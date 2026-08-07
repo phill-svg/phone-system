@@ -1418,13 +1418,15 @@ git commit -m "feat: add /webhooks/twilio route with signature verification and 
 
 This task is operational, not code — it connects the system built in Tasks 1–9 to a real phone number.
 
-- [ ] **Step 1: Create a Twilio account and provision for Australian numbers**
+> **Number type decision (2026-08-08):** using a **1300/1800 toll-free number**, not a local (+61) geographic number. Twilio's own regulatory guidelines require a personal photo-ID upload from an authorized representative to activate a local AU number — Phill doesn't want to do that. Toll-free AU numbers explicitly require **no supporting documents at submission** (just business name, address, and ABN), on either an individual or business Twilio account. This is a Twilio number-type distinction, not a provider change — every task built so far (signature verification, TwiML rendering, the webhook route) works identically regardless of which Twilio number is behind it, so nothing in Tasks 1–9 needs to change.
 
-At twilio.com, sign up, and provide the identity/regulatory information Twilio requires for Australian local numbers (your name and an Australian address — a PO Box is not accepted where a local address is required; Twilio may prompt for further regulatory-bundle details depending on account type).
+- [ ] **Step 1: Create a Twilio account**
 
-- [ ] **Step 2: Buy an Australian number**
+At twilio.com, sign up and provide your business details (name, Australian business address, ABN) when prompted. No photo ID is required for the toll-free number path used below.
 
-In the Twilio Console: Develop → Phone Numbers → Manage → Buy a Number. Set the country dropdown to Australia, ensure **Voice** capability is checked, and purchase a local (+61) number.
+- [ ] **Step 2: Buy an Australian toll-free number**
+
+In the Twilio Console: Develop → Phone Numbers → Manage → Buy a Number. Set the country dropdown to Australia, ensure **Voice** capability is checked, and use **Advanced Search** to filter to **toll-free** numbers (1300 or 1800) rather than local — uncheck "Local number" if that's the only way the filter is exposed for your account. Purchase one. If Twilio's flow prompts for a regulatory bundle at checkout, confirm it's the toll-free bundle (no document upload) and not the local-number bundle before submitting — if it asks for a photo ID at any point, stop and re-check that a toll-free number, not a local one, is actually selected.
 
 - [ ] **Step 3: Point the number's voice webhook at the deployed Worker**
 
