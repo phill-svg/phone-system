@@ -11,5 +11,9 @@
       "database_id": "c6d72eb4-9a3d-43cb-9678-69e5151b81fb",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "CALL_SESSION", "class_name": "CallSession" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }]
 }
