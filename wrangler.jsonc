@@ -15,8 +15,5 @@
   "durable_objects": {
     "bindings": [{ "name": "CALL_SESSION", "class_name": "CallSession" }]
   },
-  "vars": {
-    "TWILIO_AUTH_TOKEN": ""
-  },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }]
 }
