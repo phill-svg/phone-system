@@ -3,5 +3,13 @@
   "name": "tcb-voip",
   "main": "src/worker.ts",
   "compatibility_date": "2026-08-01",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tcb-voip-db",
+      "database_id": "c6d72eb4-9a3d-43cb-9678-69e5151b81fb",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
