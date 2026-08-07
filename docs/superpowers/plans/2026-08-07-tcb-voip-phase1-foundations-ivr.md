@@ -1419,6 +1419,8 @@ git commit -m "feat: add /webhooks/twilio route with signature verification and 
 This task is operational, not code — it connects the system built in Tasks 1–9 to a real phone number.
 
 > **Number type decision (2026-08-08):** using a **1300/1800 toll-free number**, not a local (+61) geographic number. Twilio's own regulatory guidelines require a personal photo-ID upload from an authorized representative to activate a local AU number — Phill doesn't want to do that. Toll-free AU numbers explicitly require **no supporting documents at submission** (just business name, address, and ABN), on either an individual or business Twilio account. This is a Twilio number-type distinction, not a provider change — every task built so far (signature verification, TwiML rendering, the webhook route) works identically regardless of which Twilio number is behind it, so nothing in Tasks 1–9 needs to change.
+>
+> **Status (2026-08-08): PAUSED.** Even the toll-free path still asked for verification Phill isn't ready to do. Tasks 1–9 are complete, tested, and committed independent of any real phone number — nothing is blocked by pausing here. Resume this task whenever ready; it may be worth re-examining Plivo (documented "no documents required" for AU) as an alternative before resuming, per the earlier options discussion.
 
 - [ ] **Step 1: Create a Twilio account**
 
