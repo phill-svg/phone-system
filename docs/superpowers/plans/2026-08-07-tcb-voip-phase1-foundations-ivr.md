@@ -1,12 +1,14 @@
-# TCB VoIP — Phase 1: Foundations + Telnyx Connectivity + IVR Menu Implementation Plan
+# TCB VoIP — Phase 1: Foundations + Twilio Connectivity + IVR Menu Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the Cloudflare Worker + D1 foundation, connect a real Telnyx phone number via its Call Control API, and implement the full IVR menu (greeting, recording-disclosure notice, business-hours branch, numeric menu, retry/timeout handling) as a testable state machine — ending with a real phone call that can navigate the whole menu, short of staff routing, recording, or transcription (later plans).
+> **Provider correction (2026-08-08):** this plan originally targeted Telnyx. Telnyx's self-service portal turned out to have no purchasable Australian numbers despite its marketing pages — confirmed directly by Phill. The provider is now **Twilio** (confirmed AU self-service number support). Tasks 1–4 and 7 (scaffold, D1 schema, business hours, settings, IVR state machine) are provider-agnostic and unaffected. Tasks 5, 6, 8, 9, 10 below are the Twilio-targeted rewrite, replacing the original Telnyx-specific versions.
 
-**Architecture:** A Cloudflare Worker receives Telnyx webhooks at `/webhooks/telnyx`, verifies their Ed25519 signature, and routes each event to a per-call Durable Object (`CallSession`) keyed by Telnyx's `call_control_id`. `CallSession` runs a pure, independently-tested IVR state machine (`ivr/stateMachine.ts`) and executes the commands it returns via a thin Telnyx REST client (`telnyx/client.ts`), logging every transition to D1.
+**Goal:** Stand up the Cloudflare Worker + D1 foundation, connect a real Twilio phone number via its Programmable Voice API, and implement the full IVR menu (greeting, recording-disclosure notice, business-hours branch, numeric menu, retry/timeout handling) as a testable state machine — ending with a real phone call that can navigate the whole menu, short of staff routing, recording, or transcription (later plans).
 
-**Tech Stack:** Cloudflare Workers, Durable Objects, D1, TypeScript, Wrangler, Vitest + `@cloudflare/vitest-pool-workers`, Telnyx Call Control API v2.
+**Architecture:** A Cloudflare Worker receives Twilio webhooks at `/webhooks/twilio` (a single endpoint reused as the `action` URL for every TwiML verb), verifies Twilio's `X-Twilio-Signature` header, and routes each request to a per-call Durable Object (`CallSession`) keyed by Twilio's `CallSid`. `CallSession` runs a pure, independently-tested IVR state machine (`ivr/stateMachine.ts`) and renders the commands it returns directly into a TwiML XML document (`twilio/twiml.ts`), returned synchronously as the webhook's HTTP response — Twilio's model has no separate async command-dispatch step, so there is no REST client to write for this phase. Every transition is logged to D1.
+
+**Tech Stack:** Cloudflare Workers, Durable Objects, D1, TypeScript, Wrangler, Vitest + `@cloudflare/vitest-pool-workers`, Twilio Programmable Voice (TwiML).
 
 ## Global Constraints
 
@@ -14,7 +16,7 @@
 - Recording-disclosure wording is fixed for this phase: `"This call may be recorded for quality and training purposes."` — confirm final wording with the business before go-live (tracked as a design risk, not blocking this plan).
 - Menu prompt (fixed for this phase): `"Press 1 for a new booking or enquiry. Press 2 for an existing job. Press 3 for an urgent pest emergency. Or press 0 to speak to someone."`
 - Gather timeout: 8000ms per attempt, 2 retries (3 total attempts) before falling through to voicemail.
-- No staff ring list, no recording, no transcription in this plan — reaching `ROUTE_STAFF` or `VOICEMAIL` in the state machine is a terminal state for now (a later plan implements what happens inside them).
+- No staff ring list, no recording, no transcription in this plan — reaching `ROUTE_STAFF` or `VOICEMAIL` in the state machine is terminal for now: the `CallSession` DO responds with the state's spoken prompt followed by an explicit `<Hangup/>` (there is no next step to hand the call to yet; a later plan replaces this with real staff-ring/voicemail-recording TwiML).
 - Package manager: npm. Project root: `C:\Users\Phill\Claude\voip-phone-system`.
 
 ---
@@ -516,96 +518,112 @@ git commit -m "feat: add settings D1 helpers for business hours"
 
 ---
 
-### Task 5: Telnyx webhook signature verification
+### Task 5: Twilio webhook signature verification
 
 **Files:**
-- Create: `src/telnyx/verifySignature.ts`
-- Test: `test/telnyx/verifySignature.test.ts`
+- Create: `src/twilio/verifySignature.ts`
+- Test: `test/twilio/verifySignature.test.ts`
 
 **Interfaces:**
-- Produces: `verifyTelnyxSignature(rawBody: string, signatureHeader: string, timestampHeader: string, publicKeyBase64: string): Promise<boolean>` — consumed by `routes/telnyxWebhook.ts` (Task 9).
+- Produces: `verifyTwilioSignature(url: string, params: Record<string, string>, signatureHeader: string, authToken: string): Promise<boolean>` — consumed by `worker.ts` (Task 9).
 
-Telnyx signs webhooks with Ed25519: headers `telnyx-signature-ed25519` (base64 signature) and `telnyx-timestamp` (unix seconds); the signed message is `` `${timestamp}|${rawBody}` ``, verified against the account's Ed25519 public key from the Telnyx portal. Cloudflare Workers' `crypto.subtle` supports the `"Ed25519"` algorithm natively for `importKey`/`verify`.
+Twilio signs webhooks with `X-Twilio-Signature`: `base64(HMAC-SHA1(authToken, url + sortedConcatenatedParams))`, where `sortedConcatenatedParams` is every POST param's key immediately followed by its value (no delimiters), sorted by key using case-sensitive Unix-style ordering, all concatenated together. Cloudflare Workers' `crypto.subtle` supports `HMAC`/`SHA-1` natively for `importKey`/`sign`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-// test/telnyx/verifySignature.test.ts
+// test/twilio/verifySignature.test.ts
 import { describe, expect, it } from "vitest";
-import { verifyTelnyxSignature } from "../../src/telnyx/verifySignature";
+import { verifyTwilioSignature } from "../../src/twilio/verifySignature";
 
-async function generateKeyPairBase64() {
-  const keyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
-  const publicKeyRaw = await crypto.subtle.exportKey("raw", keyPair.publicKey);
-  const publicKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(publicKeyRaw)));
-  return { privateKey: keyPair.privateKey, publicKeyBase64 };
-}
+const AUTH_TOKEN = "test-auth-token";
 
-async function sign(privateKey: CryptoKey, message: string): Promise<string> {
-  const signature = await crypto.subtle.sign("Ed25519", privateKey, new TextEncoder().encode(message));
+async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+  const message =
+    url +
+    Object.keys(params)
+      .sort()
+      .map((key) => `${key}${params[key]}`)
+      .join("");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
   return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 
-describe("verifyTelnyxSignature", () => {
-  it("accepts a correctly signed payload", async () => {
-    const { privateKey, publicKeyBase64 } = await generateKeyPairBase64();
-    const rawBody = JSON.stringify({ data: { event_type: "call.initiated" } });
-    const timestamp = "1735689600";
-    const signature = await sign(privateKey, `${timestamp}|${rawBody}`);
-    expect(await verifyTelnyxSignature(rawBody, signature, timestamp, publicKeyBase64)).toBe(true);
+describe("verifyTwilioSignature", () => {
+  const url = "https://example.com/webhooks/twilio";
+  const params = { CallSid: "CA123", From: "+61400000000", To: "+61200000000", CallStatus: "ringing" };
+
+  it("accepts a correctly signed request", async () => {
+    const signature = await sign(url, params, AUTH_TOKEN);
+    expect(await verifyTwilioSignature(url, params, signature, AUTH_TOKEN)).toBe(true);
   });
 
-  it("rejects a tampered body", async () => {
-    const { privateKey, publicKeyBase64 } = await generateKeyPairBase64();
-    const timestamp = "1735689600";
-    const signature = await sign(privateKey, `${timestamp}|original-body`);
-    expect(await verifyTelnyxSignature("tampered-body", signature, timestamp, publicKeyBase64)).toBe(false);
+  it("rejects a tampered param value", async () => {
+    const signature = await sign(url, params, AUTH_TOKEN);
+    const tampered = { ...params, From: "+61499999999" };
+    expect(await verifyTwilioSignature(url, tampered, signature, AUTH_TOKEN)).toBe(false);
   });
 
-  it("rejects a signature from the wrong key", async () => {
-    const { publicKeyBase64 } = await generateKeyPairBase64();
-    const wrongPair = await generateKeyPairBase64();
-    const rawBody = "some-body";
-    const timestamp = "1735689600";
-    const signature = await sign(wrongPair.privateKey, `${timestamp}|${rawBody}`);
-    expect(await verifyTelnyxSignature(rawBody, signature, timestamp, publicKeyBase64)).toBe(false);
+  it("rejects a signature computed with the wrong auth token", async () => {
+    const signature = await sign(url, params, "wrong-token");
+    expect(await verifyTwilioSignature(url, params, signature, AUTH_TOKEN)).toBe(false);
+  });
+
+  it("rejects a signature computed for a different URL", async () => {
+    const signature = await sign(url, params, AUTH_TOKEN);
+    expect(await verifyTwilioSignature("https://example.com/other", params, signature, AUTH_TOKEN)).toBe(false);
+  });
+
+  it("is independent of the params object's key order", async () => {
+    const signature = await sign(url, params, AUTH_TOKEN);
+    const reordered = { To: params.To, CallStatus: params.CallStatus, From: params.From, CallSid: params.CallSid };
+    expect(await verifyTwilioSignature(url, reordered, signature, AUTH_TOKEN)).toBe(true);
   });
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm test -- verifySignature`
-Expected: FAIL — `src/telnyx/verifySignature.ts` not found.
+Run: `npm test -- twilio/verifySignature`
+Expected: FAIL — `src/twilio/verifySignature.ts` not found.
 
 - [ ] **Step 3: Write the implementation**
 
 ```ts
-// src/telnyx/verifySignature.ts
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+// src/twilio/verifySignature.ts
+function buildSignedMessage(url: string, params: Record<string, string>): string {
+  const sortedConcat = Object.keys(params)
+    .sort()
+    .map((key) => `${key}${params[key]}`)
+    .join("");
+  return url + sortedConcat;
 }
 
-export async function verifyTelnyxSignature(
-  rawBody: string,
+export async function verifyTwilioSignature(
+  url: string,
+  params: Record<string, string>,
   signatureHeader: string,
-  timestampHeader: string,
-  publicKeyBase64: string
+  authToken: string
 ): Promise<boolean> {
   try {
-    const publicKey = await crypto.subtle.importKey(
+    const key = await crypto.subtle.importKey(
       "raw",
-      base64ToBytes(publicKeyBase64),
-      { name: "Ed25519" },
-      true,
-      ["verify"]
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
     );
-    const message = new TextEncoder().encode(`${timestampHeader}|${rawBody}`);
-    const signature = base64ToBytes(signatureHeader);
-    return await crypto.subtle.verify("Ed25519", publicKey, signature, message);
+    const message = new TextEncoder().encode(buildSignedMessage(url, params));
+    const signature = await crypto.subtle.sign("HMAC", key, message);
+    const computed = btoa(String.fromCharCode(...new Uint8Array(signature)));
+    return computed === signatureHeader;
   } catch {
     return false;
   }
@@ -614,169 +632,154 @@ export async function verifyTelnyxSignature(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npm test -- verifySignature`
+Run: `npm test -- twilio/verifySignature`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/telnyx/verifySignature.ts test/telnyx/verifySignature.test.ts
-git commit -m "feat: add Telnyx Ed25519 webhook signature verification"
+git add src/twilio/verifySignature.ts test/twilio/verifySignature.test.ts
+git commit -m "feat: add Twilio X-Twilio-Signature HMAC-SHA1 webhook verification"
 ```
 
 ---
 
-### Task 6: Telnyx REST client wrapper
+### Task 6: TwiML renderer
 
 **Files:**
-- Create: `src/telnyx/client.ts`
-- Test: `test/telnyx/client.test.ts`
+- Create: `src/twilio/twiml.ts`
+- Test: `test/twilio/twiml.test.ts`
 
 **Interfaces:**
-- Produces: `createTelnyxClient(apiKey: string)` returning `{ answer(callControlId): Promise<void>, speak(callControlId, text): Promise<void>, gatherUsingSpeak(callControlId, opts): Promise<void>, hangup(callControlId): Promise<void> }` — consumed by `CallSession` (Task 9).
+- Consumes: `IvrCommand` type from `src/ivr/stateMachine.ts` (Task 7).
+- Produces: `renderTwiml(commands: IvrCommand[], opts: { gatherAction: string }): string` — consumed by `CallSession` (Task 8). Renders a full `<Response>...</Response>` TwiML XML document from the state machine's commands, returned directly as the webhook's HTTP response body (Twilio's model has no separate REST command dispatch).
+
+Rendering rules: `ANSWER` → nothing (Twilio has already implicitly answered the call by fetching this TwiML — there is no TwiML verb for "answer"). `SPEAK { text }` → `<Say>text</Say>`. `GATHER { prompt, validDigits }` → `<Gather action="..." method="POST" input="dtmf" numDigits="1" timeout="8"><Say>prompt</Say></Gather>` (the `validDigits` field on the command is intentionally unused here — Twilio's `<Gather>` has no equivalent filter; out-of-range digits are rejected by the state machine's own reducer logic in Task 7, not by the telephony layer). `HANGUP` → `<Hangup/>`. All spoken text is XML-escaped.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-// test/telnyx/client.test.ts
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTelnyxClient } from "../../src/telnyx/client";
+// test/twilio/twiml.test.ts
+import { describe, expect, it } from "vitest";
+import { renderTwiml } from "../../src/twilio/twiml";
+import type { IvrCommand } from "../../src/ivr/stateMachine";
 
-describe("telnyx client", () => {
-  const fetchMock = vi.fn();
+const GATHER_ACTION = "https://example.com/webhooks/twilio";
 
-  beforeEach(() => {
-    fetchMock.mockReset();
-    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+describe("renderTwiml", () => {
+  it("renders a SPEAK command as <Say>", () => {
+    const commands: IvrCommand[] = [{ type: "SPEAK", text: "Hello there" }];
+    const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
+    expect(xml).toBe('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Hello there</Say></Response>');
   });
 
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("answer() posts to the answer action with the API key", async () => {
-    const client = createTelnyxClient("test-key");
-    await client.answer("call-123");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.telnyx.com/v2/calls/call-123/actions/answer",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
-      })
+  it("renders a GATHER command as <Gather> wrapping a <Say>", () => {
+    const commands: IvrCommand[] = [{ type: "GATHER", prompt: "Press 1 or 2", validDigits: "12" }];
+    const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
+    expect(xml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response>' +
+        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        "<Say>Press 1 or 2</Say>" +
+        "</Gather>" +
+        "</Response>"
     );
   });
 
-  it("speak() sends the payload text", async () => {
-    const client = createTelnyxClient("test-key");
-    await client.speak("call-123", "Hello there");
-    const [, init] = fetchMock.mock.calls[0];
-    const body = JSON.parse(init.body as string);
-    expect(body.payload).toBe("Hello there");
+  it("renders a HANGUP command as <Hangup/>", () => {
+    const commands: IvrCommand[] = [{ type: "HANGUP" }];
+    const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
+    expect(xml).toBe('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
   });
 
-  it("gatherUsingSpeak() sends prompt, valid digits, and timeout", async () => {
-    const client = createTelnyxClient("test-key");
-    await client.gatherUsingSpeak("call-123", {
-      prompt: "Press 1 or 2",
-      validDigits: "12",
-      timeoutMillis: 8000,
-    });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://api.telnyx.com/v2/calls/call-123/actions/gather_using_speak");
-    const body = JSON.parse(init.body as string);
-    expect(body).toMatchObject({
-      payload: "Press 1 or 2",
-      valid_digits: "12",
-      inter_digit_timeout_millis: 8000,
-      minimum_digits: 1,
-      maximum_digits: 1,
-    });
+  it("renders an ANSWER command as nothing (Twilio auto-answers)", () => {
+    const commands: IvrCommand[] = [{ type: "ANSWER" }, { type: "SPEAK", text: "Hi" }];
+    const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
+    expect(xml).toBe('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Hi</Say></Response>');
   });
 
-  it("hangup() posts to the hangup action", async () => {
-    const client = createTelnyxClient("test-key");
-    await client.hangup("call-123");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.telnyx.com/v2/calls/call-123/actions/hangup",
-      expect.objectContaining({ method: "POST" })
+  it("combines multiple commands into one Response, in order", () => {
+    const commands: IvrCommand[] = [
+      { type: "SPEAK", text: "This call may be recorded." },
+      { type: "GATHER", prompt: "Press 1 for sales", validDigits: "1" },
+    ];
+    const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
+    expect(xml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response>' +
+        "<Say>This call may be recorded.</Say>" +
+        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        "<Say>Press 1 for sales</Say>" +
+        "</Gather>" +
+        "</Response>"
     );
   });
 
-  it("throws on a non-2xx response", async () => {
-    fetchMock.mockResolvedValue(new Response("bad request", { status: 422 }));
-    const client = createTelnyxClient("test-key");
-    await expect(client.answer("call-123")).rejects.toThrow(/422/);
+  it("XML-escapes special characters in spoken text", () => {
+    const commands: IvrCommand[] = [{ type: "SPEAK", text: `Bob & Jane's <shop> "special"` }];
+    const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
+    expect(xml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Bob &amp; Jane&apos;s &lt;shop&gt; &quot;special&quot;</Say></Response>'
+    );
   });
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm test -- telnyx/client`
-Expected: FAIL — `src/telnyx/client.ts` not found.
+Run: `npm test -- twiml`
+Expected: FAIL — `src/twilio/twiml.ts` not found.
 
 - [ ] **Step 3: Write the implementation**
 
 ```ts
-// src/telnyx/client.ts
-const BASE_URL = "https://api.telnyx.com/v2";
+// src/twilio/twiml.ts
+import type { IvrCommand } from "../ivr/stateMachine";
 
-async function callAction(apiKey: string, callControlId: string, action: string, body: Record<string, unknown>) {
-  const response = await fetch(`${BASE_URL}/calls/${callControlId}/actions/${action}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new Error(`Telnyx ${action} failed with status ${response.status}`);
+export type TwimlOptions = {
+  gatherAction: string;
+};
+
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function renderCommand(command: IvrCommand, opts: TwimlOptions): string {
+  switch (command.type) {
+    case "ANSWER":
+      return "";
+    case "SPEAK":
+      return `<Say>${escapeXml(command.text)}</Say>`;
+    case "GATHER":
+      return (
+        `<Gather action="${opts.gatherAction}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        `<Say>${escapeXml(command.prompt)}</Say>` +
+        `</Gather>`
+      );
+    case "HANGUP":
+      return "<Hangup/>";
   }
 }
 
-export type GatherOptions = {
-  prompt: string;
-  validDigits: string;
-  timeoutMillis: number;
-};
-
-export function createTelnyxClient(apiKey: string) {
-  return {
-    answer(callControlId: string) {
-      return callAction(apiKey, callControlId, "answer", {});
-    },
-    speak(callControlId: string, text: string) {
-      return callAction(apiKey, callControlId, "speak", { payload: text, voice: "female" });
-    },
-    gatherUsingSpeak(callControlId: string, opts: GatherOptions) {
-      return callAction(apiKey, callControlId, "gather_using_speak", {
-        payload: opts.prompt,
-        voice: "female",
-        valid_digits: opts.validDigits,
-        minimum_digits: 1,
-        maximum_digits: 1,
-        inter_digit_timeout_millis: opts.timeoutMillis,
-      });
-    },
-    hangup(callControlId: string) {
-      return callAction(apiKey, callControlId, "hangup", {});
-    },
-  };
+export function renderTwiml(commands: IvrCommand[], opts: TwimlOptions): string {
+  const body = commands.map((command) => renderCommand(command, opts)).join("");
+  return `<?xml version="1.0" encoding="UTF-8"?><Response>${body}</Response>`;
 }
-
-export type TelnyxClient = ReturnType<typeof createTelnyxClient>;
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npm test -- telnyx/client`
+Run: `npm test -- twiml`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/telnyx/client.ts test/telnyx/client.test.ts
-git commit -m "feat: add Telnyx Call Control REST client (answer/speak/gather/hangup)"
+git add src/twilio/twiml.ts test/twilio/twiml.test.ts
+git commit -m "feat: add TwiML renderer for IVR commands"
 ```
 
 ---
@@ -1027,7 +1030,7 @@ git commit -m "feat: add pure IVR state machine (greeting, menu, retries, voicem
 
 ---
 
-### Task 8: `CallSession` Durable Object — wire state machine to Telnyx
+### Task 8: `CallSession` Durable Object — wire state machine to TwiML rendering
 
 **Files:**
 - Create: `src/durable-objects/CallSession.ts`
@@ -1035,8 +1038,12 @@ git commit -m "feat: add pure IVR state machine (greeting, menu, retries, voicem
 - Test: `test/durable-objects/CallSession.test.ts`
 
 **Interfaces:**
-- Consumes: `reduce` from `src/ivr/stateMachine.ts` (Task 7), `createTelnyxClient` from `src/telnyx/client.ts` (Task 6), `getBusinessHours`/`isWithinBusinessHours` (Tasks 3–4).
-- Produces: `CallSession` class with `fetch(request: Request): Promise<Response>` accepting `POST /events` with a Telnyx webhook `data` payload (`{ event_type, payload: { call_control_id, from, to } }`) — consumed by the webhook route (Task 9). Writes one row to `calls` on `call.initiated` and one row to `call_events` per transition.
+- Consumes: `reduce` from `src/ivr/stateMachine.ts` (Task 7), `renderTwiml` from `src/twilio/twiml.ts` (Task 6), `getBusinessHours`/`isWithinBusinessHours` (Tasks 3–4).
+- Produces: `CallSession` class with `fetch(request: Request): Promise<Response>` accepting `POST /events` with an internal JSON body `{ callSid, from, to, digits, webhookUrl }` — consumed by the webhook route (Task 9), which is responsible for translating Twilio's raw form-encoded POST params into this shape. Returns a TwiML XML `Response` (`Content-Type: text/xml`) directly — there is no separate REST command step for this provider. Writes one row to `calls` on the first webhook for a given `callSid` and one row to `call_events` per state transition.
+
+One instance of `CallSession` handles exactly one call (keyed by `callSid` at the caller level via `idFromName`), so its Durable Object storage uses a single fixed key, `"state"` — there is no need to namespace storage keys by call ID inside the instance itself.
+
+Because Twilio's webhook model is synchronous (one TwiML document per request, no "speak finished" callback), the very first webhook for a call must internally apply **both** `CALL_INITIATED` and `GREETING_SPOKEN` before responding, so the disclosure notice and the first menu prompt render together in one `<Response>`. Per this plan's Global Constraints, reaching `ROUTE_STAFF` or `VOICEMAIL` is terminal for this phase: `CallSession` appends an explicit `<Hangup/>` after those states' own commands (and, for `ROUTE_STAFF` specifically — whose reducer commands are empty — a short "connecting you now" `<Say>` first, so a real test call doesn't just go silent).
 
 - [ ] **Step 1: Add the Durable Object binding to `wrangler.jsonc`**
 
@@ -1058,37 +1065,35 @@ git commit -m "feat: add pure IVR state machine (greeting, menu, retries, voicem
   "durable_objects": {
     "bindings": [{ "name": "CALL_SESSION", "class_name": "CallSession" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
-  "vars": {
-    "TELNYX_API_KEY": ""
-  }
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }]
 }
 ```
-
-(`TELNYX_API_KEY` is set as a real secret via `wrangler secret put TELNYX_API_KEY` before deploying in Task 10 — the empty `vars` entry here only satisfies local typechecking/dev; it is overridden by the secret in every real environment.)
 
 - [ ] **Step 2: Write the failing test**
 
 ```ts
 // test/durable-objects/CallSession.test.ts
 import { env, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { setBusinessHours } from "../../src/db/settings";
 
-const fetchMock = vi.fn();
+const GATHER_ACTION = "https://tcb-voip.example.workers.dev/webhooks/twilio";
 
-function webhook(eventType: string, payload: Record<string, unknown>) {
+function event(callSid: string, overrides: Partial<{ from: string; to: string; digits: string | null }> = {}) {
   return new Request("https://internal/events", {
     method: "POST",
-    body: JSON.stringify({ data: { event_type: eventType, payload } }),
+    body: JSON.stringify({
+      callSid,
+      from: overrides.from ?? "+61400000000",
+      to: overrides.to ?? "+61200000000",
+      digits: overrides.digits ?? null,
+      webhookUrl: GATHER_ACTION,
+    }),
   });
 }
 
 describe("CallSession", () => {
   beforeEach(async () => {
-    fetchMock.mockReset();
-    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
     await env.DB.prepare("DELETE FROM calls").run();
     await env.DB.prepare("DELETE FROM call_events").run();
     await setBusinessHours(env.DB, {
@@ -1102,43 +1107,54 @@ describe("CallSession", () => {
     });
   });
 
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("call.initiated answers the call and writes a calls row", async () => {
-    const id = env.CALL_SESSION.idFromName("call-abc");
+  it("first webhook for a call answers with the disclosure and main menu in one TwiML document", async () => {
+    const id = env.CALL_SESSION.idFromName("CA-abc");
     const stub = env.CALL_SESSION.get(id);
-    const response = await runInDurableObject(stub, (instance) =>
-      instance.fetch(
-        webhook("call.initiated", { call_control_id: "call-abc", from: "+61400000000", to: "+61200000000" })
-      )
-    );
+    const response = await runInDurableObject(stub, (instance) => instance.fetch(event("CA-abc")));
+
     expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/xml");
+    const xml = await response.text();
+    expect(xml).toContain("This call may be recorded");
+    expect(xml).toContain("<Gather");
+    expect(xml).toContain(`action="${GATHER_ACTION}"`);
 
-    const answerCall = fetchMock.mock.calls.find(([url]) => (url as string).endsWith("/actions/answer"));
-    expect(answerCall).toBeDefined();
+    const row = await env.DB.prepare("SELECT * FROM calls WHERE id = ?").bind("CA-abc").first();
+    expect(row).toMatchObject({ id: "CA-abc", caller_number: "+61400000000", called_number: "+61200000000" });
 
-    const row = await env.DB.prepare("SELECT * FROM calls WHERE id = ?").bind("call-abc").first();
-    expect(row).toMatchObject({ id: "call-abc", caller_number: "+61400000000", called_number: "+61200000000" });
-
-    const events = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ?")
-      .bind("call-abc")
-      .all();
-    expect(events.results.map((e: any) => e.event_type)).toContain("state_transition");
+    const events = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ?").bind("CA-abc").all();
+    expect(events.results.length).toBe(2); // CALL_INITIATED then GREETING_SPOKEN
   });
 
-  it("call.dtmf.received with digit 1 progresses toward ROUTE_STAFF", async () => {
-    const id = env.CALL_SESSION.idFromName("call-def");
+  it("digit 1 routes to ROUTE_STAFF, updates ivr_path, and hangs up (staff ring is a later phase)", async () => {
+    const id = env.CALL_SESSION.idFromName("CA-def");
     const stub = env.CALL_SESSION.get(id);
-    await runInDurableObject(stub, (instance) =>
-      instance.fetch(webhook("call.initiated", { call_control_id: "call-def", from: "+61400000001", to: "+61200000000" }))
-    );
-    await runInDurableObject(stub, (instance) => instance.fetch(webhook("call.speak.ended", { call_control_id: "call-def" })));
-    await runInDurableObject(stub, (instance) =>
-      instance.fetch(webhook("call.dtmf.received", { call_control_id: "call-def", digit: "1" }))
-    );
+    await runInDurableObject(stub, (instance) => instance.fetch(event("CA-def")));
+    const response = await runInDurableObject(stub, (instance) => instance.fetch(event("CA-def", { digits: "1" })));
 
-    const row = await env.DB.prepare("SELECT ivr_path FROM calls WHERE id = ?").bind("call-def").first();
+    const xml = await response.text();
+    expect(xml).toContain("<Hangup/>");
+
+    const row = await env.DB.prepare("SELECT ivr_path FROM calls WHERE id = ?").bind("CA-def").first();
     expect(row).toMatchObject({ ivr_path: "new_booking" });
+  });
+
+  it("three consecutive gather timeouts fall through to voicemail and hang up", async () => {
+    const id = env.CALL_SESSION.idFromName("CA-ghi");
+    const stub = env.CALL_SESSION.get(id);
+    await runInDurableObject(stub, (instance) => instance.fetch(event("CA-ghi"))); // attempt 1
+    await runInDurableObject(stub, (instance) => instance.fetch(event("CA-ghi", { digits: null }))); // -> attempt 2
+    await runInDurableObject(stub, (instance) => instance.fetch(event("CA-ghi", { digits: null }))); // -> attempt 3
+    const response = await runInDurableObject(stub, (instance) =>
+      instance.fetch(event("CA-ghi", { digits: null }))
+    ); // -> voicemail
+
+    const xml = await response.text();
+    expect(xml).toContain("leave a message");
+    expect(xml).toContain("<Hangup/>");
+
+    const row = await env.DB.prepare("SELECT ivr_path FROM calls WHERE id = ?").bind("CA-ghi").first();
+    expect(row).toMatchObject({ ivr_path: "voicemail" });
   });
 });
 ```
@@ -1153,106 +1169,80 @@ Expected: FAIL — `src/durable-objects/CallSession.ts` not found, and `env.CALL
 ```ts
 // src/durable-objects/CallSession.ts
 import { DurableObject } from "cloudflare:workers";
-import { createTelnyxClient, type TelnyxClient } from "../telnyx/client";
-import { reduce, type IvrCommand, type IvrState } from "../ivr/stateMachine";
+import { reduce, type IvrCommand, type IvrEvent, type IvrState } from "../ivr/stateMachine";
+import { renderTwiml } from "../twilio/twiml";
 import { getBusinessHours } from "../db/settings";
 import { isWithinBusinessHours } from "../ivr/businessHours";
 
 type Env = {
   DB: D1Database;
-  TELNYX_API_KEY: string;
+};
+
+type CallEvent = {
+  callSid: string;
+  from: string;
+  to: string;
+  digits: string | null;
+  webhookUrl: string;
 };
 
 export class CallSession extends DurableObject<Env> {
-  private telnyx: TelnyxClient;
-
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    this.telnyx = createTelnyxClient(env.TELNYX_API_KEY);
-  }
-
   async fetch(request: Request): Promise<Response> {
-    const body = (await request.json()) as {
-      data: { event_type: string; payload: Record<string, any> };
-    };
-    const { event_type, payload } = body.data;
-    const callControlId: string = payload.call_control_id;
+    const { callSid, from, to, digits, webhookUrl } = (await request.json()) as CallEvent;
+    const allCommands: IvrCommand[] = [];
+    const stored = await this.ctx.storage.get<IvrState>("state");
+    let current: IvrState;
 
-    if (event_type === "call.initiated") {
-      await this.handleCallInitiated(callControlId, payload.from, payload.to);
-      return new Response("ok");
+    if (!stored) {
+      const schedule = await getBusinessHours(this.env.DB);
+      const isAfterHours = !isWithinBusinessHours(schedule, new Date());
+
+      await this.env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours) VALUES (?, ?, ?, ?, ?)"
+      )
+        .bind(callSid, from, to, Date.now(), isAfterHours ? 1 : 0)
+        .run();
+
+      current = await this.applyEvent(callSid, { name: "INCOMING" }, { type: "CALL_INITIATED", isAfterHours }, allCommands);
+      current = await this.applyEvent(callSid, current, { type: "GREETING_SPOKEN" }, allCommands);
+    } else {
+      const nextEvent: IvrEvent = digits ? { type: "DIGIT_RECEIVED", digit: digits } : { type: "GATHER_TIMED_OUT" };
+      current = await this.applyEvent(callSid, stored, nextEvent, allCommands);
     }
 
-    if (event_type === "call.speak.ended") {
-      await this.applyEvent(callControlId, { type: "GREETING_SPOKEN" });
-      return new Response("ok");
+    if (current.name === "ROUTE_STAFF") {
+      allCommands.push({ type: "SPEAK", text: "Thanks, connecting you now." }, { type: "HANGUP" });
+    } else if (current.name === "VOICEMAIL") {
+      allCommands.push({ type: "HANGUP" });
     }
 
-    if (event_type === "call.dtmf.received") {
-      await this.applyEvent(callControlId, { type: "DIGIT_RECEIVED", digit: payload.digit });
-      return new Response("ok");
-    }
+    await this.ctx.storage.put("state", current);
 
-    if (event_type === "call.gather.ended" && payload.status === "timeout") {
-      await this.applyEvent(callControlId, { type: "GATHER_TIMED_OUT" });
-      return new Response("ok");
-    }
-
-    return new Response("ignored");
+    const xml = renderTwiml(allCommands, { gatherAction: webhookUrl });
+    return new Response(xml, { headers: { "Content-Type": "text/xml" } });
   }
 
-  private async handleCallInitiated(callControlId: string, from: string, to: string) {
-    const schedule = await getBusinessHours(this.env.DB);
-    const isAfterHours = !isWithinBusinessHours(schedule, new Date());
-
-    await this.env.DB.prepare(
-      "INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours) VALUES (?, ?, ?, ?, ?)"
-    )
-      .bind(callControlId, from, to, Date.now(), isAfterHours ? 1 : 0)
-      .run();
-
-    await this.ctx.storage.put<IvrState>(`state:${callControlId}`, { name: "INCOMING" });
-    await this.applyEvent(callControlId, { type: "CALL_INITIATED", isAfterHours });
-  }
-
-  private async applyEvent(callControlId: string, event: Parameters<typeof reduce>[1]) {
-    const current = (await this.ctx.storage.get<IvrState>(`state:${callControlId}`)) ?? { name: "INCOMING" };
+  private async applyEvent(
+    callSid: string,
+    current: IvrState,
+    event: IvrEvent,
+    allCommands: IvrCommand[]
+  ): Promise<IvrState> {
     const { state: next, commands } = reduce(current, event);
-    await this.ctx.storage.put(`state:${callControlId}`, next);
+    allCommands.push(...commands);
 
     await this.env.DB.prepare("INSERT INTO call_events (call_id, ts, event_type, detail) VALUES (?, ?, ?, ?)")
-      .bind(callControlId, Date.now(), "state_transition", JSON.stringify({ event, next }))
+      .bind(callSid, Date.now(), "state_transition", JSON.stringify({ event, next }))
       .run();
 
     if (next.name === "ROUTE_STAFF") {
-      await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?").bind(next.tag, callControlId).run();
+      await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?").bind(next.tag, callSid).run();
     }
     if (next.name === "VOICEMAIL") {
-      await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?")
-        .bind("voicemail", callControlId)
-        .run();
+      await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?").bind("voicemail", callSid).run();
     }
 
-    for (const command of commands) {
-      await this.executeCommand(callControlId, command);
-    }
-  }
-
-  private async executeCommand(callControlId: string, command: IvrCommand) {
-    switch (command.type) {
-      case "ANSWER":
-        return this.telnyx.answer(callControlId);
-      case "SPEAK":
-        return this.telnyx.speak(callControlId, command.text);
-      case "GATHER":
-        return this.telnyx.gatherUsingSpeak(callControlId, {
-          prompt: command.prompt,
-          validDigits: command.validDigits,
-          timeoutMillis: 8000,
-        });
-      case "HANGUP":
-        return this.telnyx.hangup(callControlId);
-    }
+    return next;
   }
 }
 ```
@@ -1266,7 +1256,7 @@ Expected: PASS
 
 ```bash
 git add wrangler.jsonc src/durable-objects/CallSession.ts test/durable-objects/CallSession.test.ts
-git commit -m "feat: add CallSession Durable Object driving the IVR state machine via Telnyx"
+git commit -m "feat: add CallSession Durable Object driving the IVR state machine via TwiML"
 ```
 
 ---
@@ -1275,12 +1265,12 @@ git commit -m "feat: add CallSession Durable Object driving the IVR state machin
 
 **Files:**
 - Modify: `src/worker.ts`
-- Modify: `wrangler.jsonc` (add `TELNYX_PUBLIC_KEY` var placeholder, real value set as secret in Task 10)
+- Modify: `wrangler.jsonc` (add `TWILIO_AUTH_TOKEN` var placeholder, real value set as secret in Task 10)
 - Test: `test/worker.test.ts` (extend)
 
 **Interfaces:**
-- Consumes: `verifyTelnyxSignature` (Task 5), `CallSession` DO binding `env.CALL_SESSION` (Task 8).
-- Produces: `POST /webhooks/telnyx` route — the only externally-facing entry point Telnyx calls.
+- Consumes: `verifyTwilioSignature` (Task 5), `CallSession` DO binding `env.CALL_SESSION` (Task 8).
+- Produces: `POST /webhooks/twilio` route — the only externally-facing entry point Twilio calls, reused as the `action` URL for every `<Gather>` (Twilio always POSTs form-encoded params, never JSON).
 
 - [ ] **Step 1: Write the failing test (append to `test/worker.test.ts`)**
 
@@ -1288,44 +1278,51 @@ git commit -m "feat: add CallSession Durable Object driving the IVR state machin
 // test/worker.test.ts (add below the existing health-check test)
 import { env } from "cloudflare:test";
 
-describe("POST /webhooks/telnyx", () => {
-  async function sign(privateKey: CryptoKey, message: string): Promise<string> {
-    const signature = await crypto.subtle.sign("Ed25519", privateKey, new TextEncoder().encode(message));
+describe("POST /webhooks/twilio", () => {
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
     return btoa(String.fromCharCode(...new Uint8Array(signature)));
   }
 
   it("rejects a request with an invalid signature", async () => {
-    const response = await SELF.fetch("https://example.com/webhooks/telnyx", {
+    const response = await SELF.fetch("https://example.com/webhooks/twilio", {
       method: "POST",
-      headers: { "telnyx-signature-ed25519": "bad", "telnyx-timestamp": "123" },
-      body: JSON.stringify({ data: { event_type: "call.initiated", payload: {} } }),
+      headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ CallSid: "CA1", From: "+61400000000", To: "+61200000000" }).toString(),
     });
     expect(response.status).toBe(401);
   });
 
-  it("accepts a validly signed call.initiated and forwards it to CallSession", async () => {
-    const keyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
-    const publicKeyRaw = await crypto.subtle.exportKey("raw", keyPair.publicKey);
-    const publicKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(publicKeyRaw)));
-    env.TELNYX_PUBLIC_KEY = publicKeyBase64;
+  it("accepts a validly signed initial call and forwards it to CallSession", async () => {
+    env.TWILIO_AUTH_TOKEN = "test-auth-token";
+    const url = "https://example.com/webhooks/twilio";
+    const params = { CallSid: "CA-xyz", From: "+61400000002", To: "+61200000000" };
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
 
-    const rawBody = JSON.stringify({
-      data: {
-        event_type: "call.initiated",
-        payload: { call_control_id: "call-xyz", from: "+61400000002", to: "+61200000000" },
-      },
-    });
-    const timestamp = String(Math.floor(Date.now() / 1000));
-    const signature = await sign(keyPair.privateKey, `${timestamp}|${rawBody}`);
-
-    const response = await SELF.fetch("https://example.com/webhooks/telnyx", {
+    const response = await SELF.fetch(url, {
       method: "POST",
-      headers: { "telnyx-signature-ed25519": signature, "telnyx-timestamp": timestamp },
-      body: rawBody,
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
     });
     expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/xml");
+    const xml = await response.text();
+    expect(xml).toContain("<Gather");
 
-    const row = await env.DB.prepare("SELECT id FROM calls WHERE id = ?").bind("call-xyz").first();
+    const row = await env.DB.prepare("SELECT id FROM calls WHERE id = ?").bind("CA-xyz").first();
     expect(row).toBeTruthy();
   });
 });
@@ -1334,14 +1331,13 @@ describe("POST /webhooks/telnyx", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npm test -- worker`
-Expected: FAIL — `/webhooks/telnyx` returns 404 (not found).
+Expected: FAIL — `/webhooks/twilio` returns 404 (not found).
 
 - [ ] **Step 3: Update `wrangler.jsonc`'s `vars` block**
 
 ```jsonc
 "vars": {
-  "TELNYX_API_KEY": "",
-  "TELNYX_PUBLIC_KEY": ""
+  "TWILIO_AUTH_TOKEN": ""
 }
 ```
 
@@ -1349,14 +1345,13 @@ Expected: FAIL — `/webhooks/telnyx` returns 404 (not found).
 
 ```ts
 // src/worker.ts
-import { verifyTelnyxSignature } from "./telnyx/verifySignature";
+import { verifyTwilioSignature } from "./twilio/verifySignature";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
   DB: D1Database;
   CALL_SESSION: DurableObjectNamespace;
-  TELNYX_API_KEY: string;
-  TELNYX_PUBLIC_KEY: string;
+  TWILIO_AUTH_TOKEN: string;
 };
 
 export default {
@@ -1367,25 +1362,37 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
-    if (url.pathname === "/webhooks/telnyx" && request.method === "POST") {
-      const rawBody = await request.text();
-      const signature = request.headers.get("telnyx-signature-ed25519") ?? "";
-      const timestamp = request.headers.get("telnyx-timestamp") ?? "";
-      const valid = await verifyTelnyxSignature(rawBody, signature, timestamp, env.TELNYX_PUBLIC_KEY);
+    if (url.pathname === "/webhooks/twilio" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
 
-      const parsed = JSON.parse(rawBody) as { data: { payload: { call_control_id: string } } };
-      const callControlId = parsed.data.payload.call_control_id;
-      const id = env.CALL_SESSION.idFromName(callControlId);
+      const id = env.CALL_SESSION.idFromName(params.CallSid);
       const stub = env.CALL_SESSION.get(id);
-      await stub.fetch("https://internal/events", {
+      const doResponse = await stub.fetch("https://internal/events", {
         method: "POST",
-        body: rawBody,
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          callSid: params.CallSid,
+          from: params.From,
+          to: params.To,
+          digits: params.Digits ?? null,
+          webhookUrl: request.url,
+        }),
       });
-      return new Response("ok", { status: 200 });
+
+      return new Response(await doResponse.text(), {
+        status: doResponse.status,
+        headers: { "Content-Type": "text/xml" },
+      });
     }
 
     return new Response("not found", { status: 404 });
@@ -1402,58 +1409,66 @@ Expected: PASS (all tests across every task so far)
 
 ```bash
 git add src/worker.ts wrangler.jsonc test/worker.test.ts
-git commit -m "feat: add /webhooks/telnyx route with signature verification and DO routing"
+git commit -m "feat: add /webhooks/twilio route with signature verification and DO routing"
 ```
 
 ---
 
-### Task 10: Telnyx account setup + real end-to-end test call
+### Task 10: Twilio account setup + real end-to-end test call
 
 This task is operational, not code — it connects the system built in Tasks 1–9 to a real phone number.
 
-- [ ] **Step 1: Create a Telnyx account and complete AU identity verification**
+- [ ] **Step 1: Create a Twilio account and provision for Australian numbers**
 
-At telnyx.com, sign up, and submit the required ID/business documents for Australian number provisioning. This step has a lead time of roughly 72 hours — start it before you need the number.
+At twilio.com, sign up, and provide the identity/regulatory information Twilio requires for Australian local numbers (your name and an Australian address — a PO Box is not accepted where a local address is required; Twilio may prompt for further regulatory-bundle details depending on account type).
 
-- [ ] **Step 2: Purchase an Australian DID and create a Call Control Application**
+- [ ] **Step 2: Buy an Australian number**
 
-In the Telnyx portal: Numbers → buy an AU number; Call Control → create an Application, and set its **Webhook URL** to `https://<your-worker-subdomain>.workers.dev/webhooks/telnyx`. Assign the new number to this Call Control Application's connection.
+In the Twilio Console: Develop → Phone Numbers → Manage → Buy a Number. Set the country dropdown to Australia, ensure **Voice** capability is checked, and purchase a local (+61) number.
 
-- [ ] **Step 3: Copy your Telnyx API key and Ed25519 public key**
+- [ ] **Step 3: Point the number's voice webhook at the deployed Worker**
 
-Portal → API Keys (create one, copy it) and Portal → Public Key (copy the Ed25519 public key used for webhook signature verification — this is the value `TELNYX_PUBLIC_KEY` must hold, not your API key).
+In the Console, open the purchased number's configuration page. Under **Voice Configuration**, set "A call comes in" to **Webhook**, the URL to `https://<your-worker-subdomain>.workers.dev/webhooks/twilio`, and the method to **HTTP POST**. Save.
 
-- [ ] **Step 4: Set the real secrets on the deployed Worker**
+- [ ] **Step 4: Copy your Twilio Auth Token**
 
-Run: `npx wrangler secret put TELNYX_API_KEY` (paste the API key when prompted)
-Run: `npx wrangler secret put TELNYX_PUBLIC_KEY` (paste the Ed25519 public key when prompted)
+Console → Account → API keys & tokens (or the Account Info panel on the Console home page) → copy the **Auth Token** (not the Account SID — this phase's code only needs the Auth Token, for webhook signature verification).
 
-- [ ] **Step 5: Apply migrations to the remote D1 database and deploy**
+- [ ] **Step 5: Set the real secret on the deployed Worker**
+
+Run: `npx wrangler secret put TWILIO_AUTH_TOKEN` (paste the Auth Token when prompted)
+
+- [ ] **Step 6: Apply migrations to the remote D1 database and deploy**
 
 Run: `npx wrangler d1 migrations apply tcb-voip-db --remote`
 Run: `npm run deploy`
-Expected: deploy succeeds, prints the `*.workers.dev` URL used in Step 2.
+Expected: deploy succeeds, prints the `*.workers.dev` URL used in Step 3.
 
-- [ ] **Step 6: Place a real test call**
+- [ ] **Step 7: Place a real test call**
 
-Call the new Telnyx AU number from any phone. Expected: you hear the recording-disclosure notice, then the main menu; pressing `1`, `2`, `3`, or `0` should each be silently accepted (no staff routing yet — that's a later plan), letting the call sit at that point; waiting out three timeouts or entering an invalid digit three times should play the voicemail prompt.
+Call the new Twilio AU number from any phone. Expected: you hear the recording-disclosure notice, then the main menu; pressing `1`, `2`, `3`, or `0` should each get a brief "Thanks, connecting you now" followed by the call ending (no real staff routing yet — that's a later plan); waiting out three timeouts or entering an invalid digit three times should play the voicemail prompt and then end the call.
 
-- [ ] **Step 7: Verify the D1 trail for that call**
+- [ ] **Step 8: Verify the D1 trail for that call**
 
 Run: `npx wrangler d1 execute tcb-voip-db --remote --command "SELECT * FROM calls ORDER BY started_at DESC LIMIT 1"`
 Run: `npx wrangler d1 execute tcb-voip-db --remote --command "SELECT event_type, detail FROM call_events WHERE call_id = '<id from previous query>' ORDER BY ts"`
-Expected: the `calls` row shows the correct `caller_number`/`ivr_path`, and `call_events` shows the exact sequence of state transitions matching what you pressed on the phone.
+Expected: the `calls` row shows the correct `caller_number`/`ivr_path` (the `id` column will be the Twilio `CallSid`, e.g. `CAxxxxxxxx...`), and `call_events` shows the exact sequence of state transitions matching what you pressed on the phone.
 
-- [ ] **Step 8: Test the after-hours branch**
+- [ ] **Step 9: Test the after-hours branch**
 
 Run: `npx wrangler d1 execute tcb-voip-db --remote --command "INSERT INTO settings (key, value) VALUES ('business_hours', '{\"mon\":null,\"tue\":null,\"wed\":null,\"thu\":null,\"fri\":null,\"sat\":null,\"sun\":null}') ON CONFLICT(key) DO UPDATE SET value = excluded.value"`
 
 This marks every day closed. Call the number again — expect the after-hours notice and the "press 1 for emergency" menu instead of the main menu. Afterward, restore real business hours with the equivalent `INSERT ... ON CONFLICT` using your actual schedule.
 
+- [ ] **Step 10: Watch for signature-verification edge cases against real traffic**
+
+Twilio's own docs flag that hand-rolled `X-Twilio-Signature` checks commonly break on proxy/URL-rewriting edge cases that synthetic tests can't catch. If Step 7's test call gets a 401 in the Worker's logs (`npx wrangler tail`) despite a correct Auth Token, compare the exact `request.url` the Worker sees against the webhook URL configured in Step 3 — a scheme/host mismatch here is the most common real-world cause.
+
 ---
 
 ## Self-Review Notes
 
-- **Spec coverage:** This plan implements Build Phases 0–2 of the design spec (`docs/superpowers/specs/2026-08-07-tcb-voip-design.md`) in full — foundations, D1 schema (the subset needed so far), Telnyx answer/hangup/speak/gather, signature verification, webhook routing, and the complete IVR state machine including after-hours branching and retry/voicemail fallback. Phases 3–8 (staff ring/AMD/bridge, recording, transcription, listen-in, dashboard, ServiceM8, cutover) are intentionally out of scope — each becomes its own follow-up plan once this one is verified working end-to-end with a real call.
-- **Type consistency:** `IvrState`/`IvrEvent`/`IvrCommand` names and shapes are defined once in Task 7 and reused verbatim in Task 8/9 tests and implementation. `BusinessHoursSchedule` is defined once in Task 3 and reused in Tasks 4 and 8.
+- **Spec coverage:** This plan implements Build Phases 0–2 of the design spec (`docs/superpowers/specs/2026-08-07-tcb-voip-design.md`) in full — foundations, D1 schema (the subset needed so far), Twilio webhook signature verification, TwiML rendering of answer/speak/gather/hangup, webhook routing, and the complete IVR state machine including after-hours branching and retry/voicemail fallback. Phases 3–8 (staff ring/AMD/bridge, recording, transcription, listen-in, dashboard, ServiceM8, cutover) are intentionally out of scope — each becomes its own follow-up plan once this one is verified working end-to-end with a real call.
+- **Type consistency:** `IvrState`/`IvrEvent`/`IvrCommand` names and shapes are defined once in Task 7 and reused verbatim in Task 6 (renderer), Task 8 (Durable Object), and Task 9 (tests). `BusinessHoursSchedule` is defined once in Task 3 and reused in Tasks 4 and 8.
 - **No placeholders:** every step includes complete, runnable code; the one operational task (Task 10) is explicitly non-code and is scoped to portal/CLI actions with exact commands and expected results, not vague instructions.
+- **Provider-pivot consistency check:** Tasks 1–4 and 7 were already implemented and reviewed under the original (correct, provider-agnostic) design before the Telnyx→Twilio pivot and needed no changes. Tasks 5, 6, 8, 9, 10 were rewritten in place for Twilio and re-checked against each other for interface consistency (`renderTwiml`'s signature matches what `CallSession` calls it with; the internal `CallEvent` JSON shape produced by Task 9's worker route matches exactly what Task 8's `CallSession.fetch` destructures).
