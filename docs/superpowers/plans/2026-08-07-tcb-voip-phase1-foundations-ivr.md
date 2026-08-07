@@ -654,7 +654,7 @@ git commit -m "feat: add Twilio X-Twilio-Signature HMAC-SHA1 webhook verificatio
 - Consumes: `IvrCommand` type from `src/ivr/stateMachine.ts` (Task 7).
 - Produces: `renderTwiml(commands: IvrCommand[], opts: { gatherAction: string }): string` — consumed by `CallSession` (Task 8). Renders a full `<Response>...</Response>` TwiML XML document from the state machine's commands, returned directly as the webhook's HTTP response body (Twilio's model has no separate REST command dispatch).
 
-Rendering rules: `ANSWER` → nothing (Twilio has already implicitly answered the call by fetching this TwiML — there is no TwiML verb for "answer"). `SPEAK { text }` → `<Say>text</Say>`. `GATHER { prompt, validDigits }` → `<Gather action="..." method="POST" input="dtmf" numDigits="1" timeout="8"><Say>prompt</Say></Gather>` (the `validDigits` field on the command is intentionally unused here — Twilio's `<Gather>` has no equivalent filter; out-of-range digits are rejected by the state machine's own reducer logic in Task 7, not by the telephony layer). `HANGUP` → `<Hangup/>`. All spoken text is XML-escaped.
+Rendering rules: `ANSWER` → nothing (Twilio has already implicitly answered the call by fetching this TwiML — there is no TwiML verb for "answer"). `SPEAK { text }` → `<Say>text</Say>`. `GATHER { prompt, validDigits }` → `<Gather action="..." method="POST" input="dtmf" numDigits="1" timeout="8" actionOnEmptyResult="true"><Say>prompt</Say></Gather>` (the `validDigits` field on the command is intentionally unused here — Twilio's `<Gather>` has no equivalent filter; out-of-range digits are rejected by the state machine's own reducer logic in Task 7, not by the telephony layer). `actionOnEmptyResult="true"` is required: Twilio's default (`false`) means a `<Gather>` that receives no input before its timeout does not re-POST to `action` at all — it just falls through to whatever follows in the document (or hangs up if nothing does) — which would make the `GATHER_TIMED_OUT` event this system's retry/voicemail-fallback logic depends on unreachable for silent callers. `HANGUP` → `<Hangup/>`. All spoken text is XML-escaped.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -678,7 +678,7 @@ describe("renderTwiml", () => {
     const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
-        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8" actionOnEmptyResult="true">` +
         "<Say>Press 1 or 2</Say>" +
         "</Gather>" +
         "</Response>"
@@ -706,7 +706,7 @@ describe("renderTwiml", () => {
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
         "<Say>This call may be recorded.</Say>" +
-        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8" actionOnEmptyResult="true">` +
         "<Say>Press 1 for sales</Say>" +
         "</Gather>" +
         "</Response>"
@@ -755,7 +755,7 @@ function renderCommand(command: IvrCommand, opts: TwimlOptions): string {
       return `<Say>${escapeXml(command.text)}</Say>`;
     case "GATHER":
       return (
-        `<Gather action="${opts.gatherAction}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        `<Gather action="${opts.gatherAction}" method="POST" input="dtmf" numDigits="1" timeout="8" actionOnEmptyResult="true">` +
         `<Say>${escapeXml(command.prompt)}</Say>` +
         `</Gather>`
       );

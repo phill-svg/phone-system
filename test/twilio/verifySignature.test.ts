@@ -51,4 +51,9 @@ describe("verifyTwilioSignature", () => {
     const reordered = { To: params.To, CallStatus: params.CallStatus, From: params.From, CallSid: params.CallSid };
     expect(await verifyTwilioSignature(url, reordered, signature, AUTH_TOKEN)).toBe(true);
   });
+
+  it("rejects when the auth token is empty, even with an otherwise well-formed signature", async () => {
+    const signature = await sign(url, params, AUTH_TOKEN);
+    expect(await verifyTwilioSignature(url, params, signature, "")).toBe(false);
+  });
 });

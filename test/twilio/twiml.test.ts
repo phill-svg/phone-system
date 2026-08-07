@@ -16,7 +16,7 @@ describe("renderTwiml", () => {
     const xml = renderTwiml(commands, { gatherAction: GATHER_ACTION });
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
-        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8" actionOnEmptyResult="true">` +
         "<Say>Press 1 or 2</Say>" +
         "</Gather>" +
         "</Response>"
@@ -44,7 +44,7 @@ describe("renderTwiml", () => {
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
         "<Say>This call may be recorded.</Say>" +
-        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        `<Gather action="${GATHER_ACTION}" method="POST" input="dtmf" numDigits="1" timeout="8" actionOnEmptyResult="true">` +
         "<Say>Press 1 for sales</Say>" +
         "</Gather>" +
         "</Response>"

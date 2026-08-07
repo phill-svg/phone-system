@@ -21,7 +21,7 @@ function renderCommand(command: IvrCommand, opts: TwimlOptions): string {
       return `<Say>${escapeXml(command.text)}</Say>`;
     case "GATHER":
       return (
-        `<Gather action="${opts.gatherAction}" method="POST" input="dtmf" numDigits="1" timeout="8">` +
+        `<Gather action="${opts.gatherAction}" method="POST" input="dtmf" numDigits="1" timeout="8" actionOnEmptyResult="true">` +
         `<Say>${escapeXml(command.prompt)}</Say>` +
         `</Gather>`
       );

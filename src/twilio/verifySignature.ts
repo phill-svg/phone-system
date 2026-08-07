@@ -12,6 +12,9 @@ export async function verifyTwilioSignature(
   signatureHeader: string,
   authToken: string
 ): Promise<boolean> {
+  if (!authToken) {
+    return false;
+  }
   try {
     const key = await crypto.subtle.importKey(
       "raw",
