@@ -1,5 +1,5 @@
 import { env, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 describe("worker health check", () => {
   it("responds 200 ok on GET /health", async () => {
@@ -133,5 +133,72 @@ describe("POST /webhooks/twilio/status", () => {
       body: new URLSearchParams({ CallSid: "CA-x", CallStatus: "completed" }).toString(),
     });
     expect(response.status).toBe(401);
+  });
+});
+
+describe("GET /api/me and /api/calls*", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM call_events").run();
+    await env.DB.prepare("DELETE FROM calls").run();
+  });
+
+  it("GET /api/me returns the dev-mode staff identity", async () => {
+    const response = await SELF.fetch("https://example.com/api/me");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" });
+  });
+
+  it("GET /api/calls returns call summaries newest-first", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-api-1", "+61400000000", "+61200000000", 1000)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-api-2", "+61400000001", "+61200000000", 2000)
+      .run();
+
+    const response = await SELF.fetch("https://example.com/api/calls");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { id: string }[];
+    expect(body.map((c) => c.id)).toEqual(["CA-api-2", "CA-api-1"]);
+  });
+
+  it("GET /api/calls/live returns only in-progress calls", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, 'completed')"
+    )
+      .bind("CA-api-done", "+61400000000", "+61200000000", 1000)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, 'in_progress')"
+    )
+      .bind("CA-api-live", "+61400000001", "+61200000000", 2000)
+      .run();
+
+    const response = await SELF.fetch("https://example.com/api/calls/live");
+    const body = (await response.json()) as { id: string }[];
+    expect(body.map((c) => c.id)).toEqual(["CA-api-live"]);
+  });
+
+  it("GET /api/calls/:id returns the call detail with its events", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-api-detail", "+61400000000", "+61200000000", 1000)
+      .run();
+
+    const response = await SELF.fetch("https://example.com/api/calls/CA-api-detail");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { call: { id: string }; events: unknown[] };
+    expect(body.call.id).toBe("CA-api-detail");
+    expect(body.events).toEqual([]);
+  });
+
+  it("GET /api/calls/:id returns 404 for a missing call", async () => {
+    const response = await SELF.fetch("https://example.com/api/calls/CA-nope");
+    expect(response.status).toBe(404);
   });
 });

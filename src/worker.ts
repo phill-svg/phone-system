@@ -1,11 +1,18 @@
 import { verifyTwilioSignature } from "./twilio/verifySignature";
 import { normalizeCallStatus } from "./twilio/statusCallback";
+import { requireStaffUser } from "./access/requireStaffUser";
+import { handleMe } from "./api/me";
+import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
   DB: D1Database;
   CALL_SESSION: DurableObjectNamespace;
   TWILIO_AUTH_TOKEN: string;
+  AUTH_MODE?: string;
+  DEV_STAFF_EMAIL?: string;
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
 };
 
 export default {
@@ -70,6 +77,28 @@ export default {
       }
 
       return new Response("ok", { status: 200 });
+    }
+
+    if (url.pathname.startsWith("/api/")) {
+      const staffOrResponse = await requireStaffUser(request, env);
+      if (staffOrResponse instanceof Response) return staffOrResponse;
+      const staff = staffOrResponse;
+
+      if (url.pathname === "/api/me") {
+        return handleMe(staff);
+      }
+      if (url.pathname === "/api/calls/live") {
+        return handleLiveCalls(env.DB);
+      }
+      if (url.pathname === "/api/calls") {
+        return handleListCalls(env.DB);
+      }
+      const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
+      if (callIdMatch) {
+        return handleCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
+      }
+
+      return new Response("not found", { status: 404 });
     }
 
     return new Response("not found", { status: 404 });

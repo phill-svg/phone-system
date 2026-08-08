@@ -8,7 +8,14 @@ export default defineWorkersConfig(async () => {
       poolOptions: {
         workers: {
           wrangler: { configPath: "./wrangler.jsonc" },
-          miniflare: { bindings: { TEST_MIGRATIONS: migrations, TWILIO_AUTH_TOKEN: "test-auth-token" } },
+          miniflare: {
+            bindings: {
+              TEST_MIGRATIONS: migrations,
+              TWILIO_AUTH_TOKEN: "test-auth-token",
+              AUTH_MODE: "dev",
+              DEV_STAFF_EMAIL: "phill@tcbpestcontrolcanberra.com.au",
+            },
+          },
         },
       },
     },

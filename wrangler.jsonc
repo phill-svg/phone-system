@@ -15,5 +15,9 @@
   "durable_objects": {
     "bindings": [{ "name": "CALL_SESSION", "class_name": "CallSession" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
+  "vars": {
+    "CF_ACCESS_TEAM_DOMAIN": "",
+    "CF_ACCESS_AUD": ""
+  }
 }
