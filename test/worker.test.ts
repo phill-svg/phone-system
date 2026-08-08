@@ -202,3 +202,54 @@ describe("GET /api/me and /api/calls*", () => {
     expect(response.status).toBe(404);
   });
 });
+
+describe("GET/PUT /api/settings/*", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM settings").run();
+  });
+
+  it("GET /api/settings/business-hours returns the default schedule", async () => {
+    const response = await SELF.fetch("https://example.com/api/settings/business-hours");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { mon: unknown };
+    expect(body.mon).toEqual({ open: "07:00", close: "17:00" });
+  });
+
+  it("PUT /api/settings/business-hours saves a new schedule", async () => {
+    const schedule = {
+      mon: { open: "08:00", close: "16:00" },
+      tue: { open: "08:00", close: "16:00" },
+      wed: { open: "08:00", close: "16:00" },
+      thu: { open: "08:00", close: "16:00" },
+      fri: { open: "08:00", close: "16:00" },
+      sat: null,
+      sun: null,
+    };
+    const putResponse = await SELF.fetch("https://example.com/api/settings/business-hours", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(schedule),
+    });
+    expect(putResponse.status).toBe(200);
+
+    const getResponse = await SELF.fetch("https://example.com/api/settings/business-hours");
+    expect(await getResponse.json()).toEqual(schedule);
+  });
+
+  it("GET /api/settings/staff-ring-list returns an empty list by default", async () => {
+    const response = await SELF.fetch("https://example.com/api/settings/staff-ring-list");
+    expect(await response.json()).toEqual([]);
+  });
+
+  it("PUT /api/settings/staff-ring-list saves entries", async () => {
+    const list = [{ label: "Phill", number: "+61400000000" }];
+    await SELF.fetch("https://example.com/api/settings/staff-ring-list", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(list),
+    });
+    const getResponse = await SELF.fetch("https://example.com/api/settings/staff-ring-list");
+    expect(await getResponse.json()).toEqual(list);
+  });
+
+});

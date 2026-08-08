@@ -3,6 +3,7 @@ import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
 import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls";
+import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours, handlePutStaffRingList } from "./api/settings";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -96,6 +97,17 @@ export default {
       const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
       if (callIdMatch) {
         return handleCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
+      }
+
+      if (url.pathname === "/api/settings/business-hours") {
+        return request.method === "PUT"
+          ? handlePutBusinessHours(request, env.DB, staff)
+          : handleGetBusinessHours(env.DB);
+      }
+      if (url.pathname === "/api/settings/staff-ring-list") {
+        return request.method === "PUT"
+          ? handlePutStaffRingList(request, env.DB, staff)
+          : handleGetStaffRingList(env.DB);
       }
 
       return new Response("not found", { status: 404 });
