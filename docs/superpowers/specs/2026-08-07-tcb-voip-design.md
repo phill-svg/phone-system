@@ -37,7 +37,7 @@ Admin Dashboard (behind Cloudflare Access) — live calls view (transcript + lis
 - **Business hours are admin-configurable**, not hardcoded — stored in D1, editable from a dashboard Settings page (time pickers per day), read by the IVR state machine to choose the after-hours branch.
 - **Recording retention: 60 days**, enforced by an R2 lifecycle rule that auto-deletes objects under the dated `recordings/` prefix older than 60 days.
 - **Dashboard auth: Cloudflare Access**, not custom auth — right-sized for 1–3 staff. A separate `staff_users` D1 table tracks per-person **role** (admin vs staff) for actions Access alone can't gate (Settings page, listen-in, ServiceM8 job creation); Phill's email (`phill@tcbpestcontrolcanberra.com.au`) is seeded as the first admin.
-- **Live listen-in:** admins can open a real-time audio feed of any active call from the dashboard (monitor-only — no whisper/barge-in). This reuses the same Telnyx media-fork audio already flowing into `CallSession`; the DO relays those raw audio frames to any connected listen-in socket, and the browser decodes/plays them. Already covered by the call's recording-disclosure notice — no separate consent flow needed.
+- **Live listen-in:** admins can open a real-time audio feed of any active call from the dashboard (monitor-only — no whisper/barge-in). This reuses the same Twilio `<Start><Stream>`/`<Connect><Stream>` media-fork audio already flowing into `CallSession`; the DO relays those raw audio frames to any connected listen-in socket, and the browser decodes/plays them. Already covered by the call's recording-disclosure notice — no separate consent flow needed.
 
 ## Component Breakdown
 
