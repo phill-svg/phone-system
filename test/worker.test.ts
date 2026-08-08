@@ -252,6 +252,67 @@ describe("GET/PUT /api/settings/*", () => {
     expect(await getResponse.json()).toEqual(list);
   });
 
+  it("PUT /api/settings/business-hours rejects a malformed schedule shape and leaves storage unchanged", async () => {
+    const malformed = {
+      // missing "mon" key entirely
+      tue: { open: "08:00", close: "16:00" },
+      wed: { open: "08:00", close: "16:00" },
+      thu: { open: "08:00", close: "16:00" },
+      fri: { open: "08:00", close: "16:00" },
+      sat: null,
+      sun: null,
+    };
+    const putResponse = await SELF.fetch("https://example.com/api/settings/business-hours", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(malformed),
+    });
+    expect(putResponse.status).toBe(400);
+
+    const getResponse = await SELF.fetch("https://example.com/api/settings/business-hours");
+    const body = (await getResponse.json()) as { mon: unknown };
+    expect(body.mon).toEqual({ open: "07:00", close: "17:00" });
+  });
+
+  it("PUT /api/settings/business-hours rejects a day value that isn't an open/close object or null", async () => {
+    const malformed = {
+      mon: "always open",
+      tue: { open: "08:00", close: "16:00" },
+      wed: { open: "08:00", close: "16:00" },
+      thu: { open: "08:00", close: "16:00" },
+      fri: { open: "08:00", close: "16:00" },
+      sat: null,
+      sun: null,
+    };
+    const putResponse = await SELF.fetch("https://example.com/api/settings/business-hours", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(malformed),
+    });
+    expect(putResponse.status).toBe(400);
+  });
+
+  it("PUT /api/settings/business-hours returns 400 (not 500) for a non-JSON body", async () => {
+    const putResponse = await SELF.fetch("https://example.com/api/settings/business-hours", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    expect(putResponse.status).toBe(400);
+  });
+
+  it("PUT /api/settings/staff-ring-list rejects an entry missing a number field", async () => {
+    const malformed = [{ label: "Phill" }];
+    const putResponse = await SELF.fetch("https://example.com/api/settings/staff-ring-list", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(malformed),
+    });
+    expect(putResponse.status).toBe(400);
+
+    const getResponse = await SELF.fetch("https://example.com/api/settings/staff-ring-list");
+    expect(await getResponse.json()).toEqual([]);
+  });
 });
 
 describe("GET /admin/calls and /admin/calls/:id", () => {
