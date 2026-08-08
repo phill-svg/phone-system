@@ -46,6 +46,10 @@ export class CallSession extends DurableObject<Env> {
       allCommands.push({ type: "HANGUP" });
     }
 
+    if (current.name === "ROUTE_STAFF" || current.name === "VOICEMAIL") {
+      await this.markCompleted(callSid);
+    }
+
     await this.ctx.storage.put("state", current);
 
     const xml = renderTwiml(allCommands, { gatherAction: webhookUrl });
@@ -73,5 +77,16 @@ export class CallSession extends DurableObject<Env> {
     }
 
     return next;
+  }
+
+  private async markCompleted(callSid: string) {
+    // NOTE: correct only while ROUTE_STAFF/VOICEMAIL are terminal (Phase 1/2).
+    // Once Phase 3 adds real staff dial/bridge/voicemail-recording, completion
+    // detection must move to the dial-completion/bridge-teardown path instead.
+    await this.env.DB.prepare(
+      "UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ? AND ended_at IS NULL"
+    )
+      .bind(Date.now(), callSid)
+      .run();
   }
 }

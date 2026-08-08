@@ -91,4 +91,23 @@ describe("CallSession", () => {
     const row = await env.DB.prepare("SELECT ivr_path FROM calls WHERE id = ?").bind("CA-ghi").first();
     expect(row).toMatchObject({ ivr_path: "voicemail" });
   });
+
+  it("marks the calls row completed when the call reaches a terminal IVR state", async () => {
+    const id = env.CALL_SESSION.idFromName("CA-lifecycle");
+    const stub = env.CALL_SESSION.get(id);
+    // See the drain note above: each intermediate Response body must be consumed
+    // before issuing the next runInDurableObject call (Windows EBUSY teardown).
+    const first = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-lifecycle")));
+    await first.text();
+    const second = await runInDurableObject(stub, (instance) =>
+      (instance as unknown as CallSession).fetch(event("CA-lifecycle", { digits: "1" }))
+    );
+    await second.text();
+
+    const row = await env.DB.prepare("SELECT status, ended_at FROM calls WHERE id = ?")
+      .bind("CA-lifecycle")
+      .first<{ status: string; ended_at: number | null }>();
+    expect(row?.status).toBe("completed");
+    expect(row?.ended_at).toBeGreaterThan(0);
+  });
 });
