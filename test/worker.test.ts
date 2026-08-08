@@ -253,3 +253,43 @@ describe("GET/PUT /api/settings/*", () => {
   });
 
 });
+
+describe("GET /admin/calls and /admin/calls/:id", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM call_events").run();
+    await env.DB.prepare("DELETE FROM calls").run();
+  });
+
+  it("renders the call history list", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, ivr_path) VALUES (?, ?, ?, ?, ?)"
+    )
+      .bind("CA-html-1", "+61400000000", "+61200000000", Date.now(), "new_booking")
+      .run();
+
+    const response = await SELF.fetch("https://example.com/admin/calls");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("+61400000000");
+    expect(html).toContain('href="/admin/calls/CA-html-1"');
+  });
+
+  it("renders the call detail page with a disabled recording/transcript placeholder", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-html-2", "+61400000000", "+61200000000", Date.now())
+      .run();
+
+    const response = await SELF.fetch("https://example.com/admin/calls/CA-html-2");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Not available yet");
+    expect(html).toContain("disabled");
+  });
+
+  it("404s for a missing call detail page", async () => {
+    const response = await SELF.fetch("https://example.com/admin/calls/CA-nope");
+    expect(response.status).toBe(404);
+  });
+});

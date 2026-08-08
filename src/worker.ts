@@ -4,6 +4,9 @@ import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
 import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls";
 import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours, handlePutStaffRingList } from "./api/settings";
+import { renderCallHistoryPage } from "./html/pages/callHistory";
+import { renderCallDetailPage } from "./html/pages/callDetail";
+import { getCallDetail, listCalls } from "./db/calls";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -108,6 +111,25 @@ export default {
         return request.method === "PUT"
           ? handlePutStaffRingList(request, env.DB, staff)
           : handleGetStaffRingList(env.DB);
+      }
+
+      return new Response("not found", { status: 404 });
+    }
+
+    if (url.pathname.startsWith("/admin/")) {
+      const staffOrResponse = await requireStaffUser(request, env);
+      if (staffOrResponse instanceof Response) return staffOrResponse;
+
+      if (url.pathname === "/admin/calls") {
+        const html = renderCallHistoryPage(await listCalls(env.DB));
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+      const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
+      if (callIdMatch) {
+        const detail = await getCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
+        if (!detail) return new Response("not found", { status: 404 });
+        const html = renderCallDetailPage(detail.call, detail.events);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
       return new Response("not found", { status: 404 });
