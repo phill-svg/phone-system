@@ -2,6 +2,24 @@ import { createAccessVerifier } from "./verifyAccessJwt";
 
 export type StaffUser = { email: string; role: "admin" | "staff" };
 
+// Module-level cache for the Access JWT verifier. Constructing a verifier calls
+// createRemoteJWKSet, which maintains its own internal JWKS cache (fetched from
+// Cloudflare's certs endpoint). Recreating the verifier on every request would
+// discard that cache and force a re-fetch of the certs on every single request.
+// In production there is exactly one real teamDomain/audience pair, so keying
+// the cache on `${teamDomain}|${audience}` is safe and avoids that overhead.
+let cachedKey: string | undefined;
+let cachedVerifier: ReturnType<typeof createAccessVerifier> | undefined;
+
+function getVerifier(teamDomain: string, audience: string): ReturnType<typeof createAccessVerifier> {
+  const key = `${teamDomain}|${audience}`;
+  if (cachedKey !== key || !cachedVerifier) {
+    cachedVerifier = createAccessVerifier(teamDomain, audience);
+    cachedKey = key;
+  }
+  return cachedVerifier;
+}
+
 type Env = {
   DB: D1Database;
   AUTH_MODE?: string;
@@ -26,7 +44,7 @@ export async function requireStaffUser(request: Request, env: Env): Promise<Staf
     if (!token) {
       return new Response("unauthenticated", { status: 401 });
     }
-    const verify = createAccessVerifier(env.CF_ACCESS_TEAM_DOMAIN, env.CF_ACCESS_AUD);
+    const verify = getVerifier(env.CF_ACCESS_TEAM_DOMAIN, env.CF_ACCESS_AUD);
     const identity = await verify(token);
     if (!identity) {
       return new Response("unauthenticated", { status: 401 });

@@ -5,21 +5,38 @@ import { requireStaffUser } from "../../src/access/requireStaffUser";
 
 const TEAM_DOMAIN = "tcb-pest.cloudflareaccess.com";
 const AUDIENCE = "test-aud-tag";
+
+// Distinct team-domain/audience pairs for each prod-mode test that constructs
+// its own JWKS + verifier. requireStaffUser caches its verifier module-level,
+// keyed on `${teamDomain}|${audience}` (matching production, which only ever
+// has one real pair). Tests that mint their own RSA keypair/JWKS must use
+// distinct pairs so they don't collide with each other's cached verifier
+// (and therefore each other's cached JWKS keys).
+const TEAM_DOMAIN_A = "tcb-pest-a.cloudflareaccess.com";
+const AUDIENCE_A = "test-aud-tag-a";
+const TEAM_DOMAIN_B = "tcb-pest-b.cloudflareaccess.com";
+const AUDIENCE_B = "test-aud-tag-b";
 const KID = "test-key-req";
 
-async function setupJwks() {
+async function setupJwks(kid: string = KID) {
   const { publicKey, privateKey } = await generateKeyPair("RS256");
   const jwk = await exportJWK(publicKey);
-  jwk.kid = KID;
+  jwk.kid = kid;
   jwk.alg = "RS256";
   jwk.use = "sig";
   return { privateKey, jwks: { keys: [jwk] } };
 }
 
-async function signToken(privateKey: KeyLike, email: string): Promise<string> {
+async function signToken(
+  privateKey: KeyLike,
+  email: string,
+  teamDomain: string,
+  audience: string,
+  kid: string = KID
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({ email, aud: [AUDIENCE], iss: `https://${TEAM_DOMAIN}`, exp: now + 3600, iat: now })
-    .setProtectedHeader({ alg: "RS256", kid: KID })
+  return new SignJWT({ email, aud: [audience], iss: `https://${teamDomain}`, exp: now + 3600, iat: now })
+    .setProtectedHeader({ alg: "RS256", kid })
     .sign(privateKey);
 }
 
@@ -68,8 +85,8 @@ describe("requireStaffUser", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(jwks)));
     vi.stubGlobal("fetch", fetchMock);
 
-    const env = { DB: testEnv.DB, CF_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, CF_ACCESS_AUD: AUDIENCE };
-    const token = await signToken(privateKey, "phill@tcbpestcontrolcanberra.com.au");
+    const env = { DB: testEnv.DB, CF_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN_A, CF_ACCESS_AUD: AUDIENCE_A };
+    const token = await signToken(privateKey, "phill@tcbpestcontrolcanberra.com.au", TEAM_DOMAIN_A, AUDIENCE_A);
     const request = new Request("https://example.com/api/me", { headers: { "Cf-Access-Jwt-Assertion": token } });
 
     const result = await requireStaffUser(request, env as any);
@@ -83,8 +100,8 @@ describe("requireStaffUser", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(jwks)));
     vi.stubGlobal("fetch", fetchMock);
 
-    const env = { DB: testEnv.DB, CF_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, CF_ACCESS_AUD: AUDIENCE };
-    const token = await signToken(privateKey, "unprovisioned@example.com");
+    const env = { DB: testEnv.DB, CF_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN_B, CF_ACCESS_AUD: AUDIENCE_B };
+    const token = await signToken(privateKey, "unprovisioned@example.com", TEAM_DOMAIN_B, AUDIENCE_B);
     const request = new Request("https://example.com/api/me", { headers: { "Cf-Access-Jwt-Assertion": token } });
 
     const result = await requireStaffUser(request, env as any);
