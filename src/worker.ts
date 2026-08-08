@@ -7,7 +7,8 @@ import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours,
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
-import { getCallDetail, listCalls } from "./db/calls";
+import { renderLiveCallsPage } from "./html/pages/liveCalls";
+import { getCallDetail, listCalls, listLiveCalls } from "./db/calls";
 import { getBusinessHours, getStaffRingList } from "./db/settings";
 export { CallSession } from "./durable-objects/CallSession";
 
@@ -128,6 +129,11 @@ export default {
     if (url.pathname.startsWith("/admin/")) {
       const staffOrResponse = await requireStaffUser(request, env);
       if (staffOrResponse instanceof Response) return staffOrResponse;
+
+      if (url.pathname === "/admin/live") {
+        const html = renderLiveCallsPage(await listLiveCalls(env.DB));
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
 
       if (url.pathname === "/admin/calls") {
         const html = renderCallHistoryPage(await listCalls(env.DB));

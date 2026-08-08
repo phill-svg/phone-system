@@ -325,6 +325,33 @@ describe("GET /admin/settings", () => {
   });
 });
 
+describe("GET /admin/live", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM calls").run();
+  });
+
+  it("renders in-progress calls with a disabled Listen button and an honest placeholder", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, 'in_progress')"
+    )
+      .bind("CA-live-1", "+61400000000", "+61200000000", Date.now())
+      .run();
+
+    const response = await SELF.fetch("https://example.com/admin/live");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("+61400000000");
+    expect(html).toContain("disabled");
+    expect(html).toContain("Not available yet");
+  });
+
+  it("shows an empty-state message when nothing is in progress", async () => {
+    const response = await SELF.fetch("https://example.com/admin/live");
+    const html = await response.text();
+    expect(html).toContain("No calls in progress");
+  });
+});
+
 describe("GET /api/calls/:id with malformed URL encoding", () => {
   it("returns 404 for malformed URL-encoded call ID", async () => {
     const response = await SELF.fetch("https://example.com/api/calls/%zz");
