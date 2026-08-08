@@ -1,4 +1,5 @@
 import { verifyTwilioSignature } from "./twilio/verifySignature";
+import { normalizeCallStatus } from "./twilio/statusCallback";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -46,6 +47,29 @@ export default {
         status: doResponse.status,
         headers: { "Content-Type": "text/xml" },
       });
+    }
+
+    if (url.pathname === "/webhooks/twilio/status" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const normalized = normalizeCallStatus(params.CallStatus ?? "");
+      if (normalized) {
+        await env.DB.prepare("UPDATE calls SET status = ?, ended_at = ? WHERE id = ? AND ended_at IS NULL")
+          .bind(normalized, Date.now(), params.CallSid)
+          .run();
+      }
+
+      return new Response("ok", { status: 200 });
     }
 
     return new Response("not found", { status: 404 });

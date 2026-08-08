@@ -57,3 +57,81 @@ describe("POST /webhooks/twilio", () => {
     expect(row).toBeTruthy();
   });
 });
+
+describe("POST /webhooks/twilio/status", () => {
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  }
+
+  it("marks a call completed on a terminal CallStatus", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-status-1", "+61400000000", "+61200000000", Date.now())
+      .run();
+
+    const url = "https://example.com/webhooks/twilio/status";
+    const params = { CallSid: "CA-status-1", CallStatus: "completed" };
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+
+    const response = await SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+    expect(response.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT status, ended_at FROM calls WHERE id = ?")
+      .bind("CA-status-1")
+      .first<{ status: string; ended_at: number | null }>();
+    expect(row?.status).toBe("completed");
+    expect(row?.ended_at).toBeGreaterThan(0);
+  });
+
+  it("does not update on a non-terminal CallStatus", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-status-2", "+61400000001", "+61200000000", Date.now())
+      .run();
+
+    const url = "https://example.com/webhooks/twilio/status";
+    const params = { CallSid: "CA-status-2", CallStatus: "ringing" };
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+
+    await SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+
+    const row = await env.DB.prepare("SELECT status, ended_at FROM calls WHERE id = ?")
+      .bind("CA-status-2")
+      .first<{ status: string; ended_at: number | null }>();
+    expect(row?.status).toBe("in_progress");
+    expect(row?.ended_at).toBeNull();
+  });
+
+  it("rejects an invalid signature", async () => {
+    const response = await SELF.fetch("https://example.com/webhooks/twilio/status", {
+      method: "POST",
+      headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ CallSid: "CA-x", CallStatus: "completed" }).toString(),
+    });
+    expect(response.status).toBe(401);
+  });
+});
