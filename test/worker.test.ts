@@ -297,14 +297,15 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
     await env.DB.prepare(
       "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
     )
-      .bind("CA-test&call", "+61400000000", "+61200000000", Date.now())
+      .bind("CA-test'call", "+61400000000", "+61200000000", Date.now())
       .run();
 
     const response = await SELF.fetch("https://example.com/admin/calls");
     expect(response.status).toBe(200);
     const html = await response.text();
-    // The ID contains &, which should be URL-encoded to %26, then HTML-escaped to &amp;26
-    expect(html).toContain('href="/admin/calls/CA-test%26call"');
+    // The ID contains ', which encodeURIComponent leaves unescaped (not in its encoding set),
+    // then escapeHtml converts to &#39;, proving that escapeHtml actually ran.
+    expect(html).toContain('href="/admin/calls/CA-test&#39;call"');
   });
 
   it("returns 404 for malformed URL-encoded call ID in /admin/calls/:id", async () => {
