@@ -292,4 +292,30 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
     const response = await SELF.fetch("https://example.com/admin/calls/CA-nope");
     expect(response.status).toBe(404);
   });
+
+  it("HTML-escapes the call ID in the href on the list page", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-test&call", "+61400000000", "+61200000000", Date.now())
+      .run();
+
+    const response = await SELF.fetch("https://example.com/admin/calls");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    // The ID contains &, which should be URL-encoded to %26, then HTML-escaped to &amp;26
+    expect(html).toContain('href="/admin/calls/CA-test%26call"');
+  });
+
+  it("returns 404 for malformed URL-encoded call ID in /admin/calls/:id", async () => {
+    const response = await SELF.fetch("https://example.com/admin/calls/%zz");
+    expect(response.status).toBe(404);
+  });
+});
+
+describe("GET /api/calls/:id with malformed URL encoding", () => {
+  it("returns 404 for malformed URL-encoded call ID", async () => {
+    const response = await SELF.fetch("https://example.com/api/calls/%zz");
+    expect(response.status).toBe(404);
+  });
 });

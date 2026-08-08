@@ -19,7 +19,7 @@ export function renderCallHistoryPage(calls: CallSummary[]): string {
   const rows = calls
     .map(
       (call) => `<tr>
-        <td><a href="/admin/calls/${encodeURIComponent(call.id)}">${escapeHtml(new Date(call.started_at).toLocaleString("en-AU"))}</a></td>
+        <td><a href="/admin/calls/${escapeHtml(encodeURIComponent(call.id))}">${escapeHtml(new Date(call.started_at).toLocaleString("en-AU"))}</a></td>
         <td>${escapeHtml(call.caller_number)}</td>
         <td>${escapeHtml(formatOutcome(call))}</td>
         <td>${call.is_after_hours ? '<span class="badge badge-after-hours">After hours</span>' : ""}</td>

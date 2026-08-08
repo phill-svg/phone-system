@@ -99,7 +99,14 @@ export default {
       }
       const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
       if (callIdMatch) {
-        return handleCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
+        try {
+          return handleCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
+        } catch (e) {
+          if (e instanceof URIError) {
+            return new Response("not found", { status: 404 });
+          }
+          throw e;
+        }
       }
 
       if (url.pathname === "/api/settings/business-hours") {
@@ -126,10 +133,17 @@ export default {
       }
       const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
       if (callIdMatch) {
-        const detail = await getCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
-        if (!detail) return new Response("not found", { status: 404 });
-        const html = renderCallDetailPage(detail.call, detail.events);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        try {
+          const detail = await getCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
+          if (!detail) return new Response("not found", { status: 404 });
+          const html = renderCallDetailPage(detail.call, detail.events);
+          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        } catch (e) {
+          if (e instanceof URIError) {
+            return new Response("not found", { status: 404 });
+          }
+          throw e;
+        }
       }
 
       return new Response("not found", { status: 404 });
