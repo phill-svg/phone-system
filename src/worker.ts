@@ -6,7 +6,9 @@ import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls"
 import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours, handlePutStaffRingList } from "./api/settings";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
+import { renderSettingsPage } from "./html/pages/settings";
 import { getCallDetail, listCalls } from "./db/calls";
+import { getBusinessHours, getStaffRingList } from "./db/settings";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -144,6 +146,13 @@ export default {
           }
           throw e;
         }
+      }
+
+      if (url.pathname === "/admin/settings") {
+        const schedule = await getBusinessHours(env.DB);
+        const ringList = await getStaffRingList(env.DB);
+        const html = renderSettingsPage(schedule, ringList);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
       return new Response("not found", { status: 404 });

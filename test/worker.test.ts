@@ -314,6 +314,17 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
   });
 });
 
+describe("GET /admin/settings", () => {
+  it("renders the business hours form with current values and the ring list editor", async () => {
+    const response = await SELF.fetch("https://example.com/admin/settings");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('id="business-hours-form"');
+    expect(html).toContain('value="07:00"');
+    expect(html).toContain('id="ring-list-form"');
+  });
+});
+
 describe("GET /api/calls/:id with malformed URL encoding", () => {
   it("returns 404 for malformed URL-encoded call ID", async () => {
     const response = await SELF.fetch("https://example.com/api/calls/%zz");
