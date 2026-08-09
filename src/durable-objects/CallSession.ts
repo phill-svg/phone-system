@@ -223,8 +223,7 @@ export class CallSession extends DurableObject<Env> {
     // Zero on-call numbers: skip the whole ring/enqueue dance and continue the flow from the
     // ring node's noAnswerNextNodeId (e.g. an emergency ring with nobody on call → voicemail).
     if (numbers.length === 0) {
-      const noAnswerResult = await walkFromNode(this.env.DB, ringConfig.noAnswerNextNodeId, isAfterHours);
-      return this.applyWalkResult(callSid, noAnswerResult, isAfterHours, origin);
+      return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
     }
 
     const { state: ringPlanState, commands: ringCommands } = reduceRingPlan(null, {
@@ -233,15 +232,41 @@ export class CallSession extends DurableObject<Env> {
       numbers,
     });
 
-    const attemptSids: string[] = [];
+    // Flatten the ring-plan commands into the concrete list of numbers to dial for this batch
+    // (one for DIAL_NEXT/cascade, all for DIAL_ALL/simultaneous), preserving ring-list order.
+    const numbersToDial: string[] = [];
     for (const command of ringCommands) {
-      if (command.type === "DIAL_NEXT") {
-        attemptSids.push(await this.dialStaff(command.number, callSid, origin));
-      } else if (command.type === "DIAL_ALL") {
-        for (const number of command.numbers) {
-          attemptSids.push(await this.dialStaff(number, callSid, origin));
+      if (command.type === "DIAL_NEXT") numbersToDial.push(command.number);
+      else if (command.type === "DIAL_ALL") numbersToDial.push(...command.numbers);
+    }
+
+    // Dial each leg in its own try/catch. If any create-call throws part-way through a
+    // multi-number simultaneous batch, the earlier legs are REAL ringing Twilio calls — cancel
+    // every leg we did manage to create, then fall through to the no-answer path so the caller
+    // still gets valid TwiML (voicemail/etc.) instead of an opaque 500. Only build + persist
+    // `activeRing` once the WHOLE batch has succeeded, so a later agent_answer never reads a
+    // half-populated (or missing) activeRing.
+    const attemptSids: string[] = [];
+    let dialFailed = false;
+    for (const number of numbersToDial) {
+      try {
+        attemptSids.push(await this.dialStaff(number, callSid, origin));
+      } catch {
+        dialFailed = true;
+        break;
+      }
+    }
+
+    if (dialFailed) {
+      for (const sid of attemptSids) {
+        // Best-effort cleanup: a cancel failure must not itself abort the fallthrough TwiML.
+        try {
+          await this.cancelStaff(sid);
+        } catch {
+          /* leg may already be torn down; ignore */
         }
       }
+      return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
     }
 
     const activeRing: ActiveRing = {
@@ -259,6 +284,22 @@ export class CallSession extends DurableObject<Env> {
       waitUrl: `${origin}/webhooks/twilio/hold`,
       actionUrl: `${origin}/webhooks/twilio/queue-left`,
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared no-answer fallthrough: walk the flow from a ring node's noAnswerNextNodeId and render
+  // the resulting caller-leg TwiML. Used by startRing (empty ring list, and mid-batch dial
+  // failure) and handleQueueLeft (cascade/simultaneous exhaustion). Callers own any activeRing
+  // deletion; this helper only produces the TwiML body.
+  // -------------------------------------------------------------------------
+  private async renderNoAnswerFallthrough(
+    callSid: string,
+    noAnswerNextNodeId: string,
+    isAfterHours: boolean,
+    origin: string
+  ): Promise<string> {
+    const result = await walkFromNode(this.env.DB, noAnswerNextNodeId, isAfterHours);
+    return this.applyWalkResult(callSid, result, isAfterHours, origin);
   }
 
   // -------------------------------------------------------------------------
@@ -337,10 +378,17 @@ export class CallSession extends DurableObject<Env> {
 
     // no_answer (or, defensively, an unexpected non-DONE state): continue the flow
     // from the ring node's noAnswerNextNodeId.
+    //
+    // KNOWN DEFERRED LIMITATION: if the caller hangs up mid-ring, this fires while the plan is
+    // still DIALING and the outstanding staff `attemptSids` are NOT cancelled here, so those
+    // outbound legs keep ringing into a now-dead queue. Cancelling them requires routing
+    // /webhooks/twilio/status through the DO, which it deliberately does not do today — left for
+    // a later real-call hardening pass.
     await this.ctx.storage.delete("activeRing");
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
-    const result = await walkFromNode(this.env.DB, activeRing.ringConfig.noAnswerNextNodeId, isAfterHours);
-    return this.xml(await this.applyWalkResult(body.callSid, result, isAfterHours, origin));
+    return this.xml(
+      await this.renderNoAnswerFallthrough(body.callSid, activeRing.ringConfig.noAnswerNextNodeId, isAfterHours, origin)
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -386,16 +434,41 @@ export class CallSession extends DurableObject<Env> {
       return new Response("ok", { status: 200 });
     }
 
+    // Stale/duplicate delivery guard: Twilio can redeliver the same terminal (busy/no-answer/...)
+    // status for a leg we've ALREADY processed and removed from attemptSids. Without this, a
+    // redelivery would pass the DIALING guard mid-cascade and re-advance the plan (re-dialing or
+    // double-advancing). If this sid is no longer tracked, no-op immediately. (Checked BEFORE the
+    // filter below, which is what removes the sid on the first, legitimate delivery.)
+    if (!activeRing.attemptSids.includes(body.agentCallSid)) {
+      return new Response("ok", { status: 200 });
+    }
+
     const origin = new URL(body.webhookUrl).origin;
     activeRing.attemptSids = activeRing.attemptSids.filter((sid) => sid !== body.agentCallSid);
 
     if (activeRing.ringPlanState.strategy === "cascade") {
       const { state, commands } = reduceRingPlan(activeRing.ringPlanState, { type: "ATTEMPT_FAILED" });
-      activeRing.ringPlanState = state;
-      for (const command of commands) {
-        if (command.type === "DIAL_NEXT") {
-          activeRing.attemptSids.push(await this.dialStaff(command.number, body.callSid, origin));
+      const dialNext = commands.find((c) => c.type === "DIAL_NEXT");
+      if (dialNext && dialNext.type === "DIAL_NEXT") {
+        // Dial the next cascade number BEFORE committing the advanced state. If create-call
+        // throws, do NOT persist the advanced DIALING state (which would expect a leg we never
+        // created and could be re-processed on a redelivered status callback). Instead treat the
+        // plan as exhausted → DONE{no_answer}; the caller then falls through to voicemail via the
+        // existing queue_left/no-answer rail (renderNoAnswerFallthrough). Persist only after the
+        // new dial genuinely succeeds.
+        let nextSid: string;
+        try {
+          nextSid = await this.dialStaff(dialNext.number, body.callSid, origin);
+        } catch {
+          activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+          await this.ctx.storage.put("activeRing", activeRing);
+          return new Response("ok", { status: 200 });
         }
+        activeRing.ringPlanState = state;
+        activeRing.attemptSids.push(nextSid);
+      } else {
+        // No DIAL_NEXT command → cascade exhausted; state is already DONE{no_answer}.
+        activeRing.ringPlanState = state;
       }
     } else {
       // Simultaneous: a single failed leg is a no-op in the plan. Once every leg has

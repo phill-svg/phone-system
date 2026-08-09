@@ -461,4 +461,130 @@ describe("CallSession", () => {
     expect(row?.mailbox_label).toBe("3 after-hours");
     expect(row?.ivr_path).toBe("main_vm");
   });
+
+  // --- error-handling robustness (dial failures + duplicate status callbacks) ---
+
+  // Make the create-call for a specific "To" number fail with a 500 (createOutboundCall throws on
+  // !res.ok); every other create-call and all cancel-calls behave normally.
+  function failCreateFor(failNumber: string) {
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const u = String(input);
+      if (u.includes("/Calls.json")) {
+        const to = new URLSearchParams((init as RequestInit).body as string).get("To");
+        if (to === failNumber) return new Response("boom", { status: 500 });
+        return new Response(JSON.stringify({ sid: `sid-${to}` }), { status: 201 });
+      }
+      return new Response("", { status: 200 });
+    });
+  }
+
+  it("startRing: mid-batch simultaneous dial failure cancels the created leg(s) and falls through to voicemail (no enqueue)", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([
+      { label: "Phill", number: "+61411111111" },
+      { label: "Sam", number: "+61422222222" },
+    ]);
+    // First number dials OK, second throws mid-batch.
+    failCreateFor("+61422222222");
+
+    const stub = stubFor("CA-dialfail");
+    await send(stub, mainEvent("CA-dialfail"));
+    const { status, xml } = await send(stub, mainEvent("CA-dialfail", { digits: "1" }));
+
+    // Caller got the voicemail fallback, NOT an enqueue, and NOT a 500.
+    expect(status).toBe(200);
+    expect(xml).not.toContain("<Enqueue");
+    expect(xml).toContain("<Record");
+
+    // Exactly the one successfully-created leg was cancelled.
+    const cancels = cancelHits(fetchMock);
+    expect(cancels.length).toBe(1);
+    expect(cancels[0]).toContain("sid-+61411111111");
+
+    // No activeRing was persisted (the whole batch failed), so a later hold poll just leaves.
+    const poll = await send(stub, {
+      kind: "hold_poll",
+      callSid: "CA-dialfail",
+      webhookUrl: `${ORIGIN}/webhooks/twilio/hold`,
+    });
+    expect(poll.xml).toContain("<Leave/>");
+  });
+
+  it("cascade: dialing the NEXT number fails via agent_status → plan goes no_answer, caller falls through to voicemail (no dangling activeRing)", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([
+      { label: "Phill", number: "+61411111111" },
+      { label: "Sam", number: "+61422222222" },
+    ]);
+    // The first (cascade) number dials OK; the second (the cascade advance) throws.
+    failCreateFor("+61422222222");
+
+    const stub = stubFor("CA-cascade-dialfail");
+    await send(stub, mainEvent("CA-cascade-dialfail"));
+    const enq = await send(stub, mainEvent("CA-cascade-dialfail", { digits: "1" }));
+    expect(enq.xml).toContain("<Enqueue"); // first leg dialed OK → caller enqueued
+    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
+
+    // First leg fails → attempt to dial the second throws → plan should transition to no_answer.
+    const s = await send(stub, agentStatus("CA-cascade-dialfail", "sid-+61411111111", "no-answer"));
+    expect(s.status).toBe(200);
+
+    // No stale DIALING state waiting on a phantom leg: hold poll now sees non-DIALING → <Leave/>.
+    const poll = await send(stub, {
+      kind: "hold_poll",
+      callSid: "CA-cascade-dialfail",
+      webhookUrl: `${ORIGIN}/webhooks/twilio/hold`,
+    });
+    expect(poll.xml).toContain("<Leave/>");
+
+    // queue_left falls through to voicemail rather than being stuck in a broken intermediate state.
+    const left = await send(stub, queueLeft("CA-cascade-dialfail", "leave"));
+    expect(left.xml).toContain("<Record");
+  });
+
+  it("duplicate terminal agent_status for an already-processed leg is a no-op (no re-advance / re-dial, attemptSids unchanged)", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([
+      { label: "Phill", number: "+61411111111" },
+      { label: "Sam", number: "+61422222222" },
+    ]);
+
+    const stub = stubFor("CA-dup");
+    await send(stub, mainEvent("CA-dup"));
+    await send(stub, mainEvent("CA-dup", { digits: "1" }));
+    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
+
+    // First delivery: first leg fails → second number dialed.
+    await send(stub, agentStatus("CA-dup", "sid-+61411111111", "no-answer"));
+    expect(outboundDials(fetchMock)).toEqual(["+61411111111", "+61422222222"]);
+
+    // Snapshot state directly from DO storage after the first (legitimate) delivery.
+    const before = await runInDurableObject(stub, async (instance) =>
+      (instance as unknown as CallSession & { ctx: DurableObjectState }).ctx.storage.get("activeRing")
+    );
+    const dialsAfterFirst = outboundDials(fetchMock).length;
+    const cancelsAfterFirst = cancelHits(fetchMock).length;
+
+    // Duplicate delivery of the SAME terminal event for sid-+61411111111 (already removed).
+    const dup = await send(stub, agentStatus("CA-dup", "sid-+61411111111", "no-answer"));
+    expect(dup.status).toBe(200);
+
+    // No extra dial or cancel triggered by the duplicate, and stored state is byte-identical.
+    expect(outboundDials(fetchMock).length).toBe(dialsAfterFirst);
+    expect(cancelHits(fetchMock).length).toBe(cancelsAfterFirst);
+    const after = await runInDurableObject(stub, async (instance) =>
+      (instance as unknown as CallSession & { ctx: DurableObjectState }).ctx.storage.get("activeRing")
+    );
+    expect(after).toEqual(before);
+
+    // The second leg can still answer normally → bridge.
+    const answer = await send(stub, agentAnswer("CA-dup", "sid-+61422222222"));
+    expect(answer.xml).toContain("<Dial");
+  });
 });
