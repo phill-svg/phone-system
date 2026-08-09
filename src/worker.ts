@@ -4,6 +4,8 @@ import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
 import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls";
 import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours, handlePutStaffRingList } from "./api/settings";
+import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
+import { handleGetMedia } from "./api/media";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
@@ -15,6 +17,7 @@ export { CallSession } from "./durable-objects/CallSession";
 type Env = {
   DB: D1Database;
   CALL_SESSION: DurableObjectNamespace;
+  AUDIO_ASSETS: R2Bucket;
   TWILIO_AUTH_TOKEN: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
@@ -90,6 +93,20 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+    if (url.pathname.startsWith("/media/")) {
+      // Public route, intentionally NOT staff-gated: Twilio fetches this URL directly
+      // to stream IVR audio into a live call and cannot present an Access credential.
+      try {
+        const key = decodeURIComponent(url.pathname.slice("/media/".length));
+        return await handleGetMedia(env.AUDIO_ASSETS, key);
+      } catch (e) {
+        if (e instanceof URIError) {
+          return new Response("not found", { status: 404 });
+        }
+        throw e;
+      }
+    }
+
     if (url.pathname.startsWith("/api/")) {
       const staffOrResponse = await requireStaffUser(request, env);
       if (staffOrResponse instanceof Response) return staffOrResponse;
@@ -125,6 +142,12 @@ export default {
         return request.method === "PUT"
           ? handlePutStaffRingList(request, env.DB, staff)
           : handleGetStaffRingList(env.DB);
+      }
+
+      if (url.pathname === "/api/ivr/audio") {
+        return request.method === "POST"
+          ? handleUploadAudioAsset(request, env)
+          : handleListAudioAssets(env.DB);
       }
 
       return new Response("not found", { status: 404 });

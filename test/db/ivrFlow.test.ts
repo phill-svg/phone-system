@@ -38,7 +38,7 @@ describe("IVR flow seeding", () => {
     it("has 4 ring nodes for each main menu route", async () => {
       const result = await env.DB.prepare(
         "SELECT id, config FROM ivr_nodes WHERE flow = 'main' AND type = 'ring' ORDER BY id"
-      ).all<Array<{ id: string; config: string }>>();
+      ).all<{ id: string; config: string }>();
 
       const ringNodeIds = result.results.map((r) => r.id);
       expect(ringNodeIds).toEqual(
@@ -55,7 +55,7 @@ describe("IVR flow seeding", () => {
     it("all ring nodes target all", async () => {
       const result = await env.DB.prepare(
         "SELECT id, config FROM ivr_nodes WHERE flow = 'main' AND type = 'ring' ORDER BY id"
-      ).all<Array<{ id: string; config: string }>>();
+      ).all<{ id: string; config: string }>();
 
       expect(result.results).toHaveLength(4);
       result.results.forEach((row) => {
@@ -67,7 +67,7 @@ describe("IVR flow seeding", () => {
     it("all ring nodes point to voicemail on no-answer", async () => {
       const result = await env.DB.prepare(
         "SELECT config FROM ivr_nodes WHERE flow = 'main' AND type = 'ring'"
-      ).all<Array<{ config: string }>>();
+      ).all<{ config: string }>();
 
       result.results.forEach((row) => {
         const config = JSON.parse(row.config);

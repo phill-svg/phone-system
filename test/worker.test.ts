@@ -1,5 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
+import worker from "../src/worker";
 
 describe("worker health check", () => {
   it("responds 200 ok on GET /health", async () => {
@@ -425,5 +426,165 @@ describe("GET /api/calls/:id with malformed URL encoding", () => {
   it("returns 404 for malformed URL-encoded call ID", async () => {
     const response = await SELF.fetch("https://example.com/api/calls/%zz");
     expect(response.status).toBe(404);
+  });
+});
+
+describe("POST/GET /api/ivr/audio and public GET /media/:key", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM ivr_audio_assets").run();
+  });
+
+  it("uploads an audio file, storing it in R2 and a matching row in D1", async () => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "greeting.mp3", { type: "audio/mpeg" });
+    const form = new FormData();
+    form.set("file", file);
+    form.set("label", "Main greeting");
+
+    const uploadResponse = await SELF.fetch("https://example.com/api/ivr/audio", {
+      method: "POST",
+      body: form,
+    });
+    expect(uploadResponse.status).toBe(201);
+    const { id } = (await uploadResponse.json()) as { id: string };
+    expect(typeof id).toBe("string");
+
+    const row = await env.DB.prepare(
+      "SELECT label, r2_key, content_type FROM ivr_audio_assets WHERE id = ?"
+    )
+      .bind(id)
+      .first<{ label: string; r2_key: string; content_type: string }>();
+    expect(row?.label).toBe("Main greeting");
+    expect(row?.content_type).toBe("audio/mpeg");
+    expect(row?.r2_key).toContain("/"); // key deliberately has a nested path (e.g. ivr-audio/<uuid>)
+
+    const stored = await env.AUDIO_ASSETS.get(row!.r2_key);
+    expect(stored).not.toBeNull();
+    const bytes = new Uint8Array(await stored!.arrayBuffer());
+    expect(Array.from(bytes)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("defaults the label to the uploaded filename when no label field is given", async () => {
+    const file = new File([new Uint8Array([9])], "no-label.wav", { type: "audio/wav" });
+    const form = new FormData();
+    form.set("file", file);
+
+    const uploadResponse = await SELF.fetch("https://example.com/api/ivr/audio", {
+      method: "POST",
+      body: form,
+    });
+    const { id } = (await uploadResponse.json()) as { id: string };
+
+    const row = await env.DB.prepare("SELECT label FROM ivr_audio_assets WHERE id = ?")
+      .bind(id)
+      .first<{ label: string }>();
+    expect(row?.label).toBe("no-label.wav");
+  });
+
+  it("returns 400 when the file field is missing", async () => {
+    const form = new FormData();
+    form.set("label", "no file here");
+
+    const response = await SELF.fetch("https://example.com/api/ivr/audio", {
+      method: "POST",
+      body: form,
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/ivr/audio lists uploaded assets", async () => {
+    const file = new File([new Uint8Array([1])], "a.mp3", { type: "audio/mpeg" });
+    const form = new FormData();
+    form.set("file", file);
+    await SELF.fetch("https://example.com/api/ivr/audio", { method: "POST", body: form });
+
+    const listResponse = await SELF.fetch("https://example.com/api/ivr/audio");
+    expect(listResponse.status).toBe(200);
+    const body = (await listResponse.json()) as { label: string }[];
+    expect(body).toHaveLength(1);
+    expect(body[0].label).toBe("a.mp3");
+  });
+
+  it("GET /media/:key streams the right bytes and content-type for a known key, with a long Cache-Control", async () => {
+    const file = new File([new Uint8Array([5, 6, 7])], "ring.mp3", { type: "audio/mpeg" });
+    const form = new FormData();
+    form.set("file", file);
+    const uploadResponse = await SELF.fetch("https://example.com/api/ivr/audio", {
+      method: "POST",
+      body: form,
+    });
+    const { id } = (await uploadResponse.json()) as { id: string };
+    const row = await env.DB.prepare("SELECT r2_key FROM ivr_audio_assets WHERE id = ?")
+      .bind(id)
+      .first<{ r2_key: string }>();
+
+    // r2_key contains a nested path (e.g. "ivr-audio/<uuid>") -- confirm the route
+    // handles the extra slash rather than treating "ivr-audio" as the whole key.
+    const mediaResponse = await SELF.fetch(`https://example.com/media/${row!.r2_key}`);
+    expect(mediaResponse.status).toBe(200);
+    expect(mediaResponse.headers.get("Content-Type")).toBe("audio/mpeg");
+    expect(mediaResponse.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    const bytes = new Uint8Array(await mediaResponse.arrayBuffer());
+    expect(Array.from(bytes)).toEqual([5, 6, 7]);
+  });
+
+  it("GET /media/:key returns 404 for an unknown key", async () => {
+    const response = await SELF.fetch("https://example.com/media/ivr-audio/does-not-exist");
+    expect(response.status).toBe(404);
+  });
+
+  it("GET /media/:key succeeds with no Access/staff-auth header, even while /api/ requires one", async () => {
+    // The whole vitest pool is configured with AUTH_MODE: "dev" (see vitest.config.ts),
+    // which makes requireStaffUser bypass real Access checks everywhere -- so hitting
+    // SELF.fetch("/api/...") with no headers would misleadingly succeed too, and
+    // wouldn't prove /media/ is special. To get a genuine production-auth env (no dev
+    // bypass, a real Cf-Access-Jwt-Assertion requirement), invoke the worker's fetch
+    // handler directly with a custom env, the same technique test/access/requireStaffUser.test.ts
+    // uses -- reusing the real DB/AUDIO_ASSETS bindings but overriding the auth vars.
+    const file = new File([new Uint8Array([42])], "noauth.mp3", { type: "audio/mpeg" });
+    const form = new FormData();
+    form.set("file", file);
+    const uploadResponse = await SELF.fetch("https://example.com/api/ivr/audio", {
+      method: "POST",
+      body: form,
+    });
+    const { id } = (await uploadResponse.json()) as { id: string };
+    const row = await env.DB.prepare("SELECT r2_key FROM ivr_audio_assets WHERE id = ?")
+      .bind(id)
+      .first<{ r2_key: string }>();
+
+    const prodEnv = {
+      DB: env.DB,
+      AUDIO_ASSETS: env.AUDIO_ASSETS,
+      CALL_SESSION: env.CALL_SESSION,
+      TWILIO_AUTH_TOKEN: env.TWILIO_AUTH_TOKEN,
+      // No AUTH_MODE / DEV_STAFF_EMAIL: this is what production actually looks like.
+      CF_ACCESS_TEAM_DOMAIN: "tcb-pest.cloudflareaccess.com",
+      CF_ACCESS_AUD: "prod-aud-tag",
+    };
+
+    // Sanity check: under this env, /api/ genuinely demands a Cf-Access-Jwt-Assertion header.
+    const apiResponse = await worker.fetch(
+      new Request("https://example.com/api/ivr/audio"),
+      prodEnv as any
+    );
+    expect(apiResponse.status).toBe(401);
+
+    // Same request, same complete absence of any auth header/cookie, against /media/:key --
+    // this must succeed, proving the route carries no staff-auth gate of its own.
+    const mediaResponse = await worker.fetch(
+      new Request(`https://example.com/media/${row!.r2_key}`),
+      prodEnv as any
+    );
+    expect(mediaResponse.status).toBe(200);
+    const bytes = new Uint8Array(await mediaResponse.arrayBuffer());
+    expect(Array.from(bytes)).toEqual([42]);
+
+    // Same no-auth, no-dev-bypass env: an unknown key still 404s rather than, say,
+    // erroring out or falling through to some other handler.
+    const missingResponse = await worker.fetch(
+      new Request("https://example.com/media/ivr-audio/does-not-exist"),
+      prodEnv as any
+    );
+    expect(missingResponse.status).toBe(404);
   });
 });
