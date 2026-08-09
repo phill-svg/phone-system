@@ -24,8 +24,8 @@ CREATE TABLE ivr_nodes (
 -- 1. Entry gather node prompting for 1/2/3/0
 -- 2. Four ring nodes for new_booking/existing_job/emergency/operator
 -- 3. Shared voicemail node for all no-answer paths
--- Emergency ring node uses target:"on_call_only" to reach on-call staff first.
--- Other ring nodes use target:"all" for normal staff routing.
+-- All four main-flow ring nodes (including emergency) use target:"all" —
+-- on-call-only targeting is reserved for the after-hours emergency ring node below.
 
 -- Shared voicemail node (reused by both main and after-hours flows)
 -- NOTE: Node lookups by later code (e.g., flow-walking engine) MUST be global-by-id (SELECT * FROM ivr_nodes WHERE id = ?),
