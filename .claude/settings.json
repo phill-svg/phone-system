@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "atomic-agents@claude-plugins-official": true
+  }
+}
