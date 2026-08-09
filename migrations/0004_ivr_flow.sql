@@ -28,13 +28,15 @@ CREATE TABLE ivr_nodes (
 -- Other ring nodes use target:"all" for normal staff routing.
 
 -- Shared voicemail node (reused by both main and after-hours flows)
+-- NOTE: Node lookups by later code (e.g., flow-walking engine) MUST be global-by-id (SELECT * FROM ivr_nodes WHERE id = ?),
+-- NOT scoped by the flow column, because this node is tagged flow='main' but referenced by after_hours flow nodes.
 INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at)
 VALUES (
   'shared_voicemail',
   'main',
   0,
   'voicemail',
-  json('{"ttsText": "Sorry we''re unable to take your call right now. Please leave a message after the tone, including your name and number.", "mailboxLabel": "default"}'),
+  json('{"ttsText": "Sorry we''re unable to take your call right now. Please leave a message after the tone, including your name and number.", "mailboxLabel": "default", "audioAssetId": null}'),
   CAST(strftime('%s', 'now') AS INTEGER) * 1000,
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );
@@ -46,7 +48,7 @@ VALUES (
   'main',
   1,
   'gather',
-  json('{"ttsText": "Press 1 for a new booking or enquiry. Press 2 for an existing job. Press 3 for an urgent pest emergency. Or press 0 to speak to someone.", "options": [{"digit": "1", "nextNodeId": "main_ring_new_booking"}, {"digit": "2", "nextNodeId": "main_ring_existing_job"}, {"digit": "3", "nextNodeId": "main_ring_emergency"}, {"digit": "0", "nextNodeId": "main_ring_operator"}], "defaultNextNodeId": "shared_voicemail", "retryLimit": 3}'),
+  json('{"ttsText": "Press 1 for a new booking or enquiry. Press 2 for an existing job. Press 3 for an urgent pest emergency. Or press 0 to speak to someone.", "options": [{"digit": "1", "nextNodeId": "main_ring_new_booking"}, {"digit": "2", "nextNodeId": "main_ring_existing_job"}, {"digit": "3", "nextNodeId": "main_ring_emergency"}, {"digit": "0", "nextNodeId": "main_ring_operator"}], "defaultNextNodeId": "shared_voicemail", "audioAssetId": null, "retryLimit": 3}'),
   CAST(strftime('%s', 'now') AS INTEGER) * 1000,
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );
@@ -75,14 +77,14 @@ VALUES (
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );
 
--- Emergency ring node (target on-call staff only for priority handling)
+-- Emergency ring node (target all staff for main/business-hours flow)
 INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at)
 VALUES (
   'main_ring_emergency',
   'main',
   0,
   'ring',
-  json('{"target": "on_call_only", "strategy": "cascade", "timeoutSeconds": 20, "noAnswerNextNodeId": "shared_voicemail"}'),
+  json('{"target": "all", "strategy": "cascade", "timeoutSeconds": 20, "noAnswerNextNodeId": "shared_voicemail"}'),
   CAST(strftime('%s', 'now') AS INTEGER) * 1000,
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );
@@ -106,7 +108,7 @@ VALUES (
   'after_hours',
   1,
   'gather',
-  json('{"ttsText": "For a pest emergency, press 1. Otherwise, please leave a message after the tone.", "options": [{"digit": "1", "nextNodeId": "after_hours_ring_emergency"}], "defaultNextNodeId": "shared_voicemail", "retryLimit": 1}'),
+  json('{"ttsText": "For a pest emergency, press 1. Otherwise, please leave a message after the tone.", "options": [{"digit": "1", "nextNodeId": "after_hours_ring_emergency"}], "defaultNextNodeId": "shared_voicemail", "audioAssetId": null, "retryLimit": 1}'),
   CAST(strftime('%s', 'now') AS INTEGER) * 1000,
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );

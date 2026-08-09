@@ -52,20 +52,12 @@ describe("IVR flow seeding", () => {
       expect(ringNodeIds).toHaveLength(4);
     });
 
-    it("emergency ring node targets on_call_only", async () => {
-      const node = await env.DB.prepare(
-        "SELECT config FROM ivr_nodes WHERE id = 'main_ring_emergency'"
-      ).first<{ config: string }>();
-
-      const config = JSON.parse(node?.config || "{}");
-      expect(config.target).toBe("on_call_only");
-    });
-
-    it("non-emergency ring nodes target all", async () => {
+    it("all ring nodes target all", async () => {
       const result = await env.DB.prepare(
-        "SELECT id, config FROM ivr_nodes WHERE flow = 'main' AND type = 'ring' AND id != 'main_ring_emergency'"
+        "SELECT id, config FROM ivr_nodes WHERE flow = 'main' AND type = 'ring' ORDER BY id"
       ).all<Array<{ id: string; config: string }>>();
 
+      expect(result.results).toHaveLength(4);
       result.results.forEach((row) => {
         const config = JSON.parse(row.config);
         expect(config.target).toBe("all");
@@ -102,6 +94,15 @@ describe("IVR flow seeding", () => {
         "Sorry we're unable to take your call right now"
       );
       expect(config.ttsText).toContain("Please leave a message after the tone");
+    });
+
+    it("main entry gather has retryLimit of 3", async () => {
+      const node = await env.DB.prepare(
+        "SELECT config FROM ivr_nodes WHERE id = 'main_entry_gather'"
+      ).first<{ config: string }>();
+
+      const config = JSON.parse(node?.config || "{}");
+      expect(config.retryLimit).toBe(3);
     });
   });
 
@@ -152,6 +153,15 @@ describe("IVR flow seeding", () => {
       const config = JSON.parse(node?.config || "{}");
       expect(config.noAnswerNextNodeId).toBe("shared_voicemail");
     });
+
+    it("after-hours entry gather has retryLimit of 1", async () => {
+      const node = await env.DB.prepare(
+        "SELECT config FROM ivr_nodes WHERE id = 'after_hours_entry_gather'"
+      ).first<{ config: string }>();
+
+      const config = JSON.parse(node?.config || "{}");
+      expect(config.retryLimit).toBe(1);
+    });
   });
 
   it("both flows use the same shared voicemail node", async () => {
@@ -168,5 +178,11 @@ describe("IVR flow seeding", () => {
 
     expect(mainConfig.defaultNextNodeId).toBe("shared_voicemail");
     expect(afterHoursConfig.defaultNextNodeId).toBe("shared_voicemail");
+
+    // Verify there is exactly one shared_voicemail node in the entire table
+    const count = await env.DB.prepare(
+      "SELECT COUNT(*) as count FROM ivr_nodes WHERE id = 'shared_voicemail'"
+    ).first<{ count: number }>();
+    expect(count?.count).toBe(1);
   });
 });
