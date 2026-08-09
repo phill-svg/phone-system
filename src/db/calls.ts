@@ -7,6 +7,10 @@ export type CallSummary = {
   ivr_path: string | null;
   is_after_hours: number;
   status: string;
+  recording_url: string | null;
+  recording_sid: string | null;
+  direction: "inbound" | "outbound";
+  mailbox_label: string | null;
 };
 
 export type CallEventRow = {

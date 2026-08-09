@@ -37,6 +37,30 @@ describe("db/calls", () => {
     expect(await getCallDetail(env.DB, "CA-missing")).toBeNull();
   });
 
+  it("listCalls surfaces the recording/direction/mailbox columns added in migration 0005", async () => {
+    await seedCall("CA-cols");
+    await env.DB.prepare(
+      "UPDATE calls SET recording_url = ?, recording_sid = ?, direction = ?, mailbox_label = ? WHERE id = ?"
+    )
+      .bind("https://api.twilio.com/rec.mp3", "RE123", "outbound", "default", "CA-cols")
+      .run();
+
+    const [call] = await listCalls(env.DB, 1);
+    expect(call.recording_url).toBe("https://api.twilio.com/rec.mp3");
+    expect(call.recording_sid).toBe("RE123");
+    expect(call.direction).toBe("outbound");
+    expect(call.mailbox_label).toBe("default");
+  });
+
+  it("seeded calls default direction to 'inbound' with null recording/mailbox fields", async () => {
+    await seedCall("CA-defaults");
+    const [call] = await listCalls(env.DB, 1);
+    expect(call.direction).toBe("inbound");
+    expect(call.recording_url).toBeNull();
+    expect(call.recording_sid).toBeNull();
+    expect(call.mailbox_label).toBeNull();
+  });
+
   it("getCallDetail returns the call and its ordered events", async () => {
     await seedCall("CA-detail");
     await env.DB.prepare("INSERT INTO call_events (call_id, ts, event_type, detail) VALUES (?, ?, ?, ?)")
