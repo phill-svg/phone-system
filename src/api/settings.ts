@@ -1,5 +1,6 @@
 import { jsonResponse } from "./respond";
 import { getBusinessHours, getStaffRingList, setBusinessHours, setStaffRingList } from "../db/settings";
+import type { StaffRingEntry } from "../db/settings";
 import type { BusinessHoursSchedule, DayWindow } from "../ivr/businessHours";
 import type { StaffUser } from "../access/requireStaffUser";
 
@@ -26,12 +27,14 @@ function isBusinessHoursSchedule(value: unknown): value is BusinessHoursSchedule
   return DAY_KEYS.every((day) => Object.prototype.hasOwnProperty.call(schedule, day) && isDayWindow(schedule[day]));
 }
 
-function isStaffRingList(value: unknown): value is { label: string; number: string }[] {
+function isStaffRingList(value: unknown): value is StaffRingEntry[] {
   if (!Array.isArray(value)) return false;
   return value.every((entry) => {
     if (typeof entry !== "object" || entry === null) return false;
     const item = entry as Record<string, unknown>;
-    return typeof item.label === "string" && typeof item.number === "string";
+    if (typeof item.label !== "string" || typeof item.number !== "string") return false;
+    if ("isOnCall" in item && typeof item.isOnCall !== "boolean") return false;
+    return true;
   });
 }
 

@@ -46,4 +46,14 @@ describe("settings.staffRingList", () => {
     await setStaffRingList(env.DB, list);
     expect(await getStaffRingList(env.DB)).toEqual(list);
   });
+
+  it("round-trips a ring list with mixed isOnCall values unchanged", async () => {
+    const list = [
+      { label: "Phill (mobile)", number: "+61400000000", isOnCall: true },
+      { label: "Backup", number: "+61400000001", isOnCall: false },
+      { label: "No isOnCall field", number: "+61400000002" },
+    ];
+    await setStaffRingList(env.DB, list);
+    expect(await getStaffRingList(env.DB)).toEqual(list);
+  });
 });

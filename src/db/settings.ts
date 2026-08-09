@@ -28,7 +28,7 @@ export async function setBusinessHours(db: D1Database, schedule: BusinessHoursSc
     .run();
 }
 
-export type StaffRingEntry = { label: string; number: string };
+export type StaffRingEntry = { label: string; number: string; isOnCall?: boolean };
 
 const STAFF_RING_LIST_KEY = "staff_ring_list";
 
