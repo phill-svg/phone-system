@@ -67,8 +67,8 @@ describe("Twilio REST client", () => {
       const expectedAuth = `Basic ${btoa(`${ACCOUNT_SID}:${AUTH_TOKEN}`)}`;
       expect(authHeader.Authorization).toBe(expectedAuth);
 
-      // Verify base64 decoding
-      const decodedAuth = atob(expectedAuth.replace("Basic ", ""));
+      // Verify base64 decoding of the header the code under test actually produced
+      const decodedAuth = atob(authHeader.Authorization.replace("Basic ", ""));
       expect(decodedAuth).toBe(`${ACCOUNT_SID}:${AUTH_TOKEN}`);
     });
 
@@ -288,8 +288,8 @@ describe("Twilio REST client", () => {
       const expectedAuth = `Basic ${btoa(`${ACCOUNT_SID}:${AUTH_TOKEN}`)}`;
       expect(authHeader.Authorization).toBe(expectedAuth);
 
-      // Verify base64 decoding
-      const decodedAuth = atob(expectedAuth.replace("Basic ", ""));
+      // Verify base64 decoding of the header the code under test actually produced
+      const decodedAuth = atob(authHeader.Authorization.replace("Basic ", ""));
       expect(decodedAuth).toBe(`${ACCOUNT_SID}:${AUTH_TOKEN}`);
     });
 
