@@ -907,3 +907,111 @@ describe("POST/GET /api/ivr/audio and public GET /media/:key", () => {
     expect(missingResponse.status).toBe(404);
   });
 });
+
+describe("Task 12 IVR flow editor routes", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM ivr_nodes").run();
+  });
+
+  it("GET /admin/ivr/:flow renders node cards for the flow's nodes", async () => {
+    await env.DB.prepare(
+      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, 1, 'voicemail', ?, ?, ?)"
+    )
+      .bind("wt-entry", "worker_test_flow", JSON.stringify({ audioAssetId: null, ttsText: "hi", mailboxLabel: "default" }), Date.now(), Date.now())
+      .run();
+
+    const response = await SELF.fetch("https://example.com/admin/ivr/worker_test_flow");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("wt-entry");
+    expect(html).toContain('id="node-cards"');
+  });
+
+  it("GET /api/ivr/flows/:flow returns the flow's entryNodeId + nodes", async () => {
+    await env.DB.prepare(
+      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, 1, 'voicemail', ?, ?, ?)"
+    )
+      .bind("wt-entry-2", "worker_test_flow", JSON.stringify({ audioAssetId: null, ttsText: "hi", mailboxLabel: "default" }), Date.now(), Date.now())
+      .run();
+
+    const response = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { entryNodeId: string; nodes: { id: string }[] };
+    expect(body.entryNodeId).toBe("wt-entry-2");
+    expect(body.nodes.map((n) => n.id)).toEqual(["wt-entry-2"]);
+  });
+
+  it("PUT /api/ivr/flows/:flow saves a new flow and GET reflects it (happy path through the dev-mode admin identity)", async () => {
+    const putResponse = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entryNodeId: "wt-put",
+        nodes: [{ id: "wt-put", type: "voicemail", config: { audioAssetId: null, ttsText: "hi", mailboxLabel: "default" } }],
+      }),
+    });
+    expect(putResponse.status).toBe(200);
+
+    const getResponse = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow");
+    const body = (await getResponse.json()) as { entryNodeId: string };
+    expect(body.entryNodeId).toBe("wt-put");
+  });
+
+  it("PUT /api/ivr/flows/:flow with a dangling reference returns 400 and does not modify DB state", async () => {
+    const putResponse = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entryNodeId: "wt-bad",
+        nodes: [{ id: "wt-bad", type: "play", config: { audioAssetId: null, ttsText: "hi", nextNodeId: "ghost" } }],
+      }),
+    });
+    expect(putResponse.status).toBe(400);
+
+    const getResponse = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow");
+    expect(getResponse.status).toBe(404);
+  });
+
+  it("routes /api/ivr/flows/:flow through the regex correctly, not swallowed by /api/ivr/audio", async () => {
+    // "flows" and "audio" are disjoint path segments under /api/ivr/, but confirm directly
+    // that a PUT to /api/ivr/flows/xyz reaches handlePutFlow, not handleUploadAudioAsset
+    // (which would 400 on a JSON body since it expects multipart formData).
+    const response = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entryNodeId: "wt-route",
+        nodes: [{ id: "wt-route", type: "voicemail", config: { audioAssetId: null, ttsText: "hi", mailboxLabel: "default" } }],
+      }),
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("requires staff auth for both new routes in a genuine production-shaped env (no dev bypass)", async () => {
+    const prodEnv = {
+      DB: env.DB,
+      AUDIO_ASSETS: env.AUDIO_ASSETS,
+      CALL_SESSION: env.CALL_SESSION,
+      TWILIO_AUTH_TOKEN: env.TWILIO_AUTH_TOKEN,
+      CF_ACCESS_TEAM_DOMAIN: "tcb-pest.cloudflareaccess.com",
+      CF_ACCESS_AUD: "prod-aud-tag",
+    };
+
+    const adminPageResponse = await worker.fetch(
+      new Request("https://example.com/admin/ivr/worker_test_flow"),
+      prodEnv as any
+    );
+    expect(adminPageResponse.status).toBe(401);
+
+    const apiResponse = await worker.fetch(
+      new Request("https://example.com/api/ivr/flows/worker_test_flow"),
+      prodEnv as any
+    );
+    expect(apiResponse.status).toBe(401);
+  });
+
+  it("GET /admin/ivr/:flow returns 404 for malformed URL-encoded flow name", async () => {
+    const response = await SELF.fetch("https://example.com/admin/ivr/%zz");
+    expect(response.status).toBe(404);
+  });
+});

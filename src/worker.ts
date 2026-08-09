@@ -6,13 +6,17 @@ import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls"
 import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours, handlePutStaffRingList } from "./api/settings";
 import { handleCreateOutboundCall } from "./api/outboundCalls";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
+import { handleGetFlow, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
 import { renderLiveCallsPage } from "./html/pages/liveCalls";
+import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { getCallDetail, listCalls, listLiveCalls } from "./db/calls";
 import { getBusinessHours, getStaffRingList } from "./db/settings";
+import { listNodesForFlow } from "./db/ivrNodes";
+import { listAudioAssets } from "./db/audioAssets";
 export { CallSession } from "./durable-objects/CallSession";
 
 // Local copy of the same 5-entity-replace XML-escape convention used throughout this codebase
@@ -433,6 +437,25 @@ export default {
           : handleListAudioAssets(env.DB);
       }
 
+      // Matched after the literal /api/ivr/audio check above -- "audio" and "flows" are
+      // disjoint path segments so there's no shadowing risk between the two, but keeping
+      // literal-before-regex here mirrors the /api/calls/outbound-before-/api/calls/:id
+      // ordering fixed in Task 11.
+      const ivrFlowMatch = url.pathname.match(/^\/api\/ivr\/flows\/([^/]+)$/);
+      if (ivrFlowMatch) {
+        try {
+          const flow = decodeURIComponent(ivrFlowMatch[1]);
+          return request.method === "PUT"
+            ? handlePutFlow(request, env.DB, flow, staff)
+            : handleGetFlow(env.DB, flow);
+        } catch (e) {
+          if (e instanceof URIError) {
+            return new Response("not found", { status: 404 });
+          }
+          throw e;
+        }
+      }
+
       return new Response("not found", { status: 404 });
     }
 
@@ -469,6 +492,25 @@ export default {
         const ringList = await getStaffRingList(env.DB);
         const html = renderSettingsPage(schedule, ringList);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+
+      const ivrAdminMatch = url.pathname.match(/^\/admin\/ivr\/([^/]+)$/);
+      if (ivrAdminMatch) {
+        try {
+          const flow = decodeURIComponent(ivrAdminMatch[1]);
+          const [nodes, audioAssets] = await Promise.all([listNodesForFlow(env.DB, flow), listAudioAssets(env.DB)]);
+          const html = renderIvrFlowPage(
+            flow,
+            nodes,
+            audioAssets.map((a) => ({ id: a.id, label: a.label }))
+          );
+          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        } catch (e) {
+          if (e instanceof URIError) {
+            return new Response("not found", { status: 404 });
+          }
+          throw e;
+        }
       }
 
       return new Response("not found", { status: 404 });
