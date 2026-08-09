@@ -145,6 +145,215 @@ describe("POST /webhooks/twilio/status", () => {
   });
 });
 
+describe("Task 8 queue/ring webhook routes", () => {
+  // Twilio signs the FULL request URL (including any query string) plus the sorted POST params.
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  }
+
+  async function postSigned(url: string, params: Record<string, string>) {
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+    return SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  beforeEach(async () => {
+    env.TWILIO_AUTH_TOKEN = "test-auth-token";
+    await env.DB.prepare("DELETE FROM call_events").run();
+    await env.DB.prepare("DELETE FROM calls").run();
+  });
+
+  // ---- Route 1: /webhooks/twilio/hold (caller leg) ----
+  describe("POST /webhooks/twilio/hold", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch("https://example.com/webhooks/twilio/hold", {
+        method: "POST",
+        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ CallSid: "CA-hold-1" }).toString(),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("forwards a validly-signed hold poll to CallSession as text/xml", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/hold", { CallSid: "CA-hold-1" });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/xml");
+    });
+  });
+
+  // ---- Route 2: /webhooks/twilio/hold-digit (caller leg) ----
+  describe("POST /webhooks/twilio/hold-digit", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch("https://example.com/webhooks/twilio/hold-digit", {
+        method: "POST",
+        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ CallSid: "CA-hd-1", Digits: "*" }).toString(),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("forwards a validly-signed hold digit to CallSession as text/xml", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/hold-digit", {
+        CallSid: "CA-hd-1",
+        Digits: "*",
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/xml");
+    });
+  });
+
+  // ---- Route 3: /webhooks/twilio/queue-left (caller leg) ----
+  describe("POST /webhooks/twilio/queue-left", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch("https://example.com/webhooks/twilio/queue-left", {
+        method: "POST",
+        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ CallSid: "CA-ql-1", QueueResult: "hangup" }).toString(),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("forwards a validly-signed queue-left event to CallSession as text/xml", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/queue-left", {
+        CallSid: "CA-ql-1",
+        QueueResult: "bridged",
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/xml");
+    });
+  });
+
+  // ---- Route 4: /webhooks/twilio/agent-answer (staff leg, callSid from query) ----
+  describe("POST /webhooks/twilio/agent-answer", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch(
+        "https://example.com/webhooks/twilio/agent-answer?callSid=CA-caller-1",
+        {
+          method: "POST",
+          headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ CallSid: "CA-staff-1" }).toString(),
+        }
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 400 when the callSid query param is missing (even with a valid signature)", async () => {
+      // Sign the exact URL fetched (no query string) so we pass signature and reach the 400 branch.
+      const response = await postSigned("https://example.com/webhooks/twilio/agent-answer", {
+        CallSid: "CA-staff-1",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("missing callSid");
+    });
+
+    it("forwards a validly-signed agent answer (callSid from query) to CallSession as text/xml", async () => {
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/agent-answer?callSid=CA-caller-1",
+        { CallSid: "CA-staff-1" }
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/xml");
+    });
+  });
+
+  // ---- Route 5: /webhooks/twilio/agent-status (staff leg, callSid from query) ----
+  describe("POST /webhooks/twilio/agent-status", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch(
+        "https://example.com/webhooks/twilio/agent-status?callSid=CA-caller-1",
+        {
+          method: "POST",
+          headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ CallSid: "CA-staff-1", CallStatus: "completed" }).toString(),
+        }
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 400 when the callSid query param is missing (even with a valid signature)", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/agent-status", {
+        CallSid: "CA-staff-1",
+        CallStatus: "completed",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("missing callSid");
+    });
+
+    it("forwards a validly-signed agent status (callSid from query) to CallSession as text/xml", async () => {
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/agent-status?callSid=CA-caller-1",
+        { CallSid: "CA-staff-1", CallStatus: "no-answer" }
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/xml");
+    });
+  });
+
+  // ---- Route 6: /webhooks/twilio/recording-status (direct D1 write, callSid from query) ----
+  describe("POST /webhooks/twilio/recording-status", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch(
+        "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-1",
+        {
+          method: "POST",
+          headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE1" }).toString(),
+        }
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 400 when the callSid query param is missing (even with a valid signature)", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/recording-status", {
+        RecordingUrl: "https://api.twilio.com/rec.mp3",
+        RecordingSid: "RE1",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("missing callSid");
+    });
+
+    it("writes the recording url/sid directly to the calls row and returns ok", async () => {
+      // NOTE: recording_url / recording_sid columns are added in Task 10. This test is written to be
+      // ready but will only go green after Task 10's migration exists (see task-8 report).
+      await env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+      )
+        .bind("CA-rec-1", "+61400000000", "+61200000000", Date.now())
+        .run();
+
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-1",
+        { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE123" }
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("ok");
+
+      const row = await env.DB.prepare("SELECT recording_url, recording_sid FROM calls WHERE id = ?")
+        .bind("CA-rec-1")
+        .first<{ recording_url: string; recording_sid: string }>();
+      expect(row?.recording_url).toBe("https://api.twilio.com/rec.mp3");
+      expect(row?.recording_sid).toBe("RE123");
+    });
+  });
+});
+
 describe("GET /api/me and /api/calls*", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM call_events").run();

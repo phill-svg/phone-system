@@ -94,6 +94,209 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+    // Caller-leg hold poll: Twilio fetches the queue waitUrl on a loop. CallSid here is the caller's.
+    if (url.pathname === "/webhooks/twilio/hold" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = params.CallSid;
+      const id = env.CALL_SESSION.idFromName(callSid);
+      const stub = env.CALL_SESSION.get(id);
+      const doResponse = await stub.fetch("https://internal/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "hold_poll", callSid, webhookUrl: request.url }),
+      });
+
+      return new Response(await doResponse.text(), {
+        status: doResponse.status,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
+
+    // Caller-leg hold digit: caller pressed a key while on hold (e.g. star for callback). Caller's CallSid.
+    if (url.pathname === "/webhooks/twilio/hold-digit" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = params.CallSid;
+      const id = env.CALL_SESSION.idFromName(callSid);
+      const stub = env.CALL_SESSION.get(id);
+      const doResponse = await stub.fetch("https://internal/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "hold_digit",
+          callSid,
+          digits: params.Digits ?? null,
+          webhookUrl: request.url,
+        }),
+      });
+
+      return new Response(await doResponse.text(), {
+        status: doResponse.status,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
+
+    // Caller-leg queue action: fires when the caller leaves the queue (bridged, hung up, or <Leave/>).
+    // CallSid here is the caller's.
+    if (url.pathname === "/webhooks/twilio/queue-left" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = params.CallSid;
+      const id = env.CALL_SESSION.idFromName(callSid);
+      const stub = env.CALL_SESSION.get(id);
+      const doResponse = await stub.fetch("https://internal/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "queue_left",
+          callSid,
+          queueResult: params.QueueResult ?? null,
+          webhookUrl: request.url,
+        }),
+      });
+
+      return new Response(await doResponse.text(), {
+        status: doResponse.status,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
+
+    // Staff-leg answer webhook: TwiML for the outbound staff call when it connects. The staff leg's own
+    // CallSid is in params.CallSid (useless for DO lookup) — the caller's CallSid comes from the query.
+    if (url.pathname === "/webhooks/twilio/agent-answer" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = url.searchParams.get("callSid");
+      if (!callSid) {
+        return new Response("missing callSid", { status: 400 });
+      }
+
+      const id = env.CALL_SESSION.idFromName(callSid);
+      const stub = env.CALL_SESSION.get(id);
+      const doResponse = await stub.fetch("https://internal/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "agent_answer",
+          callSid,
+          agentCallSid: params.CallSid,
+          webhookUrl: request.url,
+        }),
+      });
+
+      return new Response(await doResponse.text(), {
+        status: doResponse.status,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
+
+    // Staff-leg status callback: lifecycle of the outbound staff call. Caller's CallSid from the query.
+    if (url.pathname === "/webhooks/twilio/agent-status" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = url.searchParams.get("callSid");
+      if (!callSid) {
+        return new Response("missing callSid", { status: 400 });
+      }
+
+      const id = env.CALL_SESSION.idFromName(callSid);
+      const stub = env.CALL_SESSION.get(id);
+      const doResponse = await stub.fetch("https://internal/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "agent_status",
+          callSid,
+          agentCallSid: params.CallSid,
+          callStatus: params.CallStatus ?? null,
+          webhookUrl: request.url,
+        }),
+      });
+
+      return new Response(await doResponse.text(), {
+        status: doResponse.status,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
+
+    // Recording status callback: flat, direct D1 write (does NOT go through the DO), matching the style of
+    // /webhooks/twilio/status. Caller's CallSid from the query — params.CallSid is the wrong (staff) leg.
+    if (url.pathname === "/webhooks/twilio/recording-status" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = url.searchParams.get("callSid");
+      if (!callSid) {
+        return new Response("missing callSid", { status: 400 });
+      }
+
+      await env.DB.prepare("UPDATE calls SET recording_url = ?, recording_sid = ? WHERE id = ?")
+        .bind(params.RecordingUrl ?? null, params.RecordingSid ?? null, callSid)
+        .run();
+
+      return new Response("ok", { status: 200 });
+    }
+
     if (url.pathname.startsWith("/media/")) {
       // Public route, intentionally NOT staff-gated: Twilio fetches this URL directly
       // to stream IVR audio into a live call and cannot present an Access credential.
