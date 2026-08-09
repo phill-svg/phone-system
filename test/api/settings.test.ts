@@ -2,8 +2,16 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { handlePutBusinessHours, handlePutStaffRingList } from "../../src/api/settings";
 
-const STAFF: import("../../src/access/requireStaffUser").StaffUser = { email: "tech@example.com", role: "staff" };
-const ADMIN: import("../../src/access/requireStaffUser").StaffUser = { email: "admin@example.com", role: "admin" };
+const STAFF: import("../../src/access/requireStaffUser").StaffUser = {
+  email: "tech@example.com",
+  role: "staff",
+  mobile_number: null,
+};
+const ADMIN: import("../../src/access/requireStaffUser").StaffUser = {
+  email: "admin@example.com",
+  role: "admin",
+  mobile_number: null,
+};
 
 describe("settings admin gating", () => {
   beforeEach(async () => {

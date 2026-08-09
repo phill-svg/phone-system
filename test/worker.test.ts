@@ -354,6 +354,112 @@ describe("Task 8 queue/ring webhook routes", () => {
   });
 });
 
+describe("Task 11 outbound click-to-call webhook routes", () => {
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  }
+
+  async function postSigned(url: string, params: Record<string, string>) {
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+    return SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM calls").run();
+  });
+
+  describe("POST /webhooks/twilio/click-to-call", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch(
+        "https://example.com/webhooks/twilio/click-to-call?target=" + encodeURIComponent("+61400000099"),
+        {
+          method: "POST",
+          headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ CallSid: "CA-c2c-1" }).toString(),
+        }
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 400 when the target query param is missing (even with a valid signature)", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/click-to-call", {
+        CallSid: "CA-c2c-1",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("missing target");
+    });
+
+    it("renders a <Dial><Number callerId> bridging to the decoded target", async () => {
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/click-to-call?target=" + encodeURIComponent("+61400000099"),
+        { CallSid: "CA-c2c-1" }
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/xml");
+      const xml = await response.text();
+      expect(xml).toContain(`<Number callerId="${env.TWILIO_FROM_NUMBER}">+61400000099</Number>`);
+      expect(xml).toContain("<Dial ");
+      expect(xml).toContain('record="record-from-answer-dual"');
+      expect(xml).toContain("recordingStatusCallback=\"https://example.com/webhooks/twilio/recording-status-outbound\"");
+    });
+  });
+
+  describe("POST /webhooks/twilio/recording-status-outbound", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch("https://example.com/webhooks/twilio/recording-status-outbound", {
+        method: "POST",
+        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          CallSid: "CA-out-rec-1",
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE1",
+        }).toString(),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("writes the recording url/sid matched directly by params.CallSid (no query string)", async () => {
+      await env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at, direction) VALUES (?, ?, ?, ?, 'outbound')"
+      )
+        .bind("CA-out-rec-1", "+61200000000", "+61400000099", Date.now())
+        .run();
+
+      const response = await postSigned("https://example.com/webhooks/twilio/recording-status-outbound", {
+        CallSid: "CA-out-rec-1",
+        RecordingUrl: "https://api.twilio.com/out-rec.mp3",
+        RecordingSid: "RE999",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("ok");
+
+      const row = await env.DB.prepare("SELECT recording_url, recording_sid FROM calls WHERE id = ?")
+        .bind("CA-out-rec-1")
+        .first<{ recording_url: string; recording_sid: string }>();
+      expect(row?.recording_url).toBe("https://api.twilio.com/out-rec.mp3");
+      expect(row?.recording_sid).toBe("RE999");
+    });
+  });
+});
+
 describe("GET /api/me and /api/calls*", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM call_events").run();
@@ -363,7 +469,11 @@ describe("GET /api/me and /api/calls*", () => {
   it("GET /api/me returns the dev-mode staff identity", async () => {
     const response = await SELF.fetch("https://example.com/api/me");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" });
+    expect(await response.json()).toEqual({
+      email: "phill@tcbpestcontrolcanberra.com.au",
+      role: "admin",
+      mobile_number: null,
+    });
   });
 
   it("GET /api/calls returns call summaries newest-first", async () => {

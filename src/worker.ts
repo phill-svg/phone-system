@@ -4,6 +4,7 @@ import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
 import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls";
 import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours, handlePutStaffRingList } from "./api/settings";
+import { handleCreateOutboundCall } from "./api/outboundCalls";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetMedia } from "./api/media";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
@@ -13,6 +14,18 @@ import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { getCallDetail, listCalls, listLiveCalls } from "./db/calls";
 import { getBusinessHours, getStaffRingList } from "./db/settings";
 export { CallSession } from "./durable-objects/CallSession";
+
+// Local copy of the same 5-entity-replace XML-escape convention used throughout this codebase
+// (see src/twilio/flowTwiml.ts, src/twilio/queueTwiml.ts) -- neither of those modules exports
+// it, and pulling in a whole renderer module for this one inline TwiML string isn't warranted.
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
 
 type Env = {
   DB: D1Database;
@@ -301,6 +314,62 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+    // Click-to-call answer webhook: fires when the STAFF member's own phone (the leg
+    // handleCreateOutboundCall just created via createOutboundCall) picks up. Pure, stateless
+    // TwiML render off the query string + env vars only -- no D1/DO lookup needed to dial out.
+    if (url.pathname === "/webhooks/twilio/click-to-call" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const target = url.searchParams.get("target");
+      if (!target) {
+        return new Response("missing target", { status: 400 });
+      }
+      const decodedTarget = decodeURIComponent(target);
+
+      const twiml =
+        `<?xml version="1.0" encoding="UTF-8"?><Response><Dial action="${url.origin}/webhooks/twilio/status" method="POST" record="record-from-answer-dual" recordingStatusCallback="${url.origin}/webhooks/twilio/recording-status-outbound" recordingStatusCallbackMethod="POST">` +
+        `<Number callerId="${env.TWILIO_FROM_NUMBER}">${escapeXml(decodedTarget)}</Number></Dial></Response>`;
+
+      return new Response(twiml, { headers: { "Content-Type": "text/xml" } });
+    }
+
+    // Outbound click-to-call recording status: flat, direct D1 write, matched by params.CallSid
+    // DIRECTLY. Unlike /webhooks/twilio/recording-status (inbound), which needs the ?callSid=
+    // query-string workaround because the <Dial> there is executed by the STAFF leg (a different
+    // CallSid than the caller's calls.id row), THIS <Dial> (rendered in click-to-call above) is
+    // executed by the very CallSid that createOutboundCall returned and that handleCreateOutboundCall
+    // stored as calls.id -- so params.CallSid on this callback already IS the right calls.id.
+    // Do not "fix" this into a query-string workaround; it would be redundant here.
+    if (url.pathname === "/webhooks/twilio/recording-status-outbound" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      await env.DB.prepare("UPDATE calls SET recording_url = ?, recording_sid = ? WHERE id = ?")
+        .bind(params.RecordingUrl ?? null, params.RecordingSid ?? null, params.CallSid)
+        .run();
+
+      return new Response("ok", { status: 200 });
+    }
+
     if (url.pathname.startsWith("/media/")) {
       // Public route, intentionally NOT staff-gated: Twilio fetches this URL directly
       // to stream IVR audio into a live call and cannot present an Access credential.
@@ -328,6 +397,12 @@ export default {
       }
       if (url.pathname === "/api/calls") {
         return handleListCalls(env.DB);
+      }
+      // Must be checked BEFORE the /api/calls/:id regex below -- "outbound" would otherwise
+      // match ([^/]+) and get misrouted into handleCallDetail(db, "outbound") instead of here,
+      // exactly like /api/calls/live is checked before it for the same reason.
+      if (url.pathname === "/api/calls/outbound" && request.method === "POST") {
+        return handleCreateOutboundCall(request, env, staff);
       }
       const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
       if (callIdMatch) {

@@ -5,6 +5,8 @@ declare module "cloudflare:test" {
     DB: D1Database;
     TEST_MIGRATIONS: D1Migration[];
     TWILIO_AUTH_TOKEN: string;
+    TWILIO_ACCOUNT_SID: string;
+    TWILIO_FROM_NUMBER: string;
     AUDIO_ASSETS: R2Bucket;
     // Untyped: CallSession only exposes plain fetch() (no JSRPC methods), and parameterizing
     // this with the concrete class triggers "Type instantiation is excessively deep" from the

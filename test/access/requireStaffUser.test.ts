@@ -51,7 +51,22 @@ describe("requireStaffUser", () => {
     const env = { DB: testEnv.DB, AUTH_MODE: "dev", DEV_STAFF_EMAIL: "phill@tcbpestcontrolcanberra.com.au" };
     const request = new Request("https://example.com/api/me");
     const result = await requireStaffUser(request, env as any);
-    expect(result).toEqual({ email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" });
+    // The seeded phill row (migration 0003) has no mobile_number on file -- confirms the field
+    // round-trips as null, not just absent, when unset.
+    expect(result).toEqual({ email: "phill@tcbpestcontrolcanberra.com.au", role: "admin", mobile_number: null });
+  });
+
+  it("dev mode: round-trips a stored mobile_number when one is on file", async () => {
+    await testEnv.DB.prepare(
+      "INSERT INTO staff_users (email, role, mobile_number, created_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("tech@example.com", "staff", "+61411111111", Date.now())
+      .run();
+
+    const env = { DB: testEnv.DB, AUTH_MODE: "dev", DEV_STAFF_EMAIL: "tech@example.com" };
+    const request = new Request("https://example.com/api/me");
+    const result = await requireStaffUser(request, env as any);
+    expect(result).toEqual({ email: "tech@example.com", role: "staff", mobile_number: "+61411111111" });
   });
 
   it("dev mode: 500s if DEV_STAFF_EMAIL is not set", async () => {
@@ -90,7 +105,7 @@ describe("requireStaffUser", () => {
     const request = new Request("https://example.com/api/me", { headers: { "Cf-Access-Jwt-Assertion": token } });
 
     const result = await requireStaffUser(request, env as any);
-    expect(result).toEqual({ email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" });
+    expect(result).toEqual({ email: "phill@tcbpestcontrolcanberra.com.au", role: "admin", mobile_number: null });
 
     vi.unstubAllGlobals();
   });
