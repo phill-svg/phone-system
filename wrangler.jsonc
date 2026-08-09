@@ -17,7 +17,7 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
   "vars": {
-    "CF_ACCESS_TEAM_DOMAIN": "",
-    "CF_ACCESS_AUD": ""
+    "CF_ACCESS_TEAM_DOMAIN": "phill-abb.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "823cf222fdebd401866183b13a524c76a9f5a9cc009195c2091081c39e569161"
   }
 }
