@@ -18,6 +18,7 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
   "r2_buckets": [{ "binding": "AUDIO_ASSETS", "bucket_name": "tcb-voip-audio" }],
   "vars": {
+    "TWILIO_ACCOUNT_SID": "REPLACE_ME",
     "CF_ACCESS_TEAM_DOMAIN": "phill-abb.cloudflareaccess.com",
     "CF_ACCESS_AUD": "823cf222fdebd401866183b13a524c76a9f5a9cc009195c2091081c39e569161"
   }

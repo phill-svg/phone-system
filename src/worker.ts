@@ -18,6 +18,7 @@ type Env = {
   DB: D1Database;
   CALL_SESSION: DurableObjectNamespace;
   AUDIO_ASSETS: R2Bucket;
+  TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
