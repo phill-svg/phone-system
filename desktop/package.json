@@ -1,0 +1,39 @@
+{
+  "name": "tcb-phone-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop shell for the TCB VoIP staff admin dashboard",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64",
+    "build:dir": "electron-builder --win --dir --x64"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "au.com.tcbpestcontrolcanberra.tcbphone",
+    "productName": "TCB Phone",
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "TCB-Phone-Setup-${version}.exe"
+    }
+  }
+}

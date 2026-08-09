@@ -82,6 +82,13 @@ npm run deploy
 
 This runs `wrangler deploy`, publishing the worker to your Cloudflare account.
 
+## Desktop app
+
+A Windows desktop wrapper around the admin dashboard lives in `desktop/` —
+see `desktop/README.md` for building and distributing it. It has its own
+`package.json` and is not part of any workspace/monorepo tooling; it's built
+and run independently of the worker.
+
 ## Project structure
 
 ```
@@ -97,4 +104,5 @@ src/
 migrations/     D1 schema migrations
 test/           Vitest test suite (mirrors src/ structure)
 docs/           Design specs and implementation plans
+desktop/        Electron desktop wrapper app (own package.json, see desktop/README.md)
 ```
