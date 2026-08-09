@@ -4,6 +4,10 @@ export default defineWorkersConfig(async () => {
   const migrations = await readD1Migrations("./migrations");
   return {
     test: {
+      // The vitest-pool-workers isolates are slow to spin up under concurrent load on some
+      // machines (many unrelated tests here already run 5-9s), so the 5s default is too tight
+      // for the multi-step CallSession scenarios. Give every test more headroom.
+      testTimeout: 20000,
       setupFiles: ["./test/apply-migrations.ts"],
       poolOptions: {
         workers: {

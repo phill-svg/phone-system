@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { advanceFlow } from "../../src/ivr/flowEngine";
+import { advanceFlow, walkFromNode } from "../../src/ivr/flowEngine";
 
 const NOW = Date.now();
 
@@ -263,6 +263,46 @@ describe("advanceFlow — reference-diagram node shapes (test-only nodes)", () =
       { type: "PLAY", audioAssetId: null, ttsText: "Please hold, you're in the queue" },
       { type: "ENQUEUE" },
     ]);
+  });
+});
+
+describe("walkFromNode — resume walking from an arbitrary node id", () => {
+  it("walks from a play node through to the next stop node (voicemail)", async () => {
+    await insertNode({
+      id: "wfn_play",
+      flow: "wfn_flow",
+      type: "play",
+      config: { audioAssetId: null, ttsText: "Sorry we missed you", nextNodeId: "wfn_vm" },
+    });
+    await insertNode({
+      id: "wfn_vm",
+      flow: "wfn_flow",
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "Leave a message", mailboxLabel: "wfn" },
+    });
+
+    const result = await walkFromNode(env.DB, "wfn_play", false);
+    expect(result.nextNodeId).toBe("wfn_vm");
+    expect(result.attempt).toBe(0);
+    expect(result.commands).toEqual([
+      { type: "PLAY", audioAssetId: null, ttsText: "Sorry we missed you" },
+      { type: "PLAY", audioAssetId: null, ttsText: "Leave a message" },
+      { type: "VOICEMAIL_HANDOFF" },
+    ]);
+  });
+
+  it("walks from a node id that resolves straight to a stop node (a ring node)", async () => {
+    await insertNode({
+      id: "wfn_ring",
+      flow: "wfn_flow_2",
+      type: "ring",
+      config: { target: "all", strategy: "cascade", timeoutSeconds: 20, noAnswerNextNodeId: "wfn_vm2" },
+    });
+
+    const result = await walkFromNode(env.DB, "wfn_ring", false);
+    expect(result.nextNodeId).toBe("wfn_ring");
+    expect(result.attempt).toBe(0);
+    expect(result.commands).toEqual([{ type: "DIAL_HANDOFF" }]);
   });
 });
 

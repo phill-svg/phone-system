@@ -165,6 +165,19 @@ function finalizeWalk(result: WalkResult): { nextNodeId: string; attempt: number
   };
 }
 
+// Resume walking the flow graph from an ARBITRARY node id (not a flow entry and not a gather
+// continuation). Used by CallSession when a `ring` node's dial-out resolves to "no answer" and the
+// flow must continue from that ring node's `config.noAnswerNextNodeId`. `advanceFlow`'s public API
+// only supports starting fresh at a flow's entry node or continuing from a gather node; this exposes
+// the internal walking logic without changing `advanceFlow`'s contract.
+export async function walkFromNode(
+  db: D1Database,
+  startNodeId: string,
+  isAfterHours: boolean
+): Promise<{ nextNodeId: string; attempt: number; commands: FlowCommand[] }> {
+  return finalizeWalk(await walkFrom(db, startNodeId, isAfterHours));
+}
+
 export async function advanceFlow(
   db: D1Database,
   flow: string,

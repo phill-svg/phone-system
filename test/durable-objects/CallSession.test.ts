@@ -1,27 +1,173 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
-import { setBusinessHours } from "../../src/db/settings";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setBusinessHours, setStaffRingList, type StaffRingEntry } from "../../src/db/settings";
 import type { CallSession } from "../../src/durable-objects/CallSession";
 
-const GATHER_ACTION = "https://tcb-voip.example.workers.dev/webhooks/twilio";
+const ORIGIN = "https://tcb-voip.example.workers.dev";
+const NOW = Date.now();
 
-function event(callSid: string, overrides: Partial<{ from: string; to: string; digits: string | null }> = {}) {
-  return new Request("https://internal/events", {
-    method: "POST",
-    body: JSON.stringify({
-      callSid,
-      from: overrides.from ?? "+61400000000",
-      to: overrides.to ?? "+61200000000",
-      digits: overrides.digits ?? null,
-      webhookUrl: GATHER_ACTION,
-    }),
+// --- node seeding (D1 is NOT reset between tests in this pool; beforeEach clears ivr_nodes) ---
+async function seedNode(node: {
+  id: string;
+  flow?: string;
+  isEntry?: boolean;
+  type: string;
+  config: unknown;
+}): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(node.id, node.flow ?? "main", node.isEntry ? 1 : 0, node.type, JSON.stringify(node.config), NOW, NOW)
+    .run();
+}
+
+// The DO always drives flow="main". These are the building blocks each scenario assembles.
+async function seedEntryGather(opts: {
+  option1?: string; // nextNodeId for digit "1"
+  defaultNextNodeId: string;
+  retryLimit?: number;
+}): Promise<void> {
+  await seedNode({
+    id: "main_entry_gather",
+    isEntry: true,
+    type: "gather",
+    config: {
+      audioAssetId: null,
+      ttsText: "Press 1 to connect, or hold.",
+      options: opts.option1 ? [{ digit: "1", nextNodeId: opts.option1 }] : [],
+      defaultNextNodeId: opts.defaultNextNodeId,
+      retryLimit: opts.retryLimit ?? 0,
+    },
   });
 }
 
+async function seedRing(id: string, opts: {
+  target?: "all" | "on_call_only";
+  strategy?: "cascade" | "simultaneous";
+  noAnswerNextNodeId: string;
+}): Promise<void> {
+  await seedNode({
+    id,
+    type: "ring",
+    config: {
+      target: opts.target ?? "all",
+      strategy: opts.strategy ?? "cascade",
+      timeoutSeconds: 20,
+      noAnswerNextNodeId: opts.noAnswerNextNodeId,
+    },
+  });
+}
+
+async function seedVoicemail(id: string, mailboxLabel: string): Promise<void> {
+  await seedNode({
+    id,
+    type: "voicemail",
+    config: { audioAssetId: null, ttsText: "Please leave a message after the tone.", mailboxLabel },
+  });
+}
+
+async function seedWait(id: string, opts: { nextNodeId: string; allowCallbackStar: boolean }): Promise<void> {
+  await seedNode({
+    id,
+    type: "wait",
+    config: {
+      audioAssetId: null,
+      ttsText: "Please hold, connecting you now.",
+      allowCallbackStar: opts.allowCallbackStar,
+      nextNodeId: opts.nextNodeId,
+    },
+  });
+}
+
+// --- event body builders (mirror the JSON worker.ts forwards) ---
+function mainEvent(callSid: string, o: Partial<{ from: string; to: string; digits: string | null }> = {}) {
+  return {
+    callSid,
+    from: o.from ?? "+61400000000",
+    to: o.to ?? "+61200000000",
+    digits: o.digits ?? null,
+    recordingUrl: null,
+    recordingSid: null,
+    recordingDuration: null,
+    webhookUrl: `${ORIGIN}/webhooks/twilio`,
+  };
+}
+
+function recordingEvent(callSid: string, recordingUrl: string, recordingSid: string) {
+  return {
+    callSid,
+    from: "+61400000000",
+    to: "+61200000000",
+    digits: null,
+    recordingUrl,
+    recordingSid,
+    recordingDuration: "12",
+    webhookUrl: `${ORIGIN}/webhooks/twilio`,
+  };
+}
+
+const holdDigit = (callSid: string, digits: string | null) => ({
+  kind: "hold_digit",
+  callSid,
+  digits,
+  webhookUrl: `${ORIGIN}/webhooks/twilio/hold-digit`,
+});
+const queueLeft = (callSid: string, queueResult: string | null = "bridged") => ({
+  kind: "queue_left",
+  callSid,
+  queueResult,
+  webhookUrl: `${ORIGIN}/webhooks/twilio/queue-left`,
+});
+const agentAnswer = (callSid: string, agentCallSid: string) => ({
+  kind: "agent_answer",
+  callSid,
+  agentCallSid,
+  webhookUrl: `${ORIGIN}/webhooks/twilio/agent-answer?callSid=${callSid}`,
+});
+const agentStatus = (callSid: string, agentCallSid: string, callStatus: string) => ({
+  kind: "agent_status",
+  callSid,
+  agentCallSid,
+  callStatus,
+  webhookUrl: `${ORIGIN}/webhooks/twilio/agent-status?callSid=${callSid}`,
+});
+
+function stubFor(callSid: string) {
+  const id = env.CALL_SESSION.idFromName(callSid);
+  return env.CALL_SESSION.get(id);
+}
+
+// Invoke the DO and drain the body immediately (Windows EBUSY teardown note, see task-8-report.md).
+async function send(stub: DurableObjectStub, body: unknown): Promise<{ status: number; xml: string }> {
+  const res = await runInDurableObject(stub, (instance) =>
+    (instance as unknown as CallSession).fetch(
+      new Request("https://internal/events", { method: "POST", body: JSON.stringify(body) })
+    )
+  );
+  const xml = await res.text();
+  return { status: res.status, xml };
+}
+
+// Count Twilio outbound-call REST hits, and list the "To" numbers dialed.
+function outboundDials(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls
+    .filter((c) => String(c[0]).includes("/Calls.json"))
+    .map((c) => new URLSearchParams((c[1] as RequestInit).body as string).get("To") as string);
+}
+function cancelHits(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls
+    .map((c) => String(c[0]))
+    .filter((u) => /\/Calls\/[^/]+\.json$/.test(u));
+}
+
 describe("CallSession", () => {
+  const fetchMock = vi.fn();
+
   beforeEach(async () => {
-    await env.DB.prepare("DELETE FROM calls").run();
+    await env.DB.prepare("DELETE FROM callback_requests").run();
     await env.DB.prepare("DELETE FROM call_events").run();
+    await env.DB.prepare("DELETE FROM calls").run();
+    await env.DB.prepare("DELETE FROM ivr_nodes").run();
     await setBusinessHours(env.DB, {
       mon: { open: "00:00", close: "23:59" },
       tue: { open: "00:00", close: "23:59" },
@@ -31,83 +177,288 @@ describe("CallSession", () => {
       sat: { open: "00:00", close: "23:59" },
       sun: { open: "00:00", close: "23:59" },
     });
+
+    fetchMock.mockReset();
+    // Twilio create-call returns a sid derived from the dialed number (deterministic for assertions);
+    // cancel-call (and anything else) returns 200. D1 uses bindings, not global fetch, so this is safe.
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const u = String(input);
+      if (u.includes("/Calls.json")) {
+        const to = new URLSearchParams((init as RequestInit).body as string).get("To");
+        return new Response(JSON.stringify({ sid: `sid-${to}` }), { status: 201 });
+      }
+      return new Response("", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
   });
 
-  it("first webhook for a call answers with the disclosure and main menu in one TwiML document", async () => {
-    const id = env.CALL_SESSION.idFromName("CA-abc");
-    const stub = env.CALL_SESSION.get(id);
-    const response = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-abc")));
+  afterEach(() => vi.unstubAllGlobals());
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Type")).toBe("text/xml");
-    const xml = await response.text();
-    expect(xml).toContain("This call may be recorded");
+  async function setRingList(entries: StaffRingEntry[]) {
+    await setStaffRingList(env.DB, entries);
+  }
+
+  it("first webhook answers with the entry gather prompt + <Gather> pointed at the main webhook", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+
+    const stub = stubFor("CA-smoke");
+    const { status, xml } = await send(stub, mainEvent("CA-smoke"));
+
+    expect(status).toBe(200);
+    expect(xml).toContain("Press 1 to connect");
     expect(xml).toContain("<Gather");
-    expect(xml).toContain(`action="${GATHER_ACTION}"`);
+    expect(xml).toContain(`action="${ORIGIN}/webhooks/twilio"`);
 
-    const row = await env.DB.prepare("SELECT * FROM calls WHERE id = ?").bind("CA-abc").first();
-    expect(row).toMatchObject({ id: "CA-abc", caller_number: "+61400000000", called_number: "+61200000000" });
-
-    const events = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ?").bind("CA-abc").all();
-    expect(events.results.length).toBe(2); // CALL_INITIATED then GREETING_SPOKEN
+    const row = await env.DB.prepare("SELECT * FROM calls WHERE id = ?").bind("CA-smoke").first();
+    expect(row).toMatchObject({
+      id: "CA-smoke",
+      caller_number: "+61400000000",
+      called_number: "+61200000000",
+      direction: "inbound",
+    });
   });
 
-  it("digit 1 routes to ROUTE_STAFF, updates ivr_path, and hangs up (staff ring is a later phase)", async () => {
-    const id = env.CALL_SESSION.idFromName("CA-def");
-    const stub = env.CALL_SESSION.get(id);
-    // Each Response returned across the runInDurableObject RPC boundary must have its body
-    // drained before the next call, or the underlying DO SQLite handle stays open and Windows
-    // teardown of isolated storage fails with EBUSY (see task-8-report.md for the diagnosis).
-    const first = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-def")));
-    await first.text();
-    const response = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-def", { digits: "1" })));
+  it("gather → cascade ring (no wait): digit 1 enqueues the caller and fires one outbound staff call", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([{ label: "Phill", number: "+61411111111" }]);
 
-    const xml = await response.text();
-    expect(xml).toContain("<Hangup/>");
+    const stub = stubFor("CA-enq");
+    await send(stub, mainEvent("CA-enq"));
+    const { xml } = await send(stub, mainEvent("CA-enq", { digits: "1" }));
 
-    const row = await env.DB.prepare("SELECT ivr_path FROM calls WHERE id = ?").bind("CA-def").first();
-    expect(row).toMatchObject({ ivr_path: "new_booking" });
+    expect(xml).toContain("<Enqueue");
+    expect(xml).toContain("CA-enq"); // per-call queue name
+    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
   });
 
-  it("three consecutive gather timeouts fall through to voicemail and hang up", async () => {
-    const id = env.CALL_SESSION.idFromName("CA-ghi");
-    const stub = env.CALL_SESSION.get(id);
-    // See the drain note in the previous test: each intermediate Response body must be
-    // consumed before issuing the next runInDurableObject call.
-    const r1 = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-ghi"))); // attempt 1
-    await r1.text();
-    const r2 = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-ghi", { digits: null }))); // -> attempt 2
-    await r2.text();
-    const r3 = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-ghi", { digits: null }))); // -> attempt 3
-    await r3.text();
-    const response = await runInDurableObject(stub, (instance) =>
-      (instance as unknown as CallSession).fetch(event("CA-ghi", { digits: null }))
-    ); // -> voicemail
+  it("full bridge: enqueue → agent_answer renders <Dial><Queue> → queue_left(bridged) completes the call", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([{ label: "Phill", number: "+61411111111" }]);
 
-    const xml = await response.text();
-    expect(xml).toContain("leave a message");
-    expect(xml).toContain("<Hangup/>");
+    const stub = stubFor("CA-bridge");
+    await send(stub, mainEvent("CA-bridge"));
+    await send(stub, mainEvent("CA-bridge", { digits: "1" }));
 
-    const row = await env.DB.prepare("SELECT ivr_path FROM calls WHERE id = ?").bind("CA-ghi").first();
-    expect(row).toMatchObject({ ivr_path: "voicemail" });
-  });
+    const answer = await send(stub, agentAnswer("CA-bridge", "sid-+61411111111"));
+    expect(answer.xml).toContain("<Dial");
+    expect(answer.xml).toContain("<Queue>CA-bridge</Queue>");
 
-  it("marks the calls row completed when the call reaches a terminal IVR state", async () => {
-    const id = env.CALL_SESSION.idFromName("CA-lifecycle");
-    const stub = env.CALL_SESSION.get(id);
-    // See the drain note above: each intermediate Response body must be consumed
-    // before issuing the next runInDurableObject call (Windows EBUSY teardown).
-    const first = await runInDurableObject(stub, (instance) => (instance as unknown as CallSession).fetch(event("CA-lifecycle")));
-    await first.text();
-    const second = await runInDurableObject(stub, (instance) =>
-      (instance as unknown as CallSession).fetch(event("CA-lifecycle", { digits: "1" }))
-    );
-    await second.text();
+    const left = await send(stub, queueLeft("CA-bridge"));
+    expect(left.xml).toContain("<Hangup/>");
 
-    const row = await env.DB.prepare("SELECT status, ended_at FROM calls WHERE id = ?")
-      .bind("CA-lifecycle")
-      .first<{ status: string; ended_at: number | null }>();
+    const row = await env.DB.prepare("SELECT status, ended_at, ivr_path FROM calls WHERE id = ?")
+      .bind("CA-bridge")
+      .first<{ status: string; ended_at: number; ivr_path: string }>();
     expect(row?.status).toBe("completed");
     expect(row?.ended_at).toBeGreaterThan(0);
+    expect(row?.ivr_path).toBe("main_ring");
+  });
+
+  it("cascade ring-down: first staff leg fails via agent_status, the next number is dialed, then answers", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([
+      { label: "Phill", number: "+61411111111" },
+      { label: "Sam", number: "+61422222222" },
+    ]);
+
+    const stub = stubFor("CA-cascade");
+    await send(stub, mainEvent("CA-cascade"));
+    await send(stub, mainEvent("CA-cascade", { digits: "1" }));
+
+    // Only the first number is dialed initially (cascade).
+    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
+
+    // First leg fails → second number is now dialed.
+    await send(stub, agentStatus("CA-cascade", "sid-+61411111111", "no-answer"));
+    expect(outboundDials(fetchMock)).toEqual(["+61411111111", "+61422222222"]);
+
+    // Second leg answers → bridges.
+    const answer = await send(stub, agentAnswer("CA-cascade", "sid-+61422222222"));
+    expect(answer.xml).toContain("<Dial");
+
+    const left = await send(stub, queueLeft("CA-cascade"));
+    expect(left.xml).toContain("<Hangup/>");
+    const row = await env.DB.prepare("SELECT status FROM calls WHERE id = ?").bind("CA-cascade").first<{ status: string }>();
+    expect(row?.status).toBe("completed");
+  });
+
+  it("simultaneous ring-all fires an outbound call to every number at once", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([
+      { label: "Phill", number: "+61411111111" },
+      { label: "Sam", number: "+61422222222" },
+      { label: "Jo", number: "+61433333333" },
+    ]);
+
+    const stub = stubFor("CA-simul");
+    await send(stub, mainEvent("CA-simul"));
+    const { xml } = await send(stub, mainEvent("CA-simul", { digits: "1" }));
+
+    expect(xml).toContain("<Enqueue");
+    expect(outboundDials(fetchMock).sort()).toEqual(
+      ["+61411111111", "+61422222222", "+61433333333"].sort()
+    );
+
+    // First leg answers → the other two are cancelled.
+    const answer = await send(stub, agentAnswer("CA-simul", "sid-+61411111111"));
+    expect(answer.xml).toContain("<Dial");
+    expect(cancelHits(fetchMock).length).toBe(2);
+  });
+
+  it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {
+    await seedEntryGather({ option1: "main_ring_emergency", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring_emergency", { target: "on_call_only", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    // Staff exist but none are on call.
+    await setRingList([
+      { label: "Phill", number: "+61411111111", isOnCall: false },
+      { label: "Sam", number: "+61422222222", isOnCall: false },
+    ]);
+
+    const stub = stubFor("CA-emerg");
+    await send(stub, mainEvent("CA-emerg"));
+    const { xml } = await send(stub, mainEvent("CA-emerg", { digits: "1" }));
+
+    expect(xml).not.toContain("<Enqueue");
+    expect(xml).toContain("<Record");
+    expect(outboundDials(fetchMock)).toEqual([]);
+  });
+
+  it("callback star-press while on hold creates a callback_requests row and acknowledges", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+
+    const stub = stubFor("CA-cb");
+    await send(stub, mainEvent("CA-cb"));
+    const enq = await send(stub, mainEvent("CA-cb", { digits: "1" }));
+    expect(enq.xml).toContain("<Enqueue");
+
+    // Caller presses star on hold.
+    const digit = await send(stub, holdDigit("CA-cb", "*"));
+    expect(digit.xml).toContain("<Leave/>");
+    expect(cancelHits(fetchMock).length).toBe(1); // the one outstanding staff leg is cancelled
+
+    // Queue action fires after the caller leaves.
+    const left = await send(stub, queueLeft("CA-cb", "leave"));
+    expect(left.xml).toContain("call you back");
+
+    const cb = await env.DB.prepare("SELECT call_id, caller_number, status FROM callback_requests WHERE call_id = ?")
+      .bind("CA-cb")
+      .first<{ call_id: string; caller_number: string; status: string }>();
+    expect(cb).toMatchObject({ call_id: "CA-cb", caller_number: "+61400000000", status: "open" });
+
+    const row = await env.DB.prepare("SELECT status FROM calls WHERE id = ?").bind("CA-cb").first<{ status: string }>();
+    expect(row?.status).toBe("completed");
+  });
+
+  it("hold poll keeps the caller holding while dialing", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+
+    const stub = stubFor("CA-hold");
+    await send(stub, mainEvent("CA-hold"));
+    await send(stub, mainEvent("CA-hold", { digits: "1" }));
+
+    const poll = await send(stub, { kind: "hold_poll", callSid: "CA-hold", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
+    expect(poll.xml).toContain("<Gather");
+    expect(poll.xml).toContain("Please hold"); // wait-node hold content
+  });
+
+  it("no-answer path: queue_left after cascade exhaustion continues the flow to voicemail", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+
+    const stub = stubFor("CA-noans");
+    await send(stub, mainEvent("CA-noans"));
+    await send(stub, mainEvent("CA-noans", { digits: "1" }));
+
+    // The only staff leg fails → cascade exhausts → DONE{no_answer}.
+    await send(stub, agentStatus("CA-noans", "sid-+61411111111", "no-answer"));
+
+    const left = await send(stub, queueLeft("CA-noans", "leave"));
+    expect(left.xml).toContain("<Record"); // fell through to voicemail
+  });
+
+  it("simultaneous ring: both legs fail → ALL_ATTEMPTS_EXHAUSTED → queue_left falls through to voicemail", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await setRingList([
+      { label: "Phill", number: "+61411111111" },
+      { label: "Sam", number: "+61422222222" },
+    ]);
+
+    const stub = stubFor("CA-simul-noans");
+    await send(stub, mainEvent("CA-simul-noans"));
+    await send(stub, mainEvent("CA-simul-noans", { digits: "1" }));
+    expect(outboundDials(fetchMock).length).toBe(2);
+
+    // Both legs fail individually; the second failure empties attemptSids → EXHAUSTED → DONE{no_answer}.
+    await send(stub, agentStatus("CA-simul-noans", "sid-+61411111111", "no-answer"));
+    await send(stub, agentStatus("CA-simul-noans", "sid-+61422222222", "busy"));
+
+    // Hold poll now sees a non-DIALING plan and tells the caller to leave the queue.
+    const poll = await send(stub, {
+      kind: "hold_poll",
+      callSid: "CA-simul-noans",
+      webhookUrl: `${ORIGIN}/webhooks/twilio/hold`,
+    });
+    expect(poll.xml).toContain("<Leave/>");
+
+    const left = await send(stub, queueLeft("CA-simul-noans", "leave"));
+    expect(left.xml).toContain("<Record"); // fell through to voicemail
+  });
+
+  it("voicemail <Record> action callback stores recording + mailbox label and completes the call", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm", retryLimit: 0 });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "3 after-hours");
+    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+
+    const stub = stubFor("CA-vm");
+    await send(stub, mainEvent("CA-vm"));
+    // An unmatched digit with retryLimit 0 falls through to the default voicemail.
+    const vm = await send(stub, mainEvent("CA-vm", { digits: "9" }));
+    expect(vm.xml).toContain("<Record");
+
+    // Twilio posts the recording back to the same main webhook/CallSid.
+    const rec = await send(stub, recordingEvent("CA-vm", "https://api.twilio.com/rec/RE123", "RE123"));
+    expect(rec.xml).toContain("<Hangup/>");
+
+    const row = await env.DB.prepare(
+      "SELECT status, recording_url, recording_sid, mailbox_label, ivr_path FROM calls WHERE id = ?"
+    )
+      .bind("CA-vm")
+      .first<{
+        status: string;
+        recording_url: string;
+        recording_sid: string;
+        mailbox_label: string;
+        ivr_path: string;
+      }>();
+    expect(row?.status).toBe("completed");
+    expect(row?.recording_url).toBe("https://api.twilio.com/rec/RE123");
+    expect(row?.recording_sid).toBe("RE123");
+    expect(row?.mailbox_label).toBe("3 after-hours");
+    expect(row?.ivr_path).toBe("main_vm");
   });
 });

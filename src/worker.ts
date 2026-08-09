@@ -20,6 +20,7 @@ type Env = {
   AUDIO_ASSETS: R2Bucket;
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
+  TWILIO_FROM_NUMBER: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
   CF_ACCESS_TEAM_DOMAIN?: string;
@@ -61,6 +62,9 @@ export default {
           from: params.From,
           to: params.To,
           digits: params.Digits ?? null,
+          recordingUrl: params.RecordingUrl ?? null,
+          recordingSid: params.RecordingSid ?? null,
+          recordingDuration: params.RecordingDuration ?? null,
           webhookUrl: request.url,
         }),
       });
