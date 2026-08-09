@@ -9,6 +9,14 @@ describe("worker health check", () => {
   });
 });
 
+describe("GET /", () => {
+  it("redirects to /admin/live", async () => {
+    const response = await SELF.fetch("https://example.com/", { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe("/admin/live");
+  });
+});
+
 describe("POST /webhooks/twilio", () => {
   async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
     const message =
