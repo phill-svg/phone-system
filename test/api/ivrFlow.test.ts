@@ -252,6 +252,86 @@ describe("handlePutFlow", () => {
     expect(response.status).toBe(200);
   });
 
+  it("returns 400 naming a stale reference to a node dropped from the CURRENT flow being replaced", async () => {
+    // Seed the flow being edited (test_flow) with A and B, where B references A. Then PUT a
+    // payload that keeps only B (dropping A) while B's config still points at A's id. A's row is
+    // still physically present in the DB at validation time (deletion only happens afterward,
+    // inside replaceFlowNodes) -- so the fix must exclude test_flow's own rows from the
+    // "does this reference resolve somewhere" fallback check, not just trust nodeExists globally.
+    await replaceFlowNodes(env.DB, "test_flow", "node-b", [
+      { id: "node-a", type: "voicemail", config: { audioAssetId: null, ttsText: "a", mailboxLabel: "a" } },
+      { id: "node-b", type: "play", config: { audioAssetId: null, ttsText: "b", nextNodeId: "node-a" } },
+    ]);
+
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "node-b",
+        nodes: [{ id: "node-b", type: "play", config: { audioAssetId: null, ttsText: "b", nextNodeId: "node-a" } }],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+    const text = await response.text();
+    expect(text).toContain("node-b");
+    expect(text).toContain("node-a");
+  });
+
+  it("returns 400 naming a duplicate non-entry node id within the payload", async () => {
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "y",
+        nodes: [
+          { id: "y", type: "voicemail", config: { audioAssetId: null, ttsText: "entry", mailboxLabel: "entry" } },
+          { id: "x", type: "voicemail", config: { audioAssetId: null, ttsText: "a", mailboxLabel: "a" } },
+          { id: "x", type: "voicemail", config: { audioAssetId: null, ttsText: "b", mailboxLabel: "b" } },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+    const text = await response.text();
+    expect(text).toContain("duplicate node id");
+    expect(text).toContain("x");
+  });
+
+  it("returns 400 when a payload node id already exists under a different flow (global PK collision)", async () => {
+    await replaceFlowNodes(env.DB, "other_flow_2", "collide", [
+      { id: "collide", type: "voicemail", config: { audioAssetId: null, ttsText: "elsewhere", mailboxLabel: "elsewhere" } },
+    ]);
+
+    const response = await handlePutFlow(
+      putRequest({ entryNodeId: "collide", nodes: [{ id: "collide", type: "voicemail", config: { audioAssetId: null, ttsText: "here", mailboxLabel: "here" } }] }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+    const text = await response.text();
+    expect(text).toContain("collide");
+    expect(text).toContain("different flow");
+  });
+
+  it("does NOT flag a collision when re-saving the CURRENT flow's own existing node ids (normal edit-and-resave)", async () => {
+    await replaceFlowNodes(env.DB, "test_flow", "reuse-1", [
+      { id: "reuse-1", type: "voicemail", config: { audioAssetId: null, ttsText: "original", mailboxLabel: "original" } },
+    ]);
+
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "reuse-1",
+        nodes: [{ id: "reuse-1", type: "voicemail", config: { audioAssetId: null, ttsText: "edited", mailboxLabel: "edited" } }],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(200);
+  });
+
   it("on success, replaces the flow's nodes and persists the correct is_entry flag", async () => {
     const response = await handlePutFlow(
       putRequest({

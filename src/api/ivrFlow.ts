@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { listNodesForFlow, nodeExists, replaceFlowNodes } from "../db/ivrNodes";
+import { listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes } from "../db/ivrNodes";
 import type { StaffUser } from "../access/requireStaffUser";
 
 const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail"] as const;
@@ -169,14 +169,38 @@ export async function handlePutFlow(
     );
   }
 
+  const seenIds = new Set<string>();
+  for (const node of typedNodes) {
+    if (seenIds.has(node.id)) {
+      return new Response(`duplicate node id: ${node.id}`, { status: 400 });
+    }
+    seenIds.add(node.id);
+  }
+
+  // `id` is a global PRIMARY KEY (not composite with `flow`), so a payload node whose id already
+  // belongs to a DIFFERENT flow would otherwise pass validation and then throw an unhandled
+  // constraint-violation 500 out of db.batch() in replaceFlowNodes. Re-saving ids that already
+  // belong to THIS flow (the normal edit-and-resave case) is fine, since those rows are about to
+  // be replaced, not collided with.
+  for (const node of typedNodes) {
+    if (await nodeExistsInOtherFlow(db, node.id, flow)) {
+      return new Response(`node id '${node.id}' already exists in a different flow`, { status: 400 });
+    }
+  }
+
   const payloadIds = new Set(typedNodes.map((n) => n.id));
   for (const node of typedNodes) {
     for (const ref of referencesForNode(node)) {
       if (payloadIds.has(ref)) continue;
       // Cross-flow shared nodes (e.g. the seeded shared_voicemail, tagged flow='main' but
       // referenced by after_hours) are valid to reference even though we're not editing
-      // their flow right now -- so fall back to a global-by-id lookup, not flow-scoped.
-      if (await nodeExists(db, ref)) continue;
+      // their flow right now -- so fall back to a lookup excluding the flow being saved. This
+      // must exclude (not include) the current flow: nodes only in the current flow's *existing*
+      // DB rows are about to be wiped by replaceFlowNodes, so a reference to one that didn't
+      // survive into the payload is genuinely dangling after this save, even though the row is
+      // technically still present at validation time (deletion happens later, inside
+      // replaceFlowNodes).
+      if (await nodeExistsInOtherFlow(db, ref, flow)) continue;
       return new Response(`node '${node.id}' references unknown node '${ref}'`, { status: 400 });
     }
   }

@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/admin/live", label: "Live Calls", key: "live" },
   { href: "/admin/calls", label: "Call History", key: "calls" },
   { href: "/admin/settings", label: "Settings", key: "settings" },
+  { href: "/admin/ivr/main", label: "IVR Flow", key: "ivr" },
 ];
 
 export function renderLayout(title: string, activeNav: string, body: string): string {
