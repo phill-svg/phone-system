@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { handleGetFlow, handlePutFlow } from "../../src/api/ivrFlow";
+import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "../../src/api/ivrFlow";
 import { replaceFlowNodes } from "../../src/db/ivrNodes";
 
 const STAFF: import("../../src/access/requireStaffUser").StaffUser = {
@@ -20,6 +20,17 @@ function putRequest(body: unknown): Request {
     headers: { "Content-Type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
+}
+
+function patchPositionRequest(flow: string, nodeId: string, body: unknown): Request {
+  return new Request(
+    `https://example.com/api/ivr/flows/${encodeURIComponent(flow)}/nodes/${encodeURIComponent(nodeId)}/position`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    }
+  );
 }
 
 const validVoicemail = { id: "vm-1", type: "voicemail", config: { audioAssetId: null, ttsText: "leave a message", mailboxLabel: "default" } };
@@ -354,5 +365,107 @@ describe("handlePutFlow", () => {
     expect(byId["n1"].is_entry).toBe(0);
     expect(byId["n2"].is_entry).toBe(1);
     expect(byId["n2"].type).toBe("voicemail");
+  });
+
+  it("round-trips positionX/positionY when provided in the payload", async () => {
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "vm-1",
+        nodes: [{ ...validVoicemail, positionX: 10, positionY: 20 }],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(200);
+
+    const getResponse = await handleGetFlow(env.DB, "test_flow");
+    const body = (await getResponse.json()) as { nodes: { positionX: number; positionY: number }[] };
+    expect(body.nodes[0].positionX).toBe(10);
+    expect(body.nodes[0].positionY).toBe(20);
+  });
+
+  it("defaults positionX/positionY to null when omitted from the payload", async () => {
+    const response = await handlePutFlow(
+      putRequest({ entryNodeId: "vm-1", nodes: [validVoicemail] }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(200);
+
+    const getResponse = await handleGetFlow(env.DB, "test_flow");
+    const body = (await getResponse.json()) as { nodes: { positionX: number | null; positionY: number | null }[] };
+    expect(body.nodes[0].positionX).toBeNull();
+    expect(body.nodes[0].positionY).toBeNull();
+  });
+});
+
+describe("handlePatchNodePosition", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM ivr_nodes").run();
+  });
+
+  it("returns 403 for a non-admin staff user", async () => {
+    const response = await handlePatchNodePosition(
+      patchPositionRequest("test_flow", "n1", { positionX: 1, positionY: 2 }),
+      env.DB,
+      "test_flow",
+      "n1",
+      STAFF
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("returns 400 for a non-JSON body", async () => {
+    const response = await handlePatchNodePosition(
+      patchPositionRequest("test_flow", "n1", "not json"),
+      env.DB,
+      "test_flow",
+      "n1",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 400 when positionX/positionY are not numbers", async () => {
+    const response = await handlePatchNodePosition(
+      patchPositionRequest("test_flow", "n1", { positionX: "1", positionY: 2 }),
+      env.DB,
+      "test_flow",
+      "n1",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 404 for a node id that doesn't exist in that flow", async () => {
+    const response = await handlePatchNodePosition(
+      patchPositionRequest("test_flow", "ghost", { positionX: 1, positionY: 2 }),
+      env.DB,
+      "test_flow",
+      "ghost",
+      ADMIN
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("updates position and returns {ok:true} for a real node", async () => {
+    await replaceFlowNodes(env.DB, "test_flow", "vm-1", [validVoicemail]);
+
+    const response = await handlePatchNodePosition(
+      patchPositionRequest("test_flow", "vm-1", { positionX: 42, positionY: 99 }),
+      env.DB,
+      "test_flow",
+      "vm-1",
+      ADMIN
+    );
+    expect(response.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT position_x, position_y FROM ivr_nodes WHERE id = ?")
+      .bind("vm-1")
+      .first<{ position_x: number; position_y: number }>();
+    expect(row?.position_x).toBe(42);
+    expect(row?.position_y).toBe(99);
   });
 });

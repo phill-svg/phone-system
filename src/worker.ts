@@ -6,7 +6,7 @@ import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls"
 import { handleGetBusinessHours, handleGetStaffRingList, handlePutBusinessHours, handlePutStaffRingList } from "./api/settings";
 import { handleCreateOutboundCall } from "./api/outboundCalls";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
-import { handleGetFlow, handlePutFlow } from "./api/ivrFlow";
+import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
 import { handleListCallbackRequests } from "./api/callbackRequests";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
@@ -458,6 +458,24 @@ export default {
           return request.method === "PUT"
             ? handlePutFlow(request, env.DB, flow, staff)
             : handleGetFlow(env.DB, flow);
+        } catch (e) {
+          if (e instanceof URIError) {
+            return new Response("not found", { status: 404 });
+          }
+          throw e;
+        }
+      }
+
+      // PATCH-only endpoint (drag-to-reposition on the flow canvas). Disjoint from ivrFlowMatch
+      // above -- that regex terminates right after the flow segment ($), so it never matches
+      // this longer /nodes/:id/position path; same non-shadowing reasoning as the
+      // /api/ivr/audio-vs-/api/ivr/flows comment above it.
+      const ivrNodePositionMatch = url.pathname.match(/^\/api\/ivr\/flows\/([^/]+)\/nodes\/([^/]+)\/position$/);
+      if (ivrNodePositionMatch) {
+        try {
+          const flow = decodeURIComponent(ivrNodePositionMatch[1]);
+          const nodeId = decodeURIComponent(ivrNodePositionMatch[2]);
+          return handlePatchNodePosition(request, env.DB, flow, nodeId, staff);
         } catch (e) {
           if (e instanceof URIError) {
             return new Response("not found", { status: 404 });

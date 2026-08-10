@@ -1,11 +1,11 @@
 import { jsonResponse } from "./respond";
-import { listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes } from "../db/ivrNodes";
+import { listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes, updateNodePosition } from "../db/ivrNodes";
 import type { StaffUser } from "../access/requireStaffUser";
 
 const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail"] as const;
 type NodeType = (typeof NODE_TYPES)[number];
 
-type PutNode = { id: string; type: NodeType; config: Record<string, unknown> };
+type PutNode = { id: string; type: NodeType; config: Record<string, unknown>; positionX: number | null; positionY: number | null };
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -13,6 +13,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isStringOrNull(value: unknown): value is string | null {
   return value === null || typeof value === "string";
+}
+
+function isNumberOrNull(value: unknown): value is number | null {
+  return value === null || typeof value === "number";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -158,7 +162,19 @@ export async function handlePutFlow(
     if (!isValidConfigForType(type, raw.config)) {
       return new Response(`node '${raw.id}' has an invalid config shape for type '${type}'`, { status: 400 });
     }
-    typedNodes.push({ id: raw.id, type, config: raw.config });
+    if (raw.positionX !== undefined && !isNumberOrNull(raw.positionX)) {
+      return new Response(`node '${raw.id}' has an invalid positionX`, { status: 400 });
+    }
+    if (raw.positionY !== undefined && !isNumberOrNull(raw.positionY)) {
+      return new Response(`node '${raw.id}' has an invalid positionY`, { status: 400 });
+    }
+    typedNodes.push({
+      id: raw.id,
+      type,
+      config: raw.config,
+      positionX: (raw.positionX as number | null | undefined) ?? null,
+      positionY: (raw.positionY as number | null | undefined) ?? null,
+    });
   }
 
   const entryMatches = typedNodes.filter((n) => n.id === entryNodeId);
@@ -206,5 +222,33 @@ export async function handlePutFlow(
   }
 
   await replaceFlowNodes(db, flow, entryNodeId, typedNodes);
+  return jsonResponse({ ok: true });
+}
+
+export async function handlePatchNodePosition(
+  request: Request,
+  db: D1Database,
+  flow: string,
+  nodeId: string,
+  staff: StaffUser
+): Promise<Response> {
+  const forbidden = forbiddenUnlessAdmin(staff);
+  if (forbidden) return forbidden;
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return INVALID_BODY_RESPONSE();
+  }
+
+  if (!isPlainObject(body) || typeof body.positionX !== "number" || typeof body.positionY !== "number") {
+    return INVALID_BODY_RESPONSE();
+  }
+
+  const updated = await updateNodePosition(db, flow, nodeId, body.positionX, body.positionY);
+  if (!updated) {
+    return new Response("not found", { status: 404 });
+  }
   return jsonResponse({ ok: true });
 }
