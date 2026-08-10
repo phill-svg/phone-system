@@ -1015,3 +1015,77 @@ describe("Task 12 IVR flow editor routes", () => {
     expect(response.status).toBe(404);
   });
 });
+
+describe("Task 13 callback-requests routes", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM callback_requests").run();
+    await env.DB.prepare("DELETE FROM calls").run();
+  });
+
+  it("GET /api/callback-requests returns open callback requests", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-cbr-1", "+61400000000", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-1", "+61400000000", 1000)
+      .run();
+
+    const response = await SELF.fetch("https://example.com/api/callback-requests");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { call_id: string }[];
+    expect(body.map((r) => r.call_id)).toEqual(["CA-cbr-1"]);
+  });
+
+  it("GET /admin/callbacks renders without erroring, including the empty state", async () => {
+    const response = await SELF.fetch("https://example.com/admin/callbacks");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Callback Requests");
+    expect(html).toContain("No open callback requests");
+  });
+
+  it("GET /admin/callbacks renders a seeded open request", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-cbr-2", "+61400000009", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-2", "+61400000009", Date.now())
+      .run();
+
+    const response = await SELF.fetch("https://example.com/admin/callbacks");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("+61400000009");
+  });
+
+  it("requires staff auth for both new routes in a genuine production-shaped env (no dev bypass)", async () => {
+    const prodEnv = {
+      DB: env.DB,
+      AUDIO_ASSETS: env.AUDIO_ASSETS,
+      CALL_SESSION: env.CALL_SESSION,
+      TWILIO_AUTH_TOKEN: env.TWILIO_AUTH_TOKEN,
+      CF_ACCESS_TEAM_DOMAIN: "tcb-pest.cloudflareaccess.com",
+      CF_ACCESS_AUD: "prod-aud-tag",
+    };
+
+    const apiResponse = await worker.fetch(
+      new Request("https://example.com/api/callback-requests"),
+      prodEnv as any
+    );
+    expect(apiResponse.status).toBe(401);
+
+    const adminResponse = await worker.fetch(
+      new Request("https://example.com/admin/callbacks"),
+      prodEnv as any
+    );
+    expect(adminResponse.status).toBe(401);
+  });
+});

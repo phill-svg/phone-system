@@ -8,15 +8,18 @@ import { handleCreateOutboundCall } from "./api/outboundCalls";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetFlow, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
+import { handleListCallbackRequests } from "./api/callbackRequests";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
 import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { renderIvrFlowPage } from "./html/pages/ivrFlow";
+import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
 import { getCallDetail, listCalls, listLiveCalls } from "./db/calls";
 import { getBusinessHours, getStaffRingList } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { listAudioAssets } from "./db/audioAssets";
+import { listOpenCallbackRequests } from "./db/callbackRequests";
 export { CallSession } from "./durable-objects/CallSession";
 
 // Local copy of the same 5-entity-replace XML-escape convention used throughout this codebase
@@ -431,6 +434,13 @@ export default {
           : handleGetStaffRingList(env.DB);
       }
 
+      // Literal path, disjoint from every other /api/ segment above and below (no regex here to
+      // shadow or be shadowed by) -- so unlike /api/calls/outbound vs /api/calls/:id (Task 11) there's
+      // no ordering hazard to worry about.
+      if (url.pathname === "/api/callback-requests") {
+        return handleListCallbackRequests(env.DB);
+      }
+
       if (url.pathname === "/api/ivr/audio") {
         return request.method === "POST"
           ? handleUploadAudioAsset(request, env)
@@ -491,6 +501,11 @@ export default {
         const schedule = await getBusinessHours(env.DB);
         const ringList = await getStaffRingList(env.DB);
         const html = renderSettingsPage(schedule, ringList);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+
+      if (url.pathname === "/admin/callbacks") {
+        const html = renderCallbackRequestsPage(await listOpenCallbackRequests(env.DB));
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 

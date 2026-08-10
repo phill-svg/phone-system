@@ -32,6 +32,7 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, ringList: St
       (entry, i) => `<div class="ring-entry">
         <input type="text" name="ring-label-${i}" value="${escapeHtml(entry.label)}" placeholder="Label">
         <input type="text" name="ring-number-${i}" value="${escapeHtml(entry.number)}" placeholder="+61...">
+        <label><input type="checkbox" name="ring-oncall-${i}" ${entry.isOnCall ? "checked" : ""}> On call</label>
       </div>`
     )
     .join("");
@@ -81,7 +82,8 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, ringList: St
         const div = document.createElement('div');
         div.className = 'ring-entry';
         div.innerHTML = '<input type="text" name="ring-label-' + i + '" placeholder="Label">' +
-          '<input type="text" name="ring-number-' + i + '" placeholder="+61...">';
+          '<input type="text" name="ring-number-' + i + '" placeholder="+61...">' +
+          '<label><input type="checkbox" name="ring-oncall-' + i + '"> On call</label>';
         container.appendChild(div);
       });
 
@@ -91,7 +93,8 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, ringList: St
         const entries = Array.from(document.querySelectorAll('.ring-entry')).map(function (div) {
           const label = div.querySelector('[name^="ring-label-"]').value;
           const number = div.querySelector('[name^="ring-number-"]').value;
-          return { label: label, number: number };
+          const isOnCall = div.querySelector('[name^="ring-oncall-"]').checked;
+          return { label: label, number: number, isOnCall: isOnCall };
         }).filter(function (entry) { return entry.number.trim() !== ''; });
         const res = await fetch('/api/settings/staff-ring-list', {
           method: 'PUT',
