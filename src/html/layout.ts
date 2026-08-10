@@ -15,11 +15,17 @@ const NAV_ITEMS = [
   { href: "/admin/callbacks", label: "Callback Requests", key: "callbacks" },
 ];
 
-export function renderLayout(title: string, activeNav: string, body: string): string {
+export function renderLayout(
+  title: string,
+  activeNav: string,
+  body: string,
+  opts?: { extraHead?: string; fullWidth?: boolean }
+): string {
   const nav = NAV_ITEMS.map(
     (item) =>
       `<a href="${item.href}" class="nav-link${item.key === activeNav ? " active" : ""}">${escapeHtml(item.label)}</a>`
   ).join("");
+  const mainClass = opts?.fullWidth ? ' class="full-width"' : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -33,6 +39,7 @@ export function renderLayout(title: string, activeNav: string, body: string): st
   .nav-link { color: #cfe8db; text-decoration: none; }
   .nav-link.active { color: white; font-weight: 600; }
   main { padding: 1.5rem; max-width: 960px; margin: 0 auto; }
+  main.full-width { max-width: none; padding: 0; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; }
   .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; }
@@ -43,10 +50,11 @@ export function renderLayout(title: string, activeNav: string, body: string): st
   form.settings-form input { margin-left: 0.5rem; }
   .ring-entry { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
 </style>
+${opts?.extraHead ?? ""}
 </head>
 <body>
 <header><h1>TCB VoIP Admin</h1>${nav}</header>
-<main>${body}</main>
+<main${mainClass}>${body}</main>
 </body>
 </html>`;
 }

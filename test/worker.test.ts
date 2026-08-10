@@ -924,7 +924,9 @@ describe("Task 12 IVR flow editor routes", () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain("wt-entry");
-    expect(html).toContain('id="node-cards"');
+    // Phase 1 canvas editor (Drawflow) replaced the old flat node-card list -- the node data is
+    // now embedded as JSON for the client-side canvas to render, inside the #drawflow container.
+    expect(html).toContain('id="drawflow"');
   });
 
   it("GET /api/ivr/flows/:flow returns the flow's entryNodeId + nodes", async () => {
