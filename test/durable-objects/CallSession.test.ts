@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setBusinessHours, setStaffRingList, type StaffRingEntry } from "../../src/db/settings";
+import { createAudioAsset } from "../../src/db/audioAssets";
 import type { CallSession } from "../../src/durable-objects/CallSession";
 
 const ORIGIN = "https://tcb-voip.example.workers.dev";
@@ -168,6 +169,7 @@ describe("CallSession", () => {
     await env.DB.prepare("DELETE FROM call_events").run();
     await env.DB.prepare("DELETE FROM calls").run();
     await env.DB.prepare("DELETE FROM ivr_nodes").run();
+    await env.DB.prepare("DELETE FROM ivr_audio_assets").run();
     await setBusinessHours(env.DB, {
       mon: { open: "00:00", close: "23:59" },
       tue: { open: "00:00", close: "23:59" },
@@ -460,6 +462,66 @@ describe("CallSession", () => {
     expect(row?.recording_sid).toBe("RE123");
     expect(row?.mailbox_label).toBe("3 after-hours");
     expect(row?.ivr_path).toBe("main_vm");
+  });
+
+  // --- uploaded audio playback (Task 2's audio assets + PLAY commands) ---
+
+  it("PLAY command referencing an uploaded audio asset's id renders <Play> with the asset's REAL r2Key, not the bare id", async () => {
+    // The asset's id ("asset-1") is deliberately different from its r2Key
+    // ("ivr-audio/asset-1"), mirroring how POST /api/ivr/audio actually stores things:
+    // R2 object key = `ivr-audio/${id}`, which is NOT the same string as the
+    // ivr_audio_assets.id primary key that flow node configs reference.
+    await createAudioAsset(env.DB, {
+      id: "asset-1",
+      label: "Welcome greeting",
+      r2Key: "ivr-audio/asset-1",
+      contentType: "audio/mpeg",
+    });
+
+    // The entry gather node's prompt references the asset by its bare id.
+    await seedNode({
+      id: "main_entry_gather",
+      isEntry: true,
+      type: "gather",
+      config: {
+        audioAssetId: "asset-1",
+        ttsText: null,
+        options: [],
+        defaultNextNodeId: "main_vm",
+        retryLimit: 0,
+      },
+    });
+    await seedVoicemail("main_vm", "default");
+
+    const stub = stubFor("CA-audio");
+    const { status, xml } = await send(stub, mainEvent("CA-audio"));
+
+    expect(status).toBe(200);
+    // The real R2 key, resolved via getAudioAsset, must appear in the rendered <Play> URL.
+    expect(xml).toContain(`<Play>${ORIGIN}/media/ivr-audio/asset-1</Play>`);
+    // The bug's broken output (the bare asset id fed straight into the media URL) must NOT appear.
+    expect(xml).not.toContain(`${ORIGIN}/media/asset-1<`);
+  });
+
+  it("PLAY command referencing an unknown audio asset id throws a clear error instead of producing a broken URL", async () => {
+    await seedNode({
+      id: "main_entry_gather",
+      isEntry: true,
+      type: "gather",
+      config: {
+        audioAssetId: "does-not-exist",
+        ttsText: null,
+        options: [],
+        defaultNextNodeId: "main_vm",
+        retryLimit: 0,
+      },
+    });
+    await seedVoicemail("main_vm", "default");
+
+    const stub = stubFor("CA-audio-missing");
+    await expect(send(stub, mainEvent("CA-audio-missing"))).rejects.toThrow(
+      /unknown audio asset id "does-not-exist"/i
+    );
   });
 
   // --- error-handling robustness (dial failures + duplicate status callbacks) ---

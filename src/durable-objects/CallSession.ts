@@ -17,6 +17,7 @@ import {
 import { createOutboundCall, cancelCall } from "../twilio/restClient";
 import { getBusinessHours, getStaffRingList } from "../db/settings";
 import { createCallbackRequest } from "../db/callbackRequests";
+import { getAudioAsset } from "../db/audioAssets";
 import { isWithinBusinessHours } from "../ivr/businessHours";
 
 type Env = {
@@ -171,7 +172,8 @@ export class CallSession extends DurableObject<Env> {
         .bind(voicemailNodeId, callSid)
         .run();
       await this.ctx.storage.put("awaitingVoicemailNodeId", voicemailNodeId);
-      const fragment = renderFlowCommandsFragment(walkResult.commands, { baseUrl: origin });
+      const resolvedVoicemailCommands = await this.resolveAudioCommands(walkResult.commands);
+      const fragment = renderFlowCommandsFragment(resolvedVoicemailCommands, { baseUrl: origin });
       const record = `<Record action="${origin}/webhooks/twilio" method="POST" maxLength="120" timeout="5" playBeep="true"/>`;
       return wrapResponse(fragment + record);
     }
@@ -186,7 +188,8 @@ export class CallSession extends DurableObject<Env> {
     const patched = walkResult.commands.map((c) =>
       c.type === "GATHER" ? { ...c, action: mainWebhookUrl } : c
     );
-    return renderFlowTwiml(patched, { baseUrl: origin });
+    const resolved = await this.resolveAudioCommands(patched);
+    return renderFlowTwiml(resolved, { baseUrl: origin });
   }
 
   // -------------------------------------------------------------------------
@@ -208,7 +211,7 @@ export class CallSession extends DurableObject<Env> {
       // nextNodeId is the WAIT node's own id; load its config for the real ring node id + hold content.
       const waitConfig = await this.loadNodeConfig(walkResult.nextNodeId);
       ringNodeId = waitConfig.nextNodeId as string;
-      play = this.playFromConfig(waitConfig);
+      play = await this.playFromConfig(waitConfig);
       allowCallbackStar = waitConfig.allowCallbackStar === true;
     } else {
       // nextNodeId IS the ring node itself; no preceding wait → no hold content, no callback star.
@@ -495,11 +498,33 @@ export class CallSession extends DurableObject<Env> {
     });
   }
 
-  private playFromConfig(config: Record<string, any>): FlowCommand | null {
+  private async playFromConfig(config: Record<string, any>): Promise<FlowCommand | null> {
     const audioAssetId = config.audioAssetId ?? null;
     const ttsText = config.ttsText ?? null;
     if (audioAssetId === null && ttsText === null) return null;
-    return { type: "PLAY", audioAssetId, ttsText };
+    const resolved = await this.resolveAudioCommands([{ type: "PLAY", audioAssetId, ttsText }]);
+    return resolved[0];
+  }
+
+  // Resolves every PLAY command's `audioAssetId` (an `ivr_audio_assets.id` primary key) to the
+  // asset's real R2 key before the command reaches a TwiML renderer. The renderers
+  // (renderFlowTwiml/renderFlowCommandsFragment/renderHold) build the media URL directly from
+  // `audioAssetId`, so feeding them the bare id (rather than the R2 key the file is actually
+  // stored under) would silently 404 when Twilio fetches it.
+  private async resolveAudioCommands(commands: FlowCommand[]): Promise<FlowCommand[]> {
+    const resolved: FlowCommand[] = [];
+    for (const command of commands) {
+      if (command.type === "PLAY" && command.audioAssetId !== null) {
+        const asset = await getAudioAsset(this.env.DB, command.audioAssetId);
+        if (!asset) {
+          throw new Error(`IVR flow references unknown audio asset id "${command.audioAssetId}"`);
+        }
+        resolved.push({ ...command, audioAssetId: asset.r2Key });
+      } else {
+        resolved.push(command);
+      }
+    }
+    return resolved;
   }
 
   private async dialStaff(number: string, callSid: string, origin: string): Promise<string> {
