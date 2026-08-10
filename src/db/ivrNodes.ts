@@ -1,6 +1,22 @@
-export type IvrNode = { id: string; flow: string; isEntry: boolean; type: string; config: Record<string, unknown> };
+export type IvrNode = {
+  id: string;
+  flow: string;
+  isEntry: boolean;
+  type: string;
+  config: Record<string, unknown>;
+  positionX: number | null;
+  positionY: number | null;
+};
 
-type IvrNodeRow = { id: string; flow: string; is_entry: number; type: string; config: string };
+type IvrNodeRow = {
+  id: string;
+  flow: string;
+  is_entry: number;
+  type: string;
+  config: string;
+  position_x: number | null;
+  position_y: number | null;
+};
 
 export async function listNodesForFlow(db: D1Database, flow: string): Promise<IvrNode[]> {
   const result = await db.prepare("SELECT * FROM ivr_nodes WHERE flow = ?").bind(flow).all<IvrNodeRow>();
@@ -10,6 +26,8 @@ export async function listNodesForFlow(db: D1Database, flow: string): Promise<Iv
     isEntry: row.is_entry === 1,
     type: row.type,
     config: JSON.parse(row.config) as Record<string, unknown>,
+    positionX: row.position_x,
+    positionY: row.position_y,
   }));
 }
 
@@ -31,7 +49,13 @@ export async function replaceFlowNodes(
   db: D1Database,
   flow: string,
   entryNodeId: string,
-  nodes: { id: string; type: string; config: Record<string, unknown> }[]
+  nodes: {
+    id: string;
+    type: string;
+    config: Record<string, unknown>;
+    positionX?: number | null;
+    positionY?: number | null;
+  }[]
 ): Promise<void> {
   const now = Date.now();
   // Full delete-then-reinsert, run atomically via D1's batch(). This is an internal admin
@@ -42,10 +66,40 @@ export async function replaceFlowNodes(
     ...nodes.map((node) =>
       db
         .prepare(
-          "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, position_x, position_y, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-        .bind(node.id, flow, node.id === entryNodeId ? 1 : 0, node.type, JSON.stringify(node.config), now, now)
+        .bind(
+          node.id,
+          flow,
+          node.id === entryNodeId ? 1 : 0,
+          node.type,
+          JSON.stringify(node.config),
+          node.positionX ?? null,
+          node.positionY ?? null,
+          now,
+          now
+        )
     ),
   ];
   await db.batch(statements);
+}
+
+// Used by the canvas editor's drag-to-reposition endpoint. Scoped to (id, flow) rather than
+// just id -- id is a global PRIMARY KEY, but a position PATCH always targets one specific
+// flow's view of that node, and should 404 rather than silently write if the id/flow pairing
+// is wrong (e.g. a stale client still viewing a flow that no longer contains that id).
+export async function updateNodePosition(
+  db: D1Database,
+  flow: string,
+  id: string,
+  positionX: number,
+  positionY: number
+): Promise<boolean> {
+  const existing = await db.prepare("SELECT 1 FROM ivr_nodes WHERE id = ? AND flow = ? LIMIT 1").bind(id, flow).first();
+  if (existing === null) return false;
+  await db
+    .prepare("UPDATE ivr_nodes SET position_x = ?, position_y = ?, updated_at = ? WHERE id = ? AND flow = ?")
+    .bind(positionX, positionY, Date.now(), id, flow)
+    .run();
+  return true;
 }

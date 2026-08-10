@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { listNodesForFlow, nodeExists, replaceFlowNodes } from "../../src/db/ivrNodes";
+import { listNodesForFlow, nodeExists, replaceFlowNodes, updateNodePosition } from "../../src/db/ivrNodes";
 
 describe("ivrNodes db", () => {
   beforeEach(async () => {
@@ -63,5 +63,52 @@ describe("ivrNodes db", () => {
 
   it("nodeExists returns false for an id that doesn't exist", async () => {
     expect(await nodeExists(env.DB, "totally-unknown")).toBe(false);
+  });
+
+  it("replaceFlowNodes persists positionX/positionY, and they round-trip through listNodesForFlow", async () => {
+    await replaceFlowNodes(env.DB, "test_flow", "node-a", [
+      { id: "node-a", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "a" }, positionX: 120, positionY: 340 },
+    ]);
+
+    const nodes = await listNodesForFlow(env.DB, "test_flow");
+    expect(nodes[0].positionX).toBe(120);
+    expect(nodes[0].positionY).toBe(340);
+  });
+
+  it("replaceFlowNodes defaults positionX/positionY to null when omitted", async () => {
+    await replaceFlowNodes(env.DB, "test_flow", "node-a", [
+      { id: "node-a", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "a" } },
+    ]);
+
+    const nodes = await listNodesForFlow(env.DB, "test_flow");
+    expect(nodes[0].positionX).toBeNull();
+    expect(nodes[0].positionY).toBeNull();
+  });
+
+  it("updateNodePosition updates position_x/position_y for a node in the given flow and returns true", async () => {
+    await replaceFlowNodes(env.DB, "test_flow", "node-a", [
+      { id: "node-a", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "a" } },
+    ]);
+
+    const result = await updateNodePosition(env.DB, "test_flow", "node-a", 55, 66);
+    expect(result).toBe(true);
+
+    const nodes = await listNodesForFlow(env.DB, "test_flow");
+    expect(nodes[0].positionX).toBe(55);
+    expect(nodes[0].positionY).toBe(66);
+  });
+
+  it("updateNodePosition returns false and writes nothing for a node id that doesn't exist in that flow", async () => {
+    const result = await updateNodePosition(env.DB, "test_flow", "does-not-exist", 1, 2);
+    expect(result).toBe(false);
+  });
+
+  it("updateNodePosition returns false for a node that exists but belongs to a DIFFERENT flow", async () => {
+    await replaceFlowNodes(env.DB, "other_flow", "node-a", [
+      { id: "node-a", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "a" } },
+    ]);
+
+    const result = await updateNodePosition(env.DB, "test_flow", "node-a", 1, 2);
+    expect(result).toBe(false);
   });
 });
