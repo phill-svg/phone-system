@@ -9,7 +9,8 @@ import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
 import { handleListCallbackRequests } from "./api/callbackRequests";
-import { handleGetSoftphoneToken } from "./api/softphone";
+import { handleGetSoftphoneToken, handlePutPresence, handlePostHeartbeat } from "./api/softphone";
+import { handleGetStaffRoster, handlePutStaffSchedule } from "./api/staff";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
@@ -442,6 +443,19 @@ export default {
 
       if (url.pathname === "/api/softphone/token" && request.method === "GET") {
         return handleGetSoftphoneToken(env, staff);
+      }
+      if (url.pathname === "/api/softphone/presence" && request.method === "PUT") {
+        return handlePutPresence(request, env.DB, staff);
+      }
+      if (url.pathname === "/api/softphone/heartbeat" && request.method === "POST") {
+        return handlePostHeartbeat(env.DB, staff);
+      }
+      if (url.pathname === "/api/staff" && request.method === "GET") {
+        return handleGetStaffRoster(env.DB);
+      }
+      const staffScheduleMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/schedule$/);
+      if (staffScheduleMatch && request.method === "PUT") {
+        return handlePutStaffSchedule(request, env.DB, decodeURIComponent(staffScheduleMatch[1]), staff);
       }
 
       return new Response("not found", { status: 404 });
