@@ -1,4 +1,5 @@
 import { verifyTwilioSignature } from "./twilio/verifySignature";
+import { renderJoinConference } from "./twilio/conferenceTwiml";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
@@ -248,6 +249,28 @@ export default {
         status: doResponse.status,
         headers: { "Content-Type": "text/xml" },
       });
+    }
+
+    // Caller-leg redirect target (Task 4's answer-time bridge): the caller's already-enqueued leg is
+    // REST-redirected here (by handleAgentAnswer, via redirectCall) the moment an agent answers, so it
+    // joins the same Conference the agent's own answer-webhook response also joins. `conf` (the query
+    // param) is the caller's own CallSid, used as the Conference's friendly name.
+    if (url.pathname === "/webhooks/twilio/join-conference" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+      const conferenceName = url.searchParams.get("conf");
+      if (!conferenceName) {
+        return new Response("missing conf", { status: 400 });
+      }
+      return new Response(renderJoinConference({ conferenceName }), { headers: { "Content-Type": "text/xml" } });
     }
 
     // Staff-leg status callback: lifecycle of the outbound staff call. Caller's CallSid from the query.

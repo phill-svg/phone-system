@@ -39,3 +39,15 @@ export async function cancelCall(accountSid: string, authToken: string, callSid:
   });
   if (!res.ok) throw new Error(`Twilio cancel-call failed: ${res.status}`);
 }
+
+export async function redirectCall(accountSid: string, authToken: string, callSid: string, url: string): Promise<void> {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ Url: url }),
+  });
+  if (!res.ok) throw new Error(`Twilio redirect-call failed: ${res.status}`);
+}

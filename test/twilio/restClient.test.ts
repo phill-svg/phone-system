@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createOutboundCall, cancelCall } from "../../src/twilio/restClient";
+import { createOutboundCall, cancelCall, redirectCall } from "../../src/twilio/restClient";
 
 const ACCOUNT_SID = "ACabcd1234efgh5678ijkl9012";
 const AUTH_TOKEN = "auth-token-secret";
@@ -353,6 +353,28 @@ describe("Twilio REST client", () => {
       await expect(cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID)).rejects.toThrow(
         "Twilio cancel-call failed: 500"
       );
+    });
+  });
+
+  describe("redirectCall", () => {
+    it("POSTs a Url update to the call resource with Basic auth", async () => {
+      fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+
+      await redirectCall("ACxxx", "authtoken", "CAcaller", "https://example.com/webhooks/twilio/join-conference?conf=CAcaller");
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.twilio.com/2010-04-01/Accounts/ACxxx/Calls/CAcaller.json",
+        expect.objectContaining({ method: "POST" })
+      );
+      const call = fetchMock.mock.calls[0];
+      const body = call[1].body as URLSearchParams;
+      expect(body.get("Url")).toBe("https://example.com/webhooks/twilio/join-conference?conf=CAcaller");
+      expect(call[1].headers.Authorization).toBe(`Basic ${btoa("ACxxx:authtoken")}`);
+    });
+
+    it("throws on a non-2xx response", async () => {
+      fetchMock.mockResolvedValue(new Response("", { status: 500 }));
+      await expect(redirectCall("ACxxx", "authtoken", "CAcaller", "https://example.com/x")).rejects.toThrow();
     });
   });
 });

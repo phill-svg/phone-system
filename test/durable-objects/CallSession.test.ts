@@ -168,10 +168,14 @@ function outboundDials(fetchMock: ReturnType<typeof vi.fn>): string[] {
     .filter((c) => String(c[0]).includes("/Calls.json"))
     .map((c) => new URLSearchParams((c[1] as RequestInit).body as string).get("To") as string);
 }
+// Genuine cancel-call hits ONLY: cancelCall and redirectCall (Task 4's answer-time bridge)
+// both POST to the identical /Calls/{sid}.json shape, so URL alone can't tell them apart --
+// discriminate on body (Status=canceled vs Url=...), same style as outboundDials above.
 function cancelHits(fetchMock: ReturnType<typeof vi.fn>): string[] {
   return fetchMock.mock.calls
-    .map((c) => String(c[0]))
-    .filter((u) => /\/Calls\/[^/]+\.json$/.test(u));
+    .filter((c) => /\/Calls\/[^/]+\.json$/.test(String(c[0])))
+    .filter((c) => new URLSearchParams((c[1] as RequestInit).body as string).get("Status") === "canceled")
+    .map((c) => String(c[0]));
 }
 
 describe("CallSession", () => {
@@ -260,7 +264,7 @@ describe("CallSession", () => {
     expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
   });
 
-  it("full bridge: enqueue → agent_answer renders <Dial><Queue> → queue_left(bridged) completes the call", async () => {
+  it("full bridge: enqueue → agent_answer redirects the caller leg + renders <Dial><Conference> → queue_left(bridged) completes the call", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
@@ -271,8 +275,18 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-bridge", { digits: "1" }));
 
     const answer = await send(stub, agentAnswer("CA-bridge", "sid-client:phill@b.com"));
+
+    // The caller's own leg (CallSid "CA-bridge") was REST-redirected into the join-conference webhook.
+    const redirectHit = fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/Calls/CA-bridge.json"));
+    expect(redirectHit).toBeTruthy();
+    const redirectBody = new URLSearchParams((redirectHit![1] as RequestInit).body as string);
+    expect(redirectBody.get("Url")).toContain("/webhooks/twilio/join-conference?conf=CA-bridge");
+
+    // The agent's own answer-webhook response joins the SAME conference, not a <Queue>.
     expect(answer.xml).toContain("<Dial");
-    expect(answer.xml).toContain("<Queue>CA-bridge</Queue>");
+    expect(answer.xml).toContain("<Conference");
+    expect(answer.xml).toContain(">CA-bridge</Conference>");
+    expect(answer.xml).not.toContain("<Queue>");
 
     const left = await send(stub, queueLeft("CA-bridge"));
     expect(left.xml).toContain("<Hangup/>");

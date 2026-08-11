@@ -1,5 +1,5 @@
 import { env, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
 import { setCallBlocklist } from "../src/db/settings";
 
@@ -287,12 +287,20 @@ describe("Task 8 queue/ring webhook routes", () => {
     });
 
     it("forwards a validly-signed agent answer (callSid from query) to CallSession as text/xml", async () => {
+      // Task 4: handleAgentAnswer now REST-redirects the caller's leg (a real outbound fetch to
+      // api.twilio.com) before rendering TwiML. Stub it out so this route test stays a pure
+      // routing/signature check rather than a live Twilio API call.
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
       const response = await postSigned(
         "https://example.com/webhooks/twilio/agent-answer?callSid=CA-caller-1",
         { CallSid: "CA-staff-1" }
       );
       expect(response.status).toBe(200);
       expect(response.headers.get("Content-Type")).toBe("text/xml");
+
+      vi.unstubAllGlobals();
     });
   });
 
@@ -373,6 +381,40 @@ describe("Task 8 queue/ring webhook routes", () => {
         .first<{ recording_url: string; recording_sid: string }>();
       expect(row?.recording_url).toBe("https://api.twilio.com/rec.mp3");
       expect(row?.recording_sid).toBe("RE123");
+    });
+  });
+
+  // ---- Route 7: /webhooks/twilio/join-conference (caller-leg redirect target, Task 4) ----
+  describe("POST /webhooks/twilio/join-conference", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch(
+        "https://example.com/webhooks/twilio/join-conference?conf=CAcaller",
+        {
+          method: "POST",
+          headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ CallSid: "CAcaller" }).toString(),
+        }
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 400 when the conf query param is missing (even with a valid signature)", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/join-conference", {
+        CallSid: "CAcaller",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("missing conf");
+    });
+
+    it("returns a Dial/Conference document naming the conf query param", async () => {
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/join-conference?conf=CAcaller",
+        { CallSid: "CAcaller" }
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/xml");
+      const xml = await response.text();
+      expect(xml).toContain("<Conference>CAcaller</Conference>");
     });
   });
 });

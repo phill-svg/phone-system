@@ -5,7 +5,6 @@ import {
   renderEnqueue,
   renderHold,
   renderLeave,
-  renderDialIntoQueue,
   renderCallbackAck,
 } from "../twilio/queueTwiml";
 import { resolveRingTargets, type RingNodeTarget } from "../dial/ringQueue";
@@ -14,7 +13,8 @@ import {
   type RingPlanState,
   type RingStrategy,
 } from "../dial/ringPlan";
-import { createOutboundCall, cancelCall } from "../twilio/restClient";
+import { createOutboundCall, cancelCall, redirectCall } from "../twilio/restClient";
+import { renderDialAgentIntoConference } from "../twilio/conferenceTwiml";
 import { getBusinessHours } from "../db/settings";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { getAudioAsset } from "../db/audioAssets";
@@ -396,7 +396,9 @@ export class CallSession extends DurableObject<Env> {
 
   // -------------------------------------------------------------------------
   // Staff-leg answer: a staff member picked up. Cancel other attempts (simultaneous
-  // strategy) and bridge this leg into the caller's queue.
+  // strategy), then bridge the two legs into a real Twilio Conference: REST-redirect the
+  // caller's already-enqueued leg into /webhooks/twilio/join-conference, and render this
+  // (the agent's) leg's own answer-webhook response to join the same Conference.
   // -------------------------------------------------------------------------
   private async handleAgentAnswer(body: AgentAnswerEvent): Promise<Response> {
     const origin = new URL(body.webhookUrl).origin;
@@ -413,9 +415,16 @@ export class CallSession extends DurableObject<Env> {
       await this.ctx.storage.put("activeRing", activeRing);
     }
 
+    await redirectCall(
+      this.env.TWILIO_ACCOUNT_SID,
+      this.env.TWILIO_AUTH_TOKEN,
+      body.callSid,
+      `${origin}/webhooks/twilio/join-conference?conf=${body.callSid}`
+    );
+
     return this.xml(
-      renderDialIntoQueue({
-        queueName: body.callSid,
+      renderDialAgentIntoConference({
+        conferenceName: body.callSid,
         actionUrl: `${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`,
         recordingStatusCallbackUrl: `${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}`,
       })
