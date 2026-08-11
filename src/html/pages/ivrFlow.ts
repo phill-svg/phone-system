@@ -140,7 +140,8 @@ export function renderIvrFlowPage(
         var types = ['business_hours', 'play', 'gather', 'ring', 'wait', 'voicemail'];
         var html = '';
         types.forEach(function (t) {
-          html += '<option value="' + t + '"' + (t === selectedType ? ' selected' : '') + '>' + t + '</option>';
+          var label = NODE_META[t] ? NODE_META[t].label : t;
+          html += '<option value="' + t + '"' + (t === selectedType ? ' selected' : '') + '>' + label + '</option>';
         });
         return html;
       }
