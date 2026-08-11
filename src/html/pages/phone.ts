@@ -340,6 +340,7 @@ export function renderPhonePage(staffEmail: string): string {
           device.on('incoming', function (call) {
             activeCall = call;
             showIncomingBanner(call);
+            window.desktopBridge?.notifyIncomingCall(call.parameters && call.parameters.From);
             call.on('accept', onCallConnected);
             call.on('disconnect', onCallEnded);
             call.on('cancel', onCallEnded);

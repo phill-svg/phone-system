@@ -18,6 +18,8 @@
     "productName": "TCB Phone",
     "files": [
       "main.js",
+      "preload.js",
+      "icon.png",
       "package.json"
     ],
     "directories": {
