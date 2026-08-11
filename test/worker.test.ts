@@ -1,5 +1,5 @@
 import { env, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
 import { setCallBlocklist } from "../src/db/settings";
 
@@ -203,6 +203,11 @@ describe("Task 8 queue/ring webhook routes", () => {
     await env.DB.prepare("DELETE FROM calls").run();
   });
 
+  // Belt-and-suspenders: if a test below stubs global fetch (see the agent-answer route) and an
+  // assertion throws before its own cleanup runs, this still restores the real fetch afterward so
+  // the stub can never leak into a later test in this file.
+  afterEach(() => vi.unstubAllGlobals());
+
   // ---- Route 1: /webhooks/twilio/hold (caller leg) ----
   describe("POST /webhooks/twilio/hold", () => {
     it("rejects an invalid signature with 401", async () => {
@@ -299,8 +304,6 @@ describe("Task 8 queue/ring webhook routes", () => {
       );
       expect(response.status).toBe(200);
       expect(response.headers.get("Content-Type")).toBe("text/xml");
-
-      vi.unstubAllGlobals();
     });
   });
 
