@@ -221,9 +221,9 @@ export function renderPhonePage(staffEmail: string): string {
         isOnHold = false;
       }
 
-      function placeCall(to) {
+      async function placeCall(to) {
         if (!device || !to) return;
-        activeCall = device.connect({ params: { To: to } });
+        activeCall = await device.connect({ params: { To: to } });
         activeCall.on('accept', onCallConnected);
         activeCall.on('disconnect', onCallEnded);
         activeCall.on('cancel', onCallEnded);
