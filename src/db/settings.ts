@@ -47,3 +47,18 @@ export async function setStaffRingList(db: D1Database, list: StaffRingEntry[]): 
     .bind(STAFF_RING_LIST_KEY, JSON.stringify(list))
     .run();
 }
+
+const CALL_BLOCKLIST_KEY = "call_blocklist";
+
+export async function getCallBlocklist(db: D1Database): Promise<string[]> {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(CALL_BLOCKLIST_KEY).first<{ value: string }>();
+  if (!row) return [];
+  return JSON.parse(row.value) as string[];
+}
+
+export async function setCallBlocklist(db: D1Database, numbers: string[]): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(CALL_BLOCKLIST_KEY, JSON.stringify(numbers))
+    .run();
+}

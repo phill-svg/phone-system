@@ -1,6 +1,5 @@
 import { escapeHtml, renderLayout } from "../layout";
 import type { BusinessHoursSchedule } from "../../ivr/businessHours";
-import type { StaffRingEntry } from "../../db/settings";
 
 const DAYS: (keyof BusinessHoursSchedule)[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABELS: Record<string, string> = {
@@ -13,7 +12,7 @@ const DAY_LABELS: Record<string, string> = {
   sun: "Sunday",
 };
 
-export function renderSettingsPage(schedule: BusinessHoursSchedule, ringList: StaffRingEntry[]): string {
+export function renderSettingsPage(schedule: BusinessHoursSchedule, blocklist: string[]): string {
   const dayRows = DAYS.map((day) => {
     const window = schedule[day];
     return `<label>
@@ -27,16 +26,6 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, ringList: St
     </label>`;
   }).join("");
 
-  const ringRows = ringList
-    .map(
-      (entry, i) => `<div class="ring-entry">
-        <input type="text" name="ring-label-${i}" value="${escapeHtml(entry.label)}" placeholder="Label">
-        <input type="text" name="ring-number-${i}" value="${escapeHtml(entry.number)}" placeholder="+61...">
-        <label><input type="checkbox" name="ring-oncall-${i}" ${entry.isOnCall ? "checked" : ""}> On call</label>
-      </div>`
-    )
-    .join("");
-
   const body = `<h2>Settings</h2>
     <form class="settings-form" id="business-hours-form">
       <h3>Business Hours</h3>
@@ -44,12 +33,11 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, ringList: St
       <button type="submit">Save Business Hours</button>
       <span id="hours-save-status"></span>
     </form>
-    <form class="settings-form" id="ring-list-form">
-      <h3>Staff Ring List <small>(used by staff call-routing — not active yet)</small></h3>
-      <div id="ring-entries">${ringRows}</div>
-      <button type="button" id="add-ring-entry">Add number</button>
-      <button type="submit">Save Ring List</button>
-      <span id="ring-save-status"></span>
+    <form class="settings-form" id="blocklist-form">
+      <h3>Call Blocklist</h3>
+      <textarea id="blocklist-numbers" rows="6" placeholder="+61400000000">${escapeHtml(blocklist.join("\n"))}</textarea>
+      <button type="submit">Save Blocklist</button>
+      <span id="blocklist-save-status"></span>
     </form>
     <script>
       function scheduleFromForm(form) {
@@ -76,30 +64,17 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, ringList: St
         status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
       });
 
-      document.getElementById('add-ring-entry').addEventListener('click', function () {
-        const container = document.getElementById('ring-entries');
-        const i = container.children.length;
-        const div = document.createElement('div');
-        div.className = 'ring-entry';
-        div.innerHTML = '<input type="text" name="ring-label-' + i + '" placeholder="Label">' +
-          '<input type="text" name="ring-number-' + i + '" placeholder="+61...">' +
-          '<label><input type="checkbox" name="ring-oncall-' + i + '"> On call</label>';
-        container.appendChild(div);
-      });
-
-      document.getElementById('ring-list-form').addEventListener('submit', async function (e) {
+      document.getElementById('blocklist-form').addEventListener('submit', async function (e) {
         e.preventDefault();
-        const status = document.getElementById('ring-save-status');
-        const entries = Array.from(document.querySelectorAll('.ring-entry')).map(function (div) {
-          const label = div.querySelector('[name^="ring-label-"]').value;
-          const number = div.querySelector('[name^="ring-number-"]').value;
-          const isOnCall = div.querySelector('[name^="ring-oncall-"]').checked;
-          return { label: label, number: number, isOnCall: isOnCall };
-        }).filter(function (entry) { return entry.number.trim() !== ''; });
-        const res = await fetch('/api/settings/staff-ring-list', {
+        const status = document.getElementById('blocklist-save-status');
+        const numbers = document.getElementById('blocklist-numbers').value
+          .split('\\n')
+          .map(function (line) { return line.trim(); })
+          .filter(function (line) { return line !== ''; });
+        const res = await fetch('/api/settings/call-blocklist', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(entries),
+          body: JSON.stringify(numbers),
         });
         status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
       });

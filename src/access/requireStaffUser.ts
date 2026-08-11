@@ -1,6 +1,6 @@
 import { createAccessVerifier } from "./verifyAccessJwt";
 
-export type StaffUser = { email: string; role: "admin" | "staff"; mobile_number: string | null };
+export type StaffUser = { email: string; role: "admin" | "staff" };
 
 // Module-level cache for the Access JWT verifier. Constructing a verifier calls
 // createRemoteJWKSet, which maintains its own internal JWKS cache (fetched from
@@ -52,13 +52,13 @@ export async function requireStaffUser(request: Request, env: Env): Promise<Staf
     email = identity.email;
   }
 
-  const row = await env.DB.prepare("SELECT email, role, mobile_number FROM staff_users WHERE email = ?")
+  const row = await env.DB.prepare("SELECT email, role FROM staff_users WHERE email = ?")
     .bind(email)
-    .first<{ email: string; role: "admin" | "staff"; mobile_number: string | null }>();
+    .first<{ email: string; role: "admin" | "staff" }>();
 
   if (!row) {
     return new Response("not provisioned", { status: 403 });
   }
 
-  return { email: row.email, role: row.role, mobile_number: row.mobile_number };
+  return { email: row.email, role: row.role };
 }

@@ -6,12 +6,10 @@ import { replaceFlowNodes } from "../../src/db/ivrNodes";
 const STAFF: import("../../src/access/requireStaffUser").StaffUser = {
   email: "tech@example.com",
   role: "staff",
-  mobile_number: null,
 };
 const ADMIN: import("../../src/access/requireStaffUser").StaffUser = {
   email: "admin@example.com",
   role: "admin",
-  mobile_number: null,
 };
 
 function putRequest(body: unknown): Request {

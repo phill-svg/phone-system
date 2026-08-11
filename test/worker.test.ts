@@ -1,6 +1,7 @@
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import worker from "../src/worker";
+import { setCallBlocklist } from "../src/db/settings";
 
 describe("worker health check", () => {
   it("responds 200 ok on GET /health", async () => {
@@ -64,6 +65,28 @@ describe("POST /webhooks/twilio", () => {
 
     const row = await env.DB.prepare("SELECT id FROM calls WHERE id = ?").bind("CA-xyz").first();
     expect(row).toBeTruthy();
+  });
+
+  it("rejects a call from a blocklisted number before it reaches the CallSession DO", async () => {
+    env.TWILIO_AUTH_TOKEN = "test-auth-token";
+    await setCallBlocklist(env.DB, ["+61400000099"]);
+    const url = "https://example.com/webhooks/twilio";
+    const params = { CallSid: "CA_blocked", From: "+61400000099", To: "+61899999999" };
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+
+    const response = await SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("<Reject/>");
+
+    const call = await env.DB.prepare("SELECT 1 FROM calls WHERE id = ?").bind("CA_blocked").first();
+    expect(call).toBeNull();
+
+    await env.DB.prepare("DELETE FROM settings").run();
   });
 });
 
@@ -354,112 +377,6 @@ describe("Task 8 queue/ring webhook routes", () => {
   });
 });
 
-describe("Task 11 outbound click-to-call webhook routes", () => {
-  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
-    const message =
-      url +
-      Object.keys(params)
-        .sort()
-        .map((key) => `${key}${params[key]}`)
-        .join("");
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(authToken),
-      { name: "HMAC", hash: "SHA-1" },
-      false,
-      ["sign"]
-    );
-    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
-    return btoa(String.fromCharCode(...new Uint8Array(signature)));
-  }
-
-  async function postSigned(url: string, params: Record<string, string>) {
-    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
-    return SELF.fetch(url, {
-      method: "POST",
-      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(params).toString(),
-    });
-  }
-
-  beforeEach(async () => {
-    await env.DB.prepare("DELETE FROM calls").run();
-  });
-
-  describe("POST /webhooks/twilio/click-to-call", () => {
-    it("rejects an invalid signature with 401", async () => {
-      const response = await SELF.fetch(
-        "https://example.com/webhooks/twilio/click-to-call?target=" + encodeURIComponent("+61400000099"),
-        {
-          method: "POST",
-          headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ CallSid: "CA-c2c-1" }).toString(),
-        }
-      );
-      expect(response.status).toBe(401);
-    });
-
-    it("returns 400 when the target query param is missing (even with a valid signature)", async () => {
-      const response = await postSigned("https://example.com/webhooks/twilio/click-to-call", {
-        CallSid: "CA-c2c-1",
-      });
-      expect(response.status).toBe(400);
-      expect(await response.text()).toBe("missing target");
-    });
-
-    it("renders a <Dial><Number callerId> bridging to the decoded target", async () => {
-      const response = await postSigned(
-        "https://example.com/webhooks/twilio/click-to-call?target=" + encodeURIComponent("+61400000099"),
-        { CallSid: "CA-c2c-1" }
-      );
-      expect(response.status).toBe(200);
-      expect(response.headers.get("Content-Type")).toBe("text/xml");
-      const xml = await response.text();
-      expect(xml).toContain(`<Number callerId="${env.TWILIO_FROM_NUMBER}">+61400000099</Number>`);
-      expect(xml).toContain("<Dial ");
-      expect(xml).toContain('record="record-from-answer-dual"');
-      expect(xml).toContain("recordingStatusCallback=\"https://example.com/webhooks/twilio/recording-status-outbound\"");
-    });
-  });
-
-  describe("POST /webhooks/twilio/recording-status-outbound", () => {
-    it("rejects an invalid signature with 401", async () => {
-      const response = await SELF.fetch("https://example.com/webhooks/twilio/recording-status-outbound", {
-        method: "POST",
-        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          CallSid: "CA-out-rec-1",
-          RecordingUrl: "https://api.twilio.com/rec.mp3",
-          RecordingSid: "RE1",
-        }).toString(),
-      });
-      expect(response.status).toBe(401);
-    });
-
-    it("writes the recording url/sid matched directly by params.CallSid (no query string)", async () => {
-      await env.DB.prepare(
-        "INSERT INTO calls (id, caller_number, called_number, started_at, direction) VALUES (?, ?, ?, ?, 'outbound')"
-      )
-        .bind("CA-out-rec-1", "+61200000000", "+61400000099", Date.now())
-        .run();
-
-      const response = await postSigned("https://example.com/webhooks/twilio/recording-status-outbound", {
-        CallSid: "CA-out-rec-1",
-        RecordingUrl: "https://api.twilio.com/out-rec.mp3",
-        RecordingSid: "RE999",
-      });
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("ok");
-
-      const row = await env.DB.prepare("SELECT recording_url, recording_sid FROM calls WHERE id = ?")
-        .bind("CA-out-rec-1")
-        .first<{ recording_url: string; recording_sid: string }>();
-      expect(row?.recording_url).toBe("https://api.twilio.com/out-rec.mp3");
-      expect(row?.recording_sid).toBe("RE999");
-    });
-  });
-});
-
 describe("GET /api/me and /api/calls*", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM call_events").run();
@@ -472,7 +389,6 @@ describe("GET /api/me and /api/calls*", () => {
     expect(await response.json()).toEqual({
       email: "phill@tcbpestcontrolcanberra.com.au",
       role: "admin",
-      mobile_number: null,
     });
   });
 
@@ -564,19 +480,19 @@ describe("GET/PUT /api/settings/*", () => {
     expect(await getResponse.json()).toEqual(schedule);
   });
 
-  it("GET /api/settings/staff-ring-list returns an empty list by default", async () => {
-    const response = await SELF.fetch("https://example.com/api/settings/staff-ring-list");
+  it("GET /api/settings/call-blocklist returns an empty list by default", async () => {
+    const response = await SELF.fetch("https://example.com/api/settings/call-blocklist");
     expect(await response.json()).toEqual([]);
   });
 
-  it("PUT /api/settings/staff-ring-list saves entries", async () => {
-    const list = [{ label: "Phill", number: "+61400000000" }];
-    await SELF.fetch("https://example.com/api/settings/staff-ring-list", {
+  it("PUT /api/settings/call-blocklist saves entries", async () => {
+    const list = ["+61400000000"];
+    await SELF.fetch("https://example.com/api/settings/call-blocklist", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(list),
     });
-    const getResponse = await SELF.fetch("https://example.com/api/settings/staff-ring-list");
+    const getResponse = await SELF.fetch("https://example.com/api/settings/call-blocklist");
     expect(await getResponse.json()).toEqual(list);
   });
 
@@ -629,16 +545,16 @@ describe("GET/PUT /api/settings/*", () => {
     expect(putResponse.status).toBe(400);
   });
 
-  it("PUT /api/settings/staff-ring-list rejects an entry missing a number field", async () => {
-    const malformed = [{ label: "Phill" }];
-    const putResponse = await SELF.fetch("https://example.com/api/settings/staff-ring-list", {
+  it("PUT /api/settings/call-blocklist rejects an array containing a non-string", async () => {
+    const malformed = ["+61400000000", 5];
+    const putResponse = await SELF.fetch("https://example.com/api/settings/call-blocklist", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(malformed),
     });
     expect(putResponse.status).toBe(400);
 
-    const getResponse = await SELF.fetch("https://example.com/api/settings/staff-ring-list");
+    const getResponse = await SELF.fetch("https://example.com/api/settings/call-blocklist");
     expect(await getResponse.json()).toEqual([]);
   });
 });
@@ -704,13 +620,13 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
 });
 
 describe("GET /admin/settings", () => {
-  it("renders the business hours form with current values and the ring list editor", async () => {
+  it("renders the business hours form with current values and the call blocklist editor", async () => {
     const response = await SELF.fetch("https://example.com/admin/settings");
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('id="business-hours-form"');
     expect(html).toContain('value="07:00"');
-    expect(html).toContain('id="ring-list-form"');
+    expect(html).toContain('id="blocklist-form"');
   });
 });
 

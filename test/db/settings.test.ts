@@ -1,6 +1,13 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { getBusinessHours, setBusinessHours, getStaffRingList, setStaffRingList } from "../../src/db/settings";
+import {
+  getBusinessHours,
+  setBusinessHours,
+  getStaffRingList,
+  setStaffRingList,
+  getCallBlocklist,
+  setCallBlocklist,
+} from "../../src/db/settings";
 
 describe("settings.businessHours", () => {
   beforeEach(async () => {
@@ -55,5 +62,20 @@ describe("settings.staffRingList", () => {
     ];
     await setStaffRingList(env.DB, list);
     expect(await getStaffRingList(env.DB)).toEqual(list);
+  });
+});
+
+describe("call blocklist", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM settings").run();
+  });
+
+  it("returns an empty array when nothing is set", async () => {
+    expect(await getCallBlocklist(env.DB)).toEqual([]);
+  });
+
+  it("round-trips a saved list", async () => {
+    await setCallBlocklist(env.DB, ["+61400000000", "+61400000001"]);
+    expect(await getCallBlocklist(env.DB)).toEqual(["+61400000000", "+61400000001"]);
   });
 });

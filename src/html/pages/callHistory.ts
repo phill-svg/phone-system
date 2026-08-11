@@ -37,28 +37,9 @@ export function renderCallHistoryPage(calls: CallSummary[]): string {
     )
     .join("");
   const body = `<h2>Call History</h2>
-    <form class="settings-form" id="dialer-form">
-      <h3>Call a number</h3>
-      <input type="text" id="dialer-number" placeholder="+61...">
-      <button type="submit">Call</button>
-      <span id="dialer-status"></span>
-    </form>
     <table>
       <thead><tr><th>Started</th><th>Caller</th><th>Outcome</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="4">No calls yet.</td></tr>'}</tbody>
-    </table>
-    <script>
-      document.getElementById('dialer-form').addEventListener('submit', async function (e) {
-        e.preventDefault();
-        const status = document.getElementById('dialer-status');
-        const to = document.getElementById('dialer-number').value;
-        const res = await fetch('/api/calls/outbound', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: to }),
-        });
-        status.textContent = res.ok ? 'Calling...' : 'Failed to place call.';
-      });
-    </script>`;
+    </table>`;
   return renderLayout("Call History", "calls", body);
 }

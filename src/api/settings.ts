@@ -1,6 +1,5 @@
 import { jsonResponse } from "./respond";
-import { getBusinessHours, getStaffRingList, setBusinessHours, setStaffRingList } from "../db/settings";
-import type { StaffRingEntry } from "../db/settings";
+import { getBusinessHours, getCallBlocklist, setBusinessHours, setCallBlocklist } from "../db/settings";
 import type { BusinessHoursSchedule, DayWindow } from "../ivr/businessHours";
 import type { StaffUser } from "../access/requireStaffUser";
 
@@ -27,15 +26,8 @@ function isBusinessHoursSchedule(value: unknown): value is BusinessHoursSchedule
   return DAY_KEYS.every((day) => Object.prototype.hasOwnProperty.call(schedule, day) && isDayWindow(schedule[day]));
 }
 
-function isStaffRingList(value: unknown): value is StaffRingEntry[] {
-  if (!Array.isArray(value)) return false;
-  return value.every((entry) => {
-    if (typeof entry !== "object" || entry === null) return false;
-    const item = entry as Record<string, unknown>;
-    if (typeof item.label !== "string" || typeof item.number !== "string") return false;
-    if ("isOnCall" in item && typeof item.isOnCall !== "boolean") return false;
-    return true;
-  });
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string");
 }
 
 function forbiddenUnlessAdmin(staff: StaffUser): Response | null {
@@ -67,11 +59,11 @@ export async function handlePutBusinessHours(request: Request, db: D1Database, s
   return jsonResponse({ ok: true });
 }
 
-export async function handleGetStaffRingList(db: D1Database): Promise<Response> {
-  return jsonResponse(await getStaffRingList(db));
+export async function handleGetCallBlocklist(db: D1Database): Promise<Response> {
+  return jsonResponse(await getCallBlocklist(db));
 }
 
-export async function handlePutStaffRingList(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
+export async function handlePutCallBlocklist(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
   const forbidden = forbiddenUnlessAdmin(staff);
   if (forbidden) return forbidden;
   let body: unknown;
@@ -80,9 +72,7 @@ export async function handlePutStaffRingList(request: Request, db: D1Database, s
   } catch {
     return INVALID_BODY_RESPONSE();
   }
-  if (!isStaffRingList(body)) {
-    return INVALID_BODY_RESPONSE();
-  }
-  await setStaffRingList(db, body);
+  if (!isStringArray(body)) return INVALID_BODY_RESPONSE();
+  await setCallBlocklist(db, body);
   return jsonResponse({ ok: true });
 }
