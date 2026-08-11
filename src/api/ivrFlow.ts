@@ -34,8 +34,8 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
 }
 
-// One small validator per node type, matching the isStaffRingList/isBusinessHoursSchedule
-// discriminated-validator style already used in src/api/settings.ts.
+// One small validator per node type, matching the discriminated-validator style already used
+// in src/api/settings.ts.
 function isBusinessHoursConfig(c: Record<string, unknown>): boolean {
   return isNonEmptyString(c.openNextNodeId) && isNonEmptyString(c.closedNextNodeId);
 }
