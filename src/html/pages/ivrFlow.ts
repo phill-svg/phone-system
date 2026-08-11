@@ -53,6 +53,16 @@ export function renderIvrFlowPage(
         position: relative; left: auto; right: auto; top: auto; margin: 0;
         width: 9px; height: 9px; background: #fff; border: 2px solid #9aa4b2; opacity: 1; border-radius: 50%;
       }
+      /* Drawflow renders one .output marker PER OUTPUT PORT along a node's bottom edge (e.g. 5
+         for the 5-branch Menu gather), spaced a few px apart. applyOrthogonalConnections (see
+         script below) already collapses those branches' rendered LINES onto one shared trunk-x,
+         but it can't move these separate static markers -- left visible, they'd sit as a stray
+         row of unconnected-looking dots along the bottom edge, exactly the "spider" look the
+         single-trunk fix is meant to remove. Hiding them is safe: the trunk's own junction dot
+         (an <circle class="ivr-bend-dot"> the script adds at the actual bend, not at the card
+         edge) is what carries that marker in the reference instead. .input stays visible --
+         the reference does show a dot at each card's top/entry point. */
+      .drawflow .drawflow-node .output { opacity: 0; }
       /* Aircall's real flow editor draws crisp, mostly-orthogonal (right-angle) connector lines
          with small hollow "junction dot" markers at bend points, in a thin light gray -- nothing
          like Drawflow's default thick blue Bezier curves. We don't fork Drawflow to draw real
