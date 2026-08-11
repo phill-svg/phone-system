@@ -1,11 +1,24 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setBusinessHours, setStaffRingList, type StaffRingEntry } from "../../src/db/settings";
+import { setBusinessHours } from "../../src/db/settings";
 import { createAudioAsset } from "../../src/db/audioAssets";
 import type { CallSession } from "../../src/durable-objects/CallSession";
+import type { RingNodeTarget } from "../../src/dial/ringQueue";
 
 const ORIGIN = "https://tcb-voip.example.workers.dev";
 const NOW = Date.now();
+
+// A schedule open every day, all day -- so presence resolution never fails on business hours,
+// regardless of when (or in which timezone) the test suite actually runs.
+const STAFF_OPEN_SCHEDULE = JSON.stringify({
+  mon: { open: "00:00", close: "23:59" },
+  tue: { open: "00:00", close: "23:59" },
+  wed: { open: "00:00", close: "23:59" },
+  thu: { open: "00:00", close: "23:59" },
+  fri: { open: "00:00", close: "23:59" },
+  sat: { open: "00:00", close: "23:59" },
+  sun: { open: "00:00", close: "23:59" },
+});
 
 // --- node seeding (D1 is NOT reset between tests in this pool; beforeEach clears ivr_nodes) ---
 async function seedNode(node: {
@@ -43,7 +56,7 @@ async function seedEntryGather(opts: {
 }
 
 async function seedRing(id: string, opts: {
-  target?: "all" | "on_call_only";
+  target?: RingNodeTarget;
   strategy?: "cascade" | "simultaneous";
   noAnswerNextNodeId: string;
 }): Promise<void> {
@@ -170,6 +183,7 @@ describe("CallSession", () => {
     await env.DB.prepare("DELETE FROM calls").run();
     await env.DB.prepare("DELETE FROM ivr_nodes").run();
     await env.DB.prepare("DELETE FROM ivr_audio_assets").run();
+    await env.DB.prepare("DELETE FROM staff_users").run();
     await setBusinessHours(env.DB, {
       mon: { open: "00:00", close: "23:59" },
       tue: { open: "00:00", close: "23:59" },
@@ -196,15 +210,23 @@ describe("CallSession", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  async function setRingList(entries: StaffRingEntry[]) {
-    await setStaffRingList(env.DB, entries);
+  // Seeds a staff_users row that resolves to "available" right now: status='available', a
+  // schedule open all day every day, and a fresh heartbeat. Pass available:false for a staff
+  // member who exists but should NOT currently resolve as a ring target (e.g. "on hold").
+  async function seedStaff(email: string, opts: { available?: boolean } = {}): Promise<void> {
+    const available = opts.available ?? true;
+    await env.DB.prepare(
+      "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at) VALUES (?, 'staff', ?, ?, ?, ?)"
+    )
+      .bind(email, NOW, available ? "available" : "away", STAFF_OPEN_SCHEDULE, available ? Date.now() : null)
+      .run();
   }
 
   it("first webhook answers with the entry gather prompt + <Gather> pointed at the main webhook", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+    await seedStaff("phill@b.com");
 
     const stub = stubFor("CA-smoke");
     const { status, xml } = await send(stub, mainEvent("CA-smoke"));
@@ -227,7 +249,7 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+    await seedStaff("phill@b.com");
 
     const stub = stubFor("CA-enq");
     await send(stub, mainEvent("CA-enq"));
@@ -235,20 +257,20 @@ describe("CallSession", () => {
 
     expect(xml).toContain("<Enqueue");
     expect(xml).toContain("CA-enq"); // per-call queue name
-    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
   });
 
   it("full bridge: enqueue → agent_answer renders <Dial><Queue> → queue_left(bridged) completes the call", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+    await seedStaff("phill@b.com");
 
     const stub = stubFor("CA-bridge");
     await send(stub, mainEvent("CA-bridge"));
     await send(stub, mainEvent("CA-bridge", { digits: "1" }));
 
-    const answer = await send(stub, agentAnswer("CA-bridge", "sid-+61411111111"));
+    const answer = await send(stub, agentAnswer("CA-bridge", "sid-client:phill@b.com"));
     expect(answer.xml).toContain("<Dial");
     expect(answer.xml).toContain("<Queue>CA-bridge</Queue>");
 
@@ -267,24 +289,22 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([
-      { label: "Phill", number: "+61411111111" },
-      { label: "Sam", number: "+61422222222" },
-    ]);
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
 
     const stub = stubFor("CA-cascade");
     await send(stub, mainEvent("CA-cascade"));
     await send(stub, mainEvent("CA-cascade", { digits: "1" }));
 
     // Only the first number is dialed initially (cascade).
-    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
 
     // First leg fails → second number is now dialed.
-    await send(stub, agentStatus("CA-cascade", "sid-+61411111111", "no-answer"));
-    expect(outboundDials(fetchMock)).toEqual(["+61411111111", "+61422222222"]);
+    await send(stub, agentStatus("CA-cascade", "sid-client:phill@b.com", "no-answer"));
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com", "client:sam@b.com"]);
 
     // Second leg answers → bridges.
-    const answer = await send(stub, agentAnswer("CA-cascade", "sid-+61422222222"));
+    const answer = await send(stub, agentAnswer("CA-cascade", "sid-client:sam@b.com"));
     expect(answer.xml).toContain("<Dial");
 
     const left = await send(stub, queueLeft("CA-cascade"));
@@ -297,11 +317,9 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([
-      { label: "Phill", number: "+61411111111" },
-      { label: "Sam", number: "+61422222222" },
-      { label: "Jo", number: "+61433333333" },
-    ]);
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await seedStaff("jo@b.com");
 
     const stub = stubFor("CA-simul");
     await send(stub, mainEvent("CA-simul"));
@@ -309,24 +327,22 @@ describe("CallSession", () => {
 
     expect(xml).toContain("<Enqueue");
     expect(outboundDials(fetchMock).sort()).toEqual(
-      ["+61411111111", "+61422222222", "+61433333333"].sort()
+      ["client:phill@b.com", "client:sam@b.com", "client:jo@b.com"].sort()
     );
 
     // First leg answers → the other two are cancelled.
-    const answer = await send(stub, agentAnswer("CA-simul", "sid-+61411111111"));
+    const answer = await send(stub, agentAnswer("CA-simul", "sid-client:phill@b.com"));
     expect(answer.xml).toContain("<Dial");
     expect(cancelHits(fetchMock).length).toBe(2);
   });
 
   it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {
     await seedEntryGather({ option1: "main_ring_emergency", defaultNextNodeId: "main_vm" });
-    await seedRing("main_ring_emergency", { target: "on_call_only", noAnswerNextNodeId: "main_vm" });
+    await seedRing("main_ring_emergency", { target: ["phill@b.com", "sam@b.com"], noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    // Staff exist but none are on call.
-    await setRingList([
-      { label: "Phill", number: "+61411111111", isOnCall: false },
-      { label: "Sam", number: "+61422222222", isOnCall: false },
-    ]);
+    // Staff exist but none are currently available.
+    await seedStaff("phill@b.com", { available: false });
+    await seedStaff("sam@b.com", { available: false });
 
     const stub = stubFor("CA-emerg");
     await send(stub, mainEvent("CA-emerg"));
@@ -342,7 +358,7 @@ describe("CallSession", () => {
     await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+    await seedStaff("phill@b.com");
 
     const stub = stubFor("CA-cb");
     await send(stub, mainEvent("CA-cb"));
@@ -372,7 +388,7 @@ describe("CallSession", () => {
     await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+    await seedStaff("phill@b.com");
 
     const stub = stubFor("CA-hold");
     await send(stub, mainEvent("CA-hold"));
@@ -387,14 +403,14 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+    await seedStaff("phill@b.com");
 
     const stub = stubFor("CA-noans");
     await send(stub, mainEvent("CA-noans"));
     await send(stub, mainEvent("CA-noans", { digits: "1" }));
 
     // The only staff leg fails → cascade exhausts → DONE{no_answer}.
-    await send(stub, agentStatus("CA-noans", "sid-+61411111111", "no-answer"));
+    await send(stub, agentStatus("CA-noans", "sid-client:phill@b.com", "no-answer"));
 
     const left = await send(stub, queueLeft("CA-noans", "leave"));
     expect(left.xml).toContain("<Record"); // fell through to voicemail
@@ -404,10 +420,8 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([
-      { label: "Phill", number: "+61411111111" },
-      { label: "Sam", number: "+61422222222" },
-    ]);
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
 
     const stub = stubFor("CA-simul-noans");
     await send(stub, mainEvent("CA-simul-noans"));
@@ -415,8 +429,8 @@ describe("CallSession", () => {
     expect(outboundDials(fetchMock).length).toBe(2);
 
     // Both legs fail individually; the second failure empties attemptSids → EXHAUSTED → DONE{no_answer}.
-    await send(stub, agentStatus("CA-simul-noans", "sid-+61411111111", "no-answer"));
-    await send(stub, agentStatus("CA-simul-noans", "sid-+61422222222", "busy"));
+    await send(stub, agentStatus("CA-simul-noans", "sid-client:phill@b.com", "no-answer"));
+    await send(stub, agentStatus("CA-simul-noans", "sid-client:sam@b.com", "busy"));
 
     // Hold poll now sees a non-DIALING plan and tells the caller to leave the queue.
     const poll = await send(stub, {
@@ -434,7 +448,7 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm", retryLimit: 0 });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "3 after-hours");
-    await setRingList([{ label: "Phill", number: "+61411111111" }]);
+    await seedStaff("phill@b.com");
 
     const stub = stubFor("CA-vm");
     await send(stub, mainEvent("CA-vm"));
@@ -544,12 +558,10 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([
-      { label: "Phill", number: "+61411111111" },
-      { label: "Sam", number: "+61422222222" },
-    ]);
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
     // First number dials OK, second throws mid-batch.
-    failCreateFor("+61422222222");
+    failCreateFor("client:sam@b.com");
 
     const stub = stubFor("CA-dialfail");
     await send(stub, mainEvent("CA-dialfail"));
@@ -563,7 +575,7 @@ describe("CallSession", () => {
     // Exactly the one successfully-created leg was cancelled.
     const cancels = cancelHits(fetchMock);
     expect(cancels.length).toBe(1);
-    expect(cancels[0]).toContain("sid-+61411111111");
+    expect(cancels[0]).toContain("sid-client:phill@b.com");
 
     // No activeRing was persisted (the whole batch failed), so a later hold poll just leaves.
     const poll = await send(stub, {
@@ -578,21 +590,19 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([
-      { label: "Phill", number: "+61411111111" },
-      { label: "Sam", number: "+61422222222" },
-    ]);
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
     // The first (cascade) number dials OK; the second (the cascade advance) throws.
-    failCreateFor("+61422222222");
+    failCreateFor("client:sam@b.com");
 
     const stub = stubFor("CA-cascade-dialfail");
     await send(stub, mainEvent("CA-cascade-dialfail"));
     const enq = await send(stub, mainEvent("CA-cascade-dialfail", { digits: "1" }));
     expect(enq.xml).toContain("<Enqueue"); // first leg dialed OK → caller enqueued
-    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
 
     // First leg fails → attempt to dial the second throws → plan should transition to no_answer.
-    const s = await send(stub, agentStatus("CA-cascade-dialfail", "sid-+61411111111", "no-answer"));
+    const s = await send(stub, agentStatus("CA-cascade-dialfail", "sid-client:phill@b.com", "no-answer"));
     expect(s.status).toBe(200);
 
     // No stale DIALING state waiting on a phantom leg: hold poll now sees non-DIALING → <Leave/>.
@@ -612,19 +622,17 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
-    await setRingList([
-      { label: "Phill", number: "+61411111111" },
-      { label: "Sam", number: "+61422222222" },
-    ]);
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
 
     const stub = stubFor("CA-dup");
     await send(stub, mainEvent("CA-dup"));
     await send(stub, mainEvent("CA-dup", { digits: "1" }));
-    expect(outboundDials(fetchMock)).toEqual(["+61411111111"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
 
     // First delivery: first leg fails → second number dialed.
-    await send(stub, agentStatus("CA-dup", "sid-+61411111111", "no-answer"));
-    expect(outboundDials(fetchMock)).toEqual(["+61411111111", "+61422222222"]);
+    await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com", "no-answer"));
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com", "client:sam@b.com"]);
 
     // Snapshot state directly from DO storage after the first (legitimate) delivery.
     const before = await runInDurableObject(stub, async (instance) =>
@@ -633,8 +641,8 @@ describe("CallSession", () => {
     const dialsAfterFirst = outboundDials(fetchMock).length;
     const cancelsAfterFirst = cancelHits(fetchMock).length;
 
-    // Duplicate delivery of the SAME terminal event for sid-+61411111111 (already removed).
-    const dup = await send(stub, agentStatus("CA-dup", "sid-+61411111111", "no-answer"));
+    // Duplicate delivery of the SAME terminal event for sid-client:phill@b.com (already removed).
+    const dup = await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com", "no-answer"));
     expect(dup.status).toBe(200);
 
     // No extra dial or cancel triggered by the duplicate, and stored state is byte-identical.

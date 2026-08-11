@@ -1,43 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
+import { env } from "cloudflare:test";
 import { resolveRingTargets } from "../../src/dial/ringQueue";
-import type { StaffRingEntry } from "../../src/db/settings";
+
+const NOW = new Date("2026-08-10T00:00:00.000Z"); // Mon 10:00 Australia/Sydney
+const OPEN_SCHEDULE = JSON.stringify({
+  mon: { open: "09:00", close: "17:00" }, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+});
+
+async function insertStaff(email: string, status: string, heartbeatAt: number | null) {
+  await env.DB.prepare(
+    "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at) VALUES (?, 'staff', ?, ?, ?, ?)"
+  )
+    .bind(email, Date.now(), status, OPEN_SCHEDULE, heartbeatAt)
+    .run();
+}
 
 describe("resolveRingTargets", () => {
-  const mixedList: StaffRingEntry[] = [
-    { label: "Phill (mobile)", number: "+61400000000", isOnCall: true },
-    { label: "Backup", number: "+61400000001", isOnCall: false },
-    { label: "No isOnCall field", number: "+61400000002" },
-  ];
-
-  it('target:"all" returns every number regardless of isOnCall', () => {
-    expect(resolveRingTargets("all", mixedList)).toEqual([
-      "+61400000000",
-      "+61400000001",
-      "+61400000002",
-    ]);
+  beforeEach(async () => {
+    await env.DB.exec("DELETE FROM staff_users");
   });
 
-  it('target:"on_call_only" returns only entries where isOnCall === true', () => {
-    expect(resolveRingTargets("on_call_only", mixedList)).toEqual(["+61400000000"]);
+  it("'all' resolves to every currently-available staff member, as client identities", async () => {
+    await insertStaff("a@b.com", "available", NOW.getTime());
+    await insertStaff("c@b.com", "offline", NOW.getTime());
+    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:a@b.com"]);
   });
 
-  it('target:"on_call_only" with zero on-call entries returns [] (not an error, not undefined)', () => {
-    const noneOnCall: StaffRingEntry[] = [
-      { label: "Backup", number: "+61400000001", isOnCall: false },
-      { label: "No isOnCall field", number: "+61400000002" },
-    ];
-    const result = resolveRingTargets("on_call_only", noneOnCall);
-    expect(result).toEqual([]);
-    expect(result).not.toBeUndefined();
+  it("a specific staff list only considers those staff, filtered by availability", async () => {
+    await insertStaff("a@b.com", "available", NOW.getTime());
+    await insertStaff("b@b.com", "available", NOW.getTime());
+    expect(await resolveRingTargets(env.DB, ["a@b.com"], NOW)).toEqual(["client:a@b.com"]);
   });
 
-  it("empty ringList input returns [] for both targets", () => {
-    expect(resolveRingTargets("all", [])).toEqual([]);
-    expect(resolveRingTargets("on_call_only", [])).toEqual([]);
-  });
-
-  it("an entry with isOnCall omitted (undefined, not false) is treated as NOT on-call", () => {
-    const list: StaffRingEntry[] = [{ label: "No isOnCall field", number: "+61400000002" }];
-    expect(resolveRingTargets("on_call_only", list)).toEqual([]);
+  it("returns an empty array when nobody targeted is available", async () => {
+    await insertStaff("a@b.com", "away", NOW.getTime());
+    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual([]);
   });
 });

@@ -113,14 +113,14 @@ VALUES (
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );
 
--- After-hours emergency ring node (target on-call staff only)
+-- After-hours emergency ring node (ring whoever currently resolves as available)
 INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at)
 VALUES (
   'after_hours_ring_emergency',
   'after_hours',
   0,
   'ring',
-  json('{"target": "on_call_only", "strategy": "cascade", "timeoutSeconds": 20, "noAnswerNextNodeId": "shared_voicemail"}'),
+  json('{"target": "all", "strategy": "cascade", "timeoutSeconds": 20, "noAnswerNextNodeId": "shared_voicemail"}'),
   CAST(strftime('%s', 'now') AS INTEGER) * 1000,
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );

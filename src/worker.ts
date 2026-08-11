@@ -18,6 +18,7 @@ import { getCallDetail, listCalls, listLiveCalls } from "./db/calls";
 import { getBusinessHours, getCallBlocklist } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { listAudioAssets } from "./db/audioAssets";
+import { getStaffRoster } from "./db/staff";
 import { listOpenCallbackRequests } from "./db/callbackRequests";
 export { CallSession } from "./durable-objects/CallSession";
 
@@ -459,11 +460,16 @@ export default {
       if (ivrAdminMatch) {
         try {
           const flow = decodeURIComponent(ivrAdminMatch[1]);
-          const [nodes, audioAssets] = await Promise.all([listNodesForFlow(env.DB, flow), listAudioAssets(env.DB)]);
+          const [nodes, audioAssets, staffRoster] = await Promise.all([
+            listNodesForFlow(env.DB, flow),
+            listAudioAssets(env.DB),
+            getStaffRoster(env.DB),
+          ]);
           const html = renderIvrFlowPage(
             flow,
             nodes,
-            audioAssets.map((a) => ({ id: a.id, label: a.label }))
+            audioAssets.map((a) => ({ id: a.id, label: a.label })),
+            staffRoster.map((s) => s.email)
           );
           return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
         } catch (e) {

@@ -136,13 +136,13 @@ describe("IVR flow seeding", () => {
       expect(node?.type).toBe("ring");
     });
 
-    it("emergency ring node targets on_call_only", async () => {
+    it("emergency ring node targets all (available) staff", async () => {
       const node = await env.DB.prepare(
         "SELECT config FROM ivr_nodes WHERE id = 'after_hours_ring_emergency'"
       ).first<{ config: string }>();
 
       const config = JSON.parse(node?.config || "{}");
-      expect(config.target).toBe("on_call_only");
+      expect(config.target).toBe("all");
     });
 
     it("emergency ring node points to voicemail on no-answer", async () => {

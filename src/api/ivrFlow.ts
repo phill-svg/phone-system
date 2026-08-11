@@ -30,6 +30,10 @@ function isGatherOptions(value: unknown): value is { digit: string; nextNodeId: 
   );
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
 // One small validator per node type, matching the isStaffRingList/isBusinessHoursSchedule
 // discriminated-validator style already used in src/api/settings.ts.
 function isBusinessHoursConfig(c: Record<string, unknown>): boolean {
@@ -52,7 +56,7 @@ function isGatherConfig(c: Record<string, unknown>): boolean {
 
 function isRingConfig(c: Record<string, unknown>): boolean {
   return (
-    (c.target === "all" || c.target === "on_call_only") &&
+    (c.target === "all" || isStringArray(c.target)) &&
     (c.strategy === "cascade" || c.strategy === "simultaneous") &&
     typeof c.timeoutSeconds === "number" &&
     isNonEmptyString(c.noAnswerNextNodeId)

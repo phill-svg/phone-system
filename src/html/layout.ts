@@ -48,7 +48,6 @@ export function renderLayout(
   .placeholder button { cursor: not-allowed; opacity: 0.6; }
   form.settings-form label { display: block; margin-bottom: 0.75rem; }
   form.settings-form input { margin-left: 0.5rem; }
-  .ring-entry { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
 </style>
 ${opts?.extraHead ?? ""}
 </head>

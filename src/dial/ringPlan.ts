@@ -109,9 +109,9 @@ export function reduceRingPlan(state: RingPlanState | null, event: RingPlanEvent
 
 function startPlan(event: { type: "START"; strategy: RingStrategy; numbers: string[] }): ReduceResult {
   if (event.numbers.length === 0) {
-    // Mirrors resolveRingTargets' contract (Task 6): an empty ring list (e.g. an emergency ring
-    // node targeting on_call_only with nobody currently on call) falls through cleanly to
-    // "no answer", never throws.
+    // Mirrors resolveRingTargets' contract (Task 6): an empty ring list (e.g. a ring node
+    // targeting specific staff, none of whom currently resolve as available) falls through
+    // cleanly to "no answer", never throws.
     return { state: { name: "DONE", outcome: "no_answer" }, commands: [{ type: "NO_ANSWER" }] };
   }
 

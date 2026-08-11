@@ -133,7 +133,7 @@ describe("handlePutFlow", () => {
     expect(response.status).toBe(400);
   });
 
-  it("returns 400 when a ring node's target is not 'all' or 'on_call_only'", async () => {
+  it("returns 400 when a ring node's target is neither 'all' nor a string array", async () => {
     const response = await handlePutFlow(
       putRequest({
         entryNodeId: "n1",
@@ -142,6 +142,44 @@ describe("handlePutFlow", () => {
             id: "n1",
             type: "ring",
             config: { target: "everyone", strategy: "cascade", timeoutSeconds: 20, noAnswerNextNodeId: "n1" },
+          },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("accepts a ring node targeting a specific list of staff emails", async () => {
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "n1",
+        nodes: [
+          {
+            id: "n1",
+            type: "ring",
+            config: { target: ["a@b.com"], strategy: "cascade", timeoutSeconds: 20, noAnswerNextNodeId: "n1" },
+          },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 400 when a ring node's target array contains a non-string entry", async () => {
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "n1",
+        nodes: [
+          {
+            id: "n1",
+            type: "ring",
+            config: { target: [123], strategy: "cascade", timeoutSeconds: 20, noAnswerNextNodeId: "n1" },
           },
         ],
       }),

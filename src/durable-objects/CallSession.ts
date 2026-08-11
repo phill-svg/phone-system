@@ -15,7 +15,7 @@ import {
   type RingStrategy,
 } from "../dial/ringPlan";
 import { createOutboundCall, cancelCall } from "../twilio/restClient";
-import { getBusinessHours, getStaffRingList } from "../db/settings";
+import { getBusinessHours } from "../db/settings";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { getAudioAsset } from "../db/audioAssets";
 import { isWithinBusinessHours } from "../ivr/businessHours";
@@ -221,7 +221,7 @@ export class CallSession extends DurableObject<Env> {
     }
 
     const ringConfig = (await this.loadNodeConfig(ringNodeId)) as unknown as RingConfig;
-    const numbers = resolveRingTargets(ringConfig.target, await getStaffRingList(this.env.DB));
+    const numbers = await resolveRingTargets(this.env.DB, ringConfig.target, new Date());
 
     // Zero on-call numbers: skip the whole ring/enqueue dance and continue the flow from the
     // ring node's noAnswerNextNodeId (e.g. an emergency ring with nobody on call → voicemail).

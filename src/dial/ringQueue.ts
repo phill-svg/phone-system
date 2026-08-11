@@ -1,8 +1,10 @@
-import type { StaffRingEntry } from "../db/settings";
+import { getStaffRoster } from "../db/staff";
+import { isStaffAvailable } from "./presence";
 
-export type RingNodeTarget = "all" | "on_call_only";
+export type RingNodeTarget = "all" | string[];
 
-export function resolveRingTargets(target: RingNodeTarget, ringList: StaffRingEntry[]): string[] {
-  if (target === "all") return ringList.map((e) => e.number);
-  return ringList.filter((e) => e.isOnCall).map((e) => e.number);
+export async function resolveRingTargets(db: D1Database, target: RingNodeTarget, now: Date): Promise<string[]> {
+  const roster = await getStaffRoster(db);
+  const candidates = target === "all" ? roster : roster.filter((s) => target.includes(s.email));
+  return candidates.filter((s) => isStaffAvailable(s, now)).map((s) => `client:${s.email}`);
 }

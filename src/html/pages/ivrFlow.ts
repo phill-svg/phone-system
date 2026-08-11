@@ -18,7 +18,8 @@ const DRAWFLOW_JS_URL = `https://cdn.jsdelivr.net/npm/drawflow@${DRAWFLOW_VERSIO
 export function renderIvrFlowPage(
   flow: string,
   nodes: IvrNode[],
-  audioAssets: { id: string; label: string }[]
+  audioAssets: { id: string; label: string }[],
+  staffEmails: string[]
 ): string {
   const extraHead = `<link rel="stylesheet" href="${DRAWFLOW_CSS_URL}">
     <style>
@@ -85,6 +86,7 @@ export function renderIvrFlowPage(
       var FLOW = ${safeJsonForScript(flow)};
       var currentNodes = ${safeJsonForScript(nodes)};
       var audioAssets = ${safeJsonForScript(audioAssets)};
+      var staffEmails = ${safeJsonForScript(staffEmails)};
       var entryNodeId = (currentNodes.filter(function (n) { return n.isEntry; })[0] || {}).id || null;
       var editor = null;
       var drawflowIdToIvrId = {};
@@ -160,11 +162,15 @@ export function renderIvrFlowPage(
           '<label>Retry limit <input type="number" class="f-retryLimit" value="' + escAttr(config.retryLimit != null ? config.retryLimit : 3) + '"></label>' +
           '</div>';
 
+        var targetIsAll = config.target === 'all';
+        var targetList = Array.isArray(config.target) ? config.target : [];
+        var staffCheckboxesHtml = staffEmails.map(function (email) {
+          var checked = targetList.indexOf(email) !== -1 ? ' checked' : '';
+          return '<label style="font-weight:400;"><input type="checkbox" class="f-target-email" value="' + escAttr(email) + '"' + checked + '> ' + escText(email) + '</label>';
+        }).join('');
         html += '<div class="field-group" data-type="ring" style="display:' + (node.type === 'ring' ? 'block' : 'none') + '">' +
-          '<label>Target <select class="f-target">' +
-          '<option value="all"' + (config.target === 'all' ? ' selected' : '') + '>all</option>' +
-          '<option value="on_call_only"' + (config.target === 'on_call_only' ? ' selected' : '') + '>on_call_only</option>' +
-          '</select></label> ' +
+          '<label><input type="checkbox" class="f-target-all" onchange="toggleRingTargetList(this)"' + (targetIsAll ? ' checked' : '') + '> All available staff</label>' +
+          '<div class="f-target-list" style="display:' + (targetIsAll ? 'none' : 'block') + '">' + staffCheckboxesHtml + '</div>' +
           '<label>Strategy <select class="f-strategy">' +
           '<option value="cascade"' + (config.strategy === 'cascade' ? ' selected' : '') + '>cascade</option>' +
           '<option value="simultaneous"' + (config.strategy === 'simultaneous' ? ' selected' : '') + '>simultaneous</option>' +
@@ -187,6 +193,12 @@ export function renderIvrFlowPage(
           '</div>';
 
         return html;
+      }
+
+      function toggleRingTargetList(checkboxEl) {
+        var group = checkboxEl.closest('.field-group');
+        var list = group.querySelector('.f-target-list');
+        list.style.display = checkboxEl.checked ? 'none' : 'block';
       }
 
       function toggleFields(selectEl) {
@@ -246,7 +258,14 @@ export function renderIvrFlowPage(
           config.defaultNextNodeId = group.querySelector('.f-defaultNextNodeId').value.trim();
           config.retryLimit = Number(group.querySelector('.f-retryLimit').value) || 0;
         } else if (type === 'ring') {
-          config.target = group.querySelector('.f-target').value;
+          var allChecked = group.querySelector('.f-target-all').checked;
+          if (allChecked) {
+            config.target = 'all';
+          } else {
+            var checkedEmails = [];
+            group.querySelectorAll('.f-target-email:checked').forEach(function (cb) { checkedEmails.push(cb.value); });
+            config.target = checkedEmails;
+          }
           config.strategy = group.querySelector('.f-strategy').value;
           config.timeoutSeconds = Number(group.querySelector('.f-timeoutSeconds').value) || 0;
           config.noAnswerNextNodeId = group.querySelector('.f-noAnswerNextNodeId').value.trim();
@@ -395,7 +414,10 @@ export function renderIvrFlowPage(
           var n = Array.isArray(c.options) ? c.options.length : 0;
           return n + ' option' + (n === 1 ? '' : 's') + (c.ttsText ? ': ' + truncate(c.ttsText, 30) : '');
         }
-        if (node.type === 'ring') return 'Ring ' + (c.target === 'on_call_only' ? 'on-call staff' : 'all staff') + ' for ' + c.timeoutSeconds + 's (' + c.strategy + ')';
+        if (node.type === 'ring') {
+          var targetLabel = c.target === 'all' ? 'all available staff' : (Array.isArray(c.target) ? c.target.length + ' staff member' + (c.target.length === 1 ? '' : 's') : 'staff');
+          return 'Ring ' + targetLabel + ' for ' + c.timeoutSeconds + 's (' + c.strategy + ')';
+        }
         if (node.type === 'wait') return 'Hold experience' + (c.allowCallbackStar ? ' + callback (*)' : '');
         if (node.type === 'voicemail') return 'Mailbox: ' + (c.mailboxLabel || 'default');
         return '';
