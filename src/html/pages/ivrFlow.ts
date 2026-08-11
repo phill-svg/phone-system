@@ -24,6 +24,11 @@ export function renderIvrFlowPage(
   const extraHead = `<link rel="stylesheet" href="${DRAWFLOW_CSS_URL}">
     <style>
       #canvas-wrap { position: relative; height: calc(100vh - 64px); }
+      #add-node-btn {
+        position: absolute; top: 12px; left: 12px; z-index: 15; background: #1a3d2e; color: white;
+        border: none; border-radius: 6px; padding: 0.5rem 0.9rem; font-size: 0.85rem; font-weight: 600;
+        cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+      }
       #drawflow { width: 100%; height: 100%; background: #f8f9fa; background-image: radial-gradient(#e2e5ea 1px, transparent 1px); background-size: 16px 16px; }
       #cdn-error { display: none; padding: 1rem; background: #fde8e8; color: #9b1c1c; }
       /* Drawflow's own CSS lays a node out as a flex ROW (input on the left edge, content in the
@@ -132,6 +137,7 @@ export function renderIvrFlowPage(
 
   const body = `<div id="cdn-error">Could not load the flow editor library. Check your connection and reload the page.</div>
     <div id="canvas-wrap">
+      <button type="button" id="add-node-btn">+ Add node</button>
       <div id="drawflow"></div>
     </div>
     <div id="edit-panel">
@@ -220,12 +226,31 @@ export function renderIvrFlowPage(
           '</div>';
       }
 
-      // Same field-group markup as the old flat-card editor, minus the entry-radio/remove-node
-      // controls (Phase 1 has no canvas equivalent for those yet -- deferred to Phase 2).
-      function buildFieldsHtml(node) {
+      // Same field-group markup as the old flat-card editor, minus the remove-node control
+      // (Phase 1 has no canvas equivalent for that yet -- deferred to Phase 2). The entry
+      // checkbox below WAS on that deferred list too, but turned out load-bearing for the
+      // "+ Add node" feature: every non-voicemail node type requires a non-empty forward
+      // reference (see isPlayConfig/isGatherConfig/etc. in src/api/ivrFlow.ts), so building a
+      // flow up from zero nodes forces the very first addable node to be a bare voicemail (the
+      // only type with referencesForNode() === []) -- which then auto-becomes the entry (see
+      // openAddPanel/save-node-btn below), permanently stuck there with no way to move it to the
+      // greeting/menu node that should actually be the entry. This checkbox is the escape hatch:
+      // check it on any OTHER node to transfer entryNodeId to that node on the next save.
+      function buildFieldsHtml(node, isNew) {
         var config = node.config || {};
         var html = '';
-        html += '<label>ID <input type="text" id="panel-id-input" value="' + escAttr(node.id) + '" readonly></label> ';
+        html += '<label>ID <input type="text" id="panel-id-input" value="' + escAttr(node.id) + '"' + (isNew ? '' : ' readonly') + '></label> ';
+        // Checked+disabled in both cases where unchecking it would leave the flow with zero (or,
+        // for the not-yet-saved forced-first-node case, an about-to-be-wrong) entry nodes -- the
+        // server requires entryNodeId to match exactly one payload node (see handlePutFlow), so
+        // the only way to move entry off a node is to check this box on a DIFFERENT node instead,
+        // same "set a different node as the entry first" rule the delete-node handler already
+        // enforces below.
+        var isCurrentEntry = !isNew && node.id === entryNodeId;
+        var forcedFirstEntry = isNew && entryNodeId === null;
+        var entryLocked = isCurrentEntry || forcedFirstEntry;
+        html += '<label><input type="checkbox" id="panel-entry-checkbox"' + (entryLocked ? ' checked disabled' : '') + '> Entry node (call starts here)' +
+          (forcedFirstEntry ? ' -- automatic, this is the first node in the flow' : '') + '</label>';
         html += '<label>Type</label>' +
           '<div class="ivr-type-picker" id="panel-type-picker">' +
           '<button type="button" class="ivr-type-picker-btn" id="panel-type-picker-btn">' + typePickerBtnHtml(node.type) + '</button>' +
@@ -831,28 +856,77 @@ export function renderIvrFlowPage(
         });
       }
 
+      var addingNewNode = false;
+
       function openEditPanel(ivrId) {
         var node = currentNodes.filter(function (n) { return n.id === ivrId; })[0];
         if (!node) return;
         editingIvrId = ivrId;
+        addingNewNode = false;
         document.getElementById('save-status').textContent = '';
-        document.getElementById('edit-panel-fields').innerHTML = buildFieldsHtml(node);
+        document.getElementById('edit-panel-fields').innerHTML = buildFieldsHtml(node, false);
         document.getElementById('edit-panel').classList.add('open');
       }
+
+      // A blank starting point for a brand-new node -- 'play' is the simplest type to fill in
+      // (a message + where to go next), so it's a reasonable default rather than leaving every
+      // field empty against an arbitrary type.
+      function openAddPanel() {
+        editingIvrId = null;
+        addingNewNode = true;
+        document.getElementById('save-status').textContent = '';
+        var blank = { id: '', type: 'play', config: { audioAssetId: null, ttsText: '', nextNodeId: '' } };
+        document.getElementById('edit-panel-fields').innerHTML = buildFieldsHtml(blank, true);
+        document.getElementById('edit-panel').classList.add('open');
+      }
+
+      document.getElementById('add-node-btn').addEventListener('click', openAddPanel);
 
       document.getElementById('close-panel-btn').addEventListener('click', function () {
         document.getElementById('edit-panel').classList.remove('open');
         editingIvrId = null;
+        addingNewNode = false;
       });
 
       document.getElementById('save-node-btn').addEventListener('click', async function () {
-        if (!editingIvrId) return;
         var updated = collectNodeFromPanel();
-        var node = currentNodes.filter(function (n) { return n.id === editingIvrId; })[0];
-        node.type = updated.type;
-        node.config = updated.config;
-
         var status = document.getElementById('save-status');
+        var newId = null;
+        // Snapshot so a failed save can restore entryNodeId exactly, whether it moved via the
+        // forced-first-node auto-entry path below or via the entry checkbox.
+        var previousEntryNodeId = entryNodeId;
+        var entryCheckbox = document.getElementById('panel-entry-checkbox');
+
+        if (addingNewNode) {
+          newId = document.getElementById('panel-id-input').value.trim();
+          if (!newId) {
+            status.textContent = 'Enter an ID for the new node.';
+            return;
+          }
+          if (currentNodes.some(function (n) { return n.id === newId; })) {
+            status.textContent = 'A node with that ID already exists.';
+            return;
+          }
+          currentNodes.push({ id: newId, type: updated.type, config: updated.config, positionX: null, positionY: null });
+          // The very first node in an empty flow has to be the entry node -- the save API
+          // requires entryNodeId to match exactly one node in the payload, so an empty flow
+          // could never save its first node otherwise. For any later add, the checkbox (checked
+          // and disabled in the forced case, checkable otherwise -- see buildFieldsHtml) decides.
+          if (entryNodeId === null) {
+            entryNodeId = newId;
+          } else if (entryCheckbox && entryCheckbox.checked) {
+            entryNodeId = newId;
+          }
+        } else {
+          if (!editingIvrId) return;
+          var node = currentNodes.filter(function (n) { return n.id === editingIvrId; })[0];
+          node.type = updated.type;
+          node.config = updated.config;
+          if (entryCheckbox && entryCheckbox.checked) {
+            entryNodeId = editingIvrId;
+          }
+        }
+
         var payload = {
           entryNodeId: entryNodeId,
           nodes: currentNodes.map(function (n) {
@@ -864,13 +938,26 @@ export function renderIvrFlowPage(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        if (res.ok) {
+        if (!res.ok) {
+          // Roll back the optimistic local edit so a failed save doesn't leave currentNodes
+          // (or entryNodeId) out of sync with what's actually persisted.
+          if (addingNewNode) {
+            currentNodes = currentNodes.filter(function (n) { return n.id !== newId; });
+          }
+          entryNodeId = previousEntryNodeId;
+          var text = await res.text();
+          status.textContent = 'Failed to save: ' + text;
+          return;
+        }
+        if (addingNewNode) {
+          // A brand-new node changes the graph's topology (ranks/columns/trunk lines) --
+          // simplest and safest to let the next full page load recompute layout fresh, same
+          // reasoning as the delete-node reload.
+          location.reload();
+        } else {
           status.textContent = 'Saved.';
           document.getElementById('edit-panel').classList.remove('open');
           editingIvrId = null;
-        } else {
-          var text = await res.text();
-          status.textContent = 'Failed to save: ' + text;
         }
       });
 
