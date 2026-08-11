@@ -8,6 +8,7 @@ export function escapeHtml(value: string): string {
 }
 
 const NAV_ITEMS = [
+  { href: "/admin/phone", label: "Phone", key: "phone" },
   { href: "/admin/live", label: "Live Calls", key: "live" },
   { href: "/admin/calls", label: "Call History", key: "calls" },
   { href: "/admin/settings", label: "Settings", key: "settings" },

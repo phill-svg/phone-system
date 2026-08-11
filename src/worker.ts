@@ -19,6 +19,7 @@ import {
   handlePostCompleteTransfer,
 } from "./api/softphone";
 import { handleGetStaffRoster, handlePutStaffSchedule } from "./api/staff";
+import { renderPhonePage } from "./html/pages/phone";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
@@ -546,6 +547,11 @@ export default {
     if (url.pathname.startsWith("/admin/")) {
       const staffOrResponse = await requireStaffUser(request, env);
       if (staffOrResponse instanceof Response) return staffOrResponse;
+
+      if (url.pathname === "/admin/phone") {
+        const html = renderPhonePage(staffOrResponse.email);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
 
       if (url.pathname === "/admin/live") {
         const html = renderLiveCallsPage(await listLiveCalls(env.DB));
