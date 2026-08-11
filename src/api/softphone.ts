@@ -4,6 +4,7 @@ import { setStaffStatus, touchHeartbeat } from "../db/staff";
 import type { StaffUser } from "../access/requireStaffUser";
 import {
   findConferenceSid as realFindConferenceSid,
+  listParticipants as realListParticipants,
   setParticipantHold as realSetParticipantHold,
   removeParticipant as realRemoveParticipant,
 } from "../twilio/conferenceClient";
@@ -57,6 +58,7 @@ type TwilioEnv = { TWILIO_ACCOUNT_SID: string; TWILIO_AUTH_TOKEN: string };
 
 type ConferenceDeps = {
   findConferenceSid: typeof realFindConferenceSid;
+  listParticipants: typeof realListParticipants;
   setParticipantHold: typeof realSetParticipantHold;
 };
 
@@ -64,7 +66,11 @@ export async function handlePostHold(
   request: Request,
   env: TwilioEnv,
   _staff: StaffUser,
-  deps: ConferenceDeps = { findConferenceSid: realFindConferenceSid, setParticipantHold: realSetParticipantHold }
+  deps: ConferenceDeps = {
+    findConferenceSid: realFindConferenceSid,
+    listParticipants: realListParticipants,
+    setParticipantHold: realSetParticipantHold,
+  }
 ): Promise<Response> {
   let body: unknown;
   try {
@@ -73,13 +79,17 @@ export async function handlePostHold(
     return new Response("invalid request body", { status: 400 });
   }
   if (typeof body !== "object" || body === null) return new Response("invalid request body", { status: 400 });
-  const { conferenceName, callSid, hold } = body as Record<string, unknown>;
-  if (typeof conferenceName !== "string" || typeof callSid !== "string" || typeof hold !== "boolean") {
+  const { conferenceName, selfCallSid, hold } = body as Record<string, unknown>;
+  if (typeof conferenceName !== "string" || typeof selfCallSid !== "string" || typeof hold !== "boolean") {
     return new Response("invalid request body", { status: 400 });
   }
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
-  await deps.setParticipantHold(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid, callSid, hold);
+  const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
+  const others = participants.filter((p) => p.callSid !== selfCallSid);
+  for (const other of others) {
+    await deps.setParticipantHold(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid, other.callSid, hold);
+  }
   return jsonResponse({ ok: true });
 }
 

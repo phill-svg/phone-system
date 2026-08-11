@@ -263,7 +263,7 @@ export function renderPhonePage(staffEmail: string): string {
         var res = await fetch('/api/softphone/hold', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conferenceName: callSid, callSid: callSid, hold: nextHold }),
+          body: JSON.stringify({ conferenceName: callSid, selfCallSid: callSid, hold: nextHold }),
         });
         if (res.ok) {
           isOnHold = nextHold;

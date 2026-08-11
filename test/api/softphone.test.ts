@@ -61,28 +61,44 @@ describe("handlePostHeartbeat", () => {
 });
 
 describe("handlePostHold", () => {
-  it("looks up the conference and sets Hold on the given participant", async () => {
+  it("looks up the conference and sets Hold on the OTHER participant, not the caller's own leg", async () => {
     const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAself" }, { callSid: "CAother" }]);
     const setHold = vi.fn().mockResolvedValue(undefined);
     const res = await handlePostHold(
-      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAcaller", hold: true }) }),
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
-      { findConferenceSid: findSid, setParticipantHold: setHold }
+      { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
     );
     expect(res.status).toBe(200);
     expect(findSid).toHaveBeenCalledWith("ACxxx", "authtoken", "CAcaller");
-    expect(setHold).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAcaller", true);
+    expect(setHold).toHaveBeenCalledTimes(1);
+    expect(setHold).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAother", true);
   });
 
   it("404s when the conference can't be found", async () => {
     const res = await handlePostHold(
-      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAcaller", hold: true }) }),
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
-      { findConferenceSid: vi.fn().mockResolvedValue(null), setParticipantHold: vi.fn() }
+      { findConferenceSid: vi.fn().mockResolvedValue(null), listParticipants: vi.fn(), setParticipantHold: vi.fn() }
     );
     expect(res.status).toBe(404);
+  });
+
+  it("does nothing when the caller is the only participant in the conference so far", async () => {
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAself" }]);
+    const setHold = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostHold(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
+    );
+    expect(res.status).toBe(200);
+    expect(setHold).not.toHaveBeenCalled();
   });
 });
 
