@@ -422,6 +422,72 @@ describe("Task 8 queue/ring webhook routes", () => {
   });
 });
 
+// ---- Task 7: /webhooks/twilio/transfer-answer (transfer target's answer webhook) ----
+describe("POST /webhooks/twilio/transfer-answer", () => {
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  }
+
+  async function postSigned(url: string, params: Record<string, string>) {
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+    return SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  beforeEach(() => {
+    env.TWILIO_AUTH_TOKEN = "test-auth-token";
+  });
+
+  it("rejects an invalid signature with 401", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller",
+      {
+        method: "POST",
+        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ CallSid: "CA-transfer-1" }).toString(),
+      }
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 400 when the conf query param is missing (even with a valid signature)", async () => {
+    const response = await postSigned("https://example.com/webhooks/twilio/transfer-answer", {
+      CallSid: "CA-transfer-1",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("missing conf");
+  });
+
+  it("returns a Dial/Conference document naming the conf query param", async () => {
+    const response = await postSigned(
+      "https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller",
+      { CallSid: "CA-transfer-1" }
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/xml");
+    const xml = await response.text();
+    expect(xml).toContain("<Conference");
+    expect(xml).toContain("CAcaller</Conference>");
+  });
+});
+
 describe("GET /api/me and /api/calls*", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM call_events").run();

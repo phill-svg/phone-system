@@ -1,5 +1,5 @@
 import { verifyTwilioSignature } from "./twilio/verifySignature";
-import { renderJoinConference } from "./twilio/conferenceTwiml";
+import { renderJoinConference, renderDialAgentIntoConference } from "./twilio/conferenceTwiml";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
@@ -9,7 +9,14 @@ import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
 import { handleListCallbackRequests } from "./api/callbackRequests";
-import { handleGetSoftphoneToken, handlePutPresence, handlePostHeartbeat } from "./api/softphone";
+import {
+  handleGetSoftphoneToken,
+  handlePutPresence,
+  handlePostHeartbeat,
+  handlePostHold,
+  handlePostTransfer,
+  handlePostCompleteTransfer,
+} from "./api/softphone";
 import { handleGetStaffRoster, handlePutStaffSchedule } from "./api/staff";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
@@ -278,6 +285,34 @@ export default {
       return new Response(renderJoinConference({ conferenceName }), { headers: { "Content-Type": "text/xml" } });
     }
 
+    // Transfer target's answer webhook (Task 7): TwiML for the outbound call dialed to the transfer
+    // target's client identity when it connects. Dials the target into the same conference the
+    // original caller/agent legs are already in. `conf` (the query param) is that conference's name.
+    if (url.pathname === "/webhooks/twilio/transfer-answer" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+      const conferenceName = url.searchParams.get("conf");
+      if (!conferenceName) {
+        return new Response("missing conf", { status: 400 });
+      }
+      return new Response(
+        renderDialAgentIntoConference({
+          conferenceName,
+          actionUrl: `${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`,
+          recordingStatusCallbackUrl: `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`,
+        }),
+        { headers: { "Content-Type": "text/xml" } }
+      );
+    }
+
     // Staff-leg status callback: lifecycle of the outbound staff call. Caller's CallSid from the query.
     if (url.pathname === "/webhooks/twilio/agent-status" && request.method === "POST") {
       const formData = await request.formData();
@@ -449,6 +484,15 @@ export default {
       }
       if (url.pathname === "/api/softphone/heartbeat" && request.method === "POST") {
         return handlePostHeartbeat(env.DB, staff);
+      }
+      if (url.pathname === "/api/softphone/hold" && request.method === "POST") {
+        return handlePostHold(request, env, staff);
+      }
+      if (url.pathname === "/api/softphone/transfer" && request.method === "POST") {
+        return handlePostTransfer(request, env, staff, url.origin);
+      }
+      if (url.pathname === "/api/softphone/transfer/complete" && request.method === "POST") {
+        return handlePostCompleteTransfer(request, env, staff);
       }
       if (url.pathname === "/api/staff" && request.method === "GET") {
         return handleGetStaffRoster(env.DB);

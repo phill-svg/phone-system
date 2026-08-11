@@ -1,7 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { jwtVerify } from "jose";
 import { env } from "cloudflare:test";
-import { handleGetSoftphoneToken, handlePutPresence, handlePostHeartbeat } from "../../src/api/softphone";
+import {
+  handleGetSoftphoneToken,
+  handlePutPresence,
+  handlePostHeartbeat,
+  handlePostHold,
+  handlePostTransfer,
+  handlePostCompleteTransfer,
+} from "../../src/api/softphone";
 
 describe("handleGetSoftphoneToken", () => {
   it("returns a token scoped to the requesting staff member's identity", async () => {
@@ -50,5 +57,69 @@ describe("handlePostHeartbeat", () => {
     expect(res.status).toBe(200);
     const row = await env.DB.prepare("SELECT last_heartbeat_at FROM staff_users WHERE email = 'a@b.com'").first<{ last_heartbeat_at: number }>();
     expect(row!.last_heartbeat_at).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe("handlePostHold", () => {
+  it("looks up the conference and sets Hold on the given participant", async () => {
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const setHold = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostHold(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAcaller", hold: true }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      { findConferenceSid: findSid, setParticipantHold: setHold }
+    );
+    expect(res.status).toBe(200);
+    expect(findSid).toHaveBeenCalledWith("ACxxx", "authtoken", "CAcaller");
+    expect(setHold).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAcaller", true);
+  });
+
+  it("404s when the conference can't be found", async () => {
+    const res = await handlePostHold(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAcaller", hold: true }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      { findConferenceSid: vi.fn().mockResolvedValue(null), setParticipantHold: vi.fn() }
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("handlePostTransfer", () => {
+  it("dials the target identity into the same conference and returns the new leg's sid", async () => {
+    const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
+    const res = await handlePostTransfer(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com" }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      { email: "a@b.com", role: "staff" },
+      "https://example.com",
+      { createOutboundCall: dial }
+    );
+    expect(res.status).toBe(200);
+    expect(dial).toHaveBeenCalledWith(
+      "ACxxx", "authtoken",
+      expect.objectContaining({
+        to: "client:b@b.com",
+        from: "+61800000000",
+        url: "https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller",
+      })
+    );
+    expect(await res.json()).toEqual({ sid: "CAtransfer" });
+  });
+});
+
+describe("handlePostCompleteTransfer", () => {
+  it("looks up the conference and removes the given participant", async () => {
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostCompleteTransfer(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAoriginalAgent" }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      { findConferenceSid: findSid, removeParticipant: remove }
+    );
+    expect(res.status).toBe(200);
+    expect(remove).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAoriginalAgent");
   });
 });
