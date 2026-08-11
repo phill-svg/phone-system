@@ -1,5 +1,6 @@
 import { escapeHtml, renderLayout } from "../layout";
 import type { BusinessHoursSchedule } from "../../ivr/businessHours";
+import type { StaffPresenceRow } from "../../dial/presence";
 
 const DAYS: (keyof BusinessHoursSchedule)[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABELS: Record<string, string> = {
@@ -12,19 +13,52 @@ const DAY_LABELS: Record<string, string> = {
   sun: "Sunday",
 };
 
-export function renderSettingsPage(schedule: BusinessHoursSchedule, blocklist: string[]): string {
-  const dayRows = DAYS.map((day) => {
+// Turns an arbitrary string (a DOM id fragment, e.g. an email address) into something safe to
+// splice into both an `id="..."` attribute and a single-quoted `document.getElementById('...')`
+// call embedded in an inline event handler.
+function domIdSafe(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+// Renders the day-checkbox/time-input rows shared by the business-hours form and each staff
+// member's schedule form. `idPrefix` keeps each form's `<span id="...">` targets unique on the
+// page (the checkboxes' inline `onchange` handlers look them up via `getElementById`), while the
+// `name` attributes stay bare day keys since `scheduleFromForm` below reads them scoped to their
+// own `<form>`.
+function renderDayRows(schedule: BusinessHoursSchedule, idPrefix: string): string {
+  return DAYS.map((day) => {
     const window = schedule[day];
+    const timesId = `${idPrefix}-${day}-times`;
     return `<label>
-      <input type="checkbox" name="${day}-open" ${window ? "checked" : ""} onchange="document.getElementById('${day}-times').style.display = this.checked ? 'inline' : 'none'">
+      <input type="checkbox" name="${day}-open" ${window ? "checked" : ""} onchange="document.getElementById('${timesId}').style.display = this.checked ? 'inline' : 'none'">
       ${DAY_LABELS[day]}
-      <span id="${day}-times" style="display:${window ? "inline" : "none"}">
+      <span id="${timesId}" style="display:${window ? "inline" : "none"}">
         <input type="time" name="${day}-start" value="${escapeHtml(window?.open ?? "07:00")}">
         to
         <input type="time" name="${day}-end" value="${escapeHtml(window?.close ?? "17:00")}">
       </span>
     </label>`;
   }).join("");
+}
+
+export function renderSettingsPage(
+  schedule: BusinessHoursSchedule,
+  blocklist: string[],
+  staffRoster: StaffPresenceRow[]
+): string {
+  const dayRows = renderDayRows(schedule, "hours");
+
+  const staffForms = staffRoster
+    .map((staffMember) => {
+      const idPrefix = `staff-${domIdSafe(staffMember.email)}`;
+      return `<form class="settings-form staff-schedule-form" id="${idPrefix}-form" data-email="${escapeHtml(staffMember.email)}">
+        <h4>${escapeHtml(staffMember.email)} <small>(${escapeHtml(staffMember.role)})</small></h4>
+        ${renderDayRows(staffMember.schedule, idPrefix)}
+        <button type="submit">Save Schedule</button>
+        <span class="staff-save-status"></span>
+      </form>`;
+    })
+    .join("");
 
   const body = `<h2>Settings</h2>
     <form class="settings-form" id="business-hours-form">
@@ -39,6 +73,10 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, blocklist: s
       <button type="submit">Save Blocklist</button>
       <span id="blocklist-save-status"></span>
     </form>
+    <section class="settings-form">
+      <h3>Staff Working Hours</h3>
+      ${staffForms || "<p>No staff members found.</p>"}
+    </section>
     <script>
       function scheduleFromForm(form) {
         const days = ${JSON.stringify(DAYS)};
@@ -77,6 +115,20 @@ export function renderSettingsPage(schedule: BusinessHoursSchedule, blocklist: s
           body: JSON.stringify(numbers),
         });
         status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
+      });
+
+      document.querySelectorAll('.staff-schedule-form').forEach(function (form) {
+        form.addEventListener('submit', async function (e) {
+          e.preventDefault();
+          const status = form.querySelector('.staff-save-status');
+          const email = form.dataset.email;
+          const res = await fetch('/api/staff/' + encodeURIComponent(email) + '/schedule', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(scheduleFromForm(form)),
+          });
+          status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
+        });
       });
     </script>`;
   return renderLayout("Settings", "settings", body);

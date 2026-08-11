@@ -578,9 +578,12 @@ export default {
       }
 
       if (url.pathname === "/admin/settings") {
-        const schedule = await getBusinessHours(env.DB);
-        const blocklist = await getCallBlocklist(env.DB);
-        const html = renderSettingsPage(schedule, blocklist);
+        const [schedule, blocklist, staffRoster] = await Promise.all([
+          getBusinessHours(env.DB),
+          getCallBlocklist(env.DB),
+          getStaffRoster(env.DB),
+        ]);
+        const html = renderSettingsPage(schedule, blocklist, staffRoster);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
