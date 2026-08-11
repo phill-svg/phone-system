@@ -1,6 +1,7 @@
 import { jsonResponse } from "./respond";
 import { mintAccessToken } from "../twilio/accessToken";
 import { setStaffStatus, touchHeartbeat } from "../db/staff";
+import { recordCallLeg, isOwnLeg } from "../db/callLegs";
 import type { StaffUser } from "../access/requireStaffUser";
 import {
   findConferenceSid as realFindConferenceSid,
@@ -65,7 +66,8 @@ type ConferenceDeps = {
 export async function handlePostHold(
   request: Request,
   env: TwilioEnv,
-  _staff: StaffUser,
+  staff: StaffUser,
+  db: D1Database,
   deps: ConferenceDeps = {
     findConferenceSid: realFindConferenceSid,
     listParticipants: realListParticipants,
@@ -85,6 +87,13 @@ export async function handlePostHold(
   }
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
+  // Bind the claimed leg to the AUTHENTICATED staff identity -- never trust a body-supplied email.
+  // This closes the gap where a staff member reads a colleague's live-call CallSid (via
+  // GET /api/calls/live) and submits it as their OWN selfCallSid: it's a genuine participant, but
+  // it was never dialed/received on THIS staff member's behalf.
+  if (!(await isOwnLeg(db, selfCallSid, staff.email))) {
+    return new Response("not your call leg", { status: 403 });
+  }
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
   if (!participants.some((p) => p.callSid === selfCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
@@ -111,8 +120,9 @@ type RemoveDeps = {
 export async function handlePostTransfer(
   request: Request,
   env: OutboundEnv,
-  _staff: StaffUser,
+  staff: StaffUser,
   origin: string,
+  db: D1Database,
   deps: DialDeps = {
     createOutboundCall: realCreateOutboundCall,
     findConferenceSid: realFindConferenceSid,
@@ -132,6 +142,10 @@ export async function handlePostTransfer(
   }
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
+  // Bind the claimed leg to the AUTHENTICATED requester -- never trust a body-supplied email.
+  if (!(await isOwnLeg(db, agentCallSid, staff.email))) {
+    return new Response("not your call leg", { status: 403 });
+  }
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
   if (!participants.some((p) => p.callSid === agentCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
@@ -141,13 +155,18 @@ export async function handlePostTransfer(
     from: env.TWILIO_FROM_NUMBER,
     url: `${origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`,
   });
+  // Staff-gate the transferred-to leg for the TARGET staff member, before they even exist as a
+  // real conference participant, so a subsequent hold/transfer/complete-transfer they make can
+  // itself be verified via isOwnLeg.
+  await recordCallLeg(db, sid, targetEmail, conferenceName);
   return jsonResponse({ sid });
 }
 
 export async function handlePostCompleteTransfer(
   request: Request,
   env: TwilioEnv,
-  _staff: StaffUser,
+  staff: StaffUser,
+  db: D1Database,
   deps: RemoveDeps = {
     findConferenceSid: realFindConferenceSid,
     listParticipants: realListParticipants,
@@ -167,6 +186,10 @@ export async function handlePostCompleteTransfer(
   }
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
+  // Bind the claimed leg to the AUTHENTICATED requester -- never trust a body-supplied email.
+  if (!(await isOwnLeg(db, selfCallSid, staff.email))) {
+    return new Response("not your call leg", { status: 403 });
+  }
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
   if (!participants.some((p) => p.callSid === selfCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });

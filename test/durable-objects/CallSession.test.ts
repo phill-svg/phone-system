@@ -188,6 +188,7 @@ describe("CallSession", () => {
     await env.DB.prepare("DELETE FROM ivr_nodes").run();
     await env.DB.prepare("DELETE FROM ivr_audio_assets").run();
     await env.DB.prepare("DELETE FROM staff_users").run();
+    await env.DB.prepare("DELETE FROM softphone_call_legs").run();
     await setBusinessHours(env.DB, {
       mon: { open: "00:00", close: "23:59" },
       tue: { open: "00:00", close: "23:59" },
@@ -262,6 +263,26 @@ describe("CallSession", () => {
     expect(xml).toContain("<Enqueue");
     expect(xml).toContain("CA-enq"); // per-call queue name
     expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
+  });
+
+  it("dialStaff records a softphone_call_legs row so hold/transfer can later verify leg ownership", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-legs");
+    await send(stub, mainEvent("CA-legs"));
+    await send(stub, mainEvent("CA-legs", { digits: "1" }));
+
+    const row = await env.DB.prepare("SELECT * FROM softphone_call_legs WHERE call_sid = ?")
+      .bind("sid-client:phill@b.com")
+      .first<{ call_sid: string; staff_email: string; conference_name: string }>();
+    expect(row).toMatchObject({
+      call_sid: "sid-client:phill@b.com",
+      staff_email: "phill@b.com", // "client:" prefix stripped
+      conference_name: "CA-legs", // the caller's CallSid, used as the queue/conference name
+    });
   });
 
   it("full bridge: enqueue → agent_answer redirects the caller leg + renders <Dial><Conference> → queue_left(bridged) completes the call", async () => {

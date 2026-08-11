@@ -32,6 +32,7 @@ import { listNodesForFlow } from "./db/ivrNodes";
 import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster } from "./db/staff";
 import { listOpenCallbackRequests } from "./db/callbackRequests";
+import { recordCallLeg } from "./db/callLegs";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -344,6 +345,12 @@ export default {
         .bind(conferenceName, env.TWILIO_FROM_NUMBER, target, Date.now(), 0, "in_progress", "outbound")
         .run();
 
+      // params.From is the agent's own `client:{email}` identity (set by the Voice SDK). Record
+      // this leg's ownership so handlePostHold/handlePostTransfer/handlePostCompleteTransfer can
+      // later verify a client-submitted CallSid actually belongs to the authenticated staff member.
+      const fromEmail = params.From.startsWith("client:") ? params.From.slice("client:".length) : params.From;
+      await recordCallLeg(env.DB, conferenceName, fromEmail, conferenceName);
+
       await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
         to: target,
         from: env.TWILIO_FROM_NUMBER,
@@ -535,13 +542,13 @@ export default {
         return handlePostHeartbeat(env.DB, staff);
       }
       if (url.pathname === "/api/softphone/hold" && request.method === "POST") {
-        return handlePostHold(request, env, staff);
+        return handlePostHold(request, env, staff, env.DB);
       }
       if (url.pathname === "/api/softphone/transfer" && request.method === "POST") {
-        return handlePostTransfer(request, env, staff, url.origin);
+        return handlePostTransfer(request, env, staff, url.origin, env.DB);
       }
       if (url.pathname === "/api/softphone/transfer/complete" && request.method === "POST") {
-        return handlePostCompleteTransfer(request, env, staff);
+        return handlePostCompleteTransfer(request, env, staff, env.DB);
       }
       if (url.pathname === "/api/staff" && request.method === "GET") {
         return handleGetStaffRoster(env.DB);

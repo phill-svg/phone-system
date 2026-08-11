@@ -18,6 +18,7 @@ import { renderDialAgentIntoConference } from "../twilio/conferenceTwiml";
 import { getBusinessHours } from "../db/settings";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { getAudioAsset } from "../db/audioAssets";
+import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
 
 type Env = {
@@ -544,6 +545,13 @@ export class CallSession extends DurableObject<Env> {
       statusCallback: `${origin}/webhooks/twilio/agent-status?callSid=${callSid}`,
       statusCallbackEvent: ["completed", "busy", "no-answer", "failed", "canceled"],
     });
+    // `number` is always a `client:{email}` identity (see resolveRingTargets) -- record this leg's
+    // ownership so handlePostHold/handlePostTransfer/handlePostCompleteTransfer can later verify a
+    // client-submitted CallSid actually belongs to the AUTHENTICATED staff member, not just that
+    // it's someone's leg in the conference. `callSid` here is the caller's own CallSid, which is
+    // also the queue/conference name (see startRing's renderEnqueue call).
+    const email = number.startsWith("client:") ? number.slice("client:".length) : number;
+    await recordCallLeg(this.env.DB, sid, email, callSid);
     return sid;
   }
 

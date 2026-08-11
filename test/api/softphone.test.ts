@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { jwtVerify } from "jose";
 import { env } from "cloudflare:test";
 import {
@@ -9,6 +9,7 @@ import {
   handlePostTransfer,
   handlePostCompleteTransfer,
 } from "../../src/api/softphone";
+import { recordCallLeg } from "../../src/db/callLegs";
 
 describe("handleGetSoftphoneToken", () => {
   it("returns a token scoped to the requesting staff member's identity", async () => {
@@ -61,7 +62,12 @@ describe("handlePostHeartbeat", () => {
 });
 
 describe("handlePostHold", () => {
+  beforeEach(async () => {
+    await env.DB.exec(`DELETE FROM softphone_call_legs`);
+  });
+
   it("looks up the conference and sets Hold on the OTHER participant, not the caller's own leg", async () => {
+    await recordCallLeg(env.DB, "CAself", "a@b.com", "CAcaller");
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAself" }, { callSid: "CAother" }]);
     const setHold = vi.fn().mockResolvedValue(undefined);
@@ -69,6 +75,7 @@ describe("handlePostHold", () => {
       new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
+      env.DB,
       { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
     );
     expect(res.status).toBe(200);
@@ -82,12 +89,14 @@ describe("handlePostHold", () => {
       new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
+      env.DB,
       { findConferenceSid: vi.fn().mockResolvedValue(null), listParticipants: vi.fn(), setParticipantHold: vi.fn() }
     );
     expect(res.status).toBe(404);
   });
 
   it("does nothing when the caller is the only participant in the conference so far", async () => {
+    await recordCallLeg(env.DB, "CAself", "a@b.com", "CAcaller");
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAself" }]);
     const setHold = vi.fn().mockResolvedValue(undefined);
@@ -95,13 +104,15 @@ describe("handlePostHold", () => {
       new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
+      env.DB,
       { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
     );
     expect(res.status).toBe(200);
     expect(setHold).not.toHaveBeenCalled();
   });
 
-  it("403s when the requester's selfCallSid is not actually a participant in the conference", async () => {
+  it("403s when the requester's selfCallSid is not actually a participant in the conference (still owns the leg)", async () => {
+    await recordCallLeg(env.DB, "CAnotamember", "a@b.com", "CAcaller");
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAother1" }, { callSid: "CAother2" }]);
     const setHold = vi.fn().mockResolvedValue(undefined);
@@ -109,15 +120,57 @@ describe("handlePostHold", () => {
       new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAnotamember", hold: true }) }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
+      env.DB,
       { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
     );
     expect(res.status).toBe(403);
     expect(setHold).not.toHaveBeenCalled();
   });
+
+  it("403s when selfCallSid is a genuine conference participant but was recorded under a DIFFERENT staff member's identity", async () => {
+    // The attack this closes: staff member "a@b.com" reads a colleague's live-call CallSid
+    // (via GET /api/calls/live) and submits it as their own selfCallSid. It IS a real
+    // participant in the conference, but it was dialed/received on behalf of "victim@b.com".
+    await recordCallLeg(env.DB, "CAself", "victim@b.com", "CAcaller");
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAself" }, { callSid: "CAother" }]);
+    const setHold = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostHold(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      env.DB,
+      { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
+    );
+    expect(res.status).toBe(403);
+    expect(listParticipants).not.toHaveBeenCalled();
+    expect(setHold).not.toHaveBeenCalled();
+  });
+
+  it("403s when selfCallSid was never recorded as anyone's leg at all", async () => {
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAself" }, { callSid: "CAother" }]);
+    const setHold = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostHold(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      env.DB,
+      { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
+    );
+    expect(res.status).toBe(403);
+    expect(listParticipants).not.toHaveBeenCalled();
+    expect(setHold).not.toHaveBeenCalled();
+  });
 });
 
 describe("handlePostTransfer", () => {
+  beforeEach(async () => {
+    await env.DB.exec(`DELETE FROM softphone_call_legs`);
+  });
+
   it("dials the target identity into the same conference and returns the new leg's sid", async () => {
+    await recordCallLeg(env.DB, "CAagent", "a@b.com", "CAcaller");
     const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAagent" }, { callSid: "CAcaller" }]);
@@ -129,6 +182,7 @@ describe("handlePostTransfer", () => {
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
       { email: "a@b.com", role: "staff" },
       "https://example.com",
+      env.DB,
       { createOutboundCall: dial, findConferenceSid: findSid, listParticipants }
     );
     expect(res.status).toBe(200);
@@ -143,7 +197,31 @@ describe("handlePostTransfer", () => {
     expect(await res.json()).toEqual({ sid: "CAtransfer" });
   });
 
-  it("403s when agentCallSid isn't actually a participant in the named conference", async () => {
+  it("records the transferred-to leg's ownership for the target staff member after a successful dial", async () => {
+    await recordCallLeg(env.DB, "CAagent", "a@b.com", "CAcaller");
+    const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAagent" }, { callSid: "CAcaller" }]);
+    await handlePostTransfer(
+      new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAagent" }),
+      }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      { email: "a@b.com", role: "staff" },
+      "https://example.com",
+      env.DB,
+      { createOutboundCall: dial, findConferenceSid: findSid, listParticipants }
+    );
+    const row = await env.DB.prepare("SELECT * FROM softphone_call_legs WHERE call_sid = 'CAtransfer'").first<{
+      staff_email: string;
+      conference_name: string;
+    }>();
+    expect(row).toMatchObject({ staff_email: "b@b.com", conference_name: "CAcaller" });
+  });
+
+  it("403s when agentCallSid isn't actually a participant in the named conference (still owns the leg)", async () => {
+    await recordCallLeg(env.DB, "CAnotamember", "a@b.com", "CAcaller");
     const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAcaller" }, { callSid: "CAother" }]);
@@ -155,15 +233,42 @@ describe("handlePostTransfer", () => {
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
       { email: "a@b.com", role: "staff" },
       "https://example.com",
+      env.DB,
       { createOutboundCall: dial, findConferenceSid: findSid, listParticipants }
     );
     expect(res.status).toBe(403);
     expect(dial).not.toHaveBeenCalled();
   });
+
+  it("403s when agentCallSid is a genuine conference participant but was recorded under a DIFFERENT staff member's identity", async () => {
+    await recordCallLeg(env.DB, "CAagent", "victim@b.com", "CAcaller");
+    const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAagent" }, { callSid: "CAcaller" }]);
+    const res = await handlePostTransfer(
+      new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAagent" }),
+      }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      { email: "a@b.com", role: "staff" },
+      "https://example.com",
+      env.DB,
+      { createOutboundCall: dial, findConferenceSid: findSid, listParticipants }
+    );
+    expect(res.status).toBe(403);
+    expect(listParticipants).not.toHaveBeenCalled();
+    expect(dial).not.toHaveBeenCalled();
+  });
 });
 
 describe("handlePostCompleteTransfer", () => {
+  beforeEach(async () => {
+    await env.DB.exec(`DELETE FROM softphone_call_legs`);
+  });
+
   it("looks up the conference and removes the given participant", async () => {
+    await recordCallLeg(env.DB, "CAoriginalAgent", "a@b.com", "CAcaller");
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAoriginalAgent" }, { callSid: "CAcaller" }]);
     const remove = vi.fn().mockResolvedValue(undefined);
@@ -174,13 +279,15 @@ describe("handlePostCompleteTransfer", () => {
       }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
+      env.DB,
       { findConferenceSid: findSid, listParticipants, removeParticipant: remove }
     );
     expect(res.status).toBe(200);
     expect(remove).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAoriginalAgent");
   });
 
-  it("403s when selfCallSid isn't actually a participant in the named conference", async () => {
+  it("403s when selfCallSid isn't actually a participant in the named conference (still owns the leg)", async () => {
+    await recordCallLeg(env.DB, "CAnotamember", "a@b.com", "CAcaller");
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAcaller" }, { callSid: "CAother" }]);
     const remove = vi.fn().mockResolvedValue(undefined);
@@ -191,9 +298,30 @@ describe("handlePostCompleteTransfer", () => {
       }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
+      env.DB,
       { findConferenceSid: findSid, listParticipants, removeParticipant: remove }
     );
     expect(res.status).toBe(403);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("403s when selfCallSid is a genuine conference participant but was recorded under a DIFFERENT staff member's identity", async () => {
+    await recordCallLeg(env.DB, "CAoriginalAgent", "victim@b.com", "CAcaller");
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAoriginalAgent" }, { callSid: "CAcaller" }]);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostCompleteTransfer(
+      new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAoriginalAgent", selfCallSid: "CAoriginalAgent" }),
+      }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      env.DB,
+      { findConferenceSid: findSid, listParticipants, removeParticipant: remove }
+    );
+    expect(res.status).toBe(403);
+    expect(listParticipants).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
 });

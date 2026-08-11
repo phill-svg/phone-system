@@ -521,6 +521,7 @@ describe("POST /twiml/voice-app", () => {
     env.TWILIO_AUTH_TOKEN = "test-auth-token";
     await env.DB.prepare("DELETE FROM call_events").run();
     await env.DB.prepare("DELETE FROM calls").run();
+    await env.DB.prepare("DELETE FROM softphone_call_legs").run();
   });
 
   afterEach(() => vi.unstubAllGlobals());
@@ -570,6 +571,33 @@ describe("POST /twiml/voice-app", () => {
     expect(row!.status).toBe("in_progress");
     expect(row!.caller_number).toBe(env.TWILIO_FROM_NUMBER);
     expect(row!.called_number).toBe("+61400000000");
+  });
+
+  it("records a softphone_call_legs row for the agent's own leg so hold/transfer can later verify ownership", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ sid: "CAtarget" }), { status: 200 })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CAagent",
+      From: "client:a@b.com",
+      To: "+61400000000",
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT * FROM softphone_call_legs WHERE call_sid = 'CAagent'").first<{
+      call_sid: string;
+      staff_email: string;
+      conference_name: string;
+    }>();
+    expect(row).toMatchObject({
+      call_sid: "CAagent",
+      staff_email: "a@b.com", // "client:" prefix stripped
+      conference_name: "CAagent",
+    });
   });
 });
 
