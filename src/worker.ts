@@ -1,5 +1,6 @@
 import { verifyTwilioSignature } from "./twilio/verifySignature";
 import { renderJoinConference, renderDialAgentIntoConference } from "./twilio/conferenceTwiml";
+import { createOutboundCall } from "./twilio/restClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
@@ -303,6 +304,43 @@ export default {
       if (!conferenceName) {
         return new Response("missing conf", { status: 400 });
       }
+      return new Response(
+        renderDialAgentIntoConference({
+          conferenceName,
+          actionUrl: `${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`,
+          recordingStatusCallbackUrl: `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`,
+        }),
+        { headers: { "Content-Type": "text/xml" } }
+      );
+    }
+
+    // Outbound softphone dialing (Task 8): TwiML Application route that Twilio calls when a staff
+    // member dials out from the browser softphone. Dials the target phone number into a named
+    // conference (named after the agent's own CallSid), and returns TwiML for the agent leg to join.
+    if (url.pathname === "/twiml/voice-app" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+      const signature = request.headers.get("X-Twilio-Signature") ?? "";
+      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const conferenceName = params.CallSid; // the agent's own browser-originated leg
+      const target = params.To;
+      if (!target) return new Response("missing To", { status: 400 });
+
+      await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
+        to: target,
+        from: env.TWILIO_FROM_NUMBER,
+        url: `${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`,
+        statusCallback: `${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`,
+        statusCallbackEvent: ["completed", "busy", "no-answer", "failed", "canceled"],
+      });
+
       return new Response(
         renderDialAgentIntoConference({
           conferenceName,

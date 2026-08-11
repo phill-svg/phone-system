@@ -488,6 +488,61 @@ describe("POST /webhooks/twilio/transfer-answer", () => {
   });
 });
 
+// ---- Task 8: /twiml/voice-app (softphone outbound dialing) ----
+describe("POST /twiml/voice-app", () => {
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  }
+
+  async function postSigned(url: string, params: Record<string, string>) {
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+    return SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  beforeEach(() => {
+    env.TWILIO_AUTH_TOKEN = "test-auth-token";
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("POST /twiml/voice-app returns Conference TwiML for the agent leg and dials the target into the same conference", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ sid: "CAtarget" }), { status: 200 })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CAagent",
+      From: "client:a@b.com",
+      To: "+61400000000",
+    });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("<Conference");
+    expect(body).toContain(">CAagent</Conference>");
+  });
+});
+
 describe("GET /api/me and /api/calls*", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM call_events").run();
