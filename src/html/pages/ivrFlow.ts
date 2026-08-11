@@ -23,14 +23,42 @@ export function renderIvrFlowPage(
   const extraHead = `<link rel="stylesheet" href="${DRAWFLOW_CSS_URL}">
     <style>
       #canvas-wrap { position: relative; height: calc(100vh - 64px); }
-      #drawflow { width: 100%; height: 100%; background: #f8f9fa; }
+      #drawflow { width: 100%; height: 100%; background: #f8f9fa; background-image: radial-gradient(#e2e5ea 1px, transparent 1px); background-size: 16px 16px; }
       #cdn-error { display: none; padding: 1rem; background: #fde8e8; color: #9b1c1c; }
-      .ivr-node { border: 2px solid #1a3d2e; border-radius: 6px; background: white; padding: 0.5rem 0.75rem; min-width: 140px; cursor: pointer; }
-      .ivr-node-id { font-weight: 600; font-size: 0.85rem; }
-      .ivr-node-type { font-size: 0.75rem; color: #6b7280; }
-      .ivr-node-external { border-style: dashed; opacity: 0.75; cursor: default; }
-      #edit-panel { display: none; position: fixed; top: 0; right: 0; width: 380px; height: 100vh; background: white; border-left: 1px solid #ccc; padding: 1rem; overflow-y: auto; box-shadow: -2px 0 8px rgba(0,0,0,0.1); z-index: 10; }
+      .drawflow .drawflow-node { background: transparent; box-shadow: none; padding: 0; min-width: 0; border: none; }
+      .drawflow .drawflow-node.selected { background: transparent; box-shadow: none; border: none; }
+      .drawflow .drawflow-node.selected .ivr-node-card { box-shadow: 0 0 0 2px #1a3d2e, 0 1px 3px rgba(0,0,0,0.1); }
+      .drawflow .drawflow-node .input, .drawflow .drawflow-node .output { width: 8px; height: 8px; background: #cbd5e1; border: 2px solid #cbd5e1; opacity: 0.7; }
+      .ivr-branch-label { display: inline-block; background: #eef1f5; color: #4b5563; font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; margin-bottom: 0.35rem; white-space: nowrap; }
+      .ivr-node-card { display: flex; align-items: flex-start; gap: 0.6rem; background: white; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 0.6rem 0.75rem; width: 210px; cursor: pointer; }
+      .ivr-node-card-external { border-style: dashed; opacity: 0.7; cursor: default; }
+      .ivr-node-icon { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.9rem; }
+      .ivr-node-body { min-width: 0; }
+      .ivr-node-title { font-weight: 600; font-size: 0.85rem; color: #111827; }
+      .ivr-node-subtitle { font-size: 0.72rem; color: #6b7280; margin-top: 0.15rem; word-break: break-word; }
+      .ivr-node-idsmall { font-size: 0.62rem; color: #b0b5bd; margin-top: 0.25rem; }
+      .ivr-pill { display: inline-flex; align-items: center; gap: 0.35rem; background: #12283f; color: white; border-radius: 999px; padding: 0.4rem 0.9rem; font-size: 0.78rem; font-weight: 500; cursor: default; white-space: nowrap; }
+      #edit-panel { display: none; position: fixed; top: 0; right: 0; width: 380px; height: 100vh; background: white; border-left: 1px solid #e5e7eb; padding: 1.25rem; overflow-y: auto; box-shadow: -4px 0 16px rgba(0,0,0,0.08); z-index: 10; }
       #edit-panel.open { display: block; }
+      #close-panel-btn { float: right; border: none; background: none; font-size: 1.1rem; color: #9ca3af; cursor: pointer; }
+      #edit-panel-fields { clear: both; padding-top: 0.5rem; }
+      #edit-panel-fields label { display: block; font-size: 0.75rem; font-weight: 600; color: #4b5563; margin-top: 0.9rem; margin-bottom: 0.3rem; }
+      #edit-panel-fields label:first-of-type { margin-top: 0; }
+      #edit-panel-fields input[type=text], #edit-panel-fields input[type=number], #edit-panel-fields select {
+        display: block; width: 100%; box-sizing: border-box; padding: 0.45rem 0.6rem; font-size: 0.85rem;
+        border: 1px solid #d1d5db; border-radius: 6px; background: white; margin-top: 0.15rem;
+      }
+      #edit-panel-fields input[readonly] { background: #f3f4f6; color: #6b7280; }
+      #edit-panel-fields input[type=checkbox] { width: 34px; height: 18px; vertical-align: middle; accent-color: #1a3d2e; }
+      #edit-panel-fields .gather-option-row { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.4rem; }
+      #edit-panel-fields .gather-option-row input { margin: 0; }
+      #edit-panel-fields .gather-option-row .opt-digit { width: 60px; flex-shrink: 0; }
+      #edit-panel-fields button, #save-node-btn {
+        background: #1a3d2e; color: white; border: none; border-radius: 6px; padding: 0.45rem 0.9rem;
+        font-size: 0.8rem; cursor: pointer; margin-top: 0.4rem;
+      }
+      #edit-panel-fields .remove-option-btn { background: #9ca3af; }
+      #save-node-btn { margin-top: 1.25rem; }
     </style>`;
 
   const body = `<div id="cdn-error">Could not load the flow editor library. Check your connection and reload the page.</div>
@@ -226,10 +254,11 @@ export function renderIvrFlowPage(
         return { type: type, config: config };
       }
 
-      // Every node-id-shaped outgoing reference for a node, by type -- used for both drawing
-      // canvas connections and for the auto-layout BFS. Mirrors referencesForNode() in
-      // src/api/ivrFlow.ts (kept in sync by hand since this runs as inline browser JS with no
-      // shared module to import from).
+      // Every node-id-shaped outgoing reference for a node, by type -- used for the auto-layout
+      // BFS (synthetic pill targets deliberately excluded here so they don't affect ranking;
+      // they're positioned relative to their one real parent instead, see buildCanvas). Mirrors
+      // referencesForNode() in src/api/ivrFlow.ts (kept in sync by hand since this runs as inline
+      // browser JS with no shared module to import from).
       function outgoingRefs(node) {
         var c = node.config || {};
         if (node.type === 'business_hours') return [c.openNextNodeId, c.closedNextNodeId].filter(Boolean);
@@ -242,38 +271,51 @@ export function renderIvrFlowPage(
         return [];
       }
 
-      // Ordered list of { target } per output slot, in the SAME order used when the node's
-      // Drawflow output count was decided in outputsCountForType -- addConnection uses
-      // 1-based "output_N" slot names that must line up with this order.
+      // Ordered list of { target, label } per output slot, in the SAME order used when the
+      // node's Drawflow output count was decided in outputsCountForType -- addConnection uses
+      // 1-based "output_N" slot names that must line up with this order. The "label" field is a
+      // short branch badge shown above the target node's card (null when there's only one path, since
+      // an unlabeled single connector reads fine on its own -- matches the Aircall reference,
+      // which only labels branch points). ring/voicemail's terminal outcomes route to synthetic
+      // "__pill_answered_<id>"/"__pill_ended_<id>" targets -- these aren't real ivr_nodes, just
+      // decorative end-of-call markers created in buildCanvas before this function's targets are
+      // resolved into Drawflow connections.
       function outputHandlesForType(node) {
         var c = node.config || {};
-        if (node.type === 'business_hours') return [{ target: c.openNextNodeId }, { target: c.closedNextNodeId }];
-        if (node.type === 'play' || node.type === 'wait') return [{ target: c.nextNodeId }];
-        if (node.type === 'ring') return [{ target: c.noAnswerNextNodeId }];
+        if (node.type === 'business_hours') return [{ target: c.openNextNodeId, label: 'Open' }, { target: c.closedNextNodeId, label: 'Closed' }];
+        if (node.type === 'play' || node.type === 'wait') return [{ target: c.nextNodeId, label: null }];
+        if (node.type === 'ring') return [{ target: '__pill_answered_' + node.id, label: null }, { target: c.noAnswerNextNodeId, label: 'No answer' }];
         if (node.type === 'gather') {
           var opts = Array.isArray(c.options) ? c.options : [];
-          return opts.map(function (o) { return { target: o.nextNodeId }; }).concat([{ target: c.defaultNextNodeId }]);
+          return opts.map(function (o) { return { target: o.nextNodeId, label: 'Press ' + o.digit }; }).concat([{ target: c.defaultNextNodeId, label: 'No input' }]);
         }
+        if (node.type === 'voicemail') return [{ target: '__pill_ended_' + node.id, label: null }];
         return [];
       }
 
       function outputsCountForType(node) {
-        if (node.type === 'voicemail') return 0;
+        if (node.type === 'voicemail') return 1; // synthetic "Call ended" pill
         if (node.type === 'business_hours') return 2;
         if (node.type === 'gather') {
           var opts = Array.isArray(node.config.options) ? node.config.options : [];
           return opts.length + 1;
         }
-        return 1;
+        if (node.type === 'ring') return 2; // synthetic "Call answered" pill + real no-answer target
+        return 1; // play, wait
       }
 
-      // Layered/rank auto-layout: BFS from the entry node, ranking each node by hop distance.
-      // Each rank becomes a column; nodes within a rank are stacked in rows. Nodes unreachable
-      // from the entry (shouldn't normally exist, given the save API's cross-reference
-      // validation, but a node could still be legitimately un-pointed-to) get appended as
-      // trailing ranks so nothing silently disappears from the canvas. This only computes an
-      // INITIAL position for nodes with no stored positionX/positionY -- it is never itself
-      // persisted; a node only gets a real stored position once it's actually dragged.
+      var COLUMN_WIDTH = 240;
+      var RANK_HEIGHT = 150;
+      var TOP_MARGIN = RANK_HEIGHT; // headroom for the "Call comes in" pill above rank 0
+
+      // Layered/rank auto-layout: BFS from the entry node, ranking each node by hop distance --
+      // each rank is now a horizontal ROW (top-down tree, matching the Aircall reference) rather
+      // than the previous left-to-right column layout; nodes within a rank spread across columns.
+      // Nodes unreachable from the entry (shouldn't normally exist, given the save API's
+      // cross-reference validation, but a node could still be legitimately un-pointed-to) get
+      // appended as trailing ranks so nothing silently disappears from the canvas. This only
+      // computes an INITIAL position for nodes with no stored positionX/positionY -- it is never
+      // itself persisted; a node only gets a real stored position once it's actually dragged.
       function computeAutoLayout(nodes) {
         var byId = {};
         nodes.forEach(function (n) { byId[n.id] = n; });
@@ -304,19 +346,72 @@ export function renderIvrFlowPage(
 
         var countPerRank = {};
         var positions = {};
-        var RANK_WIDTH = 280;
-        var ROW_HEIGHT = 160;
         nodes.forEach(function (n) {
           var r = rank[n.id];
-          var row = countPerRank[r] || 0;
-          countPerRank[r] = row + 1;
-          positions[n.id] = { x: r * RANK_WIDTH + 40, y: row * ROW_HEIGHT + 40 };
+          var col = countPerRank[r] || 0;
+          countPerRank[r] = col + 1;
+          positions[n.id] = { x: col * COLUMN_WIDTH + 40, y: r * RANK_HEIGHT + TOP_MARGIN + 40 };
         });
-        return positions;
+
+        // Center each rank as a block relative to the widest rank -- without this, a rank with
+        // fewer nodes than its neighbors (almost always rank 0, the lone entry node) sits jammed
+        // against the left edge instead of centered above its children, which is what makes the
+        // Aircall reference read as a clean tree rather than a lopsided fan.
+        var maxRankWidth = 0;
+        Object.keys(countPerRank).forEach(function (r) {
+          maxRankWidth = Math.max(maxRankWidth, countPerRank[r] * COLUMN_WIDTH);
+        });
+        nodes.forEach(function (n) {
+          var r = rank[n.id];
+          var offset = (maxRankWidth - countPerRank[r] * COLUMN_WIDTH) / 2;
+          positions[n.id].x += offset;
+        });
+
+        return { positions: positions, maxRank: maxRank };
       }
 
-      function nodeHtml(node) {
-        return '<div class="ivr-node"><div class="ivr-node-id">' + escText(node.id) + '</div><div class="ivr-node-type">' + escText(node.type) + '</div></div>';
+      function truncate(s, n) {
+        s = String(s == null ? '' : s);
+        return s.length > n ? s.slice(0, n - 1) + '…' : s;
+      }
+
+      // Icon/color/label per node type, and a one-line human summary of that node's config --
+      // this is what turns the card from "raw id + type" into something readable at a glance,
+      // matching the Aircall reference's icon+title+subtitle card style.
+      var NODE_META = {
+        business_hours: { icon: '\u{1F550}', color: '#7c5cff', label: 'Business Hours' },
+        play: { icon: '▶', color: '#2f7bf6', label: 'Audio Message' },
+        gather: { icon: '⌨', color: '#7c5cff', label: 'Menu' },
+        ring: { icon: '\u{1F4DE}', color: '#1f9d55', label: 'Ring to' },
+        wait: { icon: '⏳', color: '#2f7bf6', label: 'Waiting Experience' },
+        voicemail: { icon: '\u{1F4FC}', color: '#e08a1e', label: 'Voicemail' }
+      };
+
+      function subtitleForNode(node) {
+        var c = node.config || {};
+        if (node.type === 'business_hours') return 'Routes by business hours';
+        if (node.type === 'play') return c.ttsText ? truncate(c.ttsText, 40) : (c.audioAssetId ? 'Plays uploaded audio' : 'No content set');
+        if (node.type === 'gather') {
+          var n = Array.isArray(c.options) ? c.options.length : 0;
+          return n + ' option' + (n === 1 ? '' : 's') + (c.ttsText ? ': ' + truncate(c.ttsText, 30) : '');
+        }
+        if (node.type === 'ring') return 'Ring ' + (c.target === 'on_call_only' ? 'on-call staff' : 'all staff') + ' for ' + c.timeoutSeconds + 's (' + c.strategy + ')';
+        if (node.type === 'wait') return 'Hold experience' + (c.allowCallbackStar ? ' + callback (*)' : '');
+        if (node.type === 'voicemail') return 'Mailbox: ' + (c.mailboxLabel || 'default');
+        return '';
+      }
+
+      function nodeHtml(node, branchLabel) {
+        var meta = NODE_META[node.type] || { icon: '●', color: '#6b7280', label: node.type };
+        var badge = branchLabel ? '<div class="ivr-branch-label">' + escText(branchLabel) + '</div>' : '';
+        return badge +
+          '<div class="ivr-node-card">' +
+          '<div class="ivr-node-icon" style="background:' + meta.color + '">' + meta.icon + '</div>' +
+          '<div class="ivr-node-body">' +
+          '<div class="ivr-node-title">' + escText(meta.label) + '</div>' +
+          '<div class="ivr-node-subtitle">' + escText(subtitleForNode(node)) + '</div>' +
+          '<div class="ivr-node-idsmall">' + escText(node.id) + '</div>' +
+          '</div></div>';
       }
 
       // Rendered for a reference target that isn't one of this flow's own nodes -- e.g.
@@ -326,7 +421,20 @@ export function renderIvrFlowPage(
       // never contains these. Rather than silently dropping the connection, draw a dashed,
       // non-editable stub node so the cross-flow reference is visible on the canvas.
       function externalNodeHtml(id) {
-        return '<div class="ivr-node ivr-node-external"><div class="ivr-node-id">' + escText(id) + '</div><div class="ivr-node-type">shared (other flow)</div></div>';
+        return '<div class="ivr-node-card ivr-node-card-external">' +
+          '<div class="ivr-node-icon" style="background:#9ca3af">↗</div>' +
+          '<div class="ivr-node-body">' +
+          '<div class="ivr-node-title">Shared node</div>' +
+          '<div class="ivr-node-subtitle">In another flow</div>' +
+          '<div class="ivr-node-idsmall">' + escText(id) + '</div>' +
+          '</div></div>';
+      }
+
+      // Decorative start/end-of-call markers -- never part of currentNodes, never saved, never
+      // openable in the edit panel (openEditPanel's existing currentNodes lookup naturally
+      // no-ops for any id that isn't a real node, same as it already does for external stubs).
+      function pillHtml(text, icon) {
+        return '<div class="ivr-pill"><span>' + escText(icon) + '</span>' + escText(text) + '</div>';
       }
 
       function renderAudioAssetList() {
@@ -356,22 +464,63 @@ export function renderIvrFlowPage(
         editor.reroute = true;
         editor.start();
 
-        var autoPositions = computeAutoLayout(currentNodes);
-        var maxNodeX = 0;
+        var layout = computeAutoLayout(currentNodes);
+        var autoPositions = layout.positions;
 
+        // Precompute each node's incoming branch label (first writer wins for a target reached
+        // via more than one path -- e.g. a shared voicemail node -- since a card only has room
+        // for one badge; this is a deliberate simplification, not a bug).
+        var incomingLabel = {};
         currentNodes.forEach(function (node) {
-          var pos = (node.positionX != null && node.positionY != null)
+          outputHandlesForType(node).forEach(function (h) {
+            if (h.target && h.label && !(h.target in incomingLabel)) {
+              incomingLabel[h.target] = h.label;
+            }
+          });
+        });
+
+        function posOf(node) {
+          return (node.positionX != null && node.positionY != null)
             ? { x: node.positionX, y: node.positionY }
             : autoPositions[node.id];
-          maxNodeX = Math.max(maxNodeX, pos.x);
+        }
+
+        // Tracks each real node's ACTUAL rendered position (which respects a stored drag, not
+        // just the raw auto-layout guess) so the synthetic pills placed relative to a node below
+        // stay aligned with it even after that node has been dragged away from its auto position.
+        var renderedPos = {};
+
+        currentNodes.forEach(function (node) {
+          var pos = posOf(node);
+          renderedPos[node.id] = pos;
           var numOutputs = outputsCountForType(node);
-          var drawflowId = editor.addNode(node.type, 1, numOutputs, pos.x, pos.y, 'ivr-node', { ivrNodeId: node.id }, nodeHtml(node));
+          var drawflowId = editor.addNode(node.type, 1, numOutputs, pos.x, pos.y, 'ivr-node', { ivrNodeId: node.id }, nodeHtml(node, incomingLabel[node.id]));
           drawflowIdToIvrId[drawflowId] = node.id;
           ivrIdToDrawflowId[node.id] = drawflowId;
         });
 
+        // Synthetic "Call comes in" pill directly above the entry node -- purely decorative,
+        // never registered in ivrIdToDrawflowId since nothing ever targets it.
+        if (entryNodeId && ivrIdToDrawflowId[entryNodeId] != null) {
+          var entryPos = renderedPos[entryNodeId] || { x: 40, y: 40 };
+          var startPillId = editor.addNode('pill_start', 0, 1, entryPos.x, entryPos.y - RANK_HEIGHT, 'ivr-pill-node', {}, pillHtml('Call comes in', '\u{1F4DE}'));
+          editor.addConnection(startPillId, ivrIdToDrawflowId[entryNodeId], 'output_1', 'input_1');
+        }
+
+        // Synthetic terminal pills for every ring ("Call answered") and voicemail ("Call ended")
+        // node, registered under the same synthetic ids outputHandlesForType already targets --
+        // this reuses the exact same connection-drawing pass below, no special-casing needed.
+        currentNodes.forEach(function (node) {
+          if (node.type !== 'ring' && node.type !== 'voicemail') return;
+          var pos = renderedPos[node.id];
+          var pillId = node.type === 'ring' ? '__pill_answered_' + node.id : '__pill_ended_' + node.id;
+          var pillText = node.type === 'ring' ? 'Call answered' : 'Call ended';
+          var pillDrawflowId = editor.addNode('pill_end', 1, 0, pos.x, pos.y + RANK_HEIGHT, 'ivr-pill-node', {}, pillHtml(pillText, '☎'));
+          ivrIdToDrawflowId[pillId] = pillDrawflowId;
+        });
+
         // Cross-flow reference targets (see externalNodeHtml above) get a dashed stub node of
-        // their own, stacked in a column to the right of every real node this flow has.
+        // their own, in an extra row below every real node this flow has.
         var externalTargetIds = [];
         currentNodes.forEach(function (node) {
           outputHandlesForType(node).forEach(function (h) {
@@ -381,8 +530,8 @@ export function renderIvrFlowPage(
           });
         });
         externalTargetIds.forEach(function (targetId, idx) {
-          var stubX = maxNodeX + 280;
-          var stubY = idx * 160 + 40;
+          var stubX = idx * COLUMN_WIDTH + 40;
+          var stubY = (layout.maxRank + 2) * RANK_HEIGHT + TOP_MARGIN + 40;
           var stubDrawflowId = editor.addNode(targetId, 1, 0, stubX, stubY, 'ivr-node-external', { ivrNodeId: targetId }, externalNodeHtml(targetId));
           drawflowIdToIvrId[stubDrawflowId] = targetId;
           ivrIdToDrawflowId[targetId] = stubDrawflowId;
