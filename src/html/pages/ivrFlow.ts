@@ -26,10 +26,33 @@ export function renderIvrFlowPage(
       #canvas-wrap { position: relative; height: calc(100vh - 64px); }
       #drawflow { width: 100%; height: 100%; background: #f8f9fa; background-image: radial-gradient(#e2e5ea 1px, transparent 1px); background-size: 16px 16px; }
       #cdn-error { display: none; padding: 1rem; background: #fde8e8; color: #9b1c1c; }
+      /* Drawflow's own CSS lays a node out as a flex ROW (input on the left edge, content in the
+         middle, output on the right edge, all vertically centered) at a hardcoded 160px width --
+         built for left-to-right flow diagrams. Our canvas is a top-down TREE (see
+         computeAutoLayout below), so that default geometry is exactly backwards for us: it anchors
+         every connector to the left/right edges of an invisible 160px box that doesn't even match
+         our actual card width, which is what produced the loose diagonal, criss-crossing connector
+         lines the Aircall reference doesn't have. Overriding to a block box sized to the real
+         rendered content, with inputs/outputs re-anchored to the top/bottom edge (in branch order,
+         left to right), makes each connector run from the true bottom-center of a parent card to
+         the true top-center of a child card -- vertical rank-to-rank, matching the reference.
+         (Confirmed by inspecting live getBoundingClientRect() values in a running instance of this
+         page before writing this override -- the un-overridden ports sat ~30-40px off the visible
+         card's actual edges.) */
+      .drawflow .drawflow-node { display: block; width: max-content; }
+      .drawflow .drawflow-node .drawflow_content_node { width: auto; display: block; }
       .drawflow .drawflow-node { background: transparent; box-shadow: none; padding: 0; min-width: 0; border: none; }
       .drawflow .drawflow-node.selected { background: transparent; box-shadow: none; border: none; }
       .drawflow .drawflow-node.selected .ivr-node-card { box-shadow: 0 0 0 2px #1a3d2e, 0 1px 3px rgba(0,0,0,0.1); }
-      .drawflow .drawflow-node .input, .drawflow .drawflow-node .output { width: 8px; height: 8px; background: #cbd5e1; border: 2px solid #cbd5e1; opacity: 0.7; }
+      .drawflow .drawflow-node .inputs, .drawflow .drawflow-node .outputs {
+        position: absolute; left: 0; width: 100%; height: 0; display: flex; justify-content: center; align-items: center; gap: 14px;
+      }
+      .drawflow .drawflow-node .inputs { top: -5px; }
+      .drawflow .drawflow-node .outputs { bottom: -5px; }
+      .drawflow .drawflow-node .input, .drawflow .drawflow-node .output {
+        position: relative; left: auto; right: auto; top: auto; margin: 0;
+        width: 9px; height: 9px; background: #fff; border: 2px solid #9aa4b2; opacity: 1; border-radius: 50%;
+      }
       .ivr-branch-label { display: inline-block; background: #eef1f5; color: #4b5563; font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; margin-bottom: 0.35rem; white-space: nowrap; }
       .ivr-node-card { display: flex; align-items: flex-start; gap: 0.6rem; background: white; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 0.6rem 0.75rem; width: 210px; cursor: pointer; }
       .ivr-node-card-external { border-style: dashed; opacity: 0.7; cursor: default; }
@@ -323,7 +346,7 @@ export function renderIvrFlowPage(
         return 1; // play, wait
       }
 
-      var COLUMN_WIDTH = 240;
+      var COLUMN_WIDTH = 300;
       var RANK_HEIGHT = 150;
       var TOP_MARGIN = RANK_HEIGHT; // headroom for the "Call comes in" pill above rank 0
 
@@ -335,20 +358,39 @@ export function renderIvrFlowPage(
       // appended as trailing ranks so nothing silently disappears from the canvas. This only
       // computes an INITIAL position for nodes with no stored positionX/positionY -- it is never
       // itself persisted; a node only gets a real stored position once it's actually dragged.
+      //
+      // Column order within a rank MUST come from BFS visitation order, not from the "nodes"
+      // array's own order. "nodes" is whatever listNodesForFlow's unordered SELECT * ... WHERE
+      // flow = ? happened to return (see src/db/ivrNodes.ts -- no ORDER BY, and a full
+      // delete-then-reinsert on every save means that order can drift over time from whatever
+      // order a past save's payload happened to list nodes in). Since each parent's children are
+      // enqueued in outgoingRefs' order -- which mirrors outputHandlesForType's branch/option
+      // order used for the connections and labels below -- a plain BFS queue already visits every
+      // rank's nodes left-to-right in correct branch order *for free*; the bug was discarding that
+      // order and re-deriving columns from the unrelated "nodes" array instead, which could easily
+      // disagree (e.g. a gather node's Press-2 target happening to sit before its Press-1 target
+      // in that array) and land a sibling in the wrong column.
       function computeAutoLayout(nodes) {
         var byId = {};
         nodes.forEach(function (n) { byId[n.id] = n; });
 
         var rank = {};
+        var orderPerRank = {};
+        function place(id, r) {
+          rank[id] = r;
+          if (!orderPerRank[r]) orderPerRank[r] = [];
+          orderPerRank[r].push(id);
+        }
+
         var queue = entryNodeId ? [entryNodeId] : [];
-        if (entryNodeId) rank[entryNodeId] = 0;
+        if (entryNodeId) place(entryNodeId, 0);
         while (queue.length > 0) {
           var currentId = queue.shift();
           var current = byId[currentId];
           if (!current) continue;
           outgoingRefs(current).forEach(function (nextId) {
             if (!(nextId in rank) && byId[nextId]) {
-              rank[nextId] = rank[currentId] + 1;
+              place(nextId, rank[currentId] + 1);
               queue.push(nextId);
             }
           });
@@ -356,20 +398,24 @@ export function renderIvrFlowPage(
 
         var maxRank = 0;
         Object.keys(rank).forEach(function (id) { if (rank[id] > maxRank) maxRank = rank[id]; });
+        // Nodes the BFS never reached (unpointed-to nodes) still fall back to the "nodes" array's
+        // order, but each one gets its own brand-new trailing rank -- so there are never two
+        // such nodes sharing a rank, and no branch-order guarantee is needed for them.
         nodes.forEach(function (n) {
           if (!(n.id in rank)) {
             maxRank += 1;
-            rank[n.id] = maxRank;
+            place(n.id, maxRank);
           }
         });
 
         var countPerRank = {};
         var positions = {};
-        nodes.forEach(function (n) {
-          var r = rank[n.id];
-          var col = countPerRank[r] || 0;
-          countPerRank[r] = col + 1;
-          positions[n.id] = { x: col * COLUMN_WIDTH + 40, y: r * RANK_HEIGHT + TOP_MARGIN + 40 };
+        Object.keys(orderPerRank).forEach(function (r) {
+          var ids = orderPerRank[r];
+          countPerRank[r] = ids.length;
+          ids.forEach(function (id, col) {
+            positions[id] = { x: col * COLUMN_WIDTH + 40, y: Number(r) * RANK_HEIGHT + TOP_MARGIN + 40 };
+          });
         });
 
         // Center each rank as a block relative to the widest rank -- without this, a rank with
@@ -484,6 +530,17 @@ export function renderIvrFlowPage(
         var container = document.getElementById('drawflow');
         editor = new Drawflow(container);
         editor.reroute = true;
+        // Drawflow's connector path is a cubic bezier whose control points sit "curvature" of the
+        // way along the horizontal gap between the two endpoints (see createCurvature in
+        // drawflow.min.js) -- the default 0.5 is tuned for wide, lazy S-curves between left/right
+        // ports on a horizontal flow diagram. Combined with the top/bottom port CSS above, a low
+        // curvature keeps each path hugging close to vertical near both ends and only bends where
+        // a branch's target column is genuinely offset from its source, which is as close to the
+        // reference's clean mostly-straight/orthogonal look as a bezier-only renderer gets without
+        // forking Drawflow to draw real right-angle paths (out of scope for this fix).
+        editor.curvature = 0.18;
+        editor.reroute_curvature_start_end = 0.18;
+        editor.reroute_curvature = 0.18;
         editor.start();
 
         var layout = computeAutoLayout(currentNodes);
