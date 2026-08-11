@@ -9,6 +9,7 @@ import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
 import { handleListCallbackRequests } from "./api/callbackRequests";
+import { handleGetSoftphoneToken } from "./api/softphone";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
@@ -30,6 +31,9 @@ type Env = {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   TWILIO_FROM_NUMBER: string;
+  TWILIO_API_KEY_SID: string;
+  TWILIO_API_KEY_SECRET: string;
+  TWILIO_TWIML_APP_SID: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
   CF_ACCESS_TEAM_DOMAIN?: string;
@@ -434,6 +438,10 @@ export default {
           }
           throw e;
         }
+      }
+
+      if (url.pathname === "/api/softphone/token" && request.method === "GET") {
+        return handleGetSoftphoneToken(env, staff);
       }
 
       return new Response("not found", { status: 404 });
