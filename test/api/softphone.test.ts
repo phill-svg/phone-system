@@ -100,17 +100,36 @@ describe("handlePostHold", () => {
     expect(res.status).toBe(200);
     expect(setHold).not.toHaveBeenCalled();
   });
+
+  it("403s when the requester's selfCallSid is not actually a participant in the conference", async () => {
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAother1" }, { callSid: "CAother2" }]);
+    const setHold = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostHold(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAnotamember", hold: true }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
+    );
+    expect(res.status).toBe(403);
+    expect(setHold).not.toHaveBeenCalled();
+  });
 });
 
 describe("handlePostTransfer", () => {
   it("dials the target identity into the same conference and returns the new leg's sid", async () => {
     const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAagent" }, { callSid: "CAcaller" }]);
     const res = await handlePostTransfer(
-      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com" }) }),
+      new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAagent" }),
+      }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
       { email: "a@b.com", role: "staff" },
       "https://example.com",
-      { createOutboundCall: dial }
+      { createOutboundCall: dial, findConferenceSid: findSid, listParticipants }
     );
     expect(res.status).toBe(200);
     expect(dial).toHaveBeenCalledWith(
@@ -123,19 +142,58 @@ describe("handlePostTransfer", () => {
     );
     expect(await res.json()).toEqual({ sid: "CAtransfer" });
   });
+
+  it("403s when agentCallSid isn't actually a participant in the named conference", async () => {
+    const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAcaller" }, { callSid: "CAother" }]);
+    const res = await handlePostTransfer(
+      new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAnotamember" }),
+      }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      { email: "a@b.com", role: "staff" },
+      "https://example.com",
+      { createOutboundCall: dial, findConferenceSid: findSid, listParticipants }
+    );
+    expect(res.status).toBe(403);
+    expect(dial).not.toHaveBeenCalled();
+  });
 });
 
 describe("handlePostCompleteTransfer", () => {
   it("looks up the conference and removes the given participant", async () => {
     const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAoriginalAgent" }, { callSid: "CAcaller" }]);
     const remove = vi.fn().mockResolvedValue(undefined);
     const res = await handlePostCompleteTransfer(
-      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAoriginalAgent" }) }),
+      new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAoriginalAgent", selfCallSid: "CAoriginalAgent" }),
+      }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
       { email: "a@b.com", role: "staff" },
-      { findConferenceSid: findSid, removeParticipant: remove }
+      { findConferenceSid: findSid, listParticipants, removeParticipant: remove }
     );
     expect(res.status).toBe(200);
     expect(remove).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAoriginalAgent");
+  });
+
+  it("403s when selfCallSid isn't actually a participant in the named conference", async () => {
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAcaller" }, { callSid: "CAother" }]);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostCompleteTransfer(
+      new Request("http://x", {
+        method: "POST",
+        body: JSON.stringify({ conferenceName: "CAcaller", callSid: "CAoriginalAgent", selfCallSid: "CAnotamember" }),
+      }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      { findConferenceSid: findSid, listParticipants, removeParticipant: remove }
+    );
+    expect(res.status).toBe(403);
+    expect(remove).not.toHaveBeenCalled();
   });
 });

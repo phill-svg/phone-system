@@ -86,6 +86,9 @@ export async function handlePostHold(
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
+  if (!participants.some((p) => p.callSid === selfCallSid)) {
+    return new Response("not a participant in this conference", { status: 403 });
+  }
   const others = participants.filter((p) => p.callSid !== selfCallSid);
   for (const other of others) {
     await deps.setParticipantHold(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid, other.callSid, hold);
@@ -94,15 +97,27 @@ export async function handlePostHold(
 }
 
 type OutboundEnv = TwilioEnv & { TWILIO_FROM_NUMBER: string };
-type DialDeps = { createOutboundCall: typeof realCreateOutboundCall };
-type RemoveDeps = { findConferenceSid: typeof realFindConferenceSid; removeParticipant: typeof realRemoveParticipant };
+type DialDeps = {
+  createOutboundCall: typeof realCreateOutboundCall;
+  findConferenceSid: typeof realFindConferenceSid;
+  listParticipants: typeof realListParticipants;
+};
+type RemoveDeps = {
+  findConferenceSid: typeof realFindConferenceSid;
+  listParticipants: typeof realListParticipants;
+  removeParticipant: typeof realRemoveParticipant;
+};
 
 export async function handlePostTransfer(
   request: Request,
   env: OutboundEnv,
   _staff: StaffUser,
   origin: string,
-  deps: DialDeps = { createOutboundCall: realCreateOutboundCall }
+  deps: DialDeps = {
+    createOutboundCall: realCreateOutboundCall,
+    findConferenceSid: realFindConferenceSid,
+    listParticipants: realListParticipants,
+  }
 ): Promise<Response> {
   let body: unknown;
   try {
@@ -111,9 +126,15 @@ export async function handlePostTransfer(
     return new Response("invalid request body", { status: 400 });
   }
   if (typeof body !== "object" || body === null) return new Response("invalid request body", { status: 400 });
-  const { conferenceName, targetEmail } = body as Record<string, unknown>;
-  if (typeof conferenceName !== "string" || typeof targetEmail !== "string") {
+  const { conferenceName, targetEmail, agentCallSid } = body as Record<string, unknown>;
+  if (typeof conferenceName !== "string" || typeof targetEmail !== "string" || typeof agentCallSid !== "string") {
     return new Response("invalid request body", { status: 400 });
+  }
+  const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
+  if (!conferenceSid) return new Response("conference not found", { status: 404 });
+  const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
+  if (!participants.some((p) => p.callSid === agentCallSid)) {
+    return new Response("not a participant in this conference", { status: 403 });
   }
   const { sid } = await deps.createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
     to: `client:${targetEmail}`,
@@ -127,7 +148,11 @@ export async function handlePostCompleteTransfer(
   request: Request,
   env: TwilioEnv,
   _staff: StaffUser,
-  deps: RemoveDeps = { findConferenceSid: realFindConferenceSid, removeParticipant: realRemoveParticipant }
+  deps: RemoveDeps = {
+    findConferenceSid: realFindConferenceSid,
+    listParticipants: realListParticipants,
+    removeParticipant: realRemoveParticipant,
+  }
 ): Promise<Response> {
   let body: unknown;
   try {
@@ -136,12 +161,16 @@ export async function handlePostCompleteTransfer(
     return new Response("invalid request body", { status: 400 });
   }
   if (typeof body !== "object" || body === null) return new Response("invalid request body", { status: 400 });
-  const { conferenceName, callSid } = body as Record<string, unknown>;
-  if (typeof conferenceName !== "string" || typeof callSid !== "string") {
+  const { conferenceName, callSid, selfCallSid } = body as Record<string, unknown>;
+  if (typeof conferenceName !== "string" || typeof callSid !== "string" || typeof selfCallSid !== "string") {
     return new Response("invalid request body", { status: 400 });
   }
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
+  const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
+  if (!participants.some((p) => p.callSid === selfCallSid)) {
+    return new Response("not a participant in this conference", { status: 403 });
+  }
   await deps.removeParticipant(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid, callSid);
   return jsonResponse({ ok: true });
 }

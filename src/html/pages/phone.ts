@@ -449,7 +449,7 @@ export function renderPhonePage(staffEmail: string): string {
         var res = await fetch('/api/softphone/transfer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conferenceName: callSid, targetEmail: target }),
+          body: JSON.stringify({ conferenceName: callSid, targetEmail: target, agentCallSid: callSid }),
         });
         if (res.ok) {
           status.textContent = 'Transfer to ' + target + ' started. Once they join, click "Complete transfer".';
@@ -466,7 +466,7 @@ export function renderPhonePage(staffEmail: string): string {
         var res = await fetch('/api/softphone/transfer/complete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conferenceName: callSid, callSid: callSid }),
+          body: JSON.stringify({ conferenceName: callSid, callSid: callSid, selfCallSid: callSid }),
         });
         if (res.ok) {
           status.textContent = 'Transfer complete -- you have left the call.';

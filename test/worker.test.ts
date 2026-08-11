@@ -517,8 +517,10 @@ describe("POST /twiml/voice-app", () => {
     });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     env.TWILIO_AUTH_TOKEN = "test-auth-token";
+    await env.DB.prepare("DELETE FROM call_events").run();
+    await env.DB.prepare("DELETE FROM calls").run();
   });
 
   afterEach(() => vi.unstubAllGlobals());
@@ -540,6 +542,34 @@ describe("POST /twiml/voice-app", () => {
     const body = await res.text();
     expect(body).toContain("<Conference");
     expect(body).toContain(">CAagent</Conference>");
+  });
+
+  it("inserts a calls row for the outbound leg so it shows up in Call History/Live Calls and the recording callback has a row to match", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ sid: "CAtarget" }), { status: 200 })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CAagent",
+      From: "client:a@b.com",
+      To: "+61400000000",
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT * FROM calls WHERE id = 'CAagent'").first<{
+      caller_number: string;
+      called_number: string;
+      status: string;
+      direction: string;
+    }>();
+    expect(row).toBeTruthy();
+    expect(row!.direction).toBe("outbound");
+    expect(row!.status).toBe("in_progress");
+    expect(row!.caller_number).toBe(env.TWILIO_FROM_NUMBER);
+    expect(row!.called_number).toBe("+61400000000");
   });
 });
 

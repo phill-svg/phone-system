@@ -334,6 +334,16 @@ export default {
       const target = params.To;
       if (!target) return new Response("missing To", { status: 400 });
 
+      // Outbound calls otherwise create no `calls` row, so they never show up in Call
+      // History/Live Calls, and the recording-status callback (which matches on this same
+      // conferenceName as `calls.id`) silently discards the recording. Mirrors the inbound
+      // insert in CallSession.ts's handleMainWebhook.
+      await env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours, status, direction) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      )
+        .bind(conferenceName, env.TWILIO_FROM_NUMBER, target, Date.now(), 0, "in_progress", "outbound")
+        .run();
+
       await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
         to: target,
         from: env.TWILIO_FROM_NUMBER,
