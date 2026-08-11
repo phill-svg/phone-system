@@ -35,19 +35,23 @@ Outside scheduled hours, they're always treated as unavailable regardless of man
 
 `resolveRingTargets` (`src/dial/ringQueue.ts`) is rewritten to take the staff roster + this resolution logic instead of the old `StaffRingEntry[]` phone list, returning Twilio Client identity strings (`client:{email}`) instead of E.164 numbers. `reduceRingPlan` (`src/dial/ringPlan.ts`) is untouched — it already operates on opaque `string[]` targets.
 
-## Call Flow (Conference-based)
+## Call Flow (Conference-based, grafted onto the existing Queue/hold machinery)
 
-- **Inbound, reaching a `ring` node**: the Worker creates a Twilio Conference (named after the caller's CallSid, consistent with the existing per-call queue-naming convention) and returns TwiML putting the caller into it immediately (`<Dial><Conference>`) — they hear ringback/hold music while agents are dialed.
-- Targeted agents (resolved to Client identities) are dialed via the existing `restClient.ts`/`reduceRingPlan` machinery, cascade or simultaneous per the node's existing setting — only the dial target changes, from `to: "+61..."` to `to: "client:{email}"`, and the answer webhook's TwiML changes from a direct bridge to `<Dial><Conference>{name}</Conference></Dial>`, joining the same conference as the caller.
-- **Answer** = agent's Client leg joins the conference.
-- **Mute** = client-side only: Voice SDK `call.mute(true)` on the agent's own leg.
-- **Hold** = REST API: update the caller's conference participant with `hold: true` (Twilio auto-plays hold music). Used when an agent needs to step away mid-call.
-- **Transfer**: dial a second agent's Client into the same conference; on join, REST-remove the original agent's participant (warm transfer, brief overlap) or remove them immediately (blind transfer).
+The existing ring/hold/cascade/star-press-for-callback logic in `CallSession.ts` is built around Twilio's `<Enqueue>`/`<Gather>` combination, and Twilio Conferences don't reliably support capturing DTMF from a participant waiting alone in one — so the caller stays in the existing Queue, completely unchanged, for the entire ring/hold phase. A real Conference only comes into existence at the moment an agent actually answers, and only the bridge step changes:
+
+- **Inbound, reaching a `ring` node**: unchanged — the caller is `<Enqueue>`'d into the same per-call queue as today, hears hold content, can star-press for a callback. The only change is *who* gets dialed: targets are resolved to Twilio Client identity strings (`client:{email}`) instead of phone numbers (see "Presence Resolution" below), dialed via the same cascade/simultaneous `reduceRingPlan` machinery, unmodified.
+- **Answer**: when an agent's Client leg answers (`handleAgentAnswer`), two things happen instead of the old direct `<Dial><Queue>` bridge:
+  1. A REST call **redirects the caller's still-enqueued leg** to new TwiML (`POST /Calls/{CallSid}.json` with a `Url` pointing at a new `/webhooks/twilio/join-conference` route) — this pulls the caller out of the queue and into `<Dial><Conference>{callSid}</Conference></Dial>`.
+  2. The agent leg's own answer-webhook response is now `<Dial><Conference>{callSid}</Conference></Dial>` too (same conference name), instead of `<Dial><Queue>`.
+  3. Both legs are now real Participants in a real Twilio Conference resource, which is what makes hold/transfer possible via the Conference Participants REST API.
+- **Mute** = client-side only, no server involvement: Voice SDK `call.mute(true)` on the agent's own leg.
+- **Hold** = REST API: look up the conference by friendly name (`callSid`), then update the *other* participant (the caller) with `Hold=true` (Twilio auto-plays hold music). Used when an agent needs to step away mid-call.
+- **Transfer**: dial a second agent's Client identity the same way the first was dialed, with an answer-webhook that joins them into the *same* conference name; once they've joined, REST-remove the original agent's participant (warm transfer, brief overlap) or remove them immediately (blind transfer).
 - **No answer / nobody available**: unchanged — falls through to the node's existing `noAnswerNextNodeId` (typically voicemail).
 
 ## Outbound (from the softphone)
 
-Agent enters a number in the softphone UI and clicks call → `device.connect({ params: { To: number } })` → hits the TwiML Application's Voice URL → Worker returns TwiML that also creates a Conference (agent leg + a REST-dialed leg to the target number with the business caller ID) — this means outbound calls get the same mute/hold/transfer controls as inbound ones, for free, since it's the same Conference mechanism. This replaces the old click-to-call "ring my phone first" flow entirely; `handleCreateOutboundCall` and its webhook are removed.
+Agent enters a number in the softphone UI and clicks call → `device.connect({ params: { To: number } })` → hits the TwiML Application's Voice URL → the agent's own Client leg is brand new (no pre-existing queue to redirect out of, unlike inbound), so its first TwiML response can join a Conference directly (`<Dial><Conference>{agentCallSid}</Conference></Dial>`, using the agent leg's own CallSid as the conference name); the Worker then REST-dials the target number into that same conference name with the business caller ID. Same mute/hold/transfer controls apply, since it's the same Conference mechanism as inbound. This replaces the old click-to-call "ring my phone first" flow entirely; `handleCreateOutboundCall` and its webhook are removed.
 
 ## Dashboard & Desktop App
 
@@ -62,6 +66,14 @@ Agent enters a number in the softphone UI and clicks call → `device.connect({ 
 - `staff_ring_list` settings key and its Settings-page UI.
 - `staff_users.mobile_number` column.
 - Direct-phone-number dialing paths in `restClient.ts`'s call sites (the client itself, `createOutboundCall`/`cancelCall`, stays — it's still used to dial Client identities into conferences).
+
+## Call Blocklist
+
+Twilio publishes a standalone "Reject Calls with Blocklist" quick-deploy sample app — not used here, since it's meant for people with no existing backend. Instead, the same behavior is folded directly into the existing inbound webhook:
+
+- New settings key `call_blocklist` (JSON array of E.164 numbers), stored via the same `settings` table pattern as `business_hours` (`src/db/settings.ts`) — `getCallBlocklist(db)` / `setCallBlocklist(db, numbers)`.
+- New Settings-page UI section: a textarea/list to add and remove blocked numbers, alongside the existing business-hours and staff-schedule sections.
+- In `src/worker.ts`'s `/webhooks/twilio` handler, immediately after Twilio signature verification (before the call reaches the `CallSession` Durable Object at all): if `params.From` is in the blocklist, respond directly with `<Reject/>` TwiML and return — the call never reaches the flow engine, never creates a `calls` row, never rings anyone.
 
 ## Twilio Account Setup (operational, last step — like the original Task 14)
 
