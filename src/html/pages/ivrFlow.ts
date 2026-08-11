@@ -102,6 +102,7 @@ export function renderIvrFlowPage(
       }
       #edit-panel-fields .remove-option-btn { background: #9ca3af; }
       #save-node-btn { margin-top: 1.25rem; }
+      #delete-node-btn { margin-top: 1.25rem; margin-left: 0.5rem; background: #b91c1c; }
       /* Custom node-type picker for the edit panel's "Type" field, replacing a native <select> --
          matches the Aircall reference's popup list of icon-badge + label rows (native <option>
          elements can't render the icon badges). A hidden native <select id="panel-type-select">
@@ -136,7 +137,7 @@ export function renderIvrFlowPage(
     <div id="edit-panel">
       <button type="button" id="close-panel-btn">Close</button>
       <div id="edit-panel-fields"></div>
-      <p><button type="button" id="save-node-btn">Save node</button> <span id="save-status"></span></p>
+      <p><button type="button" id="save-node-btn">Save node</button> <button type="button" id="delete-node-btn">Delete node</button> <span id="save-status"></span></p>
     </div>
 
     <h3>Upload audio</h3>
@@ -870,6 +871,58 @@ export function renderIvrFlowPage(
         } else {
           var text = await res.text();
           status.textContent = 'Failed to save: ' + text;
+        }
+      });
+
+      // Nodes that still point AT targetId -- reuses the same outgoingRefs() the auto-layout
+      // and connection-drawing code already rely on, so "who references this node" can never
+      // drift out of sync with what actually gets saved/validated server-side.
+      function referencingNodes(targetId) {
+        return currentNodes.filter(function (n) {
+          return n.id !== targetId && outgoingRefs(n).indexOf(targetId) !== -1;
+        });
+      }
+
+      document.getElementById('delete-node-btn').addEventListener('click', async function () {
+        if (!editingIvrId) return;
+        var status = document.getElementById('save-status');
+        var deleteId = editingIvrId;
+
+        if (deleteId === entryNodeId) {
+          status.textContent = "Can't delete the entry node -- set a different node as the entry first.";
+          return;
+        }
+        var referencing = referencingNodes(deleteId);
+        if (referencing.length > 0) {
+          var names = referencing.map(function (n) { return n.id; }).join(', ');
+          status.textContent = 'Still referenced by: ' + names + ' -- repoint those first.';
+          return;
+        }
+        if (!window.confirm('Delete node "' + deleteId + '"? This cannot be undone.')) {
+          return;
+        }
+
+        var remainingNodes = currentNodes.filter(function (n) { return n.id !== deleteId; });
+        var payload = {
+          entryNodeId: entryNodeId,
+          nodes: remainingNodes.map(function (n) {
+            return { id: n.id, type: n.type, config: n.config, positionX: n.positionX, positionY: n.positionY };
+          }),
+        };
+        var res = await fetch('/api/ivr/flows/' + encodeURIComponent(FLOW), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          // Removing a node changes the whole graph's topology (ranks/columns/trunks), so a
+          // full reload -- re-running the same auto-layout/connection-drawing pass a fresh page
+          // load already does -- is simpler and safer than trying to live-patch Drawflow's
+          // internal node/connection DOM state to match.
+          location.reload();
+        } else {
+          var text = await res.text();
+          status.textContent = 'Failed to delete: ' + text;
         }
       });
 
