@@ -53,6 +53,15 @@ export function renderIvrFlowPage(
         position: relative; left: auto; right: auto; top: auto; margin: 0;
         width: 9px; height: 9px; background: #fff; border: 2px solid #9aa4b2; opacity: 1; border-radius: 50%;
       }
+      /* Aircall's real flow editor draws crisp, mostly-orthogonal (right-angle) connector lines
+         with small hollow "junction dot" markers at bend points, in a thin light gray -- nothing
+         like Drawflow's default thick blue Bezier curves. We don't fork Drawflow to draw real
+         right-angle paths; applyOrthogonalConnections() (see script below) rewrites each
+         connection's rendered path's "d" attribute after the fact, and appends <circle class="ivr-bend-dot">
+         markers into the same per-connection <svg> at the bends. This CSS just re-skins the
+         (now-orthogonal) path and those dots to match the reference's line weight/color. */
+      .drawflow .connection .main-path { stroke: #c7ccd6; stroke-width: 1.5px; }
+      .drawflow .connection .ivr-bend-dot { fill: #ffffff; stroke: #b7bfca; stroke-width: 1.3px; }
       .ivr-branch-label { display: inline-block; background: #eef1f5; color: #4b5563; font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; margin-bottom: 0.35rem; white-space: nowrap; }
       .ivr-node-card { display: flex; align-items: flex-start; gap: 0.6rem; background: white; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 0.6rem 0.75rem; width: 210px; cursor: pointer; }
       .ivr-node-card-external { border-style: dashed; opacity: 0.7; cursor: default; }
@@ -83,6 +92,31 @@ export function renderIvrFlowPage(
       }
       #edit-panel-fields .remove-option-btn { background: #9ca3af; }
       #save-node-btn { margin-top: 1.25rem; }
+      /* Custom node-type picker for the edit panel's "Type" field, replacing a native <select> --
+         matches the Aircall reference's popup list of icon-badge + label rows (native <option>
+         elements can't render the icon badges). A hidden native <select id="panel-type-select">
+         stays in the DOM as the actual source of truth (collectNodeFromPanel/toggleFields keep
+         reading/writing it unchanged) -- this is a presentation-layer swap only. */
+      .ivr-type-picker { position: relative; margin-top: 0.15rem; }
+      /* Specificity note: #edit-panel-fields already has a "#edit-panel-fields button" rule
+         (dark-green background/white text, for Save/Add-option/Remove-option) that would
+         otherwise beat a plain ".ivr-type-picker-btn" class selector and paint this button the
+         same dark green -- matching that id+element specificity here to win instead. */
+      #edit-panel-fields .ivr-type-picker-btn {
+        display: flex; align-items: center; gap: 0.5rem; width: 100%; box-sizing: border-box;
+        padding: 0.45rem 0.6rem; font-size: 0.85rem; border: 1px solid #d1d5db; border-radius: 6px;
+        background: white; color: #111827; cursor: pointer; text-align: left; font-family: inherit; margin-top: 0;
+      }
+      .ivr-type-picker-caret { margin-left: auto; color: #9ca3af; font-size: 0.7rem; }
+      .ivr-type-picker-list {
+        position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: white;
+        border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+        z-index: 20; max-height: 260px; overflow-y: auto;
+      }
+      .ivr-type-picker-row { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0.65rem; font-size: 0.85rem; cursor: pointer; }
+      .ivr-type-picker-row:hover { background: #f3f4f6; }
+      .ivr-type-picker-row.selected { background: #eef1f5; font-weight: 600; }
+      .ivr-type-picker-icon { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.75rem; }
     </style>`;
 
   const body = `<div id="cdn-error">Could not load the flow editor library. Check your connection and reload the page.</div>
@@ -146,6 +180,25 @@ export function renderIvrFlowPage(
         return html;
       }
 
+      // Icon-badge + label content for the type picker's closed-state button -- reuses the same
+      // NODE_META already used for the node cards, so the picker's icons match the canvas.
+      function typePickerBtnHtml(selectedType) {
+        var meta = NODE_META[selectedType] || { icon: '●', color: '#6b7280', label: selectedType };
+        return '<span class="ivr-type-picker-icon" style="background:' + meta.color + '">' + meta.icon + '</span>' +
+          '<span>' + escText(meta.label) + '</span><span class="ivr-type-picker-caret">▾</span>';
+      }
+
+      // One row per node type for the type picker's open popup list.
+      function typePickerRowsHtml(selectedType) {
+        var types = ['business_hours', 'play', 'gather', 'ring', 'wait', 'voicemail'];
+        return types.map(function (t) {
+          var meta = NODE_META[t];
+          return '<div class="ivr-type-picker-row' + (t === selectedType ? ' selected' : '') + '" data-type="' + t + '">' +
+            '<span class="ivr-type-picker-icon" style="background:' + meta.color + '">' + meta.icon + '</span>' +
+            '<span>' + escText(meta.label) + '</span></div>';
+        }).join('');
+      }
+
       function gatherOptionRowHtml(opt) {
         var digit = opt && opt.digit ? opt.digit : '';
         var next = opt && opt.nextNodeId ? opt.nextNodeId : '';
@@ -162,7 +215,12 @@ export function renderIvrFlowPage(
         var config = node.config || {};
         var html = '';
         html += '<label>ID <input type="text" id="panel-id-input" value="' + escAttr(node.id) + '" readonly></label> ';
-        html += '<label>Type <select id="panel-type-select" onchange="toggleFields(this)">' + typeOptionsHtml(node.type) + '</select></label>';
+        html += '<label>Type</label>' +
+          '<div class="ivr-type-picker" id="panel-type-picker">' +
+          '<button type="button" class="ivr-type-picker-btn" id="panel-type-picker-btn">' + typePickerBtnHtml(node.type) + '</button>' +
+          '<div class="ivr-type-picker-list" id="panel-type-picker-list" style="display:none">' + typePickerRowsHtml(node.type) + '</div>' +
+          '</div>' +
+          '<select id="panel-type-select" style="display:none">' + typeOptionsHtml(node.type) + '</select>';
 
         html += '<div class="field-group" data-type="business_hours" style="display:' + (node.type === 'business_hours' ? 'block' : 'none') + '">' +
           '<label>Open next node <input type="text" class="f-openNextNodeId" value="' + escAttr(config.openNextNodeId) + '"></label> ' +
@@ -319,20 +377,22 @@ export function renderIvrFlowPage(
       // 1-based "output_N" slot names that must line up with this order. The "label" field is a
       // short branch badge shown above the target node's card (null when there's only one path, since
       // an unlabeled single connector reads fine on its own -- matches the Aircall reference,
-      // which only labels branch points). ring/voicemail's terminal outcomes route to synthetic
-      // "__pill_answered_<id>"/"__pill_ended_<id>" targets -- these aren't real ivr_nodes, just
-      // decorative end-of-call markers created in buildCanvas before this function's targets are
-      // resolved into Drawflow connections.
+      // which only labels branch points). ring's answered outcome and voicemail's terminal
+      // outcome both route to the single synthetic "__pill_call_ends" target -- not a real
+      // ivr_node, just a shared decorative end-of-call marker (one per canvas, not one per
+      // branch -- see buildCanvas) created before this function's targets are resolved into
+      // Drawflow connections. Matches the Aircall reference, which shows exactly one "Call ends"
+      // pill that every branch converges into, rather than a separate end marker per branch.
       function outputHandlesForType(node) {
         var c = node.config || {};
         if (node.type === 'business_hours') return [{ target: c.openNextNodeId, label: 'Open' }, { target: c.closedNextNodeId, label: 'Closed' }];
         if (node.type === 'play' || node.type === 'wait') return [{ target: c.nextNodeId, label: null }];
-        if (node.type === 'ring') return [{ target: '__pill_answered_' + node.id, label: null }, { target: c.noAnswerNextNodeId, label: 'No answer' }];
+        if (node.type === 'ring') return [{ target: '__pill_call_ends', label: null }, { target: c.noAnswerNextNodeId, label: 'No answer' }];
         if (node.type === 'gather') {
           var opts = Array.isArray(c.options) ? c.options : [];
           return opts.map(function (o) { return { target: o.nextNodeId, label: 'Press ' + o.digit }; }).concat([{ target: c.defaultNextNodeId, label: 'No input' }]);
         }
-        if (node.type === 'voicemail') return [{ target: '__pill_ended_' + node.id, label: null }];
+        if (node.type === 'voicemail') return [{ target: '__pill_call_ends', label: null }];
         return [];
       }
 
@@ -527,6 +587,103 @@ export function renderIvrFlowPage(
         renderAudioAssetList();
       }
 
+      // Rewrites every Drawflow connection's default Bezier path into a crisp orthogonal
+      // ("step") path with small hollow "junction dot" markers at the bends, matching the
+      // Aircall reference's line style. Drawflow renders each connection as its own
+      // <svg class="connection node_in_node-X node_out_node-Y output_N input_1"> holding one
+      // <path class="main-path"> -- confirmed live via devtools before writing this, not
+      // guessed. Those class names tell us exactly which drawflow node/output produced each
+      // path, and since that <svg> has no viewBox/zoom transform (overflow: visible, 1:1 CSS
+      // pixels), the path's existing "d" endpoints are already the correct canvas-space
+      // coordinates -- reading them back out of the (about-to-be-replaced) Bezier "d" string
+      // via a numeric-token regex avoids re-deriving them through getBoundingClientRect, which
+      // would additionally require unwinding Drawflow's pan/zoom transform.
+      //
+      // Fan-out (a card with more than one output) is visually collapsed to a single shared
+      // trunk: Drawflow spaces each output port a few px apart along the card's bottom edge, so
+      // without this every branch would start from a slightly different x and read as a "spider"
+      // of near-parallel lines instead of the reference's one-trunk-then-fan-out. Grouping
+      // connections by their shared "node_out_node-<id>" class and averaging the min/max of
+      // their original x1 (which -- because Drawflow centers a node's output-port row -- lands
+      // exactly on that card's true center-x) gives that single trunk x for free, no DOM
+      // measurement needed. The merge side needs no equivalent fix: every real/pill/stub node
+      // here has exactly one input port (see the addNode calls below), so incoming connections
+      // already land on a single point.
+      //
+      // Only reapplied on the INITIAL render and after a completed drag (see the 'nodeMoved'
+      // handler below) -- Drawflow redraws its own default Bezier continuously while a node is
+      // being dragged, and re-fighting that on every mousemove isn't worth it; accepting a brief
+      // Bezier flash mid-drag that snaps back to orthogonal on release is the reasonable
+      // trade-off here (this file has no test coverage for canvas rendering either way).
+      // forceStraightOutIds: drawflow ids whose OWN single outgoing connection should always be
+      // rendered as a plain straight drop, x1 snapped to x2, even past the small-offset
+      // threshold below -- used for the "Call comes in" pill, which is placed directly above the
+      // entry node by design (see buildCanvas) but whose narrower pill card centers its output
+      // port a bit left/right of the (wider) node card's centered input port, otherwise reading
+      // as a spurious jog that doesn't exist in the reference for this always-aligned pairing.
+      function applyOrthogonalConnections(forceStraightOutIds) {
+        var forceStraight = {};
+        (forceStraightOutIds || []).forEach(function (id) { forceStraight[id] = true; });
+        var connections = document.querySelectorAll('#drawflow .connection');
+        var groups = {};
+        connections.forEach(function (conn) {
+          var cls = conn.getAttribute('class') || '';
+          // NOTE: doubled backslashes below (\\S, \\d, \\.) are deliberate, not a typo -- this
+          // whole <script> body is itself one big TS template literal, so a single "\S"/"\d"/"\."
+          // written here would be treated as an unrecognized string escape at TS-compile time and
+          // have its backslash silently dropped (leaving a literal "S"/"d"/"." in the emitted JS,
+          // silently breaking the regex) -- confirmed by hitting exactly that bug live in-browser
+          // while building this. Doubling produces one real backslash in the runtime string.
+          var outMatch = cls.match(/node_out_node-(\\S+)/);
+          var path = conn.querySelector('.main-path');
+          if (!outMatch || !path) return;
+          var d = path.getAttribute('d') || '';
+          var nums = (d.match(/-?\\d+(\\.\\d+)?/g) || []).map(Number);
+          if (nums.length < 4) return;
+          var key = outMatch[1];
+          if (!groups[key]) groups[key] = [];
+          groups[key].push({
+            conn: conn,
+            path: path,
+            x1: nums[0],
+            y1: nums[1],
+            x2: nums[nums.length - 2],
+            y2: nums[nums.length - 1],
+          });
+        });
+
+        Object.keys(groups).forEach(function (key) {
+          var items = groups[key];
+          var xs = items.map(function (it) { return it.x1; });
+          var trunkX = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2;
+          var snapStraight = !!forceStraight[key];
+
+          items.forEach(function (it) {
+            it.conn.querySelectorAll('circle.ivr-bend-dot').forEach(function (dot) { dot.remove(); });
+
+            var x1 = snapStraight ? it.x2 : trunkX, y1 = it.y1, x2 = it.x2, y2 = it.y2, d;
+            if (snapStraight || Math.abs(x1 - x2) < 4) {
+              // Same column as its target (a straight chain, e.g. parent directly above child) --
+              // a plain vertical/near-vertical line with no bend, so no junction dots either,
+              // matching the reference's undotted straight runs.
+              d = 'M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2;
+            } else {
+              var ym = (y1 + y2) / 2;
+              d = 'M ' + x1 + ' ' + y1 + ' L ' + x1 + ' ' + ym + ' L ' + x2 + ' ' + ym + ' L ' + x2 + ' ' + y2;
+              [[x1, ym], [x2, ym]].forEach(function (pt) {
+                var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                dot.setAttribute('class', 'ivr-bend-dot');
+                dot.setAttribute('cx', pt[0]);
+                dot.setAttribute('cy', pt[1]);
+                dot.setAttribute('r', 3.5);
+                it.conn.appendChild(dot);
+              });
+            }
+            it.path.setAttribute('d', d);
+          });
+        });
+      }
+
       function buildCanvas() {
         var container = document.getElementById('drawflow');
         editor = new Drawflow(container);
@@ -587,17 +744,23 @@ export function renderIvrFlowPage(
           editor.addConnection(startPillId, ivrIdToDrawflowId[entryNodeId], 'output_1', 'input_1');
         }
 
-        // Synthetic terminal pills for every ring ("Call answered") and voicemail ("Call ended")
-        // node, registered under the same synthetic ids outputHandlesForType already targets --
-        // this reuses the exact same connection-drawing pass below, no special-casing needed.
-        currentNodes.forEach(function (node) {
-          if (node.type !== 'ring' && node.type !== 'voicemail') return;
-          var pos = renderedPos[node.id];
-          var pillId = node.type === 'ring' ? '__pill_answered_' + node.id : '__pill_ended_' + node.id;
-          var pillText = node.type === 'ring' ? 'Call answered' : 'Call ended';
-          var pillDrawflowId = editor.addNode('pill_end', 1, 0, pos.x, pos.y + RANK_HEIGHT, 'ivr-pill-node', {}, pillHtml(pillText, '☎'));
-          ivrIdToDrawflowId[pillId] = pillDrawflowId;
-        });
+        // Single shared "Call ends" pill for the whole canvas -- every ring node's answered
+        // outcome and every voicemail node's terminal outcome (registered under the same
+        // "__pill_call_ends" id outputHandlesForType already targets) converge into this one
+        // node, reusing the exact same connection-drawing pass below with no special-casing.
+        // Matches the Aircall reference's single end-of-call marker instead of one pill per
+        // branch. Positioned centered under, and one rank below, the lowest of those sources.
+        var terminalSourceNodes = currentNodes.filter(function (n) { return n.type === 'ring' || n.type === 'voicemail'; });
+        if (terminalSourceNodes.length > 0) {
+          var terminalSumX = 0, terminalMaxY = 0;
+          terminalSourceNodes.forEach(function (n) {
+            var pos = renderedPos[n.id];
+            terminalSumX += pos.x;
+            if (pos.y > terminalMaxY) terminalMaxY = pos.y;
+          });
+          var endPillDrawflowId = editor.addNode('pill_end', 1, 0, terminalSumX / terminalSourceNodes.length, terminalMaxY + RANK_HEIGHT, 'ivr-pill-node', {}, pillHtml('Call ends', '☎'));
+          ivrIdToDrawflowId['__pill_call_ends'] = endPillDrawflowId;
+        }
 
         // Cross-flow reference targets (see externalNodeHtml above) get a dashed stub node of
         // their own, in an extra row below every real node this flow has.
@@ -628,6 +791,8 @@ export function renderIvrFlowPage(
           });
         });
 
+        applyOrthogonalConnections(typeof startPillId !== 'undefined' ? [startPillId] : []);
+
         editor.on('nodeMoved', function (drawflowId) {
           var ivrId = drawflowIdToIvrId[drawflowId];
           var node = currentNodes.filter(function (n) { return n.id === ivrId; })[0];
@@ -641,6 +806,7 @@ export function renderIvrFlowPage(
           var posY = Math.round(data.pos_y);
           node.positionX = posX;
           node.positionY = posY;
+          applyOrthogonalConnections(typeof startPillId !== 'undefined' ? [startPillId] : []);
           fetch('/api/ivr/flows/' + encodeURIComponent(FLOW) + '/nodes/' + encodeURIComponent(ivrId) + '/position', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -699,15 +865,40 @@ export function renderIvrFlowPage(
 
       document.getElementById('edit-panel-fields').addEventListener('click', function (e) {
         var t = e.target;
-        if (t.classList.contains('add-option-btn')) {
+        var pickerBtn = t.closest('.ivr-type-picker-btn');
+        var pickerRow = t.closest('.ivr-type-picker-row');
+        if (pickerBtn) {
+          var list = document.getElementById('panel-type-picker-list');
+          list.style.display = list.style.display === 'none' ? 'block' : 'none';
+        } else if (pickerRow) {
+          var newType = pickerRow.getAttribute('data-type');
+          var select = document.getElementById('panel-type-select');
+          select.value = newType;
+          document.getElementById('panel-type-picker-btn').innerHTML = typePickerBtnHtml(newType);
+          document.getElementById('panel-type-picker-list').style.display = 'none';
+          document.querySelectorAll('#panel-type-picker-list .ivr-type-picker-row').forEach(function (r) {
+            r.classList.toggle('selected', r.getAttribute('data-type') === newType);
+          });
+          toggleFields(select);
+        } else if (t.classList.contains('add-option-btn')) {
           var group = t.closest('.field-group');
-          var list = group.querySelector('.gather-options-list');
+          var optList = group.querySelector('.gather-options-list');
           var div = document.createElement('div');
           div.innerHTML = gatherOptionRowHtml(null);
-          list.appendChild(div.firstChild);
+          optList.appendChild(div.firstChild);
         } else if (t.classList.contains('remove-option-btn')) {
           t.closest('.gather-option-row').remove();
         }
+      });
+
+      // Closes the type picker's popup list when clicking anywhere outside it (the panel is
+      // re-rendered fresh on every openEditPanel() call, so this only needs registering once here
+      // rather than per-render).
+      document.addEventListener('click', function (e) {
+        var picker = document.getElementById('panel-type-picker');
+        if (!picker || picker.contains(e.target)) return;
+        var list = document.getElementById('panel-type-picker-list');
+        if (list) list.style.display = 'none';
       });
 
       document.getElementById('audio-upload-form').addEventListener('submit', async function (e) {
