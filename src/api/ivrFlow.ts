@@ -11,6 +11,14 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+// "Next node" fields are deliberately allowed to be blank -- a flow is built up incrementally
+// (e.g. via the editor's "+ Add node"), and the node this points at, or even a decision about
+// where it should eventually point, may not exist yet. A blank/unresolved reference only
+// surfaces as a runtime error in the flow engine if a real call ever actually reaches it.
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
 function isStringOrNull(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
@@ -26,7 +34,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function isGatherOptions(value: unknown): value is { digit: string; nextNodeId: string }[] {
   if (!Array.isArray(value)) return false;
   return value.every(
-    (opt) => isPlainObject(opt) && isNonEmptyString(opt.digit) && isNonEmptyString(opt.nextNodeId)
+    (opt) => isPlainObject(opt) && isNonEmptyString(opt.digit) && isString(opt.nextNodeId)
   );
 }
 
@@ -37,11 +45,11 @@ function isStringArray(value: unknown): value is string[] {
 // One small validator per node type, matching the discriminated-validator style already used
 // in src/api/settings.ts.
 function isBusinessHoursConfig(c: Record<string, unknown>): boolean {
-  return isNonEmptyString(c.openNextNodeId) && isNonEmptyString(c.closedNextNodeId);
+  return isString(c.openNextNodeId) && isString(c.closedNextNodeId);
 }
 
 function isPlayConfig(c: Record<string, unknown>): boolean {
-  return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText) && isNonEmptyString(c.nextNodeId);
+  return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText) && isString(c.nextNodeId);
 }
 
 function isGatherConfig(c: Record<string, unknown>): boolean {
@@ -49,7 +57,7 @@ function isGatherConfig(c: Record<string, unknown>): boolean {
     isStringOrNull(c.audioAssetId) &&
     isStringOrNull(c.ttsText) &&
     isGatherOptions(c.options) &&
-    isNonEmptyString(c.defaultNextNodeId) &&
+    isString(c.defaultNextNodeId) &&
     typeof c.retryLimit === "number"
   );
 }
@@ -59,7 +67,7 @@ function isRingConfig(c: Record<string, unknown>): boolean {
     (c.target === "all" || isStringArray(c.target)) &&
     (c.strategy === "cascade" || c.strategy === "simultaneous") &&
     typeof c.timeoutSeconds === "number" &&
-    isNonEmptyString(c.noAnswerNextNodeId)
+    isString(c.noAnswerNextNodeId)
   );
 }
 
@@ -68,7 +76,7 @@ function isWaitConfig(c: Record<string, unknown>): boolean {
     isStringOrNull(c.audioAssetId) &&
     isStringOrNull(c.ttsText) &&
     typeof c.allowCallbackStar === "boolean" &&
-    isNonEmptyString(c.nextNodeId)
+    isString(c.nextNodeId)
   );
 }
 
