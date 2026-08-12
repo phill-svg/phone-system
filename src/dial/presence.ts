@@ -12,7 +12,13 @@ export type StaffPresenceRow = {
   lastHeartbeatAt: number | null;
 };
 
-export const HEARTBEAT_STALE_MS = 60_000;
+// Browsers throttle setInterval/setTimeout heavily in backgrounded tabs -- a staff member
+// switching away from /phone to actually take a call on their phone, or just glancing at
+// another app, can easily cause the 20s heartbeat ping to stop firing reliably for several
+// minutes even though they're still genuinely available. 60s was too tight for this completely
+// normal behavior and caused real calls to skip ringing entirely. 5 minutes still catches a
+// truly closed/crashed tab in a reasonable time, without punishing brief inattention.
+export const HEARTBEAT_STALE_MS = 5 * 60_000;
 
 export function isStaffAvailable(staff: StaffPresenceRow, now: Date): boolean {
   if (staff.status !== "available") return false;
