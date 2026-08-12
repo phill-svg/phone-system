@@ -16,6 +16,7 @@ import {
 import { createOutboundCall, cancelCall, redirectCall } from "../twilio/restClient";
 import { renderDialAgentIntoConference } from "../twilio/conferenceTwiml";
 import { getBusinessHours } from "../db/settings";
+import { getStaffRoster } from "../db/staff";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
@@ -222,7 +223,28 @@ export class CallSession extends DurableObject<Env> {
     }
 
     const ringConfig = (await this.loadNodeConfig(ringNodeId)) as unknown as RingConfig;
-    const numbers = await resolveRingTargets(this.env.DB, ringConfig.target, new Date());
+    const now = new Date();
+    const numbers = await resolveRingTargets(this.env.DB, ringConfig.target, now);
+    // TEMPORARY diagnostic logging -- remove once the "why isn't the softphone ringing" issue
+    // is confirmed fixed. Roster is fetched again here purely for visibility into WHY each
+    // staff row did or didn't resolve, since resolveRingTargets only returns the final list.
+    const roster = await getStaffRoster(this.env.DB);
+    console.log(
+      "RING_DEBUG",
+      JSON.stringify({
+        ringNodeId,
+        target: ringConfig.target,
+        resolvedTargets: numbers,
+        nowMs: now.getTime(),
+        roster: roster.map((s) => ({
+          email: s.email,
+          status: s.status,
+          lastHeartbeatAt: s.lastHeartbeatAt,
+          heartbeatAgeMs: s.lastHeartbeatAt === null ? null : now.getTime() - s.lastHeartbeatAt,
+          schedule: s.schedule,
+        })),
+      })
+    );
 
     // Zero on-call numbers: skip the whole ring/enqueue dance and continue the flow from the
     // ring node's noAnswerNextNodeId (e.g. an emergency ring with nobody on call → voicemail).
