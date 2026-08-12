@@ -23,7 +23,7 @@ export async function createOutboundCall(
     },
     body,
   });
-  if (!res.ok) throw new Error(`Twilio create-call failed: ${res.status}`);
+  if (!res.ok) throw new Error(`Twilio create-call failed: ${res.status} ${await res.text()}`);
   const json = await res.json<{ sid: string }>();
   return { sid: json.sid };
 }
