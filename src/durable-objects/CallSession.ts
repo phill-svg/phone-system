@@ -277,7 +277,10 @@ export class CallSession extends DurableObject<Env> {
     for (const number of numbersToDial) {
       try {
         attemptSids.push(await this.dialStaff(number, callSid, origin));
-      } catch {
+      } catch (err) {
+        // TEMPORARY diagnostic logging -- this catch previously swallowed the real error
+        // entirely, which is why the "softphone not ringing" issue was invisible.
+        console.log("DIAL_STAFF_FAILED", JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) }));
         dialFailed = true;
         break;
       }
