@@ -94,26 +94,6 @@ function isValidConfigForType(type: NodeType, config: unknown): config is Record
   }
 }
 
-// Every node-id-shaped field that exists for a given node type, for the dangling-reference check.
-function referencesForNode(node: PutNode): string[] {
-  const c = node.config;
-  switch (node.type) {
-    case "business_hours":
-      return [c.openNextNodeId as string, c.closedNextNodeId as string];
-    case "play":
-    case "wait":
-      return [c.nextNodeId as string];
-    case "gather": {
-      const options = (c.options as { digit: string; nextNodeId: string }[]) ?? [];
-      return [...options.map((opt) => opt.nextNodeId), c.defaultNextNodeId as string];
-    }
-    case "ring":
-      return [c.noAnswerNextNodeId as string];
-    case "voicemail":
-      return [];
-  }
-}
-
 function forbiddenUnlessAdmin(staff: StaffUser): Response | null {
   if (staff.role !== "admin") {
     return new Response("forbidden", { status: 403 });
@@ -208,22 +188,11 @@ export async function handlePutFlow(
     }
   }
 
-  const payloadIds = new Set(typedNodes.map((n) => n.id));
-  for (const node of typedNodes) {
-    for (const ref of referencesForNode(node)) {
-      if (payloadIds.has(ref)) continue;
-      // Cross-flow shared nodes (e.g. the seeded shared_voicemail, tagged flow='main' but
-      // referenced by after_hours) are valid to reference even though we're not editing
-      // their flow right now -- so fall back to a lookup excluding the flow being saved. This
-      // must exclude (not include) the current flow: nodes only in the current flow's *existing*
-      // DB rows are about to be wiped by replaceFlowNodes, so a reference to one that didn't
-      // survive into the payload is genuinely dangling after this save, even though the row is
-      // technically still present at validation time (deletion happens later, inside
-      // replaceFlowNodes).
-      if (await nodeExistsInOtherFlow(db, ref, flow)) continue;
-      return new Response(`node '${node.id}' references unknown node '${ref}'`, { status: 400 });
-    }
-  }
+  // Deliberately no dangling-reference check here: a node's config fields (openNextNodeId,
+  // noAnswerNextNodeId, etc.) are allowed to point at ids that don't exist yet, so a flow can
+  // be built up incrementally in any order rather than strictly back-to-front from a terminal
+  // node. A reference that's still dangling when a real call actually reaches it will surface
+  // as a runtime error in the flow engine at that point, not here at save time.
 
   await replaceFlowNodes(db, flow, entryNodeId, typedNodes);
   return jsonResponse({ ok: true });

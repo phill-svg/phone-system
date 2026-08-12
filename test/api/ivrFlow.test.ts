@@ -250,23 +250,24 @@ describe("handlePutFlow", () => {
     expect(await response.text()).toContain("must match exactly one node");
   });
 
-  it("returns 400 naming a dangling reference within the payload", async () => {
+  it("ACCEPTS a reference within the payload to a node that doesn't exist yet (incremental building)", async () => {
+    // Dangling-reference rejection was deliberately removed: a flow is built up node-by-node
+    // (e.g. via the editor's "+ Add node"), and most node types require pointing at a "next"
+    // node that may not have been created yet. Only the per-type shape validators (non-empty
+    // string, etc.) still apply -- existence of the target is no longer checked at save time.
     const response = await handlePutFlow(
       putRequest({
         entryNodeId: "n1",
-        nodes: [{ id: "n1", type: "play", config: { audioAssetId: null, ttsText: "hi", nextNodeId: "ghost-node" } }],
+        nodes: [{ id: "n1", type: "play", config: { audioAssetId: null, ttsText: "hi", nextNodeId: "not-created-yet" } }],
       }),
       env.DB,
       "test_flow",
       ADMIN
     );
-    expect(response.status).toBe(400);
-    const text = await response.text();
-    expect(text).toContain("n1");
-    expect(text).toContain("ghost-node");
+    expect(response.status).toBe(200);
   });
 
-  it("returns 400 naming a dangling cross-flow reference to a node that doesn't exist anywhere", async () => {
+  it("ACCEPTS a reference to a node id that doesn't exist in any flow", async () => {
     const response = await handlePutFlow(
       putRequest({
         entryNodeId: "n1",
@@ -276,8 +277,7 @@ describe("handlePutFlow", () => {
       "test_flow",
       ADMIN
     );
-    expect(response.status).toBe(400);
-    expect(await response.text()).toContain("nowhere_node");
+    expect(response.status).toBe(200);
   });
 
   it("ACCEPTS a reference to an existing node that lives in a different flow (shared node case)", async () => {
@@ -299,12 +299,11 @@ describe("handlePutFlow", () => {
     expect(response.status).toBe(200);
   });
 
-  it("returns 400 naming a stale reference to a node dropped from the CURRENT flow being replaced", async () => {
+  it("ACCEPTS a stale reference to a node dropped from the CURRENT flow being replaced", async () => {
     // Seed the flow being edited (test_flow) with A and B, where B references A. Then PUT a
-    // payload that keeps only B (dropping A) while B's config still points at A's id. A's row is
-    // still physically present in the DB at validation time (deletion only happens afterward,
-    // inside replaceFlowNodes) -- so the fix must exclude test_flow's own rows from the
-    // "does this reference resolve somewhere" fallback check, not just trust nodeExists globally.
+    // payload that keeps only B (dropping A) while B's config still points at A's id -- this
+    // used to be rejected as a dangling reference; now it saves, and node-a's reference simply
+    // goes unresolved until either node-a is re-added or node-b is repointed.
     await replaceFlowNodes(env.DB, "test_flow", "node-b", [
       { id: "node-a", type: "voicemail", config: { audioAssetId: null, ttsText: "a", mailboxLabel: "a" } },
       { id: "node-b", type: "play", config: { audioAssetId: null, ttsText: "b", nextNodeId: "node-a" } },
@@ -319,10 +318,7 @@ describe("handlePutFlow", () => {
       "test_flow",
       ADMIN
     );
-    expect(response.status).toBe(400);
-    const text = await response.text();
-    expect(text).toContain("node-b");
-    expect(text).toContain("node-a");
+    expect(response.status).toBe(200);
   });
 
   it("returns 400 naming a duplicate non-entry node id within the payload", async () => {

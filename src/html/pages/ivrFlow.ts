@@ -772,12 +772,19 @@ export function renderIvrFlowPage(
           ivrIdToDrawflowId[node.id] = drawflowId;
         });
 
-        // Synthetic "Call comes in" pill directly above the entry node -- purely decorative,
-        // never registered in ivrIdToDrawflowId since nothing ever targets it.
+        // Synthetic "Call comes in" pill -- purely decorative, never registered in
+        // ivrIdToDrawflowId since nothing ever targets it. Always shown, even on a totally
+        // empty flow (no entry node yet): a blank canvas with no visible starting point reads
+        // as broken rather than "nothing built here yet". With an entry node, it's placed
+        // directly above it and connected; without one, it just sits at a fixed top-left spot
+        // as an orientation marker for whatever gets added first.
+        var startPillId;
         if (entryNodeId && ivrIdToDrawflowId[entryNodeId] != null) {
           var entryPos = renderedPos[entryNodeId] || { x: 40, y: 40 };
-          var startPillId = editor.addNode('pill_start', 0, 1, entryPos.x, entryPos.y - RANK_HEIGHT, 'ivr-pill-node', {}, pillHtml('Call comes in', '\u{1F4DE}'));
+          startPillId = editor.addNode('pill_start', 0, 1, entryPos.x, entryPos.y - RANK_HEIGHT, 'ivr-pill-node', {}, pillHtml('Call comes in', '\u{1F4DE}'));
           editor.addConnection(startPillId, ivrIdToDrawflowId[entryNodeId], 'output_1', 'input_1');
+        } else {
+          startPillId = editor.addNode('pill_start', 0, 0, 40, 40, 'ivr-pill-node', {}, pillHtml('Call comes in', '\u{1F4DE}'));
         }
 
         // Single shared "Call ends" pill for the whole canvas -- every ring node's answered
