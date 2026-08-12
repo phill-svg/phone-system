@@ -279,8 +279,18 @@ export class CallSession extends DurableObject<Env> {
         attemptSids.push(await this.dialStaff(number, callSid, origin));
       } catch (err) {
         // TEMPORARY diagnostic logging -- this catch previously swallowed the real error
-        // entirely, which is why the "softphone not ringing" issue was invisible.
-        console.log("DIAL_STAFF_FAILED", JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) }));
+        // entirely, which is why the "softphone not ringing" issue was invisible. Account SID
+        // is not a secret (it's used directly in REST URLs), safe to log in full.
+        console.log(
+          "DIAL_STAFF_FAILED",
+          JSON.stringify({
+            number,
+            error: err instanceof Error ? err.message : String(err),
+            accountSidInUse: this.env.TWILIO_ACCOUNT_SID,
+            accountSidLength: this.env.TWILIO_ACCOUNT_SID?.length,
+            authTokenLength: this.env.TWILIO_AUTH_TOKEN?.length,
+          })
+        );
         dialFailed = true;
         break;
       }
