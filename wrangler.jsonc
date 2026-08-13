@@ -19,7 +19,7 @@
   "r2_buckets": [{ "binding": "AUDIO_ASSETS", "bucket_name": "tcb-voip-audio" }],
   "vars": {
     "TWILIO_FROM_NUMBER": "+61866108941",
-    "TWILIO_TWIML_APP_SID": "AP0b114f7d2f0384e73fce1a211d1b03f3",
+    "TWILIO_TWIML_APP_SID": "AP37a6e4263508806aa37efaf19285d2ed",
     "CF_ACCESS_TEAM_DOMAIN": "phill-abb.cloudflareaccess.com",
     "CF_ACCESS_AUD": "823cf222fdebd401866183b13a524c76a9f5a9cc009195c2091081c39e569161"
   }

@@ -14,9 +14,10 @@ import {
   type RingStrategy,
 } from "../dial/ringPlan";
 import { createOutboundCall, cancelCall, redirectCall } from "../twilio/restClient";
-import { renderDialAgentIntoConference } from "../twilio/conferenceTwiml";
+import { cleanupLoneConference } from "../twilio/conferenceClient";
+import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/conferenceTwiml";
+import { appendWebhookSecret } from "../twilio/webhookAuth";
 import { getBusinessHours } from "../db/settings";
-import { getStaffRoster } from "../db/staff";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
@@ -26,6 +27,9 @@ type Env = {
   DB: D1Database;
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
+  TWILIO_API_KEY_SID: string;
+  TWILIO_API_KEY_SECRET: string;
+  TWILIO_WEBHOOK_SECRET?: string;
   TWILIO_FROM_NUMBER: string;
 };
 
@@ -91,12 +95,24 @@ const AGENT_FAILURE_STATUSES = new Set(["busy", "no-answer", "failed", "canceled
 export class CallSession extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const body = (await request.json()) as AnyEvent;
-    if (body.kind === "hold_poll") return this.handleHoldPoll(body);
-    if (body.kind === "hold_digit") return this.handleHoldDigit(body);
-    if (body.kind === "queue_left") return this.handleQueueLeft(body);
-    if (body.kind === "agent_answer") return this.handleAgentAnswer(body);
-    if (body.kind === "agent_status") return this.handleAgentStatus(body);
-    return this.handleMainWebhook(body);
+    try {
+      if (body.kind === "hold_poll") return await this.handleHoldPoll(body);
+      if (body.kind === "hold_digit") return await this.handleHoldDigit(body);
+      if (body.kind === "queue_left") return await this.handleQueueLeft(body);
+      if (body.kind === "agent_answer") return await this.handleAgentAnswer(body);
+      if (body.kind === "agent_status") return await this.handleAgentStatus(body);
+      return await this.handleMainWebhook(body);
+    } catch (err) {
+      // A misconfigured flow (e.g. a node pointing at an id that doesn't exist -- allowed by
+      // design, since flows are built incrementally) throws here rather than at save time. A
+      // raw uncaught exception becomes a bare 500 to Twilio, which plays a generic, jarring
+      // "application error" message with no way to recover the call. Fail gracefully instead:
+      // agent_status expects a plain 200 with no TwiML body; every other kind renders TwiML to
+      // a live caller/agent leg, so give them a real spoken message and a clean hangup.
+      console.log("CALLSESSION_ERROR", JSON.stringify({ kind: body.kind ?? "main_webhook", error: err instanceof Error ? err.message : String(err) }));
+      if (body.kind === "agent_status") return new Response("ok", { status: 200 });
+      return this.xml(wrapResponse("<Say>Sorry, we're experiencing a technical issue. Please try again shortly.</Say><Hangup/>"));
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -176,7 +192,7 @@ export class CallSession extends DurableObject<Env> {
       await this.ctx.storage.put("awaitingVoicemailNodeId", voicemailNodeId);
       const resolvedVoicemailCommands = await this.resolveAudioCommands(walkResult.commands);
       const fragment = renderFlowCommandsFragment(resolvedVoicemailCommands, { baseUrl: origin });
-      const record = `<Record action="${origin}/webhooks/twilio" method="POST" maxLength="120" timeout="5" playBeep="true"/>`;
+      const record = `<Record action="${appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET)}" method="POST" maxLength="120" timeout="5" playBeep="true"/>`;
       return wrapResponse(fragment + record);
     }
 
@@ -186,7 +202,7 @@ export class CallSession extends DurableObject<Env> {
       nodeId: walkResult.nextNodeId,
       attempt: walkResult.attempt,
     });
-    const mainWebhookUrl = `${origin}/webhooks/twilio`;
+    const mainWebhookUrl = appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET);
     const patched = walkResult.commands.map((c) =>
       c.type === "GATHER" ? { ...c, action: mainWebhookUrl } : c
     );
@@ -225,26 +241,6 @@ export class CallSession extends DurableObject<Env> {
     const ringConfig = (await this.loadNodeConfig(ringNodeId)) as unknown as RingConfig;
     const now = new Date();
     const numbers = await resolveRingTargets(this.env.DB, ringConfig.target, now);
-    // TEMPORARY diagnostic logging -- remove once the "why isn't the softphone ringing" issue
-    // is confirmed fixed. Roster is fetched again here purely for visibility into WHY each
-    // staff row did or didn't resolve, since resolveRingTargets only returns the final list.
-    const roster = await getStaffRoster(this.env.DB);
-    console.log(
-      "RING_DEBUG",
-      JSON.stringify({
-        ringNodeId,
-        target: ringConfig.target,
-        resolvedTargets: numbers,
-        nowMs: now.getTime(),
-        roster: roster.map((s) => ({
-          email: s.email,
-          status: s.status,
-          lastHeartbeatAt: s.lastHeartbeatAt,
-          heartbeatAgeMs: s.lastHeartbeatAt === null ? null : now.getTime() - s.lastHeartbeatAt,
-          schedule: s.schedule,
-        })),
-      })
-    );
 
     // Zero on-call numbers: skip the whole ring/enqueue dance and continue the flow from the
     // ring node's noAnswerNextNodeId (e.g. an emergency ring with nobody on call → voicemail).
@@ -278,18 +274,10 @@ export class CallSession extends DurableObject<Env> {
       try {
         attemptSids.push(await this.dialStaff(number, callSid, origin));
       } catch (err) {
-        // TEMPORARY diagnostic logging -- this catch previously swallowed the real error
-        // entirely, which is why the "softphone not ringing" issue was invisible. Account SID
-        // is not a secret (it's used directly in REST URLs), safe to log in full.
+        // Swallowing this silently once hid a credentials outage for a full day -- always log it.
         console.log(
           "DIAL_STAFF_FAILED",
-          JSON.stringify({
-            number,
-            error: err instanceof Error ? err.message : String(err),
-            accountSidInUse: this.env.TWILIO_ACCOUNT_SID,
-            accountSidLength: this.env.TWILIO_ACCOUNT_SID?.length,
-            authTokenLength: this.env.TWILIO_AUTH_TOKEN?.length,
-          })
+          JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) })
         );
         dialFailed = true;
         break;
@@ -320,8 +308,8 @@ export class CallSession extends DurableObject<Env> {
 
     return renderEnqueue({
       queueName: callSid,
-      waitUrl: `${origin}/webhooks/twilio/hold`,
-      actionUrl: `${origin}/webhooks/twilio/queue-left`,
+      waitUrl: appendWebhookSecret(`${origin}/webhooks/twilio/hold`, this.env.TWILIO_WEBHOOK_SECRET),
+      actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/queue-left`, this.env.TWILIO_WEBHOOK_SECRET),
     });
   }
 
@@ -391,13 +379,21 @@ export class CallSession extends DurableObject<Env> {
     const outcome = state.name === "DONE" ? state.outcome : null;
 
     if (outcome === "bridged") {
-      await this.env.DB.prepare(
-        "UPDATE calls SET status = 'completed', ended_at = ?, ivr_path = ? WHERE id = ?"
-      )
-        .bind(Date.now(), activeRing.ringNodeId, body.callSid)
+      // This fires as the Enqueue action's "redirected" QueueResult, right as -- or possibly racing
+      // with -- our own REST redirect (in handleAgentAnswer) sending this same caller leg to
+      // /webhooks/twilio/join-conference. Twilio's docs don't specify which response wins that race,
+      // so render the same conference-join TwiML here too: if the REST redirect wins, this response
+      // is simply discarded; if this response is what Twilio actually applies, the caller still ends
+      // up in the right conference instead of being hung up. Do NOT touch status/ended_at here -- the
+      // call is just starting to bridge, not ending; /webhooks/twilio/status (guarded by
+      // `ended_at IS NULL`) is the authoritative source for the real completion time, and writing
+      // ended_at here pre-empted it, which is why D1 previously recorded bridged calls as lasting
+      // only a few seconds instead of their real duration.
+      await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?")
+        .bind(activeRing.ringNodeId, body.callSid)
         .run();
       await this.ctx.storage.delete("activeRing");
-      return this.xml(wrapResponse("<Hangup/>"));
+      return this.xml(renderJoinConference({ conferenceName: body.callSid }));
     }
 
     if (outcome === "callback_requested") {
@@ -455,14 +451,14 @@ export class CallSession extends DurableObject<Env> {
       this.env.TWILIO_ACCOUNT_SID,
       this.env.TWILIO_AUTH_TOKEN,
       body.callSid,
-      `${origin}/webhooks/twilio/join-conference?conf=${body.callSid}`
+      appendWebhookSecret(`${origin}/webhooks/twilio/join-conference?conf=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET)
     );
 
     return this.xml(
       renderDialAgentIntoConference({
         conferenceName: body.callSid,
-        actionUrl: `${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`,
-        recordingStatusCallbackUrl: `${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}`,
+        actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+        recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
       })
     );
   }
@@ -472,6 +468,11 @@ export class CallSession extends DurableObject<Env> {
   // forward (cascade to next number, or detect simultaneous exhaustion).
   // -------------------------------------------------------------------------
   private async handleAgentStatus(body: AgentStatusEvent): Promise<Response> {
+    // Any terminal agent-leg status (including a normal post-bridge hangup, which the ring-plan
+    // logic below deliberately ignores) may have left a lone participant behind.
+    if (body.callStatus === "completed" || (body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus))) {
+      await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+    }
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
     if (
       !activeRing ||
@@ -538,7 +539,7 @@ export class CallSession extends DurableObject<Env> {
     return renderHold({
       play: activeRing.play,
       baseUrl: origin,
-      gatherAction: `${origin}/webhooks/twilio/hold-digit`,
+      gatherAction: appendWebhookSecret(`${origin}/webhooks/twilio/hold-digit`, this.env.TWILIO_WEBHOOK_SECRET),
       timeoutSeconds: HOLD_TIMEOUT_SECONDS,
     });
   }
@@ -573,13 +574,18 @@ export class CallSession extends DurableObject<Env> {
   }
 
   private async dialStaff(number: string, callSid: string, origin: string): Promise<string> {
-    const { sid } = await createOutboundCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, {
-      to: number,
-      from: this.env.TWILIO_FROM_NUMBER,
-      url: `${origin}/webhooks/twilio/agent-answer?callSid=${callSid}`,
-      statusCallback: `${origin}/webhooks/twilio/agent-status?callSid=${callSid}`,
-      statusCallbackEvent: ["completed", "busy", "no-answer", "failed", "canceled"],
-    });
+    const { sid } = await createOutboundCall(
+      this.env.TWILIO_ACCOUNT_SID,
+      this.env.TWILIO_API_KEY_SID,
+      this.env.TWILIO_API_KEY_SECRET,
+      {
+        to: number,
+        from: this.env.TWILIO_FROM_NUMBER,
+        url: appendWebhookSecret(`${origin}/webhooks/twilio/agent-answer?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+        statusCallback: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+        statusCallbackEvent: ["completed"],
+      }
+    );
     // `number` is always a `client:{email}` identity (see resolveRingTargets) -- record this leg's
     // ownership so handlePostHold/handlePostTransfer/handlePostCompleteTransfer can later verify a
     // client-submitted CallSid actually belongs to the AUTHENTICATED staff member, not just that
@@ -591,7 +597,7 @@ export class CallSession extends DurableObject<Env> {
   }
 
   private async cancelStaff(sid: string): Promise<void> {
-    await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, sid);
+    await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);
   }
 
   private async loadNodeConfig(nodeId: string): Promise<Record<string, any>> {

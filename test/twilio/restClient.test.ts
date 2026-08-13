@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOutboundCall, cancelCall, redirectCall } from "../../src/twilio/restClient";
 
 const ACCOUNT_SID = "ACabcd1234efgh5678ijkl9012";
-const AUTH_TOKEN = "auth-token-secret";
+const API_KEY_SID = "SKabcd1234efgh5678ijkl9012";
+const API_KEY_SECRET = "api-key-secret";
 const CALL_SID = "CAcall1234sid5678";
 
 describe("Twilio REST client", () => {
@@ -21,7 +22,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
       );
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -30,7 +31,7 @@ describe("Twilio REST client", () => {
       expect(fetchMock).toHaveBeenCalledOnce();
       const call = fetchMock.mock.calls[0]!;
       expect(call[0]).toBe(
-        `https://api.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Calls.json`
+        `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Calls.json`
       );
     });
 
@@ -39,7 +40,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
       );
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -50,12 +51,12 @@ describe("Twilio REST client", () => {
       expect(options.method).toBe("POST");
     });
 
-    it("sends Basic Auth header with correct base64-encoded credentials", async () => {
+    it("sends Basic Auth header with API Key credentials (not the Account Auth Token)", async () => {
       fetchMock.mockResolvedValue(
         new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
       );
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -64,12 +65,12 @@ describe("Twilio REST client", () => {
       const call = fetchMock.mock.calls[0]!;
       const options = call[1] as RequestInit;
       const authHeader = options.headers as Record<string, string>;
-      const expectedAuth = `Basic ${btoa(`${ACCOUNT_SID}:${AUTH_TOKEN}`)}`;
+      const expectedAuth = `Basic ${btoa(`${API_KEY_SID}:${API_KEY_SECRET}`)}`;
       expect(authHeader.Authorization).toBe(expectedAuth);
 
       // Verify base64 decoding of the header the code under test actually produced
       const decodedAuth = atob(authHeader.Authorization.replace("Basic ", ""));
-      expect(decodedAuth).toBe(`${ACCOUNT_SID}:${AUTH_TOKEN}`);
+      expect(decodedAuth).toBe(`${API_KEY_SID}:${API_KEY_SECRET}`);
     });
 
     it("sets Content-Type to application/x-www-form-urlencoded", async () => {
@@ -77,7 +78,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
       );
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -98,7 +99,7 @@ describe("Twilio REST client", () => {
       const from = "+61234567890";
       const url = "https://example.com/twiml";
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to,
         from,
         url,
@@ -121,7 +122,7 @@ describe("Twilio REST client", () => {
 
       const statusCallback = "https://example.com/status";
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -141,7 +142,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
       );
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -162,7 +163,7 @@ describe("Twilio REST client", () => {
 
       const events = ["initiated", "ringing", "answered"];
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -182,7 +183,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
       );
 
-      await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -202,7 +203,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ sid: expectedSid }), { status: 201 })
       );
 
-      const result = await createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+      const result = await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
         to: "+61412345678",
         from: "+61234567890",
         url: "https://example.com/twiml",
@@ -217,7 +218,7 @@ describe("Twilio REST client", () => {
       );
 
       await expect(
-        createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+        createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
           to: "+61412345678",
           from: "+61234567890",
           url: "https://example.com/twiml",
@@ -231,7 +232,7 @@ describe("Twilio REST client", () => {
       );
 
       await expect(
-        createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+        createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
           to: "invalid",
           from: "+61234567890",
           url: "https://example.com/twiml",
@@ -245,7 +246,7 @@ describe("Twilio REST client", () => {
       );
 
       await expect(
-        createOutboundCall(ACCOUNT_SID, AUTH_TOKEN, {
+        createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
           to: "+61412345678",
           from: "+61234567890",
           url: "https://example.com/twiml",
@@ -258,45 +259,45 @@ describe("Twilio REST client", () => {
     it("sends POST request to correct Twilio API endpoint", async () => {
       fetchMock.mockResolvedValue(new Response("", { status: 200 }));
 
-      await cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID);
+      await cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID);
 
       expect(fetchMock).toHaveBeenCalledOnce();
       const call = fetchMock.mock.calls[0]!;
       expect(call[0]).toBe(
-        `https://api.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Calls/${CALL_SID}.json`
+        `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Calls/${CALL_SID}.json`
       );
     });
 
     it("uses POST method", async () => {
       fetchMock.mockResolvedValue(new Response("", { status: 200 }));
 
-      await cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID);
+      await cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID);
 
       const call = fetchMock.mock.calls[0]!;
       const options = call[1] as RequestInit;
       expect(options.method).toBe("POST");
     });
 
-    it("sends Basic Auth header with correct base64-encoded credentials", async () => {
+    it("sends Basic Auth header with API Key credentials (not the Account Auth Token)", async () => {
       fetchMock.mockResolvedValue(new Response("", { status: 200 }));
 
-      await cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID);
+      await cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID);
 
       const call = fetchMock.mock.calls[0]!;
       const options = call[1] as RequestInit;
       const authHeader = options.headers as Record<string, string>;
-      const expectedAuth = `Basic ${btoa(`${ACCOUNT_SID}:${AUTH_TOKEN}`)}`;
+      const expectedAuth = `Basic ${btoa(`${API_KEY_SID}:${API_KEY_SECRET}`)}`;
       expect(authHeader.Authorization).toBe(expectedAuth);
 
       // Verify base64 decoding of the header the code under test actually produced
       const decodedAuth = atob(authHeader.Authorization.replace("Basic ", ""));
-      expect(decodedAuth).toBe(`${ACCOUNT_SID}:${AUTH_TOKEN}`);
+      expect(decodedAuth).toBe(`${API_KEY_SID}:${API_KEY_SECRET}`);
     });
 
     it("sets Content-Type to application/x-www-form-urlencoded", async () => {
       fetchMock.mockResolvedValue(new Response("", { status: 200 }));
 
-      await cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID);
+      await cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID);
 
       const call = fetchMock.mock.calls[0]!;
       const options = call[1] as RequestInit;
@@ -307,7 +308,7 @@ describe("Twilio REST client", () => {
     it("sends Status=canceled in form body", async () => {
       fetchMock.mockResolvedValue(new Response("", { status: 200 }));
 
-      await cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID);
+      await cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID);
 
       const call = fetchMock.mock.calls[0]!;
       const options = call[1] as RequestInit;
@@ -320,7 +321,7 @@ describe("Twilio REST client", () => {
     it("returns void on success (2xx response)", async () => {
       fetchMock.mockResolvedValue(new Response("", { status: 200 }));
 
-      const result = await cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID);
+      const result = await cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID);
 
       expect(result).toBeUndefined();
     });
@@ -330,7 +331,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
       );
 
-      await expect(cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID)).rejects.toThrow(
+      await expect(cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID)).rejects.toThrow(
         "Twilio cancel-call failed: 401"
       );
     });
@@ -340,7 +341,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ error: "Call not found" }), { status: 404 })
       );
 
-      await expect(cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID)).rejects.toThrow(
+      await expect(cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID)).rejects.toThrow(
         "Twilio cancel-call failed: 404"
       );
     });
@@ -350,7 +351,7 @@ describe("Twilio REST client", () => {
         new Response(JSON.stringify({ error: "Internal server error" }), { status: 500 })
       );
 
-      await expect(cancelCall(ACCOUNT_SID, AUTH_TOKEN, CALL_SID)).rejects.toThrow(
+      await expect(cancelCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, CALL_SID)).rejects.toThrow(
         "Twilio cancel-call failed: 500"
       );
     });
@@ -363,7 +364,7 @@ describe("Twilio REST client", () => {
       await redirectCall("ACxxx", "authtoken", "CAcaller", "https://example.com/webhooks/twilio/join-conference?conf=CAcaller");
 
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://api.twilio.com/2010-04-01/Accounts/ACxxx/Calls/CAcaller.json",
+        "https://api.sydney.au1.twilio.com/2010-04-01/Accounts/ACxxx/Calls/CAcaller.json",
         expect.objectContaining({ method: "POST" })
       );
       const call = fetchMock.mock.calls[0];

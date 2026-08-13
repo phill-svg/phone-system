@@ -6,19 +6,25 @@ export type OutboundCallOptions = {
   statusCallbackEvent?: string[];
 };
 
+// The business number -- and therefore every caller leg, conference, and agent leg we attach
+// to them -- is homed in Twilio's au1 (Australia) region. Regional resources are only visible
+// to the regional endpoint, authenticated with au1-region credentials.
+const TWILIO_API_BASE = "https://api.sydney.au1.twilio.com";
+
 export async function createOutboundCall(
   accountSid: string,
-  authToken: string,
+  apiKeySid: string,
+  apiKeySecret: string,
   opts: OutboundCallOptions
 ): Promise<{ sid: string }> {
   const body = new URLSearchParams({ To: opts.to, From: opts.from, Url: opts.url });
   if (opts.statusCallback) body.set("StatusCallback", opts.statusCallback);
   if (opts.statusCallbackEvent) body.set("StatusCallbackEvent", opts.statusCallbackEvent.join(","));
 
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`, {
+  const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls.json`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+      Authorization: `Basic ${btoa(`${apiKeySid}:${apiKeySecret}`)}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body,
@@ -28,11 +34,16 @@ export async function createOutboundCall(
   return { sid: json.sid };
 }
 
-export async function cancelCall(accountSid: string, authToken: string, callSid: string): Promise<void> {
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
+export async function cancelCall(
+  accountSid: string,
+  apiKeySid: string,
+  apiKeySecret: string,
+  callSid: string
+): Promise<void> {
+  const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+      Authorization: `Basic ${btoa(`${apiKeySid}:${apiKeySecret}`)}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({ Status: "canceled" }),
@@ -41,7 +52,7 @@ export async function cancelCall(accountSid: string, authToken: string, callSid:
 }
 
 export async function redirectCall(accountSid: string, authToken: string, callSid: string, url: string): Promise<void> {
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
+  const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
     method: "POST",
     headers: {
       Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,

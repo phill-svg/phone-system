@@ -417,7 +417,7 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("Content-Type")).toBe("text/xml");
       const xml = await response.text();
-      expect(xml).toContain("<Conference>CAcaller</Conference>");
+      expect(xml).toContain('<Conference region="au1">CAcaller</Conference>');
     });
   });
 });
@@ -1099,7 +1099,7 @@ describe("Task 12 IVR flow editor routes", () => {
     expect(body.entryNodeId).toBe("wt-put");
   });
 
-  it("PUT /api/ivr/flows/:flow with a dangling reference returns 400 and does not modify DB state", async () => {
+  it("PUT /api/ivr/flows/:flow accepts a reference to a node that doesn't exist yet (incremental building)", async () => {
     const putResponse = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1108,10 +1108,10 @@ describe("Task 12 IVR flow editor routes", () => {
         nodes: [{ id: "wt-bad", type: "play", config: { audioAssetId: null, ttsText: "hi", nextNodeId: "ghost" } }],
       }),
     });
-    expect(putResponse.status).toBe(400);
+    expect(putResponse.status).toBe(200);
 
     const getResponse = await SELF.fetch("https://example.com/api/ivr/flows/worker_test_flow");
-    expect(getResponse.status).toBe(404);
+    expect(getResponse.status).toBe(200);
   });
 
   it("routes /api/ivr/flows/:flow through the regex correctly, not swallowed by /api/ivr/audio", async () => {

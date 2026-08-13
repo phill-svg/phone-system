@@ -22,7 +22,7 @@ describe("setParticipantHold", () => {
     vi.stubGlobal("fetch", fetchMock);
     await setParticipantHold("ACxxx", "authtoken", "CFxxx", "CAcaller", true);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.twilio.com/2010-04-01/Accounts/ACxxx/Conferences/CFxxx/Participants/CAcaller.json",
+      "https://api.sydney.au1.twilio.com/2010-04-01/Accounts/ACxxx/Conferences/CFxxx/Participants/CAcaller.json",
       expect.objectContaining({ method: "POST" })
     );
     const body = fetchMock.mock.calls[0][1].body as URLSearchParams;
@@ -40,7 +40,7 @@ describe("listParticipants", () => {
     vi.stubGlobal("fetch", fetchMock);
     const result = await listParticipants("ACxxx", "authtoken", "CFxxx");
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.twilio.com/2010-04-01/Accounts/ACxxx/Conferences/CFxxx/Participants.json",
+      "https://api.sydney.au1.twilio.com/2010-04-01/Accounts/ACxxx/Conferences/CFxxx/Participants.json",
       expect.objectContaining({ headers: expect.anything() })
     );
     expect(result).toEqual([{ callSid: "CAself" }, { callSid: "CAother" }]);
@@ -53,7 +53,7 @@ describe("removeParticipant", () => {
     vi.stubGlobal("fetch", fetchMock);
     await removeParticipant("ACxxx", "authtoken", "CFxxx", "CAagent");
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.twilio.com/2010-04-01/Accounts/ACxxx/Conferences/CFxxx/Participants/CAagent.json",
+      "https://api.sydney.au1.twilio.com/2010-04-01/Accounts/ACxxx/Conferences/CFxxx/Participants/CAagent.json",
       expect.objectContaining({ method: "DELETE" })
     );
   });

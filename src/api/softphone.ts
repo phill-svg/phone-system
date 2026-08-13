@@ -1,5 +1,6 @@
 import { jsonResponse } from "./respond";
 import { mintAccessToken } from "../twilio/accessToken";
+import { appendWebhookSecret } from "../twilio/webhookAuth";
 import { setStaffStatus, touchHeartbeat } from "../db/staff";
 import { recordCallLeg, isOwnLeg } from "../db/callLegs";
 import type { StaffUser } from "../access/requireStaffUser";
@@ -105,7 +106,12 @@ export async function handlePostHold(
   return jsonResponse({ ok: true });
 }
 
-type OutboundEnv = TwilioEnv & { TWILIO_FROM_NUMBER: string };
+type OutboundEnv = TwilioEnv & {
+  TWILIO_API_KEY_SID: string;
+  TWILIO_API_KEY_SECRET: string;
+  TWILIO_WEBHOOK_SECRET?: string;
+  TWILIO_FROM_NUMBER: string;
+};
 type DialDeps = {
   createOutboundCall: typeof realCreateOutboundCall;
   findConferenceSid: typeof realFindConferenceSid;
@@ -150,10 +156,10 @@ export async function handlePostTransfer(
   if (!participants.some((p) => p.callSid === agentCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
   }
-  const { sid } = await deps.createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
+  const { sid } = await deps.createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
     to: `client:${targetEmail}`,
     from: env.TWILIO_FROM_NUMBER,
-    url: `${origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`,
+    url: appendWebhookSecret(`${origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
   });
   // Staff-gate the transferred-to leg for the TARGET staff member, before they even exist as a
   // real conference participant, so a subsequent hold/transfer/complete-transfer they make can

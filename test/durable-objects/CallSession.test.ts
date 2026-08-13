@@ -309,14 +309,22 @@ describe("CallSession", () => {
     expect(answer.xml).toContain(">CA-bridge</Conference>");
     expect(answer.xml).not.toContain("<Queue>");
 
+    // The Enqueue action fires (QueueResult "redirected") possibly racing with the REST redirect
+    // above -- render the SAME conference-join TwiML here too, rather than hanging the caller up,
+    // so whichever response Twilio actually applies still bridges the call.
     const left = await send(stub, queueLeft("CA-bridge"));
-    expect(left.xml).toContain("<Hangup/>");
+    expect(left.xml).toContain("<Dial");
+    expect(left.xml).toContain("<Conference");
+    expect(left.xml).toContain(">CA-bridge</Conference>");
+    expect(left.xml).not.toContain("<Hangup/>");
 
+    // status/ended_at are NOT set here -- the call is bridging, not ending. Only ivr_path (display
+    // metadata) is recorded; /webhooks/twilio/status remains the sole writer of completion state.
     const row = await env.DB.prepare("SELECT status, ended_at, ivr_path FROM calls WHERE id = ?")
       .bind("CA-bridge")
-      .first<{ status: string; ended_at: number; ivr_path: string }>();
-    expect(row?.status).toBe("completed");
-    expect(row?.ended_at).toBeGreaterThan(0);
+      .first<{ status: string; ended_at: number | null; ivr_path: string }>();
+    expect(row?.status).not.toBe("completed");
+    expect(row?.ended_at).toBeNull();
     expect(row?.ivr_path).toBe("main_ring");
   });
 
@@ -343,9 +351,11 @@ describe("CallSession", () => {
     expect(answer.xml).toContain("<Dial");
 
     const left = await send(stub, queueLeft("CA-cascade"));
-    expect(left.xml).toContain("<Hangup/>");
+    expect(left.xml).toContain("<Dial");
+    expect(left.xml).toContain("<Conference");
+    expect(left.xml).not.toContain("<Hangup/>");
     const row = await env.DB.prepare("SELECT status FROM calls WHERE id = ?").bind("CA-cascade").first<{ status: string }>();
-    expect(row?.status).toBe("completed");
+    expect(row?.status).not.toBe("completed");
   });
 
   it("simultaneous ring-all fires an outbound call to every number at once", async () => {
@@ -552,7 +562,7 @@ describe("CallSession", () => {
     expect(xml).not.toContain(`${ORIGIN}/media/asset-1<`);
   });
 
-  it("PLAY command referencing an unknown audio asset id throws a clear error instead of producing a broken URL", async () => {
+  it("PLAY command referencing an unknown audio asset id fails gracefully instead of a raw 500 to the caller", async () => {
     await seedNode({
       id: "main_entry_gather",
       isEntry: true,
@@ -568,9 +578,14 @@ describe("CallSession", () => {
     await seedVoicemail("main_vm", "default");
 
     const stub = stubFor("CA-audio-missing");
-    await expect(send(stub, mainEvent("CA-audio-missing"))).rejects.toThrow(
-      /unknown audio asset id "does-not-exist"/i
-    );
+    // A misconfigured node used to throw uncaught out of fetch(), producing a bare 500 that
+    // Twilio surfaces to the caller as a jarring "application error" message. The top-level
+    // try/catch in CallSession.fetch() now catches this and returns a graceful spoken message
+    // + hangup instead, matching every other kind of flow misconfiguration.
+    const res = await send(stub, mainEvent("CA-audio-missing"));
+    expect(res.status).toBe(200);
+    expect(res.xml).toContain("technical issue");
+    expect(res.xml).toContain("<Hangup/>");
   });
 
   // --- error-handling robustness (dial failures + duplicate status callbacks) ---

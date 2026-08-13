@@ -1,6 +1,7 @@
-import { verifyTwilioSignature } from "./twilio/verifySignature";
+import { authorizeTwilioWebhook, appendWebhookSecret } from "./twilio/webhookAuth";
 import { renderJoinConference, renderDialAgentIntoConference } from "./twilio/conferenceTwiml";
 import { createOutboundCall } from "./twilio/restClient";
+import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
@@ -41,6 +42,8 @@ type Env = {
   AUDIO_ASSETS: R2Bucket;
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
+  TWILIO_AUTH_TOKEN_SECONDARY?: string;
+  TWILIO_WEBHOOK_SECRET?: string;
   TWILIO_FROM_NUMBER: string;
   TWILIO_API_KEY_SID: string;
   TWILIO_API_KEY_SECRET: string;
@@ -50,6 +53,18 @@ type Env = {
   CF_ACCESS_TEAM_DOMAIN?: string;
   CF_ACCESS_AUD?: string;
 };
+
+// Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
+// Australian local formats get +61; anything already-E.164 or a client: identity passes through.
+function normalizeAuNumber(raw: string | undefined): string | undefined {
+  if (!raw) return raw;
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("+") || trimmed.startsWith("client:")) return trimmed;
+  const digits = trimmed.replace(/[\s()-]/g, "");
+  if (/^0[2-9]\d{8}$/.test(digits)) return "+61" + digits.slice(1);
+  if (/^61\d{9}$/.test(digits)) return "+" + digits;
+  return trimmed;
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -63,6 +78,7 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+
     if (url.pathname === "/webhooks/twilio" && request.method === "POST") {
       const formData = await request.formData();
       const params: Record<string, string> = {};
@@ -70,8 +86,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -113,8 +128,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -124,6 +138,9 @@ export default {
         await env.DB.prepare("UPDATE calls SET status = ?, ended_at = ? WHERE id = ? AND ended_at IS NULL")
           .bind(normalized, Date.now(), params.CallSid)
           .run();
+        // The caller's leg ending may strand the agent alone in the conference (named by
+        // this same CallSid) -- end it if at most one participant remains.
+        await cleanupLoneConference(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, params.CallSid);
       }
 
       return new Response("ok", { status: 200 });
@@ -137,8 +154,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -166,8 +182,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -201,8 +216,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -236,8 +250,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -276,8 +289,7 @@ export default {
       for (const [key, value] of formData.entries()) {
         params[key] = String(value);
       }
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -297,8 +309,7 @@ export default {
       for (const [key, value] of formData.entries()) {
         params[key] = String(value);
       }
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -309,8 +320,8 @@ export default {
       return new Response(
         renderDialAgentIntoConference({
           conferenceName,
-          actionUrl: `${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`,
-          recordingStatusCallbackUrl: `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`,
+          actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
         }),
         { headers: { "Content-Type": "text/xml" } }
       );
@@ -325,14 +336,13 @@ export default {
       for (const [key, value] of formData.entries()) {
         params[key] = String(value);
       }
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
 
       const conferenceName = params.CallSid; // the agent's own browser-originated leg
-      const target = params.To;
+      const target = normalizeAuNumber(params.To);
       if (!target) return new Response("missing To", { status: 400 });
 
       // Outbound calls otherwise create no `calls` row, so they never show up in Call
@@ -351,19 +361,19 @@ export default {
       const fromEmail = params.From.startsWith("client:") ? params.From.slice("client:".length) : params.From;
       await recordCallLeg(env.DB, conferenceName, fromEmail, conferenceName);
 
-      await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
+      await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
         to: target,
         from: env.TWILIO_FROM_NUMBER,
-        url: `${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`,
-        statusCallback: `${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`,
-        statusCallbackEvent: ["completed", "busy", "no-answer", "failed", "canceled"],
+        url: appendWebhookSecret(`${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+        statusCallback: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+        statusCallbackEvent: ["completed"],
       });
 
       return new Response(
         renderDialAgentIntoConference({
           conferenceName,
-          actionUrl: `${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`,
-          recordingStatusCallbackUrl: `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`,
+          actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
         }),
         { headers: { "Content-Type": "text/xml" } }
       );
@@ -377,8 +387,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }
@@ -401,9 +410,13 @@ export default {
           webhookUrl: request.url,
         }),
       });
+      await doResponse.text();
 
-      return new Response(await doResponse.text(), {
-        status: doResponse.status,
+      // This URL is BOTH a status callback (body ignored) and the agent <Dial>'s action
+      // (body parsed as TwiML -- e.g. when the conference ends while the agent leg is still
+      // up). Plain-text "ok" here makes Twilio play "an application error has occurred" to
+      // the surviving leg; an empty TwiML document ends the call cleanly in both roles.
+      return new Response('<?xml version="1.0" encoding="UTF-8"?><Response/>', {
         headers: { "Content-Type": "text/xml" },
       });
     }
@@ -417,8 +430,7 @@ export default {
         params[key] = String(value);
       }
 
-      const signature = request.headers.get("X-Twilio-Signature") ?? "";
-      const valid = await verifyTwilioSignature(request.url, params, signature, env.TWILIO_AUTH_TOKEN);
+      const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) {
         return new Response("invalid signature", { status: 401 });
       }

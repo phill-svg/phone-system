@@ -179,7 +179,13 @@ describe("handlePostTransfer", () => {
         method: "POST",
         body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAagent" }),
       }),
-      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      {
+        TWILIO_ACCOUNT_SID: "ACxxx",
+        TWILIO_AUTH_TOKEN: "authtoken",
+        TWILIO_API_KEY_SID: "SKxxx",
+        TWILIO_API_KEY_SECRET: "authtoken",
+        TWILIO_FROM_NUMBER: "+61800000000",
+      },
       { email: "a@b.com", role: "staff" },
       "https://example.com",
       env.DB,
@@ -187,7 +193,7 @@ describe("handlePostTransfer", () => {
     );
     expect(res.status).toBe(200);
     expect(dial).toHaveBeenCalledWith(
-      "ACxxx", "authtoken",
+      "ACxxx", "SKxxx", "authtoken",
       expect.objectContaining({
         to: "client:b@b.com",
         from: "+61800000000",
@@ -207,7 +213,13 @@ describe("handlePostTransfer", () => {
         method: "POST",
         body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAagent" }),
       }),
-      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      {
+        TWILIO_ACCOUNT_SID: "ACxxx",
+        TWILIO_AUTH_TOKEN: "authtoken",
+        TWILIO_API_KEY_SID: "SKxxx",
+        TWILIO_API_KEY_SECRET: "authtoken",
+        TWILIO_FROM_NUMBER: "+61800000000",
+      },
       { email: "a@b.com", role: "staff" },
       "https://example.com",
       env.DB,
@@ -230,7 +242,13 @@ describe("handlePostTransfer", () => {
         method: "POST",
         body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAnotamember" }),
       }),
-      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      {
+        TWILIO_ACCOUNT_SID: "ACxxx",
+        TWILIO_AUTH_TOKEN: "authtoken",
+        TWILIO_API_KEY_SID: "SKxxx",
+        TWILIO_API_KEY_SECRET: "authtoken",
+        TWILIO_FROM_NUMBER: "+61800000000",
+      },
       { email: "a@b.com", role: "staff" },
       "https://example.com",
       env.DB,
@@ -250,7 +268,13 @@ describe("handlePostTransfer", () => {
         method: "POST",
         body: JSON.stringify({ conferenceName: "CAcaller", targetEmail: "b@b.com", agentCallSid: "CAagent" }),
       }),
-      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken", TWILIO_FROM_NUMBER: "+61800000000" },
+      {
+        TWILIO_ACCOUNT_SID: "ACxxx",
+        TWILIO_AUTH_TOKEN: "authtoken",
+        TWILIO_API_KEY_SID: "SKxxx",
+        TWILIO_API_KEY_SECRET: "authtoken",
+        TWILIO_FROM_NUMBER: "+61800000000",
+      },
       { email: "a@b.com", role: "staff" },
       "https://example.com",
       env.DB,

@@ -4,7 +4,9 @@ import { renderJoinConference, renderDialAgentIntoConference } from "../../src/t
 describe("renderJoinConference", () => {
   it("renders a Dial/Conference document for the given name", () => {
     const xml = renderJoinConference({ conferenceName: "CAcaller" });
-    expect(xml).toContain("<Dial><Conference>CAcaller</Conference></Dial>");
+    // Pinned to a fixed region (au1) so this leg mixes in the SAME room as the other leg's
+    // <Conference>, regardless of which Twilio region created/is processing either underlying call.
+    expect(xml).toContain('<Dial><Conference region="au1">CAcaller</Conference></Dial>');
   });
 });
 
@@ -18,7 +20,7 @@ describe("renderDialAgentIntoConference", () => {
     expect(xml).toContain('action="https://x/action"');
     expect(xml).toContain('record="record-from-start"');
     expect(xml).toContain('recordingStatusCallback="https://x/rec"');
-    expect(xml).toContain("<Conference");
+    expect(xml).toContain('<Conference region="au1"');
     expect(xml).toContain(">CAcaller</Conference>");
   });
 });

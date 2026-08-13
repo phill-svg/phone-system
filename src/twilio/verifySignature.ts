@@ -6,27 +6,37 @@ function buildSignedMessage(url: string, params: Record<string, string>): string
   return url + sortedConcat;
 }
 
+async function computeSignature(authToken: string, message: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, message);
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+
 export async function verifyTwilioSignature(
   url: string,
   params: Record<string, string>,
   signatureHeader: string,
-  authToken: string
+  authTokens: (string | undefined)[]
 ): Promise<boolean> {
-  if (!authToken) {
+  const candidates = authTokens.filter((token): token is string => !!token);
+  if (candidates.length === 0) {
     return false;
   }
   try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(authToken),
-      { name: "HMAC", hash: "SHA-1" },
-      false,
-      ["sign"]
-    );
     const message = new TextEncoder().encode(buildSignedMessage(url, params));
-    const signature = await crypto.subtle.sign("HMAC", key, message);
-    const computed = btoa(String.fromCharCode(...new Uint8Array(signature)));
-    return computed === signatureHeader;
+    for (const token of candidates) {
+      const computed = await computeSignature(token, message);
+      if (computed === signatureHeader) {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
   }

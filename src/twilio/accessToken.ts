@@ -16,7 +16,9 @@ export async function mintAccessToken(opts: {
       voice: { incoming: { allow: true }, outgoing: { application_sid: opts.twimlAppSid } },
     },
   })
-    .setProtectedHeader({ alg: "HS256", typ: "JWT", cty: "twilio-fpa;v=1" })
+    // twr routes token validation to the au1 region, where this account's telephony
+    // (number, TwiML app, API key signing this token) is homed.
+    .setProtectedHeader({ alg: "HS256", typ: "JWT", cty: "twilio-fpa;v=1", twr: "au1" })
     .setIssuer(opts.apiKeySid)
     .setSubject(opts.accountSid)
     .setJti(crypto.randomUUID())
