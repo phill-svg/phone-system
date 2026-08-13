@@ -10,6 +10,19 @@ const DASHBOARD_URL = "https://tcb-voip.phill-abb.workers.dev/admin/phone";
 let mainWindow = null;
 let tray = null;
 
+// The app lives in the tray, so launching the shortcut again while it's hidden
+// must surface the existing window -- NOT start a second instance sharing the
+// same profile (which would register two Twilio Devices under one identity).
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+app.on("second-instance", () => {
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -24,6 +37,11 @@ function createWindow() {
       sandbox: true,
       webviewTag: false,
       preload: path.join(__dirname, "preload.js"),
+      // The window spends most of its life hidden in the tray. Chromium's
+      // intensive background throttling clamps hidden-page timers to ~1/min,
+      // which risks starving the Twilio signaling keepalives -- the softphone
+      // must stay registered while hidden, so throttling stays off.
+      backgroundThrottling: false,
     },
   });
 
@@ -105,6 +123,19 @@ app.on("before-quit", () => {
   // Runs before app.quit() closes any windows, so the flag is already set
   // by the time the "close" handler above checks it.
   app.isQuitting = true;
+  // Best-effort: flip presence to offline so the ring roster drops this agent
+  // immediately instead of ringing a dead endpoint until the 5-minute
+  // heartbeat staleness threshold expires. Runs in the page context (which
+  // holds the Access session cookies); keepalive lets the request survive
+  // page teardown. Fire-and-forget -- quitting must never hang on it.
+  try {
+    mainWindow?.webContents.executeJavaScript(
+      "fetch('/api/softphone/presence',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'offline',awayReason:null}),keepalive:true}).catch(function(){})",
+      true
+    );
+  } catch (e) {
+    // Window may already be destroyed; nothing to do.
+  }
 });
 
 app.on("window-all-closed", () => {

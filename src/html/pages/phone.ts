@@ -38,25 +38,25 @@ export function renderPhonePage(staffEmail: string): string {
 
   const extraHead = `<style>
       :root {
-        --phone-bg: #17181b;
-        --phone-rail-bg: #111214;
-        --phone-panel: #1f2023;
-        --phone-card: #242529;
-        --phone-card-hover: #2b2c31;
-        --phone-border: #33343a;
-        --phone-text: #f4f5f7;
-        --phone-text-dim: #9a9ba3;
-        --phone-text-mute: #6b6c74;
-        --phone-green: #00c58e;
-        --phone-green-hover: #00a878;
-        --phone-green-dim: #173f30;
-        --phone-red: #e5484d;
-        --phone-red-dim: #4a1f21;
-        --phone-orange-dim: #4a2c17;
-        --phone-orange: #f0975a;
+        --phone-bg: #f3f5f4;
+        --phone-rail-bg: #1a3d2e;
+        --phone-panel: #ffffff;
+        --phone-card: #f8faf8;
+        --phone-card-hover: #edf3ef;
+        --phone-border: #cfe0d7;
+        --phone-text: #10231b;
+        --phone-text-dim: #4b645b;
+        --phone-text-mute: #6e8078;
+        --phone-green: #1a3d2e;
+        --phone-green-hover: #123127;
+        --phone-green-dim: #dfece6;
+        --phone-red: #b63d3d;
+        --phone-red-dim: #f8e1e1;
+        --phone-orange-dim: #f9ebdb;
+        --phone-orange: #c97c2b;
       }
       .phone-app { display: flex; min-height: calc(100vh - 64px); background: var(--phone-bg); color: var(--phone-text); font-family: system-ui, sans-serif; }
-      #sdk-error { display: none; margin: 1rem 1.25rem 0; padding: 0.7rem 1rem; background: var(--phone-red-dim); color: #ffb4b7; border-radius: 0.5rem; font-size: 0.85rem; }
+      #sdk-error { display: none; margin: 1rem 1.25rem 0; padding: 0.7rem 1rem; background: var(--phone-red-dim); color: var(--phone-red); border-radius: 0.5rem; font-size: 0.85rem; }
 
       /* Icon rail -- adapted from Aircall's Conversations/Calls/Messages/.../Evaluations rail,
          narrowed to the sections this page actually has: status, dial pad, active call. */
@@ -72,7 +72,7 @@ export function renderPhonePage(staffEmail: string): string {
 
       .device-status-pill { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--phone-text-dim); background: var(--phone-panel); border: 1px solid var(--phone-border); border-radius: 999px; padding: 0.35rem 0.9rem 0.35rem 0.6rem; margin-bottom: 1.5rem; }
       .device-status-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--phone-text-mute); flex-shrink: 0; }
-      .device-status-pill.registered { color: #b7f3de; }
+      .device-status-pill.registered { color: var(--phone-green); }
       .device-status-pill.registered::before { background: var(--phone-green); box-shadow: 0 0 0 3px rgba(0,197,142,0.2); }
 
       .phone-card { background: var(--phone-card); border: 1px solid var(--phone-border); border-radius: 0.9rem; padding: 1.1rem 1.25rem 1.25rem; margin-bottom: 1.25rem; }
@@ -90,7 +90,7 @@ export function renderPhonePage(staffEmail: string): string {
       .status-icon { width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
       .status-icon-available { background: var(--phone-green-dim); color: var(--phone-green); }
       .status-icon-away { background: var(--phone-orange-dim); color: var(--phone-orange); }
-      .status-icon-offline { background: var(--phone-red-dim); color: #ff9599; }
+      .status-icon-offline { background: var(--phone-red-dim); color: var(--phone-red); }
       .status-option-check { margin-left: auto; color: var(--phone-green); display: none; }
       .status-option.active .status-option-check { display: flex; }
 
@@ -394,7 +394,9 @@ export function renderPhonePage(staffEmail: string): string {
 
       document.getElementById('call-btn').addEventListener('click', function () {
         var to = document.getElementById('dial-input').value.trim();
-        if (to) placeCall(to);
+        if (to) placeCall(to).catch(function (err) {
+          setDeviceStatusText('Call failed: ' + describeError(err));
+        });
       });
 
       document.getElementById('accept-btn').addEventListener('click', function () {
@@ -477,6 +479,22 @@ export function renderPhonePage(staffEmail: string): string {
         }
       });
 
+      // Full detail for TwilioErrors: "AccessTokenInvalid (20101): Twilio was unable to
+      // validate your Access Token" instead of just the message (or, worse, "undefined").
+      function describeError(err) {
+        if (!err) return 'unknown error';
+        var msg = err.message || String(err);
+        if (err.code && msg.indexOf('(' + err.code + ')') === -1) msg = msg + ' (code ' + err.code + ')';
+        return msg;
+      }
+
+      // A lapsed Cloudflare Access session turns same-origin API fetches into cross-origin
+      // redirects to cloudflareaccess.com, which reject with TypeError before any status
+      // check runs. Reloading the page re-triggers the Access login.
+      function sessionExpiredHint() {
+        setDeviceStatusText('Signed-in session expired -- reload this page (Ctrl+Shift+R) to sign back in.');
+      }
+
       async function initDevice() {
         setDeviceStatusText('Registering…');
         try {
@@ -486,17 +504,29 @@ export function renderPhonePage(staffEmail: string): string {
             return;
           }
           var data = await res.json();
-          device = new Twilio.Device(data.token, { codecPreferences: ['opus', 'pcmu'] });
+          device = new Twilio.Device(data.token, { codecPreferences: ['opus', 'pcmu'], edge: 'sydney' });
           device.on('registered', function () { setDeviceStatusText('Registered -- ready to receive calls.', true); });
-          device.on('unregistered', function () { setDeviceStatusText('Unregistered.'); });
+          device.on('unregistered', function () {
+            // Registration failure fires 'error' then 'unregistered' -- keep the
+            // informative error on screen rather than replacing it with this.
+            var el = document.getElementById('device-status');
+            if (el && el.textContent.indexOf('Device error') === 0) return;
+            setDeviceStatusText('Unregistered.');
+          });
           device.on('error', function (err) {
-            setDeviceStatusText('Device error: ' + (err && err.message ? err.message : err));
+            setDeviceStatusText('Device error: ' + describeError(err));
           });
           device.on('tokenWillExpire', async function () {
-            var r = await fetch('/api/softphone/token');
-            if (r.ok) {
+            try {
+              var r = await fetch('/api/softphone/token');
+              if (!r.ok) {
+                setDeviceStatusText('Could not refresh the access token (status ' + r.status + ').');
+                return;
+              }
               var d = await r.json();
               device.updateToken(d.token);
+            } catch (e) {
+              sessionExpiredHint();
             }
           });
           device.on('incoming', function (call) {
@@ -510,14 +540,30 @@ export function renderPhonePage(staffEmail: string): string {
           });
           await device.register();
         } catch (err) {
-          setDeviceStatusText('Registration failed: ' + (err && err.message ? err.message : err));
+          // The SDK's register() rejects with NO argument when registration fails via a
+          // device 'error' event -- the handler above has already shown the real error,
+          // so only overwrite the status when we actually have something to say.
+          if (err !== undefined) setDeviceStatusText('Registration failed: ' + describeError(err));
         }
       }
 
-      // Heartbeat: keep presence alive while this tab is open (Task 1's HEARTBEAT_STALE_MS is
-      // 60s; ping well under that).
-      setInterval(function () { fetch('/api/softphone/heartbeat', { method: 'POST' }); }, 20000);
-      fetch('/api/softphone/heartbeat', { method: 'POST' });
+      // Heartbeat: keep presence alive while this tab is open (HEARTBEAT_STALE_MS is 5
+      // minutes; ping well under that). Two consecutive failures means the Access session
+      // has lapsed (or the network is down) -- surface it instead of silently going stale
+      // in the ring roster while the pill still says "Registered".
+      var heartbeatFailures = 0;
+      function sendHeartbeat() {
+        fetch('/api/softphone/heartbeat', { method: 'POST' })
+          .then(function (r) {
+            if (r.ok) { heartbeatFailures = 0; return; }
+            if (++heartbeatFailures >= 2) setDeviceStatusText('Presence heartbeat failing (status ' + r.status + ') -- you may not receive calls.');
+          })
+          .catch(function () {
+            if (++heartbeatFailures >= 2) sessionExpiredHint();
+          });
+      }
+      setInterval(sendHeartbeat, 20000);
+      sendHeartbeat();
 
       loadInitialStatus();
       if (window.Twilio) {
