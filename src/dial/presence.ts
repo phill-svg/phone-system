@@ -12,6 +12,8 @@ export type StaffPresenceRow = {
   lastHeartbeatAt: number | null;
   // Optional PSTN mobile for ring-to-mobile failover (null if not set).
   mobileNumber: string | null;
+  // Cascade ring priority: lower rings earlier. Defaults to 100.
+  ringPriority: number;
 };
 
 // Browsers throttle setInterval/setTimeout heavily in backgrounded tabs -- a staff member

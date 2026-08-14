@@ -27,6 +27,9 @@ export async function resolveRingTargets(db: D1Database, target: RingNodeTarget,
   const candidates = target === "all" ? roster : roster.filter((s) => target.includes(s.email));
   const available = candidates.filter((s) => isStaffAvailable(s, now));
 
+  // Ring in priority order (lower rings earlier); email is a stable tiebreaker within a tier.
+  available.sort((a, b) => a.ringPriority - b.ringPriority || a.email.localeCompare(b.email));
+
   const legs: string[] = [];
   for (const staff of available) {
     legs.push(`client:${staff.email}`);

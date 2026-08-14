@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { getStaffRoster, setStaffSchedule, setStaffMobile } from "../db/staff";
+import { getStaffRoster, setStaffSchedule, setStaffMobile, setStaffPriority } from "../db/staff";
 import { toDiallableNumber } from "../dial/ringQueue";
 import type { StaffUser } from "../access/requireStaffUser";
 
@@ -52,5 +52,22 @@ export async function handlePutStaffMobile(request: Request, db: D1Database, ema
     return jsonResponse({ error: "That doesn't look like a valid phone number." }, 400);
   }
   await setStaffMobile(db, email, raw || null);
+  return jsonResponse({ ok: true });
+}
+
+// Set a staff member's cascade ring priority (lower rings earlier). Admin only.
+export async function handlePutStaffPriority(request: Request, db: D1Database, email: string, staff: StaffUser): Promise<Response> {
+  if (staff.role !== "admin") return new Response("forbidden", { status: 403 });
+  let body: { priority?: unknown };
+  try {
+    body = (await request.json()) as { priority?: unknown };
+  } catch {
+    return new Response("invalid request body", { status: 400 });
+  }
+  const priority = Number(body.priority);
+  if (!Number.isFinite(priority) || priority < 0 || priority > 9999) {
+    return jsonResponse({ error: "Priority must be a number between 0 and 9999." }, 400);
+  }
+  await setStaffPriority(db, email, priority);
   return jsonResponse({ ok: true });
 }

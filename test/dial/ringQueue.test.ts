@@ -7,11 +7,17 @@ const OPEN_SCHEDULE = JSON.stringify({
   mon: { open: "09:00", close: "17:00" }, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
 });
 
-async function insertStaff(email: string, status: string, heartbeatAt: number | null, mobile: string | null = null) {
+async function insertStaff(
+  email: string,
+  status: string,
+  heartbeatAt: number | null,
+  mobile: string | null = null,
+  priority = 100
+) {
   await env.DB.prepare(
-    "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, mobile_number) VALUES (?, 'staff', ?, ?, ?, ?, ?)"
+    "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, mobile_number, ring_priority) VALUES (?, 'staff', ?, ?, ?, ?, ?, ?)"
   )
-    .bind(email, Date.now(), status, OPEN_SCHEDULE, heartbeatAt, mobile)
+    .bind(email, Date.now(), status, OPEN_SCHEDULE, heartbeatAt, mobile, priority)
     .run();
 }
 
@@ -53,6 +59,12 @@ describe("resolveRingTargets", () => {
     expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual([
       "client:a@b.com", "+61412345678", "client:b@b.com", "+61423000000",
     ]);
+  });
+
+  it("rings staff in ascending priority order (lower rings first), regardless of insert order", async () => {
+    await insertStaff("general@b.com", "available", NOW.getTime(), null, 100);
+    await insertStaff("senior@b.com", "available", NOW.getTime(), null, 10);
+    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:senior@b.com", "client:general@b.com"]);
   });
 });
 

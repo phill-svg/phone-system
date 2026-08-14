@@ -58,6 +58,11 @@ export function renderSettingsPage(
           <button type="button" class="staff-mobile-save">Save mobile</button>
           <span class="staff-mobile-status"></span>
         </label>
+        <label class="staff-priority-label">Ring priority (lower rings first)
+          <input type="number" class="staff-priority-input" value="${staffMember.ringPriority}" min="0" max="9999" step="1">
+          <button type="button" class="staff-priority-save">Save priority</button>
+          <span class="staff-priority-status"></span>
+        </label>
         ${renderDayRows(staffMember.schedule, idPrefix)}
         <button type="submit">Save Schedule</button>
         <span class="staff-save-status"></span>
@@ -135,16 +140,18 @@ export function renderSettingsPage(
           status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
         });
 
-        const mobileBtn = form.querySelector('.staff-mobile-save');
-        if (mobileBtn) {
-          mobileBtn.addEventListener('click', async function () {
-            const status = form.querySelector('.staff-mobile-status');
+        async function saveField(btnSelector, statusSelector, inputSelector, path, payloadKey) {
+          const btn = form.querySelector(btnSelector);
+          if (!btn) return;
+          btn.addEventListener('click', async function () {
+            const status = form.querySelector(statusSelector);
             const email = form.dataset.email;
-            const mobile = form.querySelector('.staff-mobile-input').value;
-            const res = await fetch('/api/staff/' + encodeURIComponent(email) + '/mobile', {
+            const value = form.querySelector(inputSelector).value;
+            const payload = {}; payload[payloadKey] = value;
+            const res = await fetch('/api/staff/' + encodeURIComponent(email) + path, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ mobile: mobile }),
+              body: JSON.stringify(payload),
             });
             if (res.ok) {
               status.textContent = 'Saved.';
@@ -155,6 +162,8 @@ export function renderSettingsPage(
             }
           });
         }
+        saveField('.staff-mobile-save', '.staff-mobile-status', '.staff-mobile-input', '/mobile', 'mobile');
+        saveField('.staff-priority-save', '.staff-priority-status', '.staff-priority-input', '/priority', 'priority');
       });
     </script>`;
   return renderLayout("Settings", "settings", body);

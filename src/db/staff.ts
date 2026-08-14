@@ -9,6 +9,7 @@ type StaffRow = {
   schedule: string;
   last_heartbeat_at: number | null;
   mobile_number: string | null;
+  ring_priority: number | null;
 };
 
 function toPresenceRow(row: StaffRow): StaffPresenceRow {
@@ -20,6 +21,7 @@ function toPresenceRow(row: StaffRow): StaffPresenceRow {
     schedule: JSON.parse(row.schedule) as BusinessHoursSchedule,
     lastHeartbeatAt: row.last_heartbeat_at,
     mobileNumber: row.mobile_number ?? null,
+    ringPriority: row.ring_priority ?? 100,
   };
 }
 
@@ -50,6 +52,11 @@ export async function setStaffStatus(
 export async function setStaffMobile(db: D1Database, email: string, mobileNumber: string | null): Promise<void> {
   const value = mobileNumber && mobileNumber.trim() ? mobileNumber.trim() : null;
   await db.prepare("UPDATE staff_users SET mobile_number = ? WHERE email = ?").bind(value, email).run();
+}
+
+// Sets a staff member's cascade ring priority (lower rings earlier).
+export async function setStaffPriority(db: D1Database, email: string, priority: number): Promise<void> {
+  await db.prepare("UPDATE staff_users SET ring_priority = ? WHERE email = ?").bind(Math.round(priority), email).run();
 }
 
 export async function setStaffSchedule(db: D1Database, email: string, schedule: BusinessHoursSchedule): Promise<void> {
