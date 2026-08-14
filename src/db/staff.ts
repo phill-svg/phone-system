@@ -8,7 +8,6 @@ type StaffRow = {
   away_reason: string | null;
   schedule: string;
   last_heartbeat_at: number | null;
-  mobile_number: string | null;
   ring_priority: number | null;
 };
 
@@ -20,7 +19,6 @@ function toPresenceRow(row: StaffRow): StaffPresenceRow {
     awayReason: row.away_reason,
     schedule: JSON.parse(row.schedule) as BusinessHoursSchedule,
     lastHeartbeatAt: row.last_heartbeat_at,
-    mobileNumber: row.mobile_number ?? null,
     ringPriority: row.ring_priority ?? 100,
   };
 }
@@ -45,13 +43,6 @@ export async function setStaffStatus(
     .prepare("UPDATE staff_users SET status = ?, away_reason = ? WHERE email = ?")
     .bind(status, awayReason, email)
     .run();
-}
-
-// Sets (or clears, when null) a staff member's PSTN failover mobile number. Stored as entered;
-// the ring plan normalizes it to a diallable E.164 form at dial time.
-export async function setStaffMobile(db: D1Database, email: string, mobileNumber: string | null): Promise<void> {
-  const value = mobileNumber && mobileNumber.trim() ? mobileNumber.trim() : null;
-  await db.prepare("UPDATE staff_users SET mobile_number = ? WHERE email = ?").bind(value, email).run();
 }
 
 // Sets a staff member's cascade ring priority (lower rings earlier).

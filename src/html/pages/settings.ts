@@ -53,11 +53,6 @@ export function renderSettingsPage(
       const idPrefix = `staff-${domIdSafe(staffMember.email)}`;
       return `<form class="settings-form staff-schedule-form" id="${idPrefix}-form" data-email="${escapeHtml(staffMember.email)}">
         <h4>${escapeHtml(staffMember.email)} <small>(${escapeHtml(staffMember.role)})</small></h4>
-        <label class="staff-mobile-label">Failover mobile
-          <input type="tel" class="staff-mobile-input" value="${escapeHtml(staffMember.mobileNumber ?? "")}" placeholder="+61 4XX XXX XXX">
-          <button type="button" class="staff-mobile-save">Save mobile</button>
-          <span class="staff-mobile-status"></span>
-        </label>
         <label class="staff-priority-label">Ring priority (lower rings first)
           <input type="number" class="staff-priority-input" value="${staffMember.ringPriority}" min="0" max="9999" step="1">
           <button type="button" class="staff-priority-save">Save priority</button>
@@ -162,7 +157,6 @@ export function renderSettingsPage(
             }
           });
         }
-        saveField('.staff-mobile-save', '.staff-mobile-status', '.staff-mobile-input', '/mobile', 'mobile');
         saveField('.staff-priority-save', '.staff-priority-status', '.staff-priority-input', '/priority', 'priority');
       });
     </script>`;

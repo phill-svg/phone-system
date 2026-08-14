@@ -1,6 +1,5 @@
 import { jsonResponse } from "./respond";
-import { getStaffRoster, setStaffSchedule, setStaffMobile, setStaffPriority } from "../db/staff";
-import { toDiallableNumber } from "../dial/ringQueue";
+import { getStaffRoster, setStaffSchedule, setStaffPriority } from "../db/staff";
 import type { StaffUser } from "../access/requireStaffUser";
 
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -34,24 +33,6 @@ export async function handlePutStaffSchedule(request: Request, db: D1Database, e
   }
   if (!isSchedule(body)) return new Response("invalid request body", { status: 400 });
   await setStaffSchedule(db, email, body as any);
-  return jsonResponse({ ok: true });
-}
-
-// Set/clear a staff member's PSTN failover mobile. An admin can edit anyone's; a non-admin may
-// only edit their own.
-export async function handlePutStaffMobile(request: Request, db: D1Database, email: string, staff: StaffUser): Promise<Response> {
-  if (staff.role !== "admin" && staff.email !== email) return new Response("forbidden", { status: 403 });
-  let body: { mobile?: unknown };
-  try {
-    body = (await request.json()) as { mobile?: unknown };
-  } catch {
-    return new Response("invalid request body", { status: 400 });
-  }
-  const raw = typeof body.mobile === "string" ? body.mobile.trim() : "";
-  if (raw && toDiallableNumber(raw) === null) {
-    return jsonResponse({ error: "That doesn't look like a valid phone number." }, 400);
-  }
-  await setStaffMobile(db, email, raw || null);
   return jsonResponse({ ok: true });
 }
 

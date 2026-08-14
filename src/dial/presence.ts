@@ -10,8 +10,6 @@ export type StaffPresenceRow = {
   awayReason: string | null;
   schedule: BusinessHoursSchedule;
   lastHeartbeatAt: number | null;
-  // Optional PSTN mobile for ring-to-mobile failover (null if not set).
-  mobileNumber: string | null;
   // Cascade ring priority: lower rings earlier. Defaults to 100.
   ringPriority: number;
 };
