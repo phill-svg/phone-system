@@ -20,6 +20,13 @@ import {
   handlePostCompleteTransfer,
 } from "./api/softphone";
 import { handleGetStaffRoster, handlePutStaffSchedule } from "./api/staff";
+import {
+  handleListContacts,
+  handleCreateContact,
+  handleUpdateContact,
+  handleDeleteContact,
+  handleImportContacts,
+} from "./api/contacts";
 import { renderPhonePage } from "./html/pages/phone";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
@@ -568,6 +575,23 @@ export default {
       const staffScheduleMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/schedule$/);
       if (staffScheduleMatch && request.method === "PUT") {
         return handlePutStaffSchedule(request, env.DB, decodeURIComponent(staffScheduleMatch[1]), staff);
+      }
+
+      // Contact book (softphone). The literal /api/contacts and /api/contacts/import paths are
+      // checked before the /api/contacts/:id regex; "import" is non-numeric so it can't collide
+      // with the \\d+ id match anyway.
+      if (url.pathname === "/api/contacts") {
+        if (request.method === "GET") return handleListContacts(env.DB);
+        if (request.method === "POST") return handleCreateContact(request, env.DB);
+      }
+      if (url.pathname === "/api/contacts/import" && request.method === "POST") {
+        return handleImportContacts(request, env.DB);
+      }
+      const contactIdMatch = url.pathname.match(/^\/api\/contacts\/(\d+)$/);
+      if (contactIdMatch) {
+        const contactId = Number(contactIdMatch[1]);
+        if (request.method === "PUT") return handleUpdateContact(request, env.DB, contactId);
+        if (request.method === "DELETE") return handleDeleteContact(env.DB, contactId);
       }
 
       return new Response("not found", { status: 404 });

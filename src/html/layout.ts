@@ -35,10 +35,11 @@ export function renderLayout(
 <title>${escapeHtml(title)} — TCB VoIP Admin</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; color: #1a1a1a; }
-  header { background: #1a3d2e; color: white; padding: 1rem 1.5rem; display: flex; gap: 1.5rem; align-items: center; }
-  header h1 { font-size: 1.1rem; margin: 0; }
-  .nav-link { color: #cfe8db; text-decoration: none; }
-  .nav-link.active { color: white; font-weight: 600; }
+  header { background: linear-gradient(180deg, #e4002b, #c10023); color: white; padding: 0.85rem 1.5rem; display: flex; gap: 1.5rem; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+  header h1 { font-size: 1.05rem; margin: 0; font-weight: 700; letter-spacing: 0.01em; }
+  .nav-link { color: rgba(255,255,255,0.82); text-decoration: none; font-size: 0.9rem; padding: 0.3rem 0; border-bottom: 2px solid transparent; transition: color 0.12s; }
+  .nav-link:hover { color: #fff; }
+  .nav-link.active { color: white; font-weight: 600; border-bottom-color: rgba(255,255,255,0.9); }
   main { padding: 1.5rem; max-width: 960px; margin: 0 auto; }
   main.full-width { max-width: none; padding: 0; }
   table { width: 100%; border-collapse: collapse; }
