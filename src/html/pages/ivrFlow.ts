@@ -188,7 +188,7 @@ export function renderIvrFlowPage(
       }
 
       function typeOptionsHtml(selectedType) {
-        var types = ['business_hours', 'play', 'gather', 'ring', 'wait', 'voicemail'];
+        var types = ['date_rule', 'business_hours', 'play', 'gather', 'input', 'wait', 'ring', 'redirect', 'voicemail'];
         var html = '';
         types.forEach(function (t) {
           var label = NODE_META[t] ? NODE_META[t].label : t;
@@ -207,7 +207,7 @@ export function renderIvrFlowPage(
 
       // One row per node type for the type picker's open popup list.
       function typePickerRowsHtml(selectedType) {
-        var types = ['business_hours', 'play', 'gather', 'ring', 'wait', 'voicemail'];
+        var types = ['date_rule', 'business_hours', 'play', 'gather', 'input', 'wait', 'ring', 'redirect', 'voicemail'];
         return types.map(function (t) {
           var meta = NODE_META[t];
           return '<div class="ivr-type-picker-row' + (t === selectedType ? ' selected' : '') + '" data-type="' + t + '">' +
@@ -310,6 +310,25 @@ export function renderIvrFlowPage(
           '<label>Mailbox label <input type="text" class="f-mailboxLabel" value="' + escAttr(config.mailboxLabel) + '"></label>' +
           '</div>';
 
+        var closedDates = Array.isArray(config.closedDates) ? config.closedDates.join(', ') : '';
+        html += '<div class="field-group" data-type="date_rule" style="display:' + (node.type === 'date_rule' ? 'block' : 'none') + '">' +
+          '<label>Closed dates <input type="text" class="f-closedDates" value="' + escAttr(closedDates) + '" placeholder="2026-12-25, 12-26, 2026-12-24..2027-01-02"></label>' +
+          '<div style="font-size:0.72rem;color:#6b7280;margin:-0.3rem 0 0.4rem">Comma-separated. Use YYYY-MM-DD, MM-DD (every year), or start..end ranges.</div>' +
+          '<label>Open next node <input type="text" class="f-openNextNodeId" value="' + escAttr(config.openNextNodeId) + '"></label> ' +
+          '<label>Closed next node <input type="text" class="f-closedNextNodeId" value="' + escAttr(config.closedNextNodeId) + '"></label>' +
+          '</div>';
+
+        html += '<div class="field-group" data-type="input" style="display:' + (node.type === 'input' ? 'block' : 'none') + '">' +
+          '<label>Audio asset <select class="f-audioAssetId">' + audioOptionsHtml(config.audioAssetId) + '</select></label> ' +
+          '<label>TTS text <input type="text" class="f-ttsText" value="' + escAttr(config.ttsText) + '"></label> ' +
+          '<label>Max digits <input type="number" class="f-numDigits" value="' + escAttr(config.numDigits != null ? config.numDigits : 6) + '"></label> ' +
+          '<label>Next node <input type="text" class="f-nextNodeId" value="' + escAttr(config.nextNodeId) + '"></label>' +
+          '</div>';
+
+        html += '<div class="field-group" data-type="redirect" style="display:' + (node.type === 'redirect' ? 'block' : 'none') + '">' +
+          '<label>Forward to number <input type="text" class="f-number" value="' + escAttr(config.number) + '" placeholder="+61 2 xxxx xxxx"></label>' +
+          '</div>';
+
         return html;
       }
 
@@ -387,6 +406,18 @@ export function renderIvrFlowPage(
           config.strategy = group.querySelector('.f-strategy').value;
           config.timeoutSeconds = Number(group.querySelector('.f-timeoutSeconds').value) || 0;
           config.noAnswerNextNodeId = group.querySelector('.f-noAnswerNextNodeId').value.trim();
+        } else if (type === 'date_rule') {
+          config.closedDates = group.querySelector('.f-closedDates').value.split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s !== ''; });
+          config.openNextNodeId = group.querySelector('.f-openNextNodeId').value.trim();
+          config.closedNextNodeId = group.querySelector('.f-closedNextNodeId').value.trim();
+        } else if (type === 'input') {
+          var ic = audioOrTtsConfig(group);
+          config.audioAssetId = ic.audioAssetId;
+          config.ttsText = ic.ttsText;
+          config.numDigits = Number(group.querySelector('.f-numDigits').value) || 6;
+          config.nextNodeId = group.querySelector('.f-nextNodeId').value.trim();
+        } else if (type === 'redirect') {
+          config.number = group.querySelector('.f-number').value.trim();
         }
         return { type: type, config: config };
       }
@@ -398,8 +429,8 @@ export function renderIvrFlowPage(
       // browser JS with no shared module to import from).
       function outgoingRefs(node) {
         var c = node.config || {};
-        if (node.type === 'business_hours') return [c.openNextNodeId, c.closedNextNodeId].filter(Boolean);
-        if (node.type === 'play' || node.type === 'wait') return [c.nextNodeId].filter(Boolean);
+        if (node.type === 'business_hours' || node.type === 'date_rule') return [c.openNextNodeId, c.closedNextNodeId].filter(Boolean);
+        if (node.type === 'play' || node.type === 'wait' || node.type === 'input') return [c.nextNodeId].filter(Boolean);
         if (node.type === 'ring') return [c.noAnswerNextNodeId].filter(Boolean);
         if (node.type === 'gather') {
           var opts = Array.isArray(c.options) ? c.options : [];
@@ -422,25 +453,26 @@ export function renderIvrFlowPage(
       function outputHandlesForType(node) {
         var c = node.config || {};
         if (node.type === 'business_hours') return [{ target: c.openNextNodeId, label: 'Open' }, { target: c.closedNextNodeId, label: 'Closed' }];
-        if (node.type === 'play' || node.type === 'wait') return [{ target: c.nextNodeId, label: null }];
+        if (node.type === 'date_rule') return [{ target: c.openNextNodeId, label: 'Open' }, { target: c.closedNextNodeId, label: 'Closed' }];
+        if (node.type === 'play' || node.type === 'wait' || node.type === 'input') return [{ target: c.nextNodeId, label: null }];
         if (node.type === 'ring') return [{ target: '__pill_call_ends', label: null }, { target: c.noAnswerNextNodeId, label: 'No answer' }];
         if (node.type === 'gather') {
           var opts = Array.isArray(c.options) ? c.options : [];
           return opts.map(function (o) { return { target: o.nextNodeId, label: 'Press ' + o.digit }; }).concat([{ target: c.defaultNextNodeId, label: 'No input' }]);
         }
-        if (node.type === 'voicemail') return [{ target: '__pill_call_ends', label: null }];
+        if (node.type === 'voicemail' || node.type === 'redirect') return [{ target: '__pill_call_ends', label: null }];
         return [];
       }
 
       function outputsCountForType(node) {
-        if (node.type === 'voicemail') return 1; // synthetic "Call ended" pill
-        if (node.type === 'business_hours') return 2;
+        if (node.type === 'voicemail' || node.type === 'redirect') return 1; // synthetic "Call ended" pill
+        if (node.type === 'business_hours' || node.type === 'date_rule') return 2;
         if (node.type === 'gather') {
           var opts = Array.isArray(node.config.options) ? node.config.options : [];
           return opts.length + 1;
         }
         if (node.type === 'ring') return 2; // synthetic "Call answered" pill + real no-answer target
-        return 1; // play, wait
+        return 1; // play, wait, input
       }
 
       var COLUMN_WIDTH = 300;
@@ -541,26 +573,35 @@ export function renderIvrFlowPage(
       // this is what turns the card from "raw id + type" into something readable at a glance,
       // matching the Aircall reference's icon+title+subtitle card style.
       var NODE_META = {
-        business_hours: { icon: '\u{1F550}', color: '#7c5cff', label: 'Business Hours' },
+        date_rule: { icon: '\u{1F4C5}', color: '#7c5cff', label: 'Date rule' },
+        business_hours: { icon: '\u{1F550}', color: '#7c5cff', label: 'Time rule' },
         play: { icon: '▶', color: '#2f7bf6', label: 'Audio Message' },
-        gather: { icon: '⌨', color: '#7c5cff', label: 'Menu' },
+        gather: { icon: '⌨', color: '#7c5cff', label: 'Standard IVR' },
+        input: { icon: '\u{1F522}', color: '#d1443b', label: 'Input IVR' },
+        wait: { icon: '⏳', color: '#2f7bf6', label: 'Waiting experience' },
         ring: { icon: '\u{1F4DE}', color: '#1f9d55', label: 'Ring to' },
-        wait: { icon: '⏳', color: '#2f7bf6', label: 'Waiting Experience' },
+        redirect: { icon: '↪', color: '#1f9d55', label: 'Redirect to' },
         voicemail: { icon: '\u{1F4FC}', color: '#e08a1e', label: 'Voicemail' }
       };
 
       function subtitleForNode(node) {
         var c = node.config || {};
         if (node.type === 'business_hours') return 'Routes by business hours';
+        if (node.type === 'date_rule') {
+          var dn = Array.isArray(c.closedDates) ? c.closedDates.length : 0;
+          return dn + ' closed date' + (dn === 1 ? '' : 's') + ' (holidays)';
+        }
         if (node.type === 'play') return c.ttsText ? truncate(c.ttsText, 40) : (c.audioAssetId ? 'Plays uploaded audio' : 'No content set');
         if (node.type === 'gather') {
           var n = Array.isArray(c.options) ? c.options.length : 0;
           return n + ' option' + (n === 1 ? '' : 's') + (c.ttsText ? ': ' + truncate(c.ttsText, 30) : '');
         }
+        if (node.type === 'input') return 'Collects ' + (c.numDigits || '?') + ' digits' + (c.ttsText ? ': ' + truncate(c.ttsText, 25) : '');
         if (node.type === 'ring') {
           var targetLabel = c.target === 'all' ? 'all available staff' : (Array.isArray(c.target) ? c.target.length + ' staff member' + (c.target.length === 1 ? '' : 's') : 'staff');
           return 'Ring ' + targetLabel + ' for ' + c.timeoutSeconds + 's (' + c.strategy + ')';
         }
+        if (node.type === 'redirect') return 'Forward to ' + (c.number || 'a number');
         if (node.type === 'wait') return 'Hold experience' + (c.allowCallbackStar ? ' + callback (*)' : '');
         if (node.type === 'voicemail') return 'Mailbox: ' + (c.mailboxLabel || 'default');
         return '';

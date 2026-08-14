@@ -2,7 +2,7 @@ import { jsonResponse } from "./respond";
 import { listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes, updateNodePosition } from "../db/ivrNodes";
 import type { StaffUser } from "../access/requireStaffUser";
 
-const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail"] as const;
+const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail", "date_rule", "input", "redirect"] as const;
 type NodeType = (typeof NODE_TYPES)[number];
 
 type PutNode = { id: string; type: NodeType; config: Record<string, unknown>; positionX: number | null; positionY: number | null };
@@ -84,6 +84,23 @@ function isVoicemailConfig(c: Record<string, unknown>): boolean {
   return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText) && isNonEmptyString(c.mailboxLabel);
 }
 
+function isDateRuleConfig(c: Record<string, unknown>): boolean {
+  return isStringArray(c.closedDates) && isString(c.openNextNodeId) && isString(c.closedNextNodeId);
+}
+
+function isInputConfig(c: Record<string, unknown>): boolean {
+  return (
+    isStringOrNull(c.audioAssetId) &&
+    isStringOrNull(c.ttsText) &&
+    typeof c.numDigits === "number" &&
+    isString(c.nextNodeId)
+  );
+}
+
+function isRedirectConfig(c: Record<string, unknown>): boolean {
+  return isNonEmptyString(c.number);
+}
+
 function isValidConfigForType(type: NodeType, config: unknown): config is Record<string, unknown> {
   if (!isPlainObject(config)) return false;
   switch (type) {
@@ -99,6 +116,12 @@ function isValidConfigForType(type: NodeType, config: unknown): config is Record
       return isWaitConfig(config);
     case "voicemail":
       return isVoicemailConfig(config);
+    case "date_rule":
+      return isDateRuleConfig(config);
+    case "input":
+      return isInputConfig(config);
+    case "redirect":
+      return isRedirectConfig(config);
   }
 }
 

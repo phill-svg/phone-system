@@ -58,6 +58,23 @@ describe("flowTwiml", () => {
       expect(fragment).toBe("");
     });
 
+    it("renders an INPUT command as a multi-digit <Gather> with finishOnKey", () => {
+      const commands: FlowCommand[] = [
+        { type: "INPUT", numDigits: 6, finishOnKey: "#", timeoutSeconds: 8, action: "https://example.com/webhooks/twilio" },
+      ];
+      const fragment = renderFlowCommandsFragment(commands, { baseUrl: BASE_URL });
+      expect(fragment).toBe(
+        '<Gather action="https://example.com/webhooks/twilio" method="POST" input="dtmf" ' +
+          'numDigits="6" finishOnKey="#" timeout="8" actionOnEmptyResult="true"></Gather>'
+      );
+    });
+
+    it("renders a REDIRECT command as a <Dial> to the external number", () => {
+      const commands: FlowCommand[] = [{ type: "REDIRECT", number: "+61212345678" }];
+      const fragment = renderFlowCommandsFragment(commands, { baseUrl: BASE_URL });
+      expect(fragment).toBe("<Dial>+61212345678</Dial>");
+    });
+
     it("XML-escapes special characters in ttsText", () => {
       const commands: FlowCommand[] = [
         { type: "PLAY", audioAssetId: null, ttsText: `Bob & Jane's <shop> "special"` },

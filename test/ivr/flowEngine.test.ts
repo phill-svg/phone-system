@@ -53,6 +53,41 @@ describe("advanceFlow — seeded main flow (byte-for-byte parity with the old ha
     expect(result.commands[0]).toMatchObject({ type: "PLAY" });
     expect(result.commands[1]).toMatchObject({ type: "GATHER" });
   });
+});
+
+describe("advanceFlow — new node types (date_rule / input / redirect)", () => {
+  it("date_rule takes the closed branch on a listed closed date and the open branch otherwise", async () => {
+    await insertNode({ id: "dr_entry", flow: "dr", isEntry: true, type: "date_rule", config: { closedDates: ["12-25", "2026-08-14"], openNextNodeId: "dr_open", closedNextNodeId: "dr_closed" } });
+    await insertNode({ id: "dr_open", flow: "dr", type: "voicemail", config: { audioAssetId: null, ttsText: "Open VM", mailboxLabel: "open" } });
+    await insertNode({ id: "dr_closed", flow: "dr", type: "voicemail", config: { audioAssetId: null, ttsText: "Closed VM", mailboxLabel: "closed" } });
+
+    const closed = await advanceFlow(env.DB, "dr", null, { type: "ENTER" }, false, 0, new Date("2026-12-25T02:00:00Z"));
+    expect(closed.nextNodeId).toBe("dr_closed");
+
+    const open = await advanceFlow(env.DB, "dr", null, { type: "ENTER" }, false, 0, new Date("2026-07-01T02:00:00Z"));
+    expect(open.nextNodeId).toBe("dr_open");
+  });
+
+  it("input node stops to collect digits, then captures the value and continues to nextNodeId", async () => {
+    await insertNode({ id: "in_entry", flow: "inf", isEntry: true, type: "input", config: { audioAssetId: null, ttsText: "Enter your booking number", numDigits: 5, nextNodeId: "in_after" } });
+    await insertNode({ id: "in_after", flow: "inf", type: "voicemail", config: { audioAssetId: null, ttsText: "Thanks", mailboxLabel: "after-input" } });
+
+    const enter = await advanceFlow(env.DB, "inf", null, { type: "ENTER" }, false, 0);
+    expect(enter.nextNodeId).toBe("in_entry");
+    expect(enter.commands.some((c) => c.type === "INPUT")).toBe(true);
+
+    const resumed = await advanceFlow(env.DB, "inf", "in_entry", { type: "DIGIT", digit: "12345" }, false, 0);
+    expect(resumed.capturedInput).toEqual({ nodeId: "in_entry", value: "12345" });
+    expect(resumed.nextNodeId).toBe("in_after");
+    expect(resumed.commands.some((c) => c.type === "VOICEMAIL_HANDOFF")).toBe(true);
+  });
+
+  it("redirect node emits a REDIRECT command with the configured number", async () => {
+    await insertNode({ id: "rd_entry", flow: "rdf", isEntry: true, type: "redirect", config: { number: "+61212345678" } });
+    const result = await advanceFlow(env.DB, "rdf", null, { type: "ENTER" }, false, 0);
+    expect(result.nextNodeId).toBe("rd_entry");
+    expect(result.commands).toEqual([{ type: "REDIRECT", number: "+61212345678" }]);
+  });
 
   it("a timeout re-prompts the same gather and increments the attempt", async () => {
     const result = await advanceFlow(env.DB, "main", "main_entry_gather", { type: "TIMEOUT_OR_INVALID" }, false, 1);

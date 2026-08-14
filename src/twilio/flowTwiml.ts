@@ -63,6 +63,19 @@ function renderCommand(command: FlowCommand, opts: FlowTwimlOptions): string {
         `numDigits="${command.numDigits}" timeout="${command.timeoutSeconds}" actionOnEmptyResult="true"></Gather>`
       );
 
+    case "INPUT":
+      // Multi-digit capture that finishes when the caller presses finishOnKey (default #) or hits
+      // numDigits. actionOnEmptyResult keeps a timeout/no-input from stalling the call.
+      return (
+        `<Gather action="${escapeXml(command.action)}" method="POST" input="dtmf" ` +
+        `numDigits="${command.numDigits}" finishOnKey="${escapeXml(command.finishOnKey)}" ` +
+        `timeout="${command.timeoutSeconds}" actionOnEmptyResult="true"></Gather>`
+      );
+
+    case "REDIRECT":
+      // Forward the caller to a fixed external number and bridge the two legs.
+      return `<Dial>${escapeXml(command.number)}</Dial>`;
+
     case "ENQUEUE":
       // Handled by Part B's own TwiML rendering logic
       return "";

@@ -54,7 +54,12 @@ type ActiveRing = {
 
 type IvrPosition = { nodeId: string; attempt: number };
 
-type WalkResult = { nextNodeId: string; attempt: number; commands: FlowCommand[] };
+type WalkResult = {
+  nextNodeId: string;
+  attempt: number;
+  commands: FlowCommand[];
+  capturedInput?: { nodeId: string; value: string };
+};
 
 // ---- Inbound event shapes (mirror the JSON bodies worker.ts forwards) ----
 
@@ -195,6 +200,25 @@ export class CallSession extends DurableObject<Env> {
     isAfterHours: boolean,
     origin: string
   ): Promise<string> {
+    // An "input" node the caller just completed: record the digits they entered before the flow
+    // moves on to the next node.
+    if (walkResult.capturedInput) {
+      await this.logEvent(callSid, "input_received", {
+        node: walkResult.capturedInput.nodeId,
+        value: walkResult.capturedInput.value,
+      });
+    }
+
+    // Redirect node: forward the caller to a fixed external number and bridge.
+    if (walkResult.commands.some((c) => c.type === "REDIRECT")) {
+      await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?")
+        .bind(walkResult.nextNodeId, callSid)
+        .run();
+      await this.logEvent(callSid, "redirected", { node: walkResult.nextNodeId });
+      const resolved = await this.resolveAudioCommands(walkResult.commands);
+      return renderFlowTwiml(resolved, { baseUrl: origin });
+    }
+
     const hasEnqueue = walkResult.commands.some((c) => c.type === "ENQUEUE");
     const hasDialHandoff = walkResult.commands.some((c) => c.type === "DIAL_HANDOFF");
 
@@ -223,7 +247,7 @@ export class CallSession extends DurableObject<Env> {
     });
     const mainWebhookUrl = appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET);
     const patched = walkResult.commands.map((c) =>
-      c.type === "GATHER" ? { ...c, action: mainWebhookUrl } : c
+      c.type === "GATHER" || c.type === "INPUT" ? { ...c, action: mainWebhookUrl } : c
     );
     const resolved = await this.resolveAudioCommands(patched);
     return renderFlowTwiml(resolved, { baseUrl: origin });

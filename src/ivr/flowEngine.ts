@@ -5,15 +5,22 @@
 // CallSession (reusing getBusinessHours/isWithinBusinessHours), which passes the result in as
 // `isAfterHours` rather than this module re-fetching or re-evaluating it.
 
+import { isClosedDate } from "./dateRules";
+
 export type FlowCommand =
   | { type: "PLAY"; audioAssetId: string | null; ttsText: string | null }
   | { type: "GATHER"; numDigits: number; timeoutSeconds: number; validDigits: string; action: string }
+  | { type: "INPUT"; numDigits: number; finishOnKey: string; timeoutSeconds: number; action: string }
+  | { type: "REDIRECT"; number: string }
   | { type: "ENQUEUE" /* wait node */ }
   | { type: "DIAL_HANDOFF" /* ring node: hand off to Part B */ }
   | { type: "VOICEMAIL_HANDOFF" /* voicemail node: hand off to Part B */ }
   | { type: "HANGUP" };
 
 export type FlowEvent = { type: "ENTER" } | { type: "DIGIT"; digit: string } | { type: "TIMEOUT_OR_INVALID" };
+
+// The maximum digits an "input" node collects when its config doesn't specify one.
+const DEFAULT_INPUT_MAX_DIGITS = 12;
 
 type NodeRow = {
   id: string;
@@ -85,12 +92,26 @@ function gatherCommandFor(config: Record<string, any>): FlowCommand {
   };
 }
 
-// Commands emitted once the walk stops at a given node (gather/ring/wait/voicemail).
+function inputCommandFor(config: Record<string, any>): FlowCommand {
+  return {
+    type: "INPUT",
+    numDigits: typeof config.numDigits === "number" ? config.numDigits : DEFAULT_INPUT_MAX_DIGITS,
+    finishOnKey: typeof config.finishOnKey === "string" ? config.finishOnKey : "#",
+    timeoutSeconds: typeof config.timeoutSeconds === "number" ? config.timeoutSeconds : DEFAULT_GATHER_TIMEOUT_SECONDS,
+    action: "PLACEHOLDER",
+  };
+}
+
+// Commands emitted once the walk stops at a given node (gather/input/ring/wait/voicemail/redirect).
 function stopCommandsFor(node: NodeRow, config: Record<string, any>): FlowCommand[] {
   switch (node.type) {
     case "gather": {
       const play = playCommandFor(config);
       return [...(play ? [play] : []), gatherCommandFor(config)];
+    }
+    case "input": {
+      const play = playCommandFor(config);
+      return [...(play ? [play] : []), inputCommandFor(config)];
     }
     case "ring":
       return [{ type: "DIAL_HANDOFF" }];
@@ -102,6 +123,11 @@ function stopCommandsFor(node: NodeRow, config: Record<string, any>): FlowComman
       const play = playCommandFor(config);
       return [...(play ? [play] : []), { type: "ENQUEUE" }];
     }
+    case "redirect": {
+      const number = typeof config.number === "string" ? config.number : "";
+      if (!number) throw new Error(`IVR flow engine: redirect node "${node.id}" is missing a number`);
+      return [{ type: "REDIRECT", number }];
+    }
     default:
       throw new Error(`IVR flow engine: node "${node.id}" has unknown type "${node.type}"`);
   }
@@ -112,7 +138,7 @@ type WalkResult = { node: NodeRow; config: Record<string, any>; commands: FlowCo
 // Walks forward from `startNodeId`, passing straight through non-interactive node types
 // (`business_hours`, `play`) and accumulating their commands, until it reaches a node type
 // that genuinely needs to stop: `gather`, `ring`, `wait`, or `voicemail`.
-async function walkFrom(db: D1Database, startNodeId: string, isAfterHours: boolean): Promise<WalkResult> {
+async function walkFrom(db: D1Database, startNodeId: string, isAfterHours: boolean, now: Date): Promise<WalkResult> {
   const commands: FlowCommand[] = [];
   let nodeId = startNodeId;
   const visited = new Set<string>();
@@ -139,6 +165,18 @@ async function walkFrom(db: D1Database, startNodeId: string, isAfterHours: boole
       continue;
     }
 
+    if (node.type === "date_rule") {
+      const closed = isClosedDate(config.closedDates, now);
+      const next = closed ? config.closedNextNodeId : config.openNextNodeId;
+      if (typeof next !== "string" || next.length === 0) {
+        throw new Error(
+          `IVR flow engine: date_rule node "${node.id}" is missing ${closed ? "closedNextNodeId" : "openNextNodeId"}`
+        );
+      }
+      nodeId = next;
+      continue;
+    }
+
     if (node.type === "play") {
       const play = playCommandFor(config);
       if (play) commands.push(play);
@@ -149,7 +187,14 @@ async function walkFrom(db: D1Database, startNodeId: string, isAfterHours: boole
       continue;
     }
 
-    if (node.type === "gather" || node.type === "ring" || node.type === "wait" || node.type === "voicemail") {
+    if (
+      node.type === "gather" ||
+      node.type === "input" ||
+      node.type === "ring" ||
+      node.type === "wait" ||
+      node.type === "voicemail" ||
+      node.type === "redirect"
+    ) {
       return { node, config, commands };
     }
 
@@ -170,12 +215,22 @@ function finalizeWalk(result: WalkResult): { nextNodeId: string; attempt: number
 // flow must continue from that ring node's `config.noAnswerNextNodeId`. `advanceFlow`'s public API
 // only supports starting fresh at a flow's entry node or continuing from a gather node; this exposes
 // the internal walking logic without changing `advanceFlow`'s contract.
+export type AdvanceResult = {
+  nextNodeId: string;
+  attempt: number;
+  commands: FlowCommand[];
+  // Set when the caller just completed an "input" node -- the digits they entered, so the caller
+  // can store/log them before the flow continues.
+  capturedInput?: { nodeId: string; value: string };
+};
+
 export async function walkFromNode(
   db: D1Database,
   startNodeId: string,
-  isAfterHours: boolean
-): Promise<{ nextNodeId: string; attempt: number; commands: FlowCommand[] }> {
-  return finalizeWalk(await walkFrom(db, startNodeId, isAfterHours));
+  isAfterHours: boolean,
+  now: Date = new Date()
+): Promise<AdvanceResult> {
+  return finalizeWalk(await walkFrom(db, startNodeId, isAfterHours, now));
 }
 
 export async function advanceFlow(
@@ -184,26 +239,39 @@ export async function advanceFlow(
   currentNodeId: string | null,
   event: FlowEvent,
   isAfterHours: boolean,
-  attempt: number
-): Promise<{ nextNodeId: string; attempt: number; commands: FlowCommand[] }> {
+  attempt: number,
+  now: Date = new Date()
+): Promise<AdvanceResult> {
   if (event.type === "ENTER") {
     if (currentNodeId !== null) {
       throw new Error(`IVR flow engine: ENTER event requires currentNodeId to be null, got "${currentNodeId}"`);
     }
     const entry = await loadEntryNode(db, flow);
-    return finalizeWalk(await walkFrom(db, entry.id, isAfterHours));
+    return finalizeWalk(await walkFrom(db, entry.id, isAfterHours, now));
   }
 
-  // DIGIT / TIMEOUT_OR_INVALID: the caller was previously paused at a gather node.
+  // DIGIT / TIMEOUT_OR_INVALID: the caller was previously paused at a gather or input node.
   if (currentNodeId === null) {
     throw new Error(`IVR flow engine: "${event.type}" event requires a non-null currentNodeId`);
   }
 
   const currentNode = await loadNodeById(db, currentNodeId);
   const currentConfig = parseConfig(currentNode);
+
+  // Input node: capture whatever digits the caller entered and continue unconditionally to
+  // nextNodeId. An empty entry (timeout / no digits) falls through the same way.
+  if (currentNode.type === "input") {
+    if (typeof currentConfig.nextNodeId !== "string" || currentConfig.nextNodeId.length === 0) {
+      throw new Error(`IVR flow engine: input node "${currentNode.id}" is missing nextNodeId`);
+    }
+    const value = event.type === "DIGIT" ? event.digit : "";
+    const walked = finalizeWalk(await walkFrom(db, currentConfig.nextNodeId, isAfterHours, now));
+    return { ...walked, capturedInput: { nodeId: currentNode.id, value } };
+  }
+
   if (currentNode.type !== "gather") {
     throw new Error(
-      `IVR flow engine: "${event.type}" event received but current node "${currentNodeId}" is type "${currentNode.type}", not "gather"`
+      `IVR flow engine: "${event.type}" event received but current node "${currentNodeId}" is type "${currentNode.type}", not "gather" or "input"`
     );
   }
 
@@ -220,7 +288,7 @@ export async function advanceFlow(
   }
 
   if (matchedNextNodeId) {
-    return finalizeWalk(await walkFrom(db, matchedNextNodeId, isAfterHours));
+    return finalizeWalk(await walkFrom(db, matchedNextNodeId, isAfterHours, now));
   }
 
   // No matching option (or a timeout): retry the same gather, or fall back to its default.
@@ -236,5 +304,5 @@ export async function advanceFlow(
   if (typeof currentConfig.defaultNextNodeId !== "string" || currentConfig.defaultNextNodeId.length === 0) {
     throw new Error(`IVR flow engine: gather node "${currentNode.id}" has no defaultNextNodeId to fall back to`);
   }
-  return finalizeWalk(await walkFrom(db, currentConfig.defaultNextNodeId, isAfterHours));
+  return finalizeWalk(await walkFrom(db, currentConfig.defaultNextNodeId, isAfterHours, now));
 }
