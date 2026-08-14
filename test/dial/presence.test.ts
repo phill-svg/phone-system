@@ -11,7 +11,7 @@ const SCHEDULE_9_TO_5 = {
 function staff(overrides: Partial<StaffPresenceRow>): StaffPresenceRow {
   return {
     email: "a@b.com", role: "staff", status: "available", awayReason: null,
-    schedule: SCHEDULE_9_TO_5, lastHeartbeatAt: MON_10AM.getTime(), ...overrides,
+    schedule: SCHEDULE_9_TO_5, lastHeartbeatAt: MON_10AM.getTime(), mobileNumber: null, ...overrides,
   };
 }
 

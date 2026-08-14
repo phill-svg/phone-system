@@ -53,6 +53,11 @@ export function renderSettingsPage(
       const idPrefix = `staff-${domIdSafe(staffMember.email)}`;
       return `<form class="settings-form staff-schedule-form" id="${idPrefix}-form" data-email="${escapeHtml(staffMember.email)}">
         <h4>${escapeHtml(staffMember.email)} <small>(${escapeHtml(staffMember.role)})</small></h4>
+        <label class="staff-mobile-label">Failover mobile
+          <input type="tel" class="staff-mobile-input" value="${escapeHtml(staffMember.mobileNumber ?? "")}" placeholder="+61 4XX XXX XXX">
+          <button type="button" class="staff-mobile-save">Save mobile</button>
+          <span class="staff-mobile-status"></span>
+        </label>
         ${renderDayRows(staffMember.schedule, idPrefix)}
         <button type="submit">Save Schedule</button>
         <span class="staff-save-status"></span>
@@ -129,6 +134,27 @@ export function renderSettingsPage(
           });
           status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
         });
+
+        const mobileBtn = form.querySelector('.staff-mobile-save');
+        if (mobileBtn) {
+          mobileBtn.addEventListener('click', async function () {
+            const status = form.querySelector('.staff-mobile-status');
+            const email = form.dataset.email;
+            const mobile = form.querySelector('.staff-mobile-input').value;
+            const res = await fetch('/api/staff/' + encodeURIComponent(email) + '/mobile', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mobile: mobile }),
+            });
+            if (res.ok) {
+              status.textContent = 'Saved.';
+            } else {
+              let msg = 'Failed to save.';
+              try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (e) {}
+              status.textContent = msg;
+            }
+          });
+        }
       });
     </script>`;
   return renderLayout("Settings", "settings", body);

@@ -19,7 +19,7 @@ import {
   handlePostTransfer,
   handlePostCompleteTransfer,
 } from "./api/softphone";
-import { handleGetStaffRoster, handlePutStaffSchedule } from "./api/staff";
+import { handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffMobile } from "./api/staff";
 import {
   handleListContacts,
   handleCreateContact,
@@ -584,6 +584,10 @@ export default {
       const staffScheduleMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/schedule$/);
       if (staffScheduleMatch && request.method === "PUT") {
         return handlePutStaffSchedule(request, env.DB, decodeURIComponent(staffScheduleMatch[1]), staff);
+      }
+      const staffMobileMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/mobile$/);
+      if (staffMobileMatch && request.method === "PUT") {
+        return handlePutStaffMobile(request, env.DB, decodeURIComponent(staffMobileMatch[1]), staff);
       }
 
       // Contact book (softphone). The literal /api/contacts and /api/contacts/import paths are

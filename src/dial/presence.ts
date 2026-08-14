@@ -10,6 +10,8 @@ export type StaffPresenceRow = {
   awayReason: string | null;
   schedule: BusinessHoursSchedule;
   lastHeartbeatAt: number | null;
+  // Optional PSTN mobile for ring-to-mobile failover (null if not set).
+  mobileNumber: string | null;
 };
 
 // Browsers throttle setInterval/setTimeout heavily in backgrounded tabs -- a staff member
