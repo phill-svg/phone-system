@@ -29,6 +29,21 @@ export async function listCalls(db: D1Database, limit = 50): Promise<CallSummary
   return result.results;
 }
 
+// Appends a row to the per-call event timeline (rendered on the call-detail page and in the
+// softphone's call detail pane). Best-effort: callers wrap this so a logging failure never breaks
+// live call handling.
+export async function appendCallEvent(
+  db: D1Database,
+  callId: string,
+  eventType: string,
+  detail?: Record<string, unknown> | null
+): Promise<void> {
+  await db
+    .prepare("INSERT INTO call_events (call_id, ts, event_type, detail) VALUES (?, ?, ?, ?)")
+    .bind(callId, Date.now(), eventType, detail ? JSON.stringify(detail) : null)
+    .run();
+}
+
 export async function listLiveCalls(db: D1Database): Promise<CallSummary[]> {
   const result = await db
     .prepare("SELECT * FROM calls WHERE status = 'in_progress' ORDER BY started_at DESC")

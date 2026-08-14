@@ -4,6 +4,10 @@ export type OutboundCallOptions = {
   url: string;
   statusCallback?: string;
   statusCallbackEvent?: string[];
+  // Ring time in seconds before Twilio gives up on an unanswered leg and fires a "no-answer"
+  // status. Without it, unanswered legs ring on the carrier default (~30s+) before the flow
+  // can fall through.
+  timeoutSeconds?: number;
 };
 
 // The business number -- and therefore every caller leg, conference, and agent leg we attach
@@ -20,6 +24,7 @@ export async function createOutboundCall(
   const body = new URLSearchParams({ To: opts.to, From: opts.from, Url: opts.url });
   if (opts.statusCallback) body.set("StatusCallback", opts.statusCallback);
   if (opts.statusCallbackEvent) body.set("StatusCallbackEvent", opts.statusCallbackEvent.join(","));
+  if (opts.timeoutSeconds && opts.timeoutSeconds > 0) body.set("Timeout", String(Math.round(opts.timeoutSeconds)));
 
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls.json`, {
     method: "POST",

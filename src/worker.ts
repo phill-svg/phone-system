@@ -34,7 +34,7 @@ import { renderSettingsPage } from "./html/pages/settings";
 import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
-import { getCallDetail, listCalls, listLiveCalls } from "./db/calls";
+import { getCallDetail, listCalls, listLiveCalls, appendCallEvent } from "./db/calls";
 import { getBusinessHours, getCallBlocklist } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { listAudioAssets } from "./db/audioAssets";
@@ -142,9 +142,18 @@ export default {
 
       const normalized = normalizeCallStatus(params.CallStatus ?? "");
       if (normalized) {
-        await env.DB.prepare("UPDATE calls SET status = ?, ended_at = ? WHERE id = ? AND ended_at IS NULL")
+        const update = await env.DB.prepare("UPDATE calls SET status = ?, ended_at = ? WHERE id = ? AND ended_at IS NULL")
           .bind(normalized, Date.now(), params.CallSid)
           .run();
+        // Only append the timeline event on the first (real) terminal write -- the `ended_at IS
+        // NULL` guard means a redelivered status callback changes 0 rows and must not double-log.
+        if ((update.meta.changes ?? 0) > 0) {
+          try {
+            await appendCallEvent(env.DB, params.CallSid, "call_ended", { status: normalized });
+          } catch {
+            /* timeline logging is best-effort; never fail the webhook over it */
+          }
+        }
         // The caller's leg ending may strand the agent alone in the conference (named by
         // this same CallSid) -- end it if at most one participant remains.
         await cleanupLoneConference(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, params.CallSid);

@@ -19,6 +19,7 @@ import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/c
 import { appendWebhookSecret } from "../twilio/webhookAuth";
 import { getBusinessHours } from "../db/settings";
 import { createCallbackRequest } from "../db/callbackRequests";
+import { appendCallEvent } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
@@ -136,6 +137,7 @@ export class CallSession extends DurableObject<Env> {
       )
         .bind(Date.now(), body.recordingUrl, body.recordingSid, mailboxLabel, callSid)
         .run();
+      await this.logEvent(callSid, "voicemail_left", { mailboxLabel, recordingSid: body.recordingSid });
       return this.xml(wrapResponse("<Say>Thanks, goodbye.</Say><Hangup/>"));
     }
 
@@ -149,12 +151,28 @@ export class CallSession extends DurableObject<Env> {
       )
         .bind(callSid, from, to, Date.now(), isAfterHours ? 1 : 0, "inbound")
         .run();
+      await this.logEvent(callSid, "call_started", { from, to, afterHours: isAfterHours });
 
-      const result = await advanceFlow(this.env.DB, "main", null, { type: "ENTER" }, isAfterHours, 0);
+      // Route after-hours callers into the dedicated "after_hours" flow (emergency ring /
+      // voicemail) instead of the in-hours "main" menu. If the "after_hours" flow is
+      // missing/misconfigured (no entry node), fall back to "main" so a live call still connects
+      // rather than erroring out.
+      const entryFlow = isAfterHours ? "after_hours" : "main";
+      let result: WalkResult;
+      try {
+        result = await advanceFlow(this.env.DB, entryFlow, null, { type: "ENTER" }, isAfterHours, 0);
+      } catch (err) {
+        if (entryFlow === "main") throw err;
+        console.log("AFTER_HOURS_FLOW_FALLBACK", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        result = await advanceFlow(this.env.DB, "main", null, { type: "ENTER" }, isAfterHours, 0);
+      }
       return this.xml(await this.applyWalkResult(callSid, result, isAfterHours, origin));
     }
 
-    // (c) Continuing from a gather node (digit or timeout/invalid).
+    // (c) Continuing from a gather node (digit or timeout/invalid). The flow name is only used
+    // for ENTER; gather continuations resolve by the stored node id, so "main" is fine here even
+    // for a call that entered via "after_hours".
+    if (digits) await this.logEvent(callSid, "menu_selection", { digit: digits });
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     const result = await advanceFlow(
       this.env.DB,
@@ -272,7 +290,7 @@ export class CallSession extends DurableObject<Env> {
     let dialFailed = false;
     for (const number of numbersToDial) {
       try {
-        attemptSids.push(await this.dialStaff(number, callSid, origin));
+        attemptSids.push(await this.dialStaff(number, callSid, origin, ringConfig.timeoutSeconds));
       } catch (err) {
         // Swallowing this silently once hid a credentials outage for a full day -- always log it.
         console.log(
@@ -305,6 +323,7 @@ export class CallSession extends DurableObject<Env> {
       attemptSids,
     };
     await this.ctx.storage.put("activeRing", activeRing);
+    await this.logEvent(callSid, "ring_started", { targets: numbers.length, strategy: ringConfig.strategy });
 
     return renderEnqueue({
       queueName: callSid,
@@ -407,18 +426,28 @@ export class CallSession extends DurableObject<Env> {
       await this.env.DB.prepare("UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ?")
         .bind(Date.now(), body.callSid)
         .run();
+      await this.logEvent(body.callSid, "callback_requested", { callerNumber: row?.caller_number ?? null });
       await this.ctx.storage.delete("activeRing");
       return this.xml(renderCallbackAck("Thanks, we'll call you back soon."));
     }
 
-    // no_answer (or, defensively, an unexpected non-DONE state): continue the flow
-    // from the ring node's noAnswerNextNodeId.
+    // no_answer, OR the caller hung up mid-ring (plan still DIALING with outstanding legs).
     //
-    // KNOWN DEFERRED LIMITATION: if the caller hangs up mid-ring, this fires while the plan is
-    // still DIALING and the outstanding staff `attemptSids` are NOT cancelled here, so those
-    // outbound legs keep ringing into a now-dead queue. Cancelling them requires routing
-    // /webhooks/twilio/status through the DO, which it deliberately does not do today — left for
-    // a later real-call hardening pass.
+    // If the caller abandoned while staff were still being dialed, cancel every outstanding staff
+    // leg so their phones stop ringing into a now-dead queue. (The Enqueue `action` webhook fires
+    // on caller hangup too, which is why we can cancel here without routing /status through the DO.)
+    const abandonedMidRing =
+      activeRing.ringPlanState.name === "DIALING" && activeRing.attemptSids.length > 0;
+    if (abandonedMidRing) {
+      for (const sid of activeRing.attemptSids) {
+        try {
+          await this.cancelStaff(sid);
+        } catch {
+          /* leg may already be torn down; ignore */
+        }
+      }
+    }
+    await this.logEvent(body.callSid, abandonedMidRing ? "caller_hung_up" : "no_answer");
     await this.ctx.storage.delete("activeRing");
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     return this.xml(
@@ -446,6 +475,7 @@ export class CallSession extends DurableObject<Env> {
       activeRing.ringPlanState = state;
       await this.ctx.storage.put("activeRing", activeRing);
     }
+    await this.logEvent(body.callSid, "answered", { agentCallSid: body.agentCallSid });
 
     await redirectCall(
       this.env.TWILIO_ACCOUNT_SID,
@@ -507,7 +537,7 @@ export class CallSession extends DurableObject<Env> {
         // new dial genuinely succeeds.
         let nextSid: string;
         try {
-          nextSid = await this.dialStaff(dialNext.number, body.callSid, origin);
+          nextSid = await this.dialStaff(dialNext.number, body.callSid, origin, activeRing.ringConfig.timeoutSeconds);
         } catch {
           activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
           await this.ctx.storage.put("activeRing", activeRing);
@@ -573,7 +603,7 @@ export class CallSession extends DurableObject<Env> {
     return resolved;
   }
 
-  private async dialStaff(number: string, callSid: string, origin: string): Promise<string> {
+  private async dialStaff(number: string, callSid: string, origin: string, timeoutSeconds?: number): Promise<string> {
     const { sid } = await createOutboundCall(
       this.env.TWILIO_ACCOUNT_SID,
       this.env.TWILIO_API_KEY_SID,
@@ -584,6 +614,9 @@ export class CallSession extends DurableObject<Env> {
         url: appendWebhookSecret(`${origin}/webhooks/twilio/agent-answer?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         statusCallback: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         statusCallbackEvent: ["completed"],
+        // Ring for the node's configured timeout (fall back to 20s) before Twilio declares the leg
+        // unanswered, so cascade/no-answer fall-through happens promptly.
+        timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : 20,
       }
     );
     // `number` is always a `client:{email}` identity (see resolveRingTargets) -- record this leg's
@@ -598,6 +631,16 @@ export class CallSession extends DurableObject<Env> {
 
   private async cancelStaff(sid: string): Promise<void> {
     await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);
+  }
+
+  // Best-effort append to the per-call event timeline. Never let a logging failure break the
+  // actual call handling -- swallow and log any error.
+  private async logEvent(callId: string, eventType: string, detail?: Record<string, unknown> | null): Promise<void> {
+    try {
+      await appendCallEvent(this.env.DB, callId, eventType, detail);
+    } catch (err) {
+      console.log("CALL_EVENT_LOG_FAILED", JSON.stringify({ callId, eventType, error: err instanceof Error ? err.message : String(err) }));
+    }
   }
 
   private async loadNodeConfig(nodeId: string): Promise<Record<string, any>> {

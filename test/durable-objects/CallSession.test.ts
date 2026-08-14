@@ -668,6 +668,108 @@ describe("CallSession", () => {
     expect(left.xml).toContain("<Record");
   });
 
+  // --- Phase 1 reliability fixes ---
+
+  it("after-hours calls route into the after_hours flow, not the in-hours main menu", async () => {
+    // In-hours "main" entry (distinct prompt) and a separate "after_hours" entry.
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedNode({
+      id: "ah_entry",
+      flow: "after_hours",
+      isEntry: true,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "We are closed. Leave a message.", mailboxLabel: "after-hours" },
+    });
+    // Closed all week → isAfterHours = true.
+    await setBusinessHours(env.DB, {
+      mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+    });
+
+    const stub = stubFor("CA-ah");
+    const { xml } = await send(stub, mainEvent("CA-ah"));
+
+    expect(xml).toContain("We are closed");
+    expect(xml).toContain("<Record"); // after_hours entry is a voicemail
+    expect(xml).not.toContain("Press 1 to connect"); // did NOT enter the in-hours main menu
+  });
+
+  it("staff legs are dialed with a ring Timeout so no-answer falls through promptly", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-timeout");
+    await send(stub, mainEvent("CA-timeout"));
+    await send(stub, mainEvent("CA-timeout", { digits: "1" }));
+
+    const dialCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/Calls.json"));
+    const body = new URLSearchParams((dialCall![1] as RequestInit).body as string);
+    expect(body.get("Timeout")).toBe("20");
+  });
+
+  it("hold music plays instead of silence when the wait node has no custom content", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-music");
+    await send(stub, mainEvent("CA-music"));
+    await send(stub, mainEvent("CA-music", { digits: "1" }));
+
+    const poll = await send(stub, { kind: "hold_poll", callSid: "CA-music", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
+    expect(poll.xml).toContain("<Play>");
+    expect(poll.xml).toContain("demo.twilio.com/docs/classic.mp3");
+  });
+
+  it("caller hanging up mid-ring cancels the outstanding staff legs (no phones left ringing)", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const stub = stubFor("CA-abandon");
+    await send(stub, mainEvent("CA-abandon"));
+    await send(stub, mainEvent("CA-abandon", { digits: "1" }));
+    expect(outboundDials(fetchMock).length).toBe(2); // both ringing, plan still DIALING
+
+    // Caller hangs up while staff are still ringing → Enqueue action fires with a hangup result.
+    await send(stub, queueLeft("CA-abandon", "hangup"));
+
+    // Both still-ringing staff legs were cancelled.
+    expect(cancelHits(fetchMock).length).toBe(2);
+
+    const ev = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ? AND event_type = 'caller_hung_up'")
+      .bind("CA-abandon")
+      .first();
+    expect(ev).toBeTruthy();
+  });
+
+  it("writes a call event timeline (call_started, menu_selection, ring_started, answered)", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-timeline");
+    await send(stub, mainEvent("CA-timeline"));
+    await send(stub, mainEvent("CA-timeline", { digits: "1" }));
+    await send(stub, agentAnswer("CA-timeline", "sid-client:phill@b.com"));
+
+    const rows = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ? ORDER BY id")
+      .bind("CA-timeline")
+      .all<{ event_type: string }>();
+    const types = rows.results.map((r) => r.event_type);
+    expect(types).toContain("call_started");
+    expect(types).toContain("menu_selection");
+    expect(types).toContain("ring_started");
+    expect(types).toContain("answered");
+  });
+
   it("duplicate terminal agent_status for an already-processed leg is a no-op (no re-advance / re-dial, attemptSids unchanged)", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });

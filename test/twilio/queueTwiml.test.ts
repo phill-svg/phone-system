@@ -62,7 +62,7 @@ describe("renderHold", () => {
     expect(xml).toContain('timeout="15"');
   });
 
-  it("renders an empty <Gather> when play is null", () => {
+  it("falls back to default hold music (not silence) when play is null", () => {
     const xml = renderHold({
       play: null,
       baseUrl: "https://x.example",
@@ -72,7 +72,7 @@ describe("renderHold", () => {
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
         '<Gather input="dtmf" numDigits="1" timeout="10" actionOnEmptyResult="true" ' +
-        'action="https://x.example/hold-digit"></Gather>' +
+        'action="https://x.example/hold-digit"><Play>https://demo.twilio.com/docs/classic.mp3</Play></Gather>' +
         "</Response>"
     );
   });
