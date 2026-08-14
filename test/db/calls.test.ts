@@ -1,6 +1,14 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { getCallDetail, listCalls, listLiveCalls } from "../../src/db/calls";
+import {
+  getCallDetail,
+  listCalls,
+  listLiveCalls,
+  updateCallMeta,
+  setCallTranscription,
+  getCallStats,
+  appendCallEvent,
+} from "../../src/db/calls";
 
 async function seedCall(id: string, overrides: Partial<{ startedAt: number; status: string }> = {}) {
   await env.DB.prepare(
@@ -73,5 +81,41 @@ describe("db/calls", () => {
     const result = await getCallDetail(env.DB, "CA-detail");
     expect(result?.call.id).toBe("CA-detail");
     expect(result?.events.map((e) => e.ts)).toEqual([100, 200]);
+  });
+
+  // --- Phase 4: post-call fields + analytics ---
+
+  it("updateCallMeta stores disposition and notes; setCallTranscription stores the transcript", async () => {
+    await seedCall("CA-meta");
+    expect(await updateCallMeta(env.DB, "CA-meta", { disposition: "New booking", notes: "Wants a quote" })).toBe(true);
+    await setCallTranscription(env.DB, "CA-meta", "Hi, please call me back about a booking.");
+    const detail = await getCallDetail(env.DB, "CA-meta");
+    expect(detail?.call.disposition).toBe("New booking");
+    expect(detail?.call.notes).toBe("Wants a quote");
+    expect(detail?.call.transcription).toBe("Hi, please call me back about a booking.");
+    expect(await updateCallMeta(env.DB, "CA-missing", { disposition: "x", notes: null })).toBe(false);
+  });
+
+  it("getCallStats derives answered/voicemail/missed from the event timeline", async () => {
+    const now = Date.now();
+    await seedCall("CA-ans", { startedAt: now - 1000 });
+    await env.DB.prepare("UPDATE calls SET ended_at = ?, direction = 'inbound' WHERE id = ?").bind(now + 60000, "CA-ans").run();
+    await appendCallEvent(env.DB, "CA-ans", "answered");
+    await seedCall("CA-vm", { startedAt: now - 2000 });
+    await env.DB.prepare("UPDATE calls SET direction = 'inbound' WHERE id = ?").bind("CA-vm").run();
+    await appendCallEvent(env.DB, "CA-vm", "voicemail_left");
+    await seedCall("CA-miss", { startedAt: now - 3000 });
+    await env.DB.prepare("UPDATE calls SET direction = 'inbound' WHERE id = ?").bind("CA-miss").run();
+    await seedCall("CA-out", { startedAt: now - 4000 });
+    await env.DB.prepare("UPDATE calls SET direction = 'outbound' WHERE id = ?").bind("CA-out").run();
+
+    const stats = await getCallStats(env.DB, now - 10 * 60_000);
+    expect(stats.total).toBe(4);
+    expect(stats.inbound).toBe(3);
+    expect(stats.outbound).toBe(1);
+    expect(stats.answered).toBe(1);
+    expect(stats.voicemail).toBe(1);
+    expect(stats.missed).toBe(1);
+    expect(stats.avgTalkSeconds).toBeGreaterThan(0);
   });
 });

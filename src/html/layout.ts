@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/admin/phone", label: "Phone", key: "phone" },
   { href: "/admin/live", label: "Live Calls", key: "live" },
   { href: "/admin/calls", label: "Call History", key: "calls" },
+  { href: "/admin/analytics", label: "Analytics", key: "analytics" },
   { href: "/admin/settings", label: "Settings", key: "settings" },
   { href: "/admin/ivr/main", label: "IVR Flow", key: "ivr" },
   { href: "/admin/callbacks", label: "Callback Requests", key: "callbacks" },

@@ -23,14 +23,18 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[]):
     <p><strong>Caller:</strong> ${escapeHtml(call.caller_number)} &rarr; ${escapeHtml(call.called_number)}</p>
     <p><strong>Started:</strong> ${escapeHtml(new Date(call.started_at).toLocaleString("en-AU"))}</p>
     <p><strong>Status:</strong> ${escapeHtml(call.status)}</p>
+    ${call.disposition || call.notes ? `<p><strong>Disposition:</strong> ${escapeHtml(call.disposition ?? "—")}</p>${call.notes ? `<p><strong>Notes:</strong> ${escapeHtml(call.notes)}</p>` : ""}` : ""}
     <h3>Timeline</h3>
     <table><tbody>${eventRows || "<tr><td>No events.</td></tr>"}</tbody></table>
-    <div class="placeholder">
-      <strong>Recording</strong> — Not available yet, coming in a later phase.
-      <div><button disabled>Play recording</button></div>
-    </div>
-    <div class="placeholder">
-      <strong>Transcript</strong> — Not available yet, coming in a later phase.
-    </div>`;
+    ${
+      call.recording_url
+        ? `<p><strong>Recording:</strong> <a href="${escapeHtml(call.recording_url)}" target="_blank" rel="noopener">Open recording</a></p>`
+        : ""
+    }
+    ${
+      call.transcription
+        ? `<h3>Voicemail transcript</h3><p style="white-space:pre-wrap">${escapeHtml(call.transcription)}</p>`
+        : ""
+    }`;
   return renderLayout(`Call ${call.id}`, "calls", body);
 }

@@ -803,18 +803,30 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
     expect(html).toContain('href="/admin/calls/CA-html-1"');
   });
 
-  it("renders the call detail page with a disabled recording/transcript placeholder", async () => {
+  it("renders the call detail page with the recording link, transcript, and disposition/notes when present", async () => {
     await env.DB.prepare(
-      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+      "INSERT INTO calls (id, caller_number, called_number, started_at, recording_url, transcription, disposition, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
-      .bind("CA-html-2", "+61400000000", "+61200000000", Date.now())
+      .bind(
+        "CA-html-2",
+        "+61400000000",
+        "+61200000000",
+        Date.now(),
+        "https://api.twilio.com/rec.mp3",
+        "Please call me back about a booking.",
+        "New booking",
+        "Wants a quote",
+      )
       .run();
 
     const response = await SELF.fetch("https://example.com/admin/calls/CA-html-2");
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("Not available yet");
-    expect(html).toContain("disabled");
+    expect(html).toContain("Open recording");
+    expect(html).toContain("Please call me back about a booking.");
+    expect(html).toContain("New booking");
+    expect(html).toContain("Wants a quote");
+    expect(html).not.toContain("Not available yet");
   });
 
   it("404s for a missing call detail page", async () => {

@@ -210,7 +210,8 @@ export class CallSession extends DurableObject<Env> {
       await this.ctx.storage.put("awaitingVoicemailNodeId", voicemailNodeId);
       const resolvedVoicemailCommands = await this.resolveAudioCommands(walkResult.commands);
       const fragment = renderFlowCommandsFragment(resolvedVoicemailCommands, { baseUrl: origin });
-      const record = `<Record action="${appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET)}" method="POST" maxLength="120" timeout="5" playBeep="true"/>`;
+      const transcribeCallback = appendWebhookSecret(`${origin}/webhooks/twilio/transcription?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET);
+      const record = `<Record action="${appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET)}" method="POST" maxLength="120" timeout="5" playBeep="true" transcribe="true" transcribeCallback="${transcribeCallback}"/>`;
       return wrapResponse(fragment + record);
     }
 

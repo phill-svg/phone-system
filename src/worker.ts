@@ -5,7 +5,7 @@ import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
-import { handleCallDetail, handleListCalls, handleLiveCalls } from "./api/calls";
+import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta } from "./api/calls";
 import { handleGetBusinessHours, handleGetCallBlocklist, handlePutBusinessHours, handlePutCallBlocklist } from "./api/settings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
@@ -34,7 +34,8 @@ import { renderSettingsPage } from "./html/pages/settings";
 import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
-import { getCallDetail, listCalls, listLiveCalls, appendCallEvent } from "./db/calls";
+import { getCallDetail, listCalls, listLiveCalls, appendCallEvent, setCallTranscription, getCallStats } from "./db/calls";
+import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { listAudioAssets } from "./db/audioAssets";
@@ -463,6 +464,33 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+    // Twilio posts the voicemail transcription here (from <Record transcribeCallback>). Store the
+    // text against the call so it shows on the call-detail pane.
+    if (url.pathname === "/webhooks/twilio/transcription" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const valid = await authorizeTwilioWebhook(request, params, env);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = url.searchParams.get("callSid") ?? params.CallSid ?? "";
+      const text = params.TranscriptionText ?? "";
+      if (callSid && params.TranscriptionStatus === "completed" && text) {
+        await setCallTranscription(env.DB, callSid, text);
+        try {
+          await appendCallEvent(env.DB, callSid, "voicemail_transcribed");
+        } catch {
+          /* best-effort timeline entry */
+        }
+      }
+      return new Response("ok", { status: 200 });
+    }
+
     if (url.pathname.startsWith("/media/")) {
       // Public route, intentionally NOT staff-gated: Twilio fetches this URL directly
       // to stream IVR audio into a live call and cannot present an Access credential.
@@ -494,7 +522,10 @@ export default {
       const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
       if (callIdMatch) {
         try {
-          return handleCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
+          const callId = decodeURIComponent(callIdMatch[1]);
+          return request.method === "PUT"
+            ? handleUpdateCallMeta(request, env.DB, callId)
+            : handleCallDetail(env.DB, callId);
         } catch (e) {
           if (e instanceof URIError) {
             return new Response("not found", { status: 404 });
@@ -659,6 +690,13 @@ export default {
 
       if (url.pathname === "/admin/callbacks") {
         const html = renderCallbackRequestsPage(await listOpenCallbackRequests(env.DB));
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+
+      if (url.pathname === "/admin/analytics") {
+        const days = 14;
+        const since = Date.now() - days * 24 * 60 * 60 * 1000;
+        const html = renderAnalyticsPage(await getCallStats(env.DB, since), days);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 

@@ -763,6 +763,54 @@ export function renderPhonePage(staffEmail: string): string {
         card.appendChild(recWrap);
         info.appendChild(card);
 
+        if (c.transcription) {
+          var tcard = document.createElement('div');
+          tcard.className = 'card';
+          var tlabel = document.createElement('p'); tlabel.className = 'card-label'; tlabel.textContent = 'Voicemail transcript';
+          var ttext = document.createElement('p');
+          ttext.style.whiteSpace = 'pre-wrap'; ttext.style.margin = '0'; ttext.style.fontSize = '0.9rem';
+          ttext.textContent = c.transcription;
+          tcard.appendChild(tlabel); tcard.appendChild(ttext);
+          info.appendChild(tcard);
+        }
+
+        // Disposition + notes editor (saved back to the call).
+        var ncard = document.createElement('div');
+        ncard.className = 'card';
+        var nlabel = document.createElement('p'); nlabel.className = 'card-label'; nlabel.textContent = 'Outcome & notes';
+        var dispSel = document.createElement('select');
+        dispSel.className = 'phone-select';
+        dispSel.style.width = '100%'; dispSel.style.marginBottom = '0.6rem';
+        ['', 'New booking', 'Existing job', 'Emergency', 'Callback', 'Spam', 'Other'].forEach(function (opt) {
+          var o = document.createElement('option');
+          o.value = opt; o.textContent = opt || 'No outcome set';
+          if ((c.disposition || '') === opt) o.selected = true;
+          dispSel.appendChild(o);
+        });
+        var notesTa = document.createElement('textarea');
+        notesTa.className = 'import-textarea';
+        notesTa.style.minHeight = '80px';
+        notesTa.placeholder = 'Notes about this call…';
+        notesTa.value = c.notes || '';
+        var saveRow = document.createElement('div');
+        saveRow.className = 'contact-actions'; saveRow.style.marginTop = '0.7rem';
+        var saveBtn = document.createElement('button');
+        saveBtn.type = 'button'; saveBtn.className = 'pill-btn pill-btn-primary'; saveBtn.textContent = 'Save';
+        var saveStatus = document.createElement('span');
+        saveStatus.style.cssText = 'font-size:0.8rem;color:var(--text-dim);align-self:center';
+        saveBtn.addEventListener('click', function () {
+          saveStatus.textContent = 'Saving…';
+          fetch('/api/calls/' + encodeURIComponent(c.id), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disposition: dispSel.value, notes: notesTa.value }),
+          }).then(function (r) { saveStatus.textContent = r.ok ? 'Saved.' : 'Failed to save.'; })
+            .catch(function () { saveStatus.textContent = 'Failed to save.'; });
+        });
+        saveRow.appendChild(saveBtn); saveRow.appendChild(saveStatus);
+        ncard.appendChild(nlabel); ncard.appendChild(dispSel); ncard.appendChild(notesTa); ncard.appendChild(saveRow);
+        info.appendChild(ncard);
+
         if (events.length) {
           var tlCard = document.createElement('div');
           tlCard.className = 'card';
