@@ -47,7 +47,7 @@ import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { listAudioAssets } from "./db/audioAssets";
-import { getStaffRoster } from "./db/staff";
+import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listOpenCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
 export { CallSession } from "./durable-objects/CallSession";
@@ -716,12 +716,13 @@ export default {
       }
 
       if (url.pathname === "/admin/settings") {
-        const [schedule, blocklist, staffRoster] = await Promise.all([
+        const [schedule, blocklist, staffRoster, staffAccess] = await Promise.all([
           getBusinessHours(env.DB),
           getCallBlocklist(env.DB),
           getStaffRoster(env.DB),
+          listStaffAccess(env.DB),
         ]);
-        const html = renderSettingsPage(schedule, blocklist, staffRoster);
+        const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 

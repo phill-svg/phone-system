@@ -41,10 +41,66 @@ function renderDayRows(schedule: BusinessHoursSchedule, idPrefix: string): strin
   }).join("");
 }
 
+function renderStaffAccess(
+  staffAccess: { email: string; role: string; hasPassword: boolean }[]
+): string {
+  const rows = staffAccess
+    .map((s) => {
+      const status = s.hasPassword
+        ? '<span class="badge">Active</span>'
+        : '<span class="badge badge-after-hours">Invited</span>';
+      const e = escapeHtml(s.email);
+      return `<tr data-email="${e}">
+        <td>${e}</td><td>${escapeHtml(s.role)}</td><td>${status}</td>
+        <td style="white-space:nowrap;">
+          <button type="button" onclick="staffAction('${e}','reset')">Send reset</button>
+          <button type="button" onclick="staffAction('${e}','invite')">Resend invite</button>
+          <button type="button" onclick="staffRemove('${e}')">Remove</button>
+        </td></tr>`;
+    })
+    .join("");
+
+  return `<form class="settings-form" onsubmit="return false">
+    <h3>Staff access</h3>
+    <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.9rem;flex-wrap:wrap;">
+      <input id="invite-email" type="email" placeholder="new.staff@tcbpestcontrolcanberra.com.au" style="flex:1;min-width:220px;">
+      <select id="invite-role"><option value="staff">Staff</option><option value="admin">Admin</option></select>
+      <button type="button" onclick="inviteStaff()">Invite</button>
+    </div>
+    <table><thead><tr><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <p id="staff-msg" class="placeholder" style="display:none;"></p>
+    <script>
+      function staffMsg(t){var el=document.getElementById('staff-msg');el.textContent=t;el.style.display='block';}
+      async function inviteStaff(){
+        var email=document.getElementById('invite-email').value.trim();
+        var role=document.getElementById('invite-role').value;
+        if(!email)return staffMsg('Enter an email.');
+        var r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,role:role})});
+        var d=await r.json().catch(function(){return {};});
+        if(r.ok){location.reload();}else{staffMsg(d.error||'Invite failed.');}
+      }
+      async function staffAction(email,kind){
+        var r=await fetch('/api/staff/'+encodeURIComponent(email)+'/'+kind,{method:'POST'});
+        var d=await r.json().catch(function(){return {};});
+        staffMsg(r.ok?(kind==='reset'?'Reset link sent.':'Invite resent.'):(d.error||'Failed.'));
+      }
+      async function staffRemove(email){
+        if(!confirm('Remove '+email+'?'))return;
+        var r=await fetch('/api/staff/'+encodeURIComponent(email),{method:'DELETE'});
+        var d=await r.json().catch(function(){return {};});
+        if(r.ok){location.reload();}else{staffMsg(d.error||'Remove failed.');}
+      }
+    </script>
+  </form>`;
+}
+
 export function renderSettingsPage(
   schedule: BusinessHoursSchedule,
   blocklist: string[],
-  staffRoster: StaffPresenceRow[]
+  staffRoster: StaffPresenceRow[],
+  staffAccess: { email: string; role: string; hasPassword: boolean }[],
+  currentRole: "admin" | "staff"
 ): string {
   const dayRows = renderDayRows(schedule, "hours");
 
@@ -82,6 +138,7 @@ export function renderSettingsPage(
       <h3>Staff Working Hours</h3>
       ${staffForms || "<p>No staff members found.</p>"}
     </section>
+    ${currentRole === "admin" ? renderStaffAccess(staffAccess) : ""}
     <script>
       function scheduleFromForm(form) {
         const days = ${JSON.stringify(DAYS)};
