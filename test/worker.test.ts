@@ -1155,7 +1155,8 @@ describe("Task 12 IVR flow editor routes", () => {
       new Request("https://example.com/admin/ivr/worker_test_flow"),
       prodEnv as any
     );
-    expect(adminPageResponse.status).toBe(401);
+    expect(adminPageResponse.status).toBe(302);
+    expect(adminPageResponse.headers.get("Location")).toBe("/login");
 
     const apiResponse = await worker.fetch(
       new Request("https://example.com/api/ivr/flows/worker_test_flow"),
@@ -1240,6 +1241,7 @@ describe("Task 13 callback-requests routes", () => {
       new Request("https://example.com/admin/callbacks"),
       prodEnv as any
     );
-    expect(adminResponse.status).toBe(401);
+    expect(adminResponse.status).toBe(302);
+    expect(adminResponse.headers.get("Location")).toBe("/login");
   });
 });

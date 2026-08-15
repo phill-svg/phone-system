@@ -506,7 +506,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/api/")) {
-      const staffOrResponse = await requireStaffUser(request, env);
+      const staffOrResponse = await requireStaffUser(request, env, { isApi: true });
       if (staffOrResponse instanceof Response) return staffOrResponse;
       const staff = staffOrResponse;
 
@@ -642,7 +642,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/admin/")) {
-      const staffOrResponse = await requireStaffUser(request, env);
+      const staffOrResponse = await requireStaffUser(request, env, { isApi: false });
       if (staffOrResponse instanceof Response) return staffOrResponse;
 
       if (url.pathname === "/admin/phone") {
