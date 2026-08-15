@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-describe("0014 auth schema", () => {
+describe("0016 auth schema", () => {
   it("adds password columns to staff_users", async () => {
     const info = await env.DB.prepare("PRAGMA table_info(staff_users)").all<{ name: string }>();
     const cols = info.results.map((r) => r.name);

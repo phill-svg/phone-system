@@ -1,4 +1,4 @@
--- migrations/0014_auth.sql
+-- migrations/0016_auth.sql
 -- Custom email+password auth: passwords on staff_users, server-side sessions,
 -- single-use email tokens (invite/reset), and a login rate-limit ledger.
 ALTER TABLE staff_users ADD COLUMN password_hash TEXT;       -- NULL = invited, password not yet set
