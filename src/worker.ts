@@ -5,6 +5,7 @@ import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
+import { handleLoginPage, handleLoginSubmit, handleLogout } from "./api/auth";
 import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta } from "./api/calls";
 import { handleGetBusinessHours, handleGetCallBlocklist, handlePutBusinessHours, handlePutCallBlocklist } from "./api/settings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
@@ -86,6 +87,14 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+    if (url.pathname === "/login") {
+      if (request.method === "GET") return handleLoginPage(request, env);
+      if (request.method === "POST") return handleLoginSubmit(request, env);
+    }
+
+    if (url.pathname === "/logout") {
+      return handleLogout(request, env);
+    }
 
     if (url.pathname === "/webhooks/twilio" && request.method === "POST") {
       const formData = await request.formData();
