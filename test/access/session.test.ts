@@ -4,6 +4,7 @@ import {
   createSession, lookupSession, destroySession, destroySessionsForEmail,
   parseSessionCookie, sessionCookieHeader,
 } from "../../src/access/session";
+import { sha256Hex } from "../../src/access/crypto";
 
 const EMAIL = "phill@tcbpestcontrolcanberra.com.au";
 
@@ -36,5 +37,14 @@ describe("sessions", () => {
     expect(header).toContain("HttpOnly");
     expect(header).toContain("Secure");
     expect(header).toContain("SameSite=Lax");
+  });
+
+  it("rejects a session whose expires_at is in the past", async () => {
+    const token = "expired-token-raw";
+    const tokenHash = await sha256Hex(token);
+    await env.DB.prepare(
+      "INSERT INTO sessions (token_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?)"
+    ).bind(tokenHash, EMAIL, 1000, Date.now() - 1000).run();
+    expect(await lookupSession(env.DB, token)).toBeNull();
   });
 });
