@@ -8,7 +8,7 @@ VOIP phone system built on Cloudflare Workers: Twilio IVR call routing, call his
 - **D1** — call/settings storage (migrations in `migrations/`)
 - **Durable Objects** — `CallSession` tracks in-progress call state
 - **Twilio** — inbound call webhooks, TwiML responses, signature verification
-- **Cloudflare Access** — staff authentication for the admin dashboard (JWT verification via `jose`)
+- **Custom auth** — email + password staff authentication for the admin dashboard (cookie sessions, SendGrid-delivered invite/reset links)
 
 ## Prerequisites
 
@@ -51,16 +51,17 @@ VOIP phone system built on Cloudflare Workers: Twilio IVR call routing, call his
    ```
 
    - `TWILIO_AUTH_TOKEN` — required; used to verify inbound Twilio webhook signatures.
-   - `AUTH_MODE=dev` — bypasses Cloudflare Access and authenticates all dashboard requests as `DEV_STAFF_EMAIL`. **Local/dev only** — do not set this in production.
+   - `AUTH_MODE=dev` — bypasses staff login and authenticates all dashboard requests as `DEV_STAFF_EMAIL`. **Local development only** — do not set this in production.
    - `DEV_STAFF_EMAIL` — required when `AUTH_MODE=dev`.
 
-   For production, set the real secret and configure Cloudflare Access instead of `AUTH_MODE`:
+   For production, set the real secrets instead of `AUTH_MODE`:
 
    ```bash
    npx wrangler secret put TWILIO_AUTH_TOKEN
+   npx wrangler secret put SENDGRID_API_KEY
    ```
 
-   Then set `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` in `wrangler.jsonc` under `vars` (or as environment-specific overrides) to your Cloudflare Access team domain and Access application AUD tag, so staff requests are verified against your Access policy.
+   See [Authentication](#authentication) below for the staff login system and the rest of the SendGrid-related config.
 
 5. **Point your Twilio number at the worker**
 
@@ -82,6 +83,49 @@ npm run deploy
 
 This runs `wrangler deploy`, publishing the worker to your Cloudflare account.
 
+## Authentication
+
+Staff sign in to the admin dashboard with **email + password**. There is no
+Cloudflare Access or SSO involved — auth is handled entirely by the worker.
+
+- **Sessions** — cookie-based (`tcb_session`, HttpOnly + Secure), 12-hour
+  lifetime. Sessions are looked up in D1 on each request via
+  `requireStaffUser` (`src/access/requireStaffUser.ts`).
+- **Inviting staff** — an admin invites a new staff member from **Settings →
+  Staff access**. The invitee receives a one-time emailed link to set their
+  own password. A **"forgot password"** flow on the login page works the same
+  way, sending a one-time reset link. Invite and reset emails are sent via
+  SendGrid (`src/email/sendgrid.ts`).
+- **Required config:**
+  - `AUTH_FROM_EMAIL` (`wrangler.jsonc` → `vars`) — the "from" address for
+    invite/reset emails. Must be a sender verified on your SendGrid account
+    for the domain.
+  - `SENDGRID_API_KEY` (secret) — set with:
+
+    ```bash
+    npx wrangler secret put SENDGRID_API_KEY
+    ```
+- **Break-glass (set a password without email)** — if SendGrid is
+  unavailable or you need to bootstrap the first admin account, generate a
+  password hash locally and write it directly to D1:
+
+  ```bash
+  node scripts/set-password.mjs <email> <password>
+  ```
+
+  This prints a SQL statement; run it against the remote database with:
+
+  ```bash
+  npx wrangler d1 execute tcb-voip-db --remote --command "<statement>"
+  ```
+- **Local development** — set `AUTH_MODE=dev` and `DEV_STAFF_EMAIL` in
+  `.dev.vars` to bypass login entirely and authenticate every dashboard
+  request as that staff email. **This is for local development only** — it
+  must never be set in production.
+- **Cutover runbook** — for the full migration story (why Cloudflare Access
+  was removed, rollout steps, verification), see
+  [`docs/superpowers/runbooks/auth-cutover.md`](docs/superpowers/runbooks/auth-cutover.md).
+
 ## Desktop app
 
 A Windows desktop wrapper around the admin dashboard lives in `desktop/` —
@@ -93,10 +137,11 @@ and run independently of the worker.
 
 ```
 src/
-  access/       Cloudflare Access JWT verification, staff auth guard
+  access/       Staff auth: sessions, password hashing, tokens, auth guard
   api/          JSON API routes (calls, settings, current user)
   db/           D1 query helpers
   durable-objects/  CallSession durable object
+  email/        SendGrid client for invite/reset emails
   html/         Server-rendered admin dashboard pages
   ivr/          IVR state machine, business hours logic
   twilio/       TwiML generation, signature verification, status callbacks
