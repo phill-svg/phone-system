@@ -116,7 +116,9 @@ export async function handleRemoveStaff(env: StaffAdminEnv, staff: StaffUser, em
   if (email.toLowerCase() === staff.email.toLowerCase()) {
     return jsonResponse({ error: "You can't remove your own account." }, 400);
   }
-  await deleteStaff(env.DB, email);
   await destroySessionsForEmail(env.DB, email);
+  await env.DB.prepare("DELETE FROM password_tokens WHERE email = ?").bind(email).run();
+  await env.DB.prepare("DELETE FROM login_attempts WHERE email = ?").bind(email).run();
+  await deleteStaff(env.DB, email);
   return jsonResponse({ ok: true });
 }

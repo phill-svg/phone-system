@@ -20,11 +20,12 @@ if (password.length < 10) {
 
 const ITER = 210000;
 const email = emailArg.toLowerCase();
+const safeEmail = email.replace(/'/g, "''");
 const salt = randomBytes(16);
 const hash = pbkdf2Sync(password, salt, ITER, 32, "sha256");
 const stored = `pbkdf2$${ITER}$${salt.toString("base64")}$${hash.toString("base64")}`;
 
 // Single-quote-safe: base64 never contains a single quote.
 console.log(
-  `UPDATE staff_users SET password_hash = '${stored}', password_set_at = ${Date.now()} WHERE email = '${email}';`
+  `UPDATE staff_users SET password_hash = '${stored}', password_set_at = ${Date.now()} WHERE email = '${safeEmail}';`
 );
