@@ -5,7 +5,11 @@ import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleMe } from "./api/me";
-import { handleLoginPage, handleLoginSubmit, handleLogout } from "./api/auth";
+import {
+  handleLoginPage, handleLoginSubmit, handleLogout,
+  handleForgotPasswordPage, handleForgotPasswordSubmit,
+  handleSetPasswordPage, handleSetPasswordSubmit,
+} from "./api/auth";
 import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta } from "./api/calls";
 import { handleGetBusinessHours, handleGetCallBlocklist, handlePutBusinessHours, handlePutCallBlocklist } from "./api/settings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
@@ -59,6 +63,8 @@ type Env = {
   TWILIO_TWIML_APP_SID: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
+  SENDGRID_API_KEY?: string;
+  AUTH_FROM_EMAIL?: string;
 };
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
@@ -92,6 +98,16 @@ export default {
 
     if (url.pathname === "/logout") {
       return handleLogout(request, env);
+    }
+
+    if (url.pathname === "/forgot-password") {
+      if (request.method === "GET") return handleForgotPasswordPage(request, env);
+      if (request.method === "POST") return handleForgotPasswordSubmit(request, env, url.origin);
+    }
+
+    if (url.pathname === "/set-password") {
+      if (request.method === "GET") return handleSetPasswordPage(request, env);
+      if (request.method === "POST") return handleSetPasswordSubmit(request, env);
     }
 
     if (url.pathname === "/webhooks/twilio" && request.method === "POST") {

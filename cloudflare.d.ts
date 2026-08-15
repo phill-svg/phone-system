@@ -12,5 +12,7 @@ declare module "cloudflare:test" {
     // this with the concrete class triggers "Type instantiation is excessively deep" from the
     // Rpc.Provider machinery. Tests cast the instance where needed (see CallSession.test.ts).
     CALL_SESSION: DurableObjectNamespace;
+    SENDGRID_API_KEY?: string;
+    AUTH_FROM_EMAIL?: string;
   }
 }
