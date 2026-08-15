@@ -19,7 +19,7 @@
 - Keep the `AUTH_MODE=dev` + `DEV_STAFF_EMAIL` bypass **unchanged** — the Vitest pool sets these globally (`vitest.config.ts`), and existing `SELF.fetch` tests rely on being auto-authenticated as `phill@tcbpestcontrolcanberra.com.au` (admin).
 - Brand tokens (from `src/html/layout.ts`): bg `#0f1013`, surface `#1b1d24`, border `#26282f`, text `#eceef2`, dim `#a7adb8`, mute `#6d7280`, brand red `#e4002b`→`#c10023`, link `#ff5c78`.
 - Emails always avoid account enumeration: `POST /forgot-password` returns the same neutral page whether or not the account exists; `POST /login` runs a dummy PBKDF2 verify for unknown emails so timing doesn't leak existence.
-- Migrations directory: `migrations/`; next number is **0014** (latest existing is `0013_staff_ring_priority.sql`).
+- Migrations directory: `migrations/`; next free number is **0016** (existing files run through `0015_ivr_node_types.sql`; `0014_call_post_call.sql` and `0015_ivr_node_types.sql` are already taken). The auth migration is `migrations/0016_auth.sql`.
 - Run the full suite with `npx vitest run` (or a single file: `npx vitest run test/path.test.ts`).
 
 ---
