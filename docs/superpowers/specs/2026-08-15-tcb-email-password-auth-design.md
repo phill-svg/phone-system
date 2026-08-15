@@ -168,7 +168,9 @@ Admin UI:
 - Login rate-limiting: a small D1-backed counter table (`login_attempts`, keyed
   by email + a coarse time window) to blunt brute force — in-memory won't do,
   since Worker isolates don't share state. Generic error messages either way.
-- No account enumeration on forgot-password.
+- No account enumeration on forgot-password. `POST /login` also runs a dummy
+  PBKDF2 verify against a fixed dummy hash when the email is unknown, so response
+  timing doesn't reveal which emails exist.
 - Reset invalidates existing sessions.
 - CSRF: `SameSite=Lax` + same-origin form posts is acceptable for v1; a per-form
   token can be added later if needed.
@@ -191,11 +193,31 @@ Admin UI:
   set-password happy path + expired/used token, forgot-password neutrality.
 - SendGrid client tested against a mocked fetch.
 
-## Rollout
+## Break-glass admin bootstrap (must not depend on email)
 
-1. Land code + migrations (Access still on; new routes are additive, dev auth
-   unaffected).
-2. Set `SENDGRID_API_KEY`, `AUTH_FROM_EMAIL`; verify SendGrid sender on the domain.
-3. Seed/bootstrap Phill's password (invite or reset link).
-4. **Disable Cloudflare Access** for the hostname.
-5. Verify sign-in end to end; invite remaining staff.
+Because the new session auth ships with nobody holding a cookie and no password
+set, there must be a recovery path that does **not** depend on SendGrid being
+live. A tiny Node script (`scripts/set-password.mjs`) computes a PBKDF2 hash with
+the exact same format as `password.ts` and prints an `UPDATE staff_users SET
+password_hash = …` statement to run via `wrangler d1 execute`. This seeds Phill's
+admin password directly and is the always-available way back in if email breaks.
+The script must stay byte-compatible with `verifyPassword` (same
+`pbkdf2$<iterations>$<salt>$<hash>` format, same iteration count).
+
+## Rollout (verify BEFORE cutover — never disable Access blind)
+
+Sequenced so the literal ask (branded email+password login) lands and is proven
+before the SendGrid-dependent layer, and so Access is only removed once login is
+confirmed working:
+
+1. Land Phase 1 code + migrations: session auth, login/logout pages,
+   break-glass script. New routes are additive; `AUTH_MODE=dev` keeps existing
+   behaviour, so nothing breaks while Access is still on.
+2. Seed Phill's password with the **break-glass script** (no email needed).
+3. **Verify login works while Access is still up** — either on a preview
+   deployment, or by temporarily adding `/login`, `/logout`, `/forgot-password`,
+   `/set-password` to Cloudflare Access's *bypass/excluded* paths and signing in.
+4. Only after login is confirmed: **disable Cloudflare Access** for the hostname.
+5. Land Phase 2: SendGrid client, invite/reset flow, staff-admin UI. Set
+   `SENDGRID_API_KEY`, `AUTH_FROM_EMAIL`; verify the SendGrid sender on the domain.
+6. Invite remaining staff via Settings → Staff access.
