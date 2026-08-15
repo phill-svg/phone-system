@@ -58,7 +58,7 @@ export async function handlePutStaffPriority(request: Request, db: D1Database, e
 
 type StaffAdminEnv = { DB: D1Database; SENDGRID_API_KEY?: string; AUTH_FROM_EMAIL?: string };
 
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const EMAIL_RE = /^[^@\s'"<>();\\`]+@[^@\s'"<>();\\`]+\.[^@\s'"<>();\\`]+$/;
 
 export async function handleInviteStaff(request: Request, env: StaffAdminEnv, staff: StaffUser, origin: string): Promise<Response> {
   if (staff.role !== "admin") return new Response("forbidden", { status: 403 });

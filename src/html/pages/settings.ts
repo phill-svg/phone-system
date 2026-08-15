@@ -53,9 +53,9 @@ function renderStaffAccess(
       return `<tr data-email="${e}">
         <td>${e}</td><td>${escapeHtml(s.role)}</td><td>${status}</td>
         <td style="white-space:nowrap;">
-          <button type="button" onclick="staffAction('${e}','reset')">Send reset</button>
-          <button type="button" onclick="staffAction('${e}','invite')">Resend invite</button>
-          <button type="button" onclick="staffRemove('${e}')">Remove</button>
+          <button type="button" class="staff-reset">Send reset</button>
+          <button type="button" class="staff-resend">Resend invite</button>
+          <button type="button" class="staff-remove">Remove</button>
         </td></tr>`;
     })
     .join("");
@@ -65,7 +65,7 @@ function renderStaffAccess(
     <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.9rem;flex-wrap:wrap;">
       <input id="invite-email" type="email" placeholder="new.staff@tcbpestcontrolcanberra.com.au" style="flex:1;min-width:220px;">
       <select id="invite-role"><option value="staff">Staff</option><option value="admin">Admin</option></select>
-      <button type="button" onclick="inviteStaff()">Invite</button>
+      <button type="button" id="staff-invite-btn">Invite</button>
     </div>
     <table><thead><tr><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table>
@@ -91,6 +91,10 @@ function renderStaffAccess(
         var d=await r.json().catch(function(){return {};});
         if(r.ok){location.reload();}else{staffMsg(d.error||'Remove failed.');}
       }
+      document.getElementById('staff-invite-btn').addEventListener('click', inviteStaff);
+      document.querySelectorAll('.staff-reset').forEach(function(b){ b.addEventListener('click', function(){ staffAction(b.closest('tr').dataset.email, 'reset'); }); });
+      document.querySelectorAll('.staff-resend').forEach(function(b){ b.addEventListener('click', function(){ staffAction(b.closest('tr').dataset.email, 'invite'); }); });
+      document.querySelectorAll('.staff-remove').forEach(function(b){ b.addEventListener('click', function(){ staffRemove(b.closest('tr').dataset.email); }); });
     </script>
   </form>`;
 }
