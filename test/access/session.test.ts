@@ -1,0 +1,40 @@
+import { env } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
+import {
+  createSession, lookupSession, destroySession, destroySessionsForEmail,
+  parseSessionCookie, sessionCookieHeader,
+} from "../../src/access/session";
+
+const EMAIL = "phill@tcbpestcontrolcanberra.com.au";
+
+describe("sessions", () => {
+  it("creates a session and looks it up by raw token", async () => {
+    const token = await createSession(env.DB, EMAIL);
+    expect(await lookupSession(env.DB, token)).toBe(EMAIL);
+  });
+
+  it("returns null for an unknown or destroyed token", async () => {
+    expect(await lookupSession(env.DB, "nope")).toBeNull();
+    const token = await createSession(env.DB, EMAIL);
+    await destroySession(env.DB, token);
+    expect(await lookupSession(env.DB, token)).toBeNull();
+  });
+
+  it("destroySessionsForEmail kills all of a user's sessions", async () => {
+    const t1 = await createSession(env.DB, EMAIL);
+    const t2 = await createSession(env.DB, EMAIL);
+    await destroySessionsForEmail(env.DB, EMAIL);
+    expect(await lookupSession(env.DB, t1)).toBeNull();
+    expect(await lookupSession(env.DB, t2)).toBeNull();
+  });
+
+  it("parseSessionCookie extracts the token; header sets flags", () => {
+    const req = new Request("https://x/", { headers: { Cookie: "a=1; tcb_session=abc.def; b=2" } });
+    expect(parseSessionCookie(req)).toBe("abc.def");
+    const header = sessionCookieHeader("tok");
+    expect(header).toContain("tcb_session=tok");
+    expect(header).toContain("HttpOnly");
+    expect(header).toContain("Secure");
+    expect(header).toContain("SameSite=Lax");
+  });
+});
