@@ -18,6 +18,8 @@ export default defineWorkersConfig(async () => {
               TWILIO_AUTH_TOKEN: "test-auth-token",
               AUTH_MODE: "dev",
               DEV_STAFF_EMAIL: "phill@tcbpestcontrolcanberra.com.au",
+              SENDGRID_API_KEY: "SG.test",
+              AUTH_FROM_EMAIL: "no-reply@tcbpestcontrolcanberra.com.au",
             },
           },
         },

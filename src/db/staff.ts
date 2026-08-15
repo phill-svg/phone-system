@@ -60,3 +60,23 @@ export async function setStaffSchedule(db: D1Database, email: string, schedule: 
 export async function touchHeartbeat(db: D1Database, email: string): Promise<void> {
   await db.prepare("UPDATE staff_users SET last_heartbeat_at = ? WHERE email = ?").bind(Date.now(), email).run();
 }
+
+export async function createInvitedStaff(db: D1Database, email: string, role: "admin" | "staff"): Promise<void> {
+  await db
+    .prepare("INSERT OR IGNORE INTO staff_users (email, role, created_at) VALUES (?, ?, ?)")
+    .bind(email, role, Date.now())
+    .run();
+}
+
+export async function deleteStaff(db: D1Database, email: string): Promise<void> {
+  await db.prepare("DELETE FROM staff_users WHERE email = ?").bind(email).run();
+}
+
+export async function listStaffAccess(
+  db: D1Database
+): Promise<{ email: string; role: "admin" | "staff"; hasPassword: boolean }[]> {
+  const rows = await db
+    .prepare("SELECT email, role, password_hash FROM staff_users ORDER BY email")
+    .all<{ email: string; role: "admin" | "staff"; password_hash: string | null }>();
+  return rows.results.map((r) => ({ email: r.email, role: r.role, hasPassword: r.password_hash !== null }));
+}

@@ -24,7 +24,10 @@ import {
   handlePostTransfer,
   handlePostCompleteTransfer,
 } from "./api/softphone";
-import { handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffPriority } from "./api/staff";
+import {
+  handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffPriority,
+  handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
+} from "./api/staff";
 import {
   handleListContacts,
   handleCreateContact,
@@ -632,8 +635,9 @@ export default {
       if (url.pathname === "/api/softphone/transfer/complete" && request.method === "POST") {
         return handlePostCompleteTransfer(request, env, staff, env.DB);
       }
-      if (url.pathname === "/api/staff" && request.method === "GET") {
-        return handleGetStaffRoster(env.DB);
+      if (url.pathname === "/api/staff") {
+        if (request.method === "GET") return handleGetStaffRoster(env.DB);
+        if (request.method === "POST") return handleInviteStaff(request, env, staff, url.origin);
       }
       const staffScheduleMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/schedule$/);
       if (staffScheduleMatch && request.method === "PUT") {
@@ -642,6 +646,20 @@ export default {
       const staffPriorityMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/priority$/);
       if (staffPriorityMatch && request.method === "PUT") {
         return handlePutStaffPriority(request, env.DB, decodeURIComponent(staffPriorityMatch[1]), staff);
+      }
+      const staffInviteMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/invite$/);
+      if (staffInviteMatch && request.method === "POST") {
+        return handleResendInvite(env, staff, decodeURIComponent(staffInviteMatch[1]).toLowerCase(), url.origin);
+      }
+      const staffResetMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/reset$/);
+      if (staffResetMatch && request.method === "POST") {
+        return handleSendReset(env, staff, decodeURIComponent(staffResetMatch[1]).toLowerCase(), url.origin);
+      }
+      // DELETE-only, and the [^/]+$ segment terminates at the email — it can't match the longer
+      // /schedule, /priority, /invite, /reset paths above (those are checked first anyway).
+      const staffRemoveMatch = url.pathname.match(/^\/api\/staff\/([^/]+)$/);
+      if (staffRemoveMatch && request.method === "DELETE") {
+        return handleRemoveStaff(env, staff, decodeURIComponent(staffRemoveMatch[1]).toLowerCase());
       }
 
       // Contact book (softphone). The literal /api/contacts and /api/contacts/import paths are
