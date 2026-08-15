@@ -59,8 +59,6 @@ type Env = {
   TWILIO_TWIML_APP_SID: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
-  CF_ACCESS_TEAM_DOMAIN?: string;
-  CF_ACCESS_AUD?: string;
 };
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
