@@ -7,7 +7,7 @@ import { pbkdf2Sync, randomBytes } from "node:crypto";
 import { verifyPassword } from "../../src/access/password";
 
 function nodeHash(password: string): string {
-  const ITER = 210000;
+  const ITER = 100000; // must match src/access/password.ts (Cloudflare Workers PBKDF2 cap)
   const salt = randomBytes(16);
   const hash = pbkdf2Sync(password, salt, ITER, 32, "sha256");
   return `pbkdf2$${ITER}$${salt.toString("base64")}$${hash.toString("base64")}`;

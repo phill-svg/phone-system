@@ -18,7 +18,9 @@ if (password.length < 10) {
   process.exit(1);
 }
 
-const ITER = 210000;
+// Must match src/access/password.ts ITERATIONS. Cloudflare Workers caps PBKDF2
+// at 100,000 iterations, so the Worker's verifyPassword rejects anything higher.
+const ITER = 100000;
 const email = emailArg.toLowerCase();
 const safeEmail = email.replace(/'/g, "''");
 const salt = randomBytes(16);

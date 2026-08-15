@@ -4,7 +4,7 @@ import { hashPassword, verifyPassword, getDummyHash } from "../../src/access/pas
 describe("password hashing", () => {
   it("verifies a correct password and rejects a wrong one", async () => {
     const stored = await hashPassword("correct horse battery");
-    expect(stored).toMatch(/^pbkdf2\$210000\$[^$]+\$[^$]+$/);
+    expect(stored).toMatch(/^pbkdf2\$100000\$[^$]+\$[^$]+$/);
     expect(await verifyPassword("correct horse battery", stored)).toBe(true);
     expect(await verifyPassword("wrong", stored)).toBe(false);
   });
@@ -20,7 +20,7 @@ describe("password hashing", () => {
 
   it("getDummyHash returns a valid, verifiable-format hash", async () => {
     const dummy = await getDummyHash();
-    expect(dummy).toMatch(/^pbkdf2\$210000\$/);
+    expect(dummy).toMatch(/^pbkdf2\$100000\$/);
     expect(await verifyPassword("anything", dummy)).toBe(false);
   });
 });

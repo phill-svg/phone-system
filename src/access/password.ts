@@ -1,6 +1,9 @@
 import { base64Encode, base64Decode } from "./crypto";
 
-const ITERATIONS = 210000;
+// Cloudflare Workers' Web Crypto caps PBKDF2 at 100,000 iterations — deriveBits
+// throws above that on the production runtime (miniflare/tests allow more, which
+// is why this slipped past CI). 100000 is the max Workers permits.
+const ITERATIONS = 100000;
 const KEY_BYTES = 32;
 const SALT_BYTES = 16;
 
