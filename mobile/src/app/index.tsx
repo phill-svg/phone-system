@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { View, Text, FlatList, Pressable, ActivityIndicator, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { getLiveCalls, type LiveCall } from "../lib/api";
@@ -7,11 +7,22 @@ import { colors } from "../lib/theme";
 
 export default function LiveCallsScreen() {
   const { signOut } = useAuth();
-  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["live-calls"],
     queryFn: getLiveCalls,
     refetchInterval: 5000,
   });
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function onRefresh() {
+    setRefreshing(true);
+    try {
+      await refetch();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   return (
     <View style={styles.wrap}>
@@ -21,14 +32,14 @@ export default function LiveCallsScreen() {
       </View>
       {isLoading ? (
         <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} />
-      ) : isError ? (
+      ) : isError && !data ? (
         <Text style={styles.muted}>Couldn't load live calls. Pull to retry.</Text>
       ) : (
         <FlatList
           data={data ?? []}
           keyExtractor={(c: LiveCall) => c.id}
-          refreshing={isRefetching}
-          onRefresh={refetch}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
           ListEmptyComponent={<Text style={styles.muted}>No calls in progress.</Text>}
           renderItem={({ item }) => (
             <View style={styles.row}>
