@@ -16,6 +16,7 @@
     "bindings": [{ "name": "CALL_SESSION", "class_name": "CallSession" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
+  "routes": [{ "pattern": "phone.tcbpestcontrolcanberra.com.au", "custom_domain": true }],
   "r2_buckets": [{ "binding": "AUDIO_ASSETS", "bucket_name": "tcb-voip-audio" }],
   "vars": {
     "TWILIO_FROM_NUMBER": "+61866108941",
