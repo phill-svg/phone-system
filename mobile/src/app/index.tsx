@@ -1,98 +1,54 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React from "react";
+import { View, Text, FlatList, Pressable, ActivityIndicator, StyleSheet } from "react-native";
+import { useQuery } from "@tanstack/react-query";
+import { getLiveCalls, type LiveCall } from "../lib/api";
+import { useAuth } from "../lib/auth";
+import { colors } from "../lib/theme";
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+export default function LiveCallsScreen() {
+  const { signOut } = useAuth();
+  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
+    queryKey: ["live-calls"],
+    queryFn: getLiveCalls,
+    refetchInterval: 5000,
+  });
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
-
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+    <View style={styles.wrap}>
+      <View style={styles.header}>
+        <Text style={styles.title}>In progress</Text>
+        <Pressable onPress={() => signOut()}><Text style={styles.signout}>Sign out</Text></Pressable>
+      </View>
+      {isLoading ? (
+        <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} />
+      ) : isError ? (
+        <Text style={styles.muted}>Couldn't load live calls. Pull to retry.</Text>
+      ) : (
+        <FlatList
+          data={data ?? []}
+          keyExtractor={(c: LiveCall) => c.id}
+          refreshing={isRefetching}
+          onRefresh={refetch}
+          ListEmptyComponent={<Text style={styles.muted}>No calls in progress.</Text>}
+          renderItem={({ item }) => (
+            <View style={styles.row}>
+              <Text style={styles.rowMain}>{item.caller_number} → {item.called_number}</Text>
+              <Text style={styles.rowSub}>{item.status}</Text>
+            </View>
+          )}
+        />
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
+  wrap: { flex: 1, backgroundColor: colors.bg, padding: 16 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  title: { color: colors.text, fontSize: 18, fontWeight: "700" },
+  signout: { color: colors.link, fontSize: 14 },
+  muted: { color: colors.mute, marginTop: 24, textAlign: "center" },
+  row: { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 8 },
+  rowMain: { color: colors.text, fontSize: 15 },
+  rowSub: { color: colors.dim, fontSize: 12, marginTop: 2 },
 });

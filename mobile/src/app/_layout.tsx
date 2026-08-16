@@ -22,7 +22,6 @@ function RootNavigator() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Protected guard={status === "authed"}>
         <Stack.Screen name="index" />
-        <Stack.Screen name="explore" />
       </Stack.Protected>
       <Stack.Protected guard={status === "anon"}>
         <Stack.Screen name="login" />
