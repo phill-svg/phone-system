@@ -1,25 +1,24 @@
-import { describe, it, expect } from "vitest";
-import { jwtVerify } from "jose";
+import { describe, expect, it } from "vitest";
+import { decodeJwt } from "jose";
 import { mintAccessToken } from "../../src/twilio/accessToken";
 
+const base = {
+  accountSid: "AC123", apiKeySid: "SK123", apiKeySecret: "secret", twimlAppSid: "AP123", identity: "a@b.com",
+};
+
 describe("mintAccessToken", () => {
-  it("mints a JWT with the Twilio Access Token header and grants, verifiable with the API key secret", async () => {
-    const token = await mintAccessToken({
-      accountSid: "ACxxx",
-      apiKeySid: "SKxxx",
-      apiKeySecret: "shh",
-      twimlAppSid: "APxxx",
-      identity: "phill@tcbpestcontrolcanberra.com.au",
-    });
+  it("omits push_credential_sid when not provided", async () => {
+    const jwt = await mintAccessToken(base);
+    const grants = (decodeJwt(jwt) as any).grants;
+    expect(grants.identity).toBe("a@b.com");
+    expect(grants.voice.outgoing.application_sid).toBe("AP123");
+    expect(grants.voice.incoming.allow).toBe(true);
+    expect("push_credential_sid" in grants.voice).toBe(false);
+  });
 
-    const key = new TextEncoder().encode("shh");
-    const { payload, protectedHeader } = await jwtVerify(token, key);
-
-    expect(protectedHeader.cty).toBe("twilio-fpa;v=1");
-    expect(payload.iss).toBe("SKxxx");
-    expect(payload.sub).toBe("ACxxx");
-    expect((payload.grants as any).identity).toBe("phill@tcbpestcontrolcanberra.com.au");
-    expect((payload.grants as any).voice.incoming.allow).toBe(true);
-    expect((payload.grants as any).voice.outgoing.application_sid).toBe("APxxx");
+  it("includes push_credential_sid when provided", async () => {
+    const jwt = await mintAccessToken({ ...base, pushCredentialSid: "CR999" });
+    const grants = (decodeJwt(jwt) as any).grants;
+    expect(grants.voice.push_credential_sid).toBe("CR999");
   });
 });

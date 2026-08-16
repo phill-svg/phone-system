@@ -126,6 +126,19 @@ Cloudflare Access or SSO involved — auth is handled entirely by the worker.
   was removed, rollout steps, verification), see
   [`docs/superpowers/runbooks/auth-cutover.md`](docs/superpowers/runbooks/auth-cutover.md).
 
+### Mobile
+
+The mobile app authenticates via `POST /api/login` (JSON body, returns a
+bearer token + user — no cookie), then sends `Authorization: Bearer <token>`
+on subsequent API calls. `POST /api/logout` revokes the token.
+
+- `TWILIO_PUSH_CREDENTIAL_SID_IOS` / `TWILIO_PUSH_CREDENTIAL_SID_ANDROID`
+  (optional Worker vars) — Twilio Push Credential SIDs used to wake the app
+  for incoming calls while backgrounded. Unset until Phase 4 (push
+  notifications); with them unset, `GET /api/softphone/token` mints a Voice
+  grant with no `push_credential_sid`, so the softphone still works in the
+  foreground — only background call push is unavailable.
+
 ## Desktop app
 
 A Windows desktop wrapper around the admin dashboard lives in `desktop/` —

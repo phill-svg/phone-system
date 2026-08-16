@@ -65,6 +65,8 @@ type Env = {
   TWILIO_API_KEY_SID: string;
   TWILIO_API_KEY_SECRET: string;
   TWILIO_TWIML_APP_SID: string;
+  TWILIO_PUSH_CREDENTIAL_SID_IOS?: string;
+  TWILIO_PUSH_CREDENTIAL_SID_ANDROID?: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
   SENDGRID_API_KEY?: string;
@@ -626,7 +628,7 @@ export default {
       }
 
       if (url.pathname === "/api/softphone/token" && request.method === "GET") {
-        return handleGetSoftphoneToken(env, staff);
+        return handleGetSoftphoneToken(env, staff, url.searchParams.get("platform") ?? undefined);
       }
       if (url.pathname === "/api/softphone/presence" && request.method === "PUT") {
         return handlePutPresence(request, env.DB, staff);
