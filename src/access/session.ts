@@ -47,6 +47,13 @@ export function parseSessionCookie(request: Request): string | null {
   return null;
 }
 
+export function parseBearerToken(request: Request): string | null {
+  const header = request.headers.get("Authorization");
+  if (!header) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? (match[1].trim() || null) : null;
+}
+
 export function sessionCookieHeader(token: string): string {
   return `${SESSION_COOKIE}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
 }

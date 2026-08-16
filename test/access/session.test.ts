@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
   createSession, lookupSession, destroySession, destroySessionsForEmail,
-  parseSessionCookie, sessionCookieHeader,
+  parseSessionCookie, sessionCookieHeader, parseBearerToken,
 } from "../../src/access/session";
 import { sha256Hex } from "../../src/access/crypto";
 
@@ -46,5 +46,12 @@ describe("sessions", () => {
       "INSERT INTO sessions (token_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?)"
     ).bind(tokenHash, EMAIL, 1000, Date.now() - 1000).run();
     expect(await lookupSession(env.DB, token)).toBeNull();
+  });
+
+  it("parseBearerToken extracts the token from an Authorization header", () => {
+    expect(parseBearerToken(new Request("https://x/", { headers: { Authorization: "Bearer abc.def" } }))).toBe("abc.def");
+    expect(parseBearerToken(new Request("https://x/", { headers: { Authorization: "bearer XYZ" } }))).toBe("XYZ");
+    expect(parseBearerToken(new Request("https://x/"))).toBeNull();
+    expect(parseBearerToken(new Request("https://x/", { headers: { Authorization: "Basic abc" } }))).toBeNull();
   });
 });

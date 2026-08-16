@@ -1,4 +1,4 @@
-import { parseSessionCookie, lookupSession } from "./session";
+import { parseSessionCookie, parseBearerToken, lookupSession } from "./session";
 
 export type StaffUser = { email: string; role: "admin" | "staff" };
 
@@ -27,7 +27,7 @@ export async function requireStaffUser(
     }
     email = env.DEV_STAFF_EMAIL.toLowerCase();
   } else {
-    const token = parseSessionCookie(request);
+    const token = parseSessionCookie(request) ?? parseBearerToken(request);
     const sessionEmail = token ? await lookupSession(env.DB, token) : null;
     if (!sessionEmail) return unauthenticated(opts.isApi);
     email = sessionEmail.toLowerCase();

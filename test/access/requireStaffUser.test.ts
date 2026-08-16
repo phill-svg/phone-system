@@ -59,4 +59,18 @@ describe("requireStaffUser (session-based)", () => {
     const res = (await requireStaffUser(req, env as any, { isApi: true })) as Response;
     expect(res.status).toBe(403);
   });
+
+  it("resolves a staff user from an Authorization: Bearer token", async () => {
+    const token = await createSession(testEnv.DB, ADMIN);
+    const env = { DB: testEnv.DB };
+    const req = new Request("https://x/api/me", { headers: { Authorization: `Bearer ${token}` } });
+    expect(await requireStaffUser(req, env as any, { isApi: true })).toEqual({ email: ADMIN, role: "admin" });
+  });
+
+  it("401s for an invalid bearer token (api)", async () => {
+    const env = { DB: testEnv.DB };
+    const req = new Request("https://x/api/me", { headers: { Authorization: "Bearer not-a-real-token" } });
+    const res = (await requireStaffUser(req, env as any, { isApi: true })) as Response;
+    expect(res.status).toBe(401);
+  });
 });
