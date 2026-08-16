@@ -9,6 +9,7 @@ import {
   handleLoginPage, handleLoginSubmit, handleLogout,
   handleForgotPasswordPage, handleForgotPasswordSubmit,
   handleSetPasswordPage, handleSetPasswordSubmit,
+  handleApiLogin, handleApiLogout,
 } from "./api/auth";
 import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta } from "./api/calls";
 import { handleGetBusinessHours, handleGetCallBlocklist, handlePutBusinessHours, handlePutCallBlocklist } from "./api/settings";
@@ -101,6 +102,13 @@ export default {
 
     if (url.pathname === "/logout") {
       return handleLogout(request, env);
+    }
+
+    if (url.pathname === "/api/login" && request.method === "POST") {
+      return handleApiLogin(request, env);
+    }
+    if (url.pathname === "/api/logout" && request.method === "POST") {
+      return handleApiLogout(request, env);
     }
 
     if (url.pathname === "/forgot-password") {

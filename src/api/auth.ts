@@ -1,10 +1,11 @@
 // src/api/auth.ts
 import { verifyPassword, getDummyHash, hashPassword } from "../access/password";
-import { createSession, destroySession, destroySessionsForEmail, parseSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "../access/session";
+import { createSession, destroySession, destroySessionsForEmail, parseSessionCookie, sessionCookieHeader, clearSessionCookieHeader, parseBearerToken } from "../access/session";
 import { isRateLimited, recordFailedAttempt, clearAttempts } from "../access/loginAttempts";
 import { issueToken, peekToken, consumeToken } from "../access/passwordTokens";
 import { sendEmail, resetEmail } from "../email/sendgrid";
 import { renderLoginPage, renderForgotPasswordPage, renderSetPasswordPage, renderAuthMessagePage } from "../html/pages/login";
+import { jsonResponse } from "./respond";
 
 type Env = {
   DB: D1Database;
@@ -129,4 +130,44 @@ export async function handleSetPasswordSubmit(request: Request, env: Env): Promi
 
   const session = await createSession(env.DB, consumed.email);
   return new Response(null, { status: 302, headers: { Location: "/admin/live", "Set-Cookie": sessionCookieHeader(session) } });
+}
+
+export async function handleApiLogin(request: Request, env: Env): Promise<Response> {
+  let body: { email?: unknown; password?: unknown };
+  try {
+    body = (await request.json()) as { email?: unknown; password?: unknown };
+  } catch {
+    return jsonResponse({ error: "invalid request body" }, 400);
+  }
+  const email = String(body.email ?? "").trim().toLowerCase();
+  const password = String(body.password ?? "");
+  if (!email || !password) return jsonResponse({ error: "Enter your email and password." }, 400);
+
+  if (await isRateLimited(env.DB, email)) {
+    return jsonResponse({ error: "Too many attempts. Try again in a few minutes." }, 429);
+  }
+
+  const user = await env.DB.prepare("SELECT email, role, password_hash FROM staff_users WHERE email = ?")
+    .bind(email)
+    .first<{ email: string; role: "admin" | "staff"; password_hash: string | null }>();
+
+  if (!user || !user.password_hash) {
+    await verifyPassword(password, await getDummyHash());
+    await recordFailedAttempt(env.DB, email);
+    return jsonResponse({ error: "Invalid email or password." }, 401);
+  }
+  if (!(await verifyPassword(password, user.password_hash))) {
+    await recordFailedAttempt(env.DB, email);
+    return jsonResponse({ error: "Invalid email or password." }, 401);
+  }
+
+  await clearAttempts(env.DB, email);
+  const token = await createSession(env.DB, user.email);
+  return jsonResponse({ token, user: { email: user.email, role: user.role } });
+}
+
+export async function handleApiLogout(request: Request, env: Env): Promise<Response> {
+  const token = parseSessionCookie(request) ?? parseBearerToken(request);
+  if (token) await destroySession(env.DB, token);
+  return jsonResponse({ ok: true });
 }
