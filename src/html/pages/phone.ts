@@ -747,13 +747,14 @@ export function renderPhonePage(staffEmail: string): string {
         var recWrap = document.createElement('div');
         recWrap.style.marginTop = '1.1rem';
         if (c.recording_url) {
-          var link = document.createElement('a');
-          link.className = 'info-rec-link';
-          link.href = c.recording_url;
-          link.target = '_blank';
-          link.rel = 'noopener';
-          link.innerHTML = IC_PLAY + '<span>Open recording</span>';
-          recWrap.appendChild(link);
+          // Play inline through the authenticated proxy (/api/calls/:id/recording) rather than
+          // linking to Twilio's protected URL, which pops a Twilio credential prompt in a new tab.
+          var audio = document.createElement('audio');
+          audio.controls = true;
+          audio.preload = 'none';
+          audio.src = '/api/calls/' + encodeURIComponent(c.id) + '/recording';
+          audio.style.width = '100%';
+          recWrap.appendChild(audio);
         } else {
           var none = document.createElement('span');
           none.className = 'info-none';
