@@ -44,6 +44,7 @@ import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
 import { getCallDetail, listCalls, listLiveCalls, appendCallEvent, setCallTranscription, getCallStats } from "./db/calls";
+import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
@@ -555,6 +556,21 @@ export default {
       if (url.pathname === "/api/calls") {
         return handleListCalls(env.DB);
       }
+      // Longer than the /api/calls/:id match below (which is $-anchored right after the id), so the
+      // two never shadow each other. Streams the call's Twilio recording through our own auth.
+      const recordingMatch = url.pathname.match(/^\/api\/calls\/([^/]+)\/recording$/);
+      if (recordingMatch && request.method === "GET") {
+        try {
+          const callId = decodeURIComponent(recordingMatch[1]);
+          return handleGetRecording(env, env.DB, callId, request);
+        } catch (e) {
+          if (e instanceof URIError) {
+            return new Response("not found", { status: 404 });
+          }
+          throw e;
+        }
+      }
+
       const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
       if (callIdMatch) {
         try {

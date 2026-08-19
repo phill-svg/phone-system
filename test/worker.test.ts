@@ -803,9 +803,9 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
     expect(html).toContain('href="/admin/calls/CA-html-1"');
   });
 
-  it("renders the call detail page with the recording link, transcript, and disposition/notes when present", async () => {
+  it("renders the call detail page with the recording player, transcript, and disposition/notes when present", async () => {
     await env.DB.prepare(
-      "INSERT INTO calls (id, caller_number, called_number, started_at, recording_url, transcription, disposition, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO calls (id, caller_number, called_number, started_at, recording_url, recording_sid, transcription, disposition, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
       .bind(
         "CA-html-2",
@@ -813,6 +813,7 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
         "+61200000000",
         Date.now(),
         "https://api.twilio.com/rec.mp3",
+        "RE123",
         "Please call me back about a booking.",
         "New booking",
         "Wants a quote",
@@ -822,7 +823,9 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
     const response = await SELF.fetch("https://example.com/admin/calls/CA-html-2");
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("Open recording");
+    // Recording plays inline via the authed proxy, not a raw Twilio link.
+    expect(html).toContain("/api/calls/CA-html-2/recording");
+    expect(html).toContain("<audio");
     expect(html).toContain("Please call me back about a booking.");
     expect(html).toContain("New booking");
     expect(html).toContain("Wants a quote");

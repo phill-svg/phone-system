@@ -27,8 +27,10 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[]):
     <h3>Timeline</h3>
     <table><tbody>${eventRows || "<tr><td>No events.</td></tr>"}</tbody></table>
     ${
-      call.recording_url
-        ? `<p><strong>Recording:</strong> <a href="${escapeHtml(call.recording_url)}" target="_blank" rel="noopener">Open recording</a></p>`
+      call.recording_sid
+        ? `<p><strong>Recording:</strong></p>
+    <audio controls preload="none" src="/api/calls/${encodeURIComponent(call.id)}/recording" style="width:100%;max-width:420px"></audio>
+    <p><a href="/api/calls/${encodeURIComponent(call.id)}/recording" download="recording-${encodeURIComponent(call.id)}.mp3">Download recording</a></p>`
         : ""
     }
     ${
