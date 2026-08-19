@@ -3,6 +3,7 @@ import { View, Text, ScrollView, Pressable, ActivityIndicator, StyleSheet } from
 import { useQuery } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
 import { getCallDetail, type CallEvent } from "../../lib/api";
+import { RecordingPlayer } from "../../components/recording-player";
 import { colors } from "../../lib/theme";
 
 function fmtWhen(ms: number): string {
@@ -39,9 +40,17 @@ export default function CallDetailScreen() {
             <Field label="To" value={data.call.called_number} />
             <Field label="Status" value={data.call.status} />
             <Field label="Started" value={fmtWhen(data.call.started_at)} />
-            <Field label="Recording" value={data.call.recording_sid ? "Available (play on desktop)" : "None"} />
             {data.call.disposition ? <Field label="Disposition" value={data.call.disposition} /> : null}
             {data.call.notes ? <Field label="Notes" value={data.call.notes} /> : null}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardLabel}>Recording</Text>
+            {data.call.recording_sid ? (
+              <RecordingPlayer callId={String(id)} />
+            ) : (
+              <Text style={styles.muted}>No recording for this call.</Text>
+            )}
           </View>
 
           {data.call.transcription ? (
