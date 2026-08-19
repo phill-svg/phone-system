@@ -22,6 +22,9 @@ function RootNavigator() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Protected guard={status === "authed"}>
         <Stack.Screen name="index" />
+        <Stack.Screen name="calls" />
+        <Stack.Screen name="callbacks" />
+        <Stack.Screen name="call/[id]" />
       </Stack.Protected>
       <Stack.Protected guard={status === "anon"}>
         <Stack.Screen name="login" />

@@ -65,3 +65,56 @@ export type LiveCall = {
 export async function getLiveCalls(): Promise<LiveCall[]> {
   return apiFetch<LiveCall[]>("/api/calls/live");
 }
+
+// ---- Call history / detail ----
+
+export type Call = {
+  id: string;
+  caller_number: string;
+  called_number: string;
+  started_at: number;
+  ended_at: number | null;
+  status: string;
+  direction: "inbound" | "outbound";
+  recording_sid: string | null;
+  recording_url: string | null;
+  transcription: string | null;
+  disposition: string | null;
+  notes: string | null;
+};
+
+export type CallEvent = {
+  id: number;
+  call_id: string;
+  ts: number;
+  event_type: string;
+  detail: string | null;
+};
+
+export async function getCalls(): Promise<Call[]> {
+  return apiFetch<Call[]>("/api/calls");
+}
+
+export async function getCallDetail(id: string): Promise<{ call: Call; events: CallEvent[] }> {
+  return apiFetch<{ call: Call; events: CallEvent[] }>(`/api/calls/${encodeURIComponent(id)}`);
+}
+
+// Absolute URL of a call's recording, streamed through the authed proxy. The Bearer token must be
+// supplied by the caller (audio source headers) — the raw Twilio URL would demand Twilio creds.
+export function recordingUri(callId: string): string {
+  return `${BASE_URL}/api/calls/${encodeURIComponent(callId)}/recording`;
+}
+
+// ---- Callback requests ----
+
+export type CallbackRequest = {
+  id: number;
+  call_id: string;
+  caller_number: string;
+  requested_at: number;
+  status: "open" | "done";
+};
+
+export async function getCallbackRequests(): Promise<CallbackRequest[]> {
+  return apiFetch<CallbackRequest[]>("/api/callback-requests");
+}
