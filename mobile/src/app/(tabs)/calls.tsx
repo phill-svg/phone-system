@@ -2,8 +2,8 @@ import React from "react";
 import { View, Text, FlatList, Pressable, ActivityIndicator, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
-import { getCalls, type Call } from "../lib/api";
-import { colors } from "../lib/theme";
+import { getCalls, type Call } from "../../lib/api";
+import { colors } from "../../lib/theme";
 
 function fmtWhen(ms: number): string {
   return new Date(ms).toLocaleString("en-AU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -14,13 +14,6 @@ export default function CallHistoryScreen() {
 
   return (
     <View style={styles.wrap}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12}>
-          <Text style={styles.back}>‹ Back</Text>
-        </Pressable>
-        <Text style={styles.title}>Call history</Text>
-        <View style={{ width: 44 }} />
-      </View>
       {isLoading ? (
         <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} />
       ) : isError && !data ? (
@@ -53,9 +46,6 @@ export default function CallHistoryScreen() {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg, padding: 16 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  back: { color: colors.link, fontSize: 15, width: 44 },
-  title: { color: colors.text, fontSize: 18, fontWeight: "700" },
   muted: { color: colors.mute, marginTop: 24, textAlign: "center" },
   row: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 8 },
   rowMain: { color: colors.text, fontSize: 15 },

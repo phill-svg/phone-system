@@ -19,12 +19,26 @@ function RootNavigator() {
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: colors.bg },
+      }}
+    >
       <Stack.Protected guard={status === "authed"}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="calls" />
-        <Stack.Screen name="callbacks" />
-        <Stack.Screen name="call/[id]" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen
+          name="call/[id]"
+          options={{
+            headerShown: true,
+            title: "Call detail",
+            headerStyle: { backgroundColor: colors.surface },
+            headerTitleStyle: { color: colors.text },
+            headerTintColor: colors.link,
+            headerShadowVisible: false,
+            headerBackButtonDisplayMode: "minimal",
+          }}
+        />
       </Stack.Protected>
       <Stack.Protected guard={status === "anon"}>
         <Stack.Screen name="login" />

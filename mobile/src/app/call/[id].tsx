@@ -1,7 +1,7 @@
 import React from "react";
-import { View, Text, ScrollView, Pressable, ActivityIndicator, StyleSheet } from "react-native";
+import { View, Text, ScrollView, ActivityIndicator, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { router, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import { getCallDetail, type CallEvent } from "../../lib/api";
 import { RecordingPlayer } from "../../components/recording-player";
 import { colors } from "../../lib/theme";
@@ -20,14 +20,6 @@ export default function CallDetailScreen() {
 
   return (
     <View style={styles.wrap}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12}>
-          <Text style={styles.back}>‹ Back</Text>
-        </Pressable>
-        <Text style={styles.title}>Call detail</Text>
-        <View style={{ width: 44 }} />
-      </View>
-
       {isLoading ? (
         <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} />
       ) : isError || !data ? (
@@ -90,9 +82,6 @@ function Field({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg, padding: 16 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  back: { color: colors.link, fontSize: 15, width: 44 },
-  title: { color: colors.text, fontSize: 18, fontWeight: "700" },
   muted: { color: colors.mute, marginTop: 12, textAlign: "center" },
   card: { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 14, marginBottom: 12 },
   cardLabel: { color: colors.dim, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
