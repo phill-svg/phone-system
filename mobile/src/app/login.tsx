@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useAuth } from "../lib/auth";
 import { colors } from "../lib/theme";
 
@@ -38,6 +38,9 @@ export default function LoginScreen() {
   return (
     <View style={styles.wrap}>
       <View style={styles.card}>
+        <View style={styles.logoBadge}>
+          <Image source={require("../../assets/images/tabIcons/tcb-logo.png")} style={styles.logo} resizeMode="contain" />
+        </View>
         <Text style={styles.brand}>TCB Phone System</Text>
         <Text style={styles.subtitle}>Sign in</Text>
         {error && <Text style={styles.error}>{error}</Text>}
@@ -58,8 +61,10 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: page.bg, alignItems: "center", justifyContent: "center", padding: 24 },
   card: { width: "100%", maxWidth: 360, backgroundColor: page.surface, borderColor: page.border, borderWidth: 1, borderRadius: 14, padding: 22 },
-  brand: { color: page.text, fontWeight: "700", fontSize: 16, marginBottom: 14 },
-  subtitle: { color: page.dim, fontSize: 13, marginBottom: 16 },
+  logoBadge: { alignSelf: "center", backgroundColor: "#ffffff", borderRadius: 22, padding: 14, marginBottom: 18 },
+  logo: { width: 88, height: 88 },
+  brand: { color: page.text, fontWeight: "700", fontSize: 16, marginBottom: 14, textAlign: "center" },
+  subtitle: { color: page.dim, fontSize: 13, marginBottom: 16, textAlign: "center" },
   error: { color: "#ff9aab", backgroundColor: "rgba(228,0,43,0.14)", borderRadius: 8, padding: 8, marginBottom: 12, fontSize: 13 },
   label: { color: page.dim, fontSize: 11, marginBottom: 5, letterSpacing: 1 },
   input: { backgroundColor: page.bg, borderColor: page.border, borderWidth: 1, borderRadius: 8, color: page.text, padding: 11, marginBottom: 12 },

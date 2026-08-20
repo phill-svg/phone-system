@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import React from "react";
-import { Pressable, StyleSheet, Text } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "../../lib/auth";
 import { colors } from "../../lib/theme";
 
@@ -15,6 +15,14 @@ const page = {
   link: "#ff5c78",     // active tab + Sign out
   mute: "#6d7280",     // inactive tabs
 };
+
+function LogoBadge() {
+  return (
+    <View style={styles.logoBadge}>
+      <Image source={require("../../../assets/images/tabIcons/tcb-logo.png")} style={styles.logoImg} resizeMode="contain" />
+    </View>
+  );
+}
 
 function SignOutButton() {
   const { signOut } = useAuth();
@@ -35,6 +43,7 @@ export default function TabsLayout() {
         tabBarStyle: { backgroundColor: page.surface, borderTopColor: page.border },
         tabBarActiveTintColor: page.link,
         tabBarInactiveTintColor: page.mute,
+        headerLeft: () => <LogoBadge />,
       }}
     >
       <Tabs.Screen
@@ -69,4 +78,6 @@ export default function TabsLayout() {
 const styles = StyleSheet.create({
   signoutBtn: { marginRight: 16 },
   signout: { color: page.link, fontSize: 20 },
+  logoBadge: { marginLeft: 14, backgroundColor: "#ffffff", borderRadius: 8, padding: 3 },
+  logoImg: { width: 26, height: 26 },
 });
