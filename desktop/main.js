@@ -74,7 +74,7 @@ function createWindow() {
 }
 
 function createTray() {
-  tray = new Tray(path.join(__dirname, "icon.png"));
+  tray = new Tray(path.join(__dirname, "tcb-logo.png"));
   tray.setToolTip("TCB Phone");
   tray.setContextMenu(
     Menu.buildFromTemplate([
