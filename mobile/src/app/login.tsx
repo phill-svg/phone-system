@@ -1,7 +1,20 @@
 import React, { useState } from "react";
-import { View, Text, TextInput, Pressable, ActivityIndicator, StyleSheet } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useAuth } from "../lib/auth";
 import { colors } from "../lib/theme";
+
+// 🎨 COLORS FOR THIS PAGE (Login) — click a swatch to recolor just this screen.
+// They start from the shared app theme; change one to override only this page.
+const page = {
+  ...colors,           // shared app theme (fallback for anything not overridden)
+  bg: "#0f1013",       // screen background
+  surface: "#1b1d24",  // the sign-in card
+  border: "#26282f",   // card + input borders
+  text: "#eceef2",     // title + typed text
+  dim: "#a7adb8",      // "Sign in" + field labels
+  mute: "#6d7280",     // placeholder text
+  brand: "#e4002b",    // the Sign in button
+};
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
@@ -25,12 +38,12 @@ export default function LoginScreen() {
   return (
     <View style={styles.wrap}>
       <View style={styles.card}>
-        <Text style={styles.brand}>TCB VoIP</Text>
+        <Text style={styles.brand}>TCB Phone System</Text>
         <Text style={styles.subtitle}>Sign in</Text>
         {error && <Text style={styles.error}>{error}</Text>}
         <Text style={styles.label}>EMAIL</Text>
         <TextInput style={styles.input} autoCapitalize="none" keyboardType="email-address"
-          autoComplete="email" value={email} onChangeText={setEmail} placeholder="you@tcb…" placeholderTextColor={colors.mute} />
+          autoComplete="email" value={email} onChangeText={setEmail} placeholder="you@tcbpestcontrolcanberra.com.au" placeholderTextColor={page.mute} />
         <Text style={styles.label}>PASSWORD</Text>
         <TextInput style={styles.input} secureTextEntry autoComplete="password"
           value={password} onChangeText={setPassword} />
@@ -43,13 +56,13 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: colors.bg, alignItems: "center", justifyContent: "center", padding: 24 },
-  card: { width: "100%", maxWidth: 360, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 14, padding: 22 },
-  brand: { color: colors.text, fontWeight: "700", fontSize: 16, marginBottom: 14 },
-  subtitle: { color: colors.dim, fontSize: 13, marginBottom: 16 },
+  wrap: { flex: 1, backgroundColor: page.bg, alignItems: "center", justifyContent: "center", padding: 24 },
+  card: { width: "100%", maxWidth: 360, backgroundColor: page.surface, borderColor: page.border, borderWidth: 1, borderRadius: 14, padding: 22 },
+  brand: { color: page.text, fontWeight: "700", fontSize: 16, marginBottom: 14 },
+  subtitle: { color: page.dim, fontSize: 13, marginBottom: 16 },
   error: { color: "#ff9aab", backgroundColor: "rgba(228,0,43,0.14)", borderRadius: 8, padding: 8, marginBottom: 12, fontSize: 13 },
-  label: { color: colors.dim, fontSize: 11, marginBottom: 5, letterSpacing: 1 },
-  input: { backgroundColor: colors.bg, borderColor: colors.border, borderWidth: 1, borderRadius: 8, color: colors.text, padding: 11, marginBottom: 12 },
-  button: { backgroundColor: colors.brand, borderRadius: 9, padding: 13, alignItems: "center", marginTop: 4 },
+  label: { color: page.dim, fontSize: 11, marginBottom: 5, letterSpacing: 1 },
+  input: { backgroundColor: page.bg, borderColor: page.border, borderWidth: 1, borderRadius: 8, color: page.text, padding: 11, marginBottom: 12 },
+  button: { backgroundColor: page.brand, borderRadius: 9, padding: 13, alignItems: "center", marginTop: 4 },
   buttonText: { color: "#fff", fontWeight: "600" },
 });

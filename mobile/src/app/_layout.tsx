@@ -5,6 +5,17 @@ import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { colors } from "../lib/theme";
 
+// 🎨 COLORS FOR THE APP SHELL (Call detail header + first loading screen).
+// They start from the shared app theme; change one to override the shell only.
+const page = {
+  ...colors,           // shared app theme (fallback for anything not overridden)
+  bg: "#0f1013",       // background behind screens + loading screen
+  surface: "#1b1d24",  // Call detail header bar
+  text: "#eceef2",     // "Call detail" title
+  link: "#ff5c78",     // the back button
+  brand: "#e4002b",    // loading spinner
+};
+
 const queryClient = new QueryClient();
 
 function RootNavigator() {
@@ -13,7 +24,7 @@ function RootNavigator() {
   if (status === "loading") {
     return (
       <View style={styles.loading}>
-        <ActivityIndicator color={colors.brand} />
+        <ActivityIndicator color={page.brand} />
       </View>
     );
   }
@@ -22,7 +33,7 @@ function RootNavigator() {
     <Stack
       screenOptions={{
         headerShown: false,
-        contentStyle: { backgroundColor: colors.bg },
+        contentStyle: { backgroundColor: page.bg },
       }}
     >
       <Stack.Protected guard={status === "authed"}>
@@ -32,9 +43,9 @@ function RootNavigator() {
           options={{
             headerShown: true,
             title: "Call detail",
-            headerStyle: { backgroundColor: colors.surface },
-            headerTitleStyle: { color: colors.text },
-            headerTintColor: colors.link,
+            headerStyle: { backgroundColor: page.surface },
+            headerTitleStyle: { color: page.text },
+            headerTintColor: page.link,
             headerShadowVisible: false,
             headerBackButtonDisplayMode: "minimal",
           }}
@@ -58,5 +69,5 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  loading: { flex: 1, backgroundColor: colors.bg, alignItems: "center", justifyContent: "center" },
+  loading: { flex: 1, backgroundColor: page.bg, alignItems: "center", justifyContent: "center" },
 });

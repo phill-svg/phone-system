@@ -1,4 +1,4 @@
 export const colors = {
-  bg: "#0f1013", surface: "#1b1d24", border: "#26282f",
-  text: "#eceef2", dim: "#a7adb8", mute: "#6d7280", brand: "#e4002b", link: "#ff5c78",
+  bg: "#f0f4ff", surface: "#000000", border: "#050608",
+  text: "#fafafb", dim: "#fefefe", mute: "#6d7280", brand: "#e4002b", link: "#bc001f",
 };

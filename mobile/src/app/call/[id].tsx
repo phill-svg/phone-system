@@ -6,6 +6,19 @@ import { getCallDetail, type CallEvent } from "../../lib/api";
 import { RecordingPlayer } from "../../components/recording-player";
 import { colors } from "../../lib/theme";
 
+// 🎨 COLORS FOR THIS PAGE (Call detail) — click a swatch to recolor just this screen.
+// They start from the shared app theme; change one to override only this page.
+const page = {
+  ...colors,           // shared app theme (fallback for anything not overridden)
+  bg: "#0f1013",       // screen background
+  surface: "#1b1d24",  // detail cards
+  border: "#26282f",   // card borders
+  text: "#eceef2",     // values / transcript text
+  dim: "#a7adb8",      // labels
+  mute: "#6d7280",     // faint "no recording" text
+  brand: "#e4002b",    // loading spinner
+};
+
 function fmtWhen(ms: number): string {
   return new Date(ms).toLocaleString("en-AU");
 }
@@ -21,7 +34,7 @@ export default function CallDetailScreen() {
   return (
     <View style={styles.wrap}>
       {isLoading ? (
-        <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} />
+        <ActivityIndicator color={page.brand} style={{ marginTop: 40 }} />
       ) : isError || !data ? (
         <Text style={styles.muted}>Couldn&apos;t load this call.</Text>
       ) : (
@@ -81,15 +94,15 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: colors.bg, padding: 16 },
-  muted: { color: colors.mute, marginTop: 12, textAlign: "center" },
-  card: { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 14, marginBottom: 12 },
-  cardLabel: { color: colors.dim, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
+  wrap: { flex: 1, backgroundColor: page.bg, padding: 16 },
+  muted: { color: page.mute, marginTop: 12, textAlign: "center" },
+  card: { backgroundColor: page.surface, borderColor: page.border, borderWidth: 1, borderRadius: 10, padding: 14, marginBottom: 12 },
+  cardLabel: { color: page.dim, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
   field: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 },
-  fieldLabel: { color: colors.dim, fontSize: 13 },
-  fieldValue: { color: colors.text, fontSize: 14, flexShrink: 1, textAlign: "right", marginLeft: 12 },
-  transcript: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  fieldLabel: { color: page.dim, fontSize: 13 },
+  fieldValue: { color: page.text, fontSize: 14, flexShrink: 1, textAlign: "right", marginLeft: 12 },
+  transcript: { color: page.text, fontSize: 14, lineHeight: 20 },
   eventRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 },
-  eventTs: { color: colors.dim, fontSize: 12 },
-  eventType: { color: colors.text, fontSize: 13, marginLeft: 12 },
+  eventTs: { color: page.dim, fontSize: 12 },
+  eventType: { color: page.text, fontSize: 13, marginLeft: 12 },
 });
