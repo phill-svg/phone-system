@@ -19,7 +19,7 @@
     "files": [
       "main.js",
       "preload.js",
-      "icon.png",
+      "tcb-logo.png",
       "package.json"
     ],
     "directories": {
