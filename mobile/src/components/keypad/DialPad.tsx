@@ -45,13 +45,14 @@ export function DialPad({ onKey }: { onKey: (char: string) => void }) {
   return (
     <View style={styles.grid}>
       {KEYS.map((k) => (
-        <Key
-          key={k.digit}
-          digit={k.digit}
-          letters={k.letters}
-          onPress={() => onKey(k.digit)}
-          onLongPress={k.digit === "0" ? () => onKey("+") : undefined}
-        />
+        <View key={k.digit} style={styles.cell}>
+          <Key
+            digit={k.digit}
+            letters={k.letters}
+            onPress={() => onKey(k.digit)}
+            onLongPress={k.digit === "0" ? () => onKey("+") : undefined}
+          />
+        </View>
       ))}
     </View>
   );
@@ -62,12 +63,12 @@ const styles = StyleSheet.create({
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    justifyContent: "space-between",
     rowGap: 14,
-    maxWidth: 320,
+    maxWidth: 300,
     alignSelf: "center",
     width: "100%",
   },
+  cell: { width: "33.3333%", alignItems: "center" },
   key: {
     width: KEY,
     height: KEY,
