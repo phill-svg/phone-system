@@ -36,7 +36,7 @@ function shell(title: string, cardBody: string): string {
 </head>
 <body>
 <div class="card">
-  <div class="brand"><img class="mark" src="/logo.png" alt="TCB"><div class="word">TCB VoIP</div></div>
+  <div class="brand"><img class="mark" src="/logo.png" alt="TCB"><div class="word">TCB Phone System</div></div>
   ${cardBody}
 </div>
 </body>
