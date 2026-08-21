@@ -19,13 +19,14 @@
     "files": [
       "main.js",
       "preload.js",
-      "tcb-logo.png",
+      "icon.png",
       "package.json"
     ],
     "directories": {
       "output": "release"
     },
     "win": {
+      "icon": "icon.png",
       "target": [
         { "target": "nsis", "arch": ["x64"] }
       ]

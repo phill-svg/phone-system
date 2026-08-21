@@ -95,6 +95,11 @@ ipcMain.on("incoming-call", (_event, fromLabel) => {
 });
 
 app.whenReady().then(() => {
+  // Windows groups taskbar buttons and attributes notifications by this ID.
+  // Set it to the packaged appId so the app shows as "TCB Phone" with its own
+  // icon rather than being grouped under the generic Electron identity.
+  app.setAppUserModelId("au.com.tcbpestcontrolcanberra.tcbphone");
+
   // The softphone needs mic access to place/receive calls via the Twilio
   // Voice SDK. Electron blocks all permission requests by default, so this
   // grants only "media" (mic/cam) and denies everything else. `session` is
