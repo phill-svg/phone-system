@@ -30,6 +30,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     title: "TCB Phone",
+    icon: path.join(__dirname, "icon.png"),
     autoHideMenuBar: true, // no custom menu items needed for a pure wrapper
     webPreferences: {
       contextIsolation: true,

@@ -44,6 +44,7 @@ export function renderLayout(
   a { color: #ff5c78; }
   header { background: linear-gradient(180deg, #e4002b, #c10023); color: white; padding: 0.85rem 1.5rem; display: flex; gap: 1.5rem; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
   header h1 { font-size: 1.05rem; margin: 0; font-weight: 700; letter-spacing: 0.01em; }
+  header .brand-logo { width: 32px; height: 32px; background: #fff; border-radius: 7px; padding: 3px; object-fit: contain; box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
   .nav-link { color: rgba(255,255,255,0.82); text-decoration: none; font-size: 0.9rem; padding: 0.3rem 0; border-bottom: 2px solid transparent; transition: color 0.12s; }
   .nav-link:hover { color: #fff; }
   .nav-link.active { color: white; font-weight: 600; border-bottom-color: rgba(255,255,255,0.9); }
@@ -72,7 +73,7 @@ export function renderLayout(
 ${opts?.extraHead ?? ""}
 </head>
 <body>
-<header><h1>TCB VoIP Admin</h1>${nav}</header>
+<header><img class="brand-logo" src="/logo.png" alt="TCB"><h1>TCB VoIP Admin</h1>${nav}</header>
 <main${mainClass}>${body}</main>
 </body>
 </html>`;

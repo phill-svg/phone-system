@@ -4,6 +4,7 @@ import { createOutboundCall } from "./twilio/restClient";
 import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
+import { handleLogoAsset } from "./html/logoAsset";
 import { handleMe } from "./api/me";
 import {
   handleLoginPage, handleLoginSubmit, handleLogout,
@@ -96,6 +97,10 @@ export default {
 
     if (url.pathname === "/health") {
       return new Response("ok", { status: 200 });
+    }
+
+    if (url.pathname === "/logo.png") {
+      return handleLogoAsset();
     }
 
     if (url.pathname === "/login") {

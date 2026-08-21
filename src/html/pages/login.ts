@@ -15,8 +15,8 @@ function shell(title: string, cardBody: string): string {
   .card { width: 100%; max-width: 340px; background: var(--surface); border: 1px solid var(--border);
           border-radius: 14px; padding: 1.75rem 1.6rem; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
   .brand { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 1.35rem; }
-  .brand .mark { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(180deg,#e4002b,#c10023);
-                 display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 0.8rem; }
+  .brand .mark { width: 40px; height: 40px; border-radius: 9px; background: #fff; padding: 4px; object-fit: contain;
+                 box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
   .brand .word { font-weight: 700; font-size: 0.95rem; }
   h1 { font-size: 1.05rem; margin: 0 0 0.15rem; }
   .subtitle { color: var(--dim); font-size: 0.8rem; margin: 0 0 1.15rem; }
@@ -36,7 +36,7 @@ function shell(title: string, cardBody: string): string {
 </head>
 <body>
 <div class="card">
-  <div class="brand"><div class="mark">TCB</div><div class="word">TCB VoIP</div></div>
+  <div class="brand"><img class="mark" src="/logo.png" alt="TCB"><div class="word">TCB VoIP</div></div>
   ${cardBody}
 </div>
 </body>
