@@ -5,9 +5,12 @@ const TCB_LOGO_BASE64 =
 
 export function handleLogoAsset(): Response {
   const bytes = Uint8Array.from(atob(TCB_LOGO_BASE64), (c) => c.charCodeAt(0));
+  // The source file is named .png but may actually be JPEG — pick the content
+  // type from the magic bytes so it's always labelled correctly.
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
   return new Response(bytes, {
     headers: {
-      "content-type": "image/png",
+      "content-type": isPng ? "image/png" : "image/jpeg",
       "cache-control": "public, max-age=31536000, immutable",
     },
   });
