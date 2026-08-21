@@ -1,83 +1,39 @@
-import { Ionicons } from "@expo/vector-icons";
-import { Tabs } from "expo-router";
 import React from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
-import { useAuth } from "../../lib/auth";
-import { colors } from "../../lib/theme";
+import { Tabs } from "expo-router";
+import { type SymbolViewProps } from "expo-symbols";
+import { Icon } from "../../components/ui/Icon";
+import { useTheme } from "../../theme/theme";
 
-// 🎨 COLORS FOR THE NAV CHROME (top header + bottom tab bar). Click a swatch to recolor.
-// They start from the shared app theme; change one to override the nav bars only.
-const page = {
-  ...colors,           // shared app theme (fallback for anything not overridden)
-  surface: "#1b1d24",  // header + tab bar background
-  border: "#26282f",   // line above the tab bar
-  text: "#eceef2",     // header title
-  link: "#ff5c78",     // active tab + Sign out
-  mute: "#6d7280",     // inactive tabs
-};
-
-function LogoBadge() {
-  return (
-    <View style={styles.logoBadge}>
-      <Image source={require("../../../assets/images/tabIcons/tcb-logo.png")} style={styles.logoImg} resizeMode="contain" />
-    </View>
+function TabIcon(name: SymbolViewProps["name"], fallback: string) {
+  const Cmp = ({ color, focused }: { color: string; focused: boolean }) => (
+    <Icon name={name} fallback={fallback as never} size={26} color={color} weight={focused ? "semibold" : "regular"} />
   );
-}
-
-function SignOutButton() {
-  const { signOut } = useAuth();
-  return (
-    <Pressable onPress={() => signOut()} hitSlop={12} style={styles.signoutBtn}>
-      <Text style={styles.signout}>Sign out</Text>
-    </Pressable>
-  );
+  Cmp.displayName = `TabIcon(${name})`;
+  return Cmp;
 }
 
 export default function TabsLayout() {
+  const t = useTheme();
   return (
     <Tabs
       screenOptions={{
-        headerStyle: { backgroundColor: page.surface },
-        headerTitleStyle: { color: page.text },
-        headerShadowVisible: false,
-        tabBarStyle: { backgroundColor: page.surface, borderTopColor: page.border },
-        tabBarActiveTintColor: page.link,
-        tabBarInactiveTintColor: page.mute,
-        headerLeft: () => <LogoBadge />,
+        headerShown: false,
+        tabBarActiveTintColor: t.colors.accent,
+        tabBarInactiveTintColor: t.colors.labelTertiary,
+        tabBarStyle: {
+          backgroundColor: t.colors.bgElevated,
+          borderTopColor: t.colors.separator,
+          borderTopWidth: t.hairline,
+        },
+        tabBarLabelStyle: { fontSize: 10.5, fontWeight: "600" },
+        sceneStyle: { backgroundColor: t.colors.bg },
       }}
     >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "In progress",
-          tabBarLabel: "Live",
-          headerRight: () => <SignOutButton />,
-          tabBarIcon: ({ color, size }) => <Ionicons name="pulse-outline" size={size} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="calls"
-        options={{
-          title: "Call history",
-          tabBarLabel: "History",
-          tabBarIcon: ({ color, size }) => <Ionicons name="time-outline" size={size} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="callbacks"
-        options={{
-          title: "Callbacks",
-          tabBarLabel: "Callbacks",
-          tabBarIcon: ({ color, size }) => <Ionicons name="call-outline" size={size} color={color} />,
-        }}
-      />
+      <Tabs.Screen name="index" options={{ title: "Keypad", tabBarIcon: TabIcon("circle.grid.3x3.fill", "keypad") }} />
+      <Tabs.Screen name="recents" options={{ title: "Recents", tabBarIcon: TabIcon("clock.fill", "time") }} />
+      <Tabs.Screen name="contacts" options={{ title: "Contacts", tabBarIcon: TabIcon("person.crop.circle.fill", "people") }} />
+      <Tabs.Screen name="voicemail" options={{ title: "Voicemail", tabBarIcon: TabIcon("waveform", "recording-outline") }} />
+      <Tabs.Screen name="settings" options={{ title: "Settings", tabBarIcon: TabIcon("gearshape.fill", "settings") }} />
     </Tabs>
   );
 }
-
-const styles = StyleSheet.create({
-  signoutBtn: { marginRight: 16 },
-  signout: { color: page.link, fontSize: 20 },
-  logoBadge: { marginLeft: 14, backgroundColor: "#ffffff", borderRadius: 8, padding: 3 },
-  logoImg: { width: 26, height: 26 },
-});

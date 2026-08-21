@@ -1,69 +1,145 @@
-import React, { useState } from "react";
-import { View, Text, FlatList, ActivityIndicator, StyleSheet } from "react-native";
+import React, { useMemo, useState } from "react";
+import { View, Text, Pressable, StyleSheet, ScrollView } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { getLiveCalls, type LiveCall } from "../../lib/api";
-import { colors } from "../../lib/theme";
+import { router } from "expo-router";
+import * as Clipboard from "expo-clipboard";
+import { Screen } from "../../components/ui/Screen";
+import { Icon } from "../../components/ui/Icon";
+import { Avatar } from "../../components/ui/Avatar";
+import { StatusPill } from "../../components/ui/StatusPill";
+import { DialPad } from "../../components/keypad/DialPad";
+import { getContacts, type Contact } from "../../lib/api";
+import { formatPhone, matchContacts } from "../../lib/phone";
+import { haptics } from "../../theme/haptics";
+import { useTheme, type } from "../../theme/theme";
 
-// 🎨 COLORS FOR THIS PAGE (Live) — click a swatch to recolor just this screen.
-// They start from the shared app theme; change one to override only this page.
-const page = {
-  ...colors,           // shared app theme (fallback for anything not overridden)
-  bg: "#0f1013",       // screen background
-  surface: "#1b1d24",  // call cards
-  border: "#26282f",   // card borders
-  text: "#eceef2",     // main text (numbers)
-  dim: "#a7adb8",      // secondary text (status)
-  mute: "#6d7280",     // faint "no calls" text
-  brand: "#e4002b",    // loading spinner
-};
+export default function KeypadScreen() {
+  const t = useTheme();
+  const insets = useSafeAreaInsets();
+  const [number, setNumber] = useState("");
+  const { data: contacts } = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
 
-export default function LiveCallsScreen() {
-  const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ["live-calls"],
-    queryFn: getLiveCalls,
-    refetchInterval: 5000,
-  });
+  const suggestions = useMemo(() => matchContacts(number, contacts ?? []), [number, contacts]);
+  const display = number ? formatPhone(number) : "";
 
-  const [refreshing, setRefreshing] = useState(false);
+  function startCall(target: string, name?: string) {
+    const dialed = target.trim();
+    if (!dialed) return;
+    haptics.medium();
+    router.push({ pathname: "/call-active", params: { number: dialed, name: name ?? "" } });
+  }
 
-  async function onRefresh() {
-    setRefreshing(true);
-    try {
-      await refetch();
-    } finally {
-      setRefreshing(false);
+  async function paste() {
+    const text = await Clipboard.getStringAsync();
+    const cleaned = text.replace(/[^\d+*#]/g, "");
+    if (cleaned) {
+      haptics.tap();
+      setNumber(cleaned);
     }
   }
 
   return (
-    <View style={styles.wrap}>
-      {isLoading ? (
-        <ActivityIndicator color={page.brand} style={{ marginTop: 40 }} />
-      ) : isError && !data ? (
-        <Text style={styles.muted}>Couldn't load live calls. Pull to retry.</Text>
-      ) : (
-        <FlatList
-          data={data ?? []}
-          keyExtractor={(c: LiveCall) => c.id}
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          ListEmptyComponent={<Text style={styles.muted}>No calls in progress.</Text>}
-          renderItem={({ item }) => (
-            <View style={styles.row}>
-              <Text style={styles.rowMain}>{item.caller_number} → {item.called_number}</Text>
-              <Text style={styles.rowSub}>{item.status}</Text>
-            </View>
-          )}
-        />
-      )}
-    </View>
+    <Screen>
+      <View style={[styles.top, { paddingTop: insets.top + t.spacing(2) }]}>
+        <StatusPill />
+      </View>
+
+      {/* Number display */}
+      <View style={styles.displayWrap}>
+        <Text
+          style={[styles.display, { color: t.colors.label }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.5}
+          selectable
+        >
+          {display}
+        </Text>
+        {number ? (
+          <Pressable onPress={() => { haptics.tap(); router.push({ pathname: "/contact-edit", params: { phone: number } }); }} hitSlop={10} style={styles.addContact}>
+            <Icon name="person.crop.circle.badge.plus" fallback="person-add" size={22} color={t.colors.accent} />
+            <Text style={[type.footnote, { color: t.colors.accent, fontWeight: "600" }]}>Add Number</Text>
+          </Pressable>
+        ) : (
+          <Text style={[type.subhead, { color: t.colors.labelTertiary }]}>Enter a number</Text>
+        )}
+      </View>
+
+      {/* Contact suggestions */}
+      <View style={styles.suggestions}>
+        {suggestions.length > 0 ? (
+          <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 132 }}>
+            {suggestions.map((c: Contact) => (
+              <Pressable
+                key={c.id}
+                onPress={() => startCall(c.phone, c.name)}
+                style={({ pressed }) => [styles.suggestionRow, { backgroundColor: pressed ? t.colors.cardPressed : "transparent" }]}
+              >
+                <Avatar name={c.name} size={38} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[type.callout, { color: t.colors.label, fontWeight: "600" }]} numberOfLines={1}>{c.name}</Text>
+                  <Text style={[type.footnote, { color: t.colors.labelSecondary }]} numberOfLines={1}>
+                    {c.company ? `${c.company} · ` : ""}{formatPhone(c.phone)}
+                  </Text>
+                </View>
+                <Icon name="phone.fill" fallback="call" size={18} color={t.colors.success} />
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : null}
+      </View>
+
+      {/* Keypad + call row pinned to lower area for one-handed use */}
+      <View style={[styles.bottom, { paddingBottom: insets.bottom + t.spacing(3) }]}>
+        <DialPad onKey={(c) => setNumber((n) => n + c)} />
+
+        <View style={styles.callRow}>
+          <View style={styles.side}>
+            <Pressable onPress={paste} hitSlop={8} style={styles.sideBtn}>
+              <Icon name="doc.on.clipboard" fallback="clipboard" size={22} color={t.colors.labelSecondary} />
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={() => startCall(number)}
+            disabled={!number}
+            style={({ pressed }) => [
+              styles.callBtn,
+              { backgroundColor: number ? (pressed ? t.colors.accentPressed : "#2FA84F") : t.colors.fill },
+            ]}
+          >
+            <Icon name="phone.fill" fallback="call" size={34} color={number ? "#FFFFFF" : t.colors.labelTertiary} />
+          </Pressable>
+
+          <View style={styles.side}>
+            {number ? (
+              <Pressable
+                onPress={() => { haptics.tap(); setNumber((n) => n.slice(0, -1)); }}
+                onLongPress={() => setNumber("")}
+                hitSlop={8}
+                style={styles.sideBtn}
+              >
+                <Icon name="delete.left.fill" fallback="backspace" size={26} color={t.colors.labelSecondary} />
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: page.bg, padding: 16 },
-  muted: { color: page.mute, marginTop: 24, textAlign: "center" },
-  row: { backgroundColor: page.surface, borderColor: page.border, borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 8 },
-  rowMain: { color: page.text, fontSize: 15 },
-  rowSub: { color: page.dim, fontSize: 12, marginTop: 2 },
+  top: { alignItems: "center", paddingBottom: 4 },
+  displayWrap: { alignItems: "center", paddingHorizontal: 24, minHeight: 76, justifyContent: "center", gap: 4 },
+  display: { fontSize: 40, fontWeight: "300", letterSpacing: 1 },
+  addContact: { flexDirection: "row", alignItems: "center", gap: 5 },
+  suggestions: { paddingHorizontal: 16, flexShrink: 1 },
+  suggestionRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8, paddingHorizontal: 8, borderRadius: 12 },
+  bottom: { marginTop: "auto", paddingHorizontal: 24, gap: 18 },
+  callRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", maxWidth: 320, alignSelf: "center", width: "100%" },
+  side: { flex: 1, alignItems: "center" },
+  sideBtn: { width: 56, height: 56, alignItems: "center", justifyContent: "center" },
+  callBtn: { width: 74, height: 74, borderRadius: 37, alignItems: "center", justifyContent: "center" },
 });

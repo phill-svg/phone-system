@@ -118,3 +118,33 @@ export type CallbackRequest = {
 export async function getCallbackRequests(): Promise<CallbackRequest[]> {
   return apiFetch<CallbackRequest[]>("/api/callback-requests");
 }
+
+// ---- Contacts ----
+
+export type Contact = {
+  id: number;
+  name: string;
+  company: string | null;
+  phone: string;
+  phone_normalized: string;
+  created_at?: number;
+  updated_at?: number;
+};
+
+export async function getContacts(): Promise<Contact[]> {
+  return apiFetch<Contact[]>("/api/contacts");
+}
+
+export type ContactInput = { name: string; phone: string; company?: string | null };
+
+export async function createContact(input: ContactInput): Promise<Contact> {
+  return apiFetch<Contact>("/api/contacts", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function updateContact(id: number, input: ContactInput): Promise<Contact> {
+  return apiFetch<Contact>(`/api/contacts/${id}`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+export async function deleteContact(id: number): Promise<void> {
+  await apiFetch(`/api/contacts/${id}`, { method: "DELETE" });
+}

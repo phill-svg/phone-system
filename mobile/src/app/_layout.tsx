@@ -2,72 +2,67 @@ import React from "react";
 import { Stack } from "expo-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AuthProvider, useAuth } from "../lib/auth";
-import { colors } from "../lib/theme";
-
-// 🎨 COLORS FOR THE APP SHELL (Call detail header + first loading screen).
-// They start from the shared app theme; change one to override the shell only.
-const page = {
-  ...colors,           // shared app theme (fallback for anything not overridden)
-  bg: "#0f1013",       // background behind screens + loading screen
-  surface: "#1b1d24",  // Call detail header bar
-  text: "#eceef2",     // "Call detail" title
-  link: "#ff5c78",     // the back button
-  brand: "#e4002b",    // loading spinner
-};
+import { RegistrationProvider } from "../lib/registration";
+import { useTheme } from "../theme/theme";
 
 const queryClient = new QueryClient();
 
 function RootNavigator() {
+  const t = useTheme();
   const { status } = useAuth();
 
   if (status === "loading") {
     return (
-      <View style={styles.loading}>
-        <ActivityIndicator color={page.brand} />
+      <View style={[styles.loading, { backgroundColor: t.colors.bg }]}>
+        <ActivityIndicator color={t.colors.accent} />
       </View>
     );
   }
 
+  const headerScreen = {
+    headerShown: true,
+    headerStyle: { backgroundColor: t.colors.bgElevated },
+    headerTitleStyle: { color: t.colors.label },
+    headerTintColor: t.colors.accent,
+    headerShadowVisible: false,
+    headerBackButtonDisplayMode: "minimal" as const,
+    contentStyle: { backgroundColor: t.colors.bg },
+  };
+
   return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-        contentStyle: { backgroundColor: page.bg },
-      }}
-    >
-      <Stack.Protected guard={status === "authed"}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen
-          name="call/[id]"
-          options={{
-            headerShown: true,
-            title: "Call detail",
-            headerStyle: { backgroundColor: page.surface },
-            headerTitleStyle: { color: page.text },
-            headerTintColor: page.link,
-            headerShadowVisible: false,
-            headerBackButtonDisplayMode: "minimal",
-          }}
-        />
-      </Stack.Protected>
-      <Stack.Protected guard={status === "anon"}>
-        <Stack.Screen name="login" />
-      </Stack.Protected>
-    </Stack>
+    <RegistrationProvider enabled={status === "authed"}>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: t.colors.bg } }}>
+        <Stack.Protected guard={status === "authed"}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="call/[id]" options={{ ...headerScreen, title: "Call Details" }} />
+          <Stack.Screen name="contact/[id]" options={{ ...headerScreen, title: "" }} />
+          <Stack.Screen name="call-active" options={{ presentation: "fullScreenModal", animation: "fade", gestureEnabled: false }} />
+          <Stack.Screen name="call-incoming" options={{ presentation: "fullScreenModal", animation: "fade", gestureEnabled: false }} />
+          <Stack.Screen name="transfer" options={{ presentation: "modal" }} />
+          <Stack.Screen name="contact-edit" options={{ presentation: "modal" }} />
+        </Stack.Protected>
+        <Stack.Protected guard={status === "anon"}>
+          <Stack.Screen name="login" />
+        </Stack.Protected>
+      </Stack>
+    </RegistrationProvider>
   );
 }
 
 export default function RootLayout() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <RootNavigator />
-      </AuthProvider>
-    </QueryClientProvider>
+    <SafeAreaProvider>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </QueryClientProvider>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  loading: { flex: 1, backgroundColor: page.bg, alignItems: "center", justifyContent: "center" },
+  loading: { flex: 1, alignItems: "center", justifyContent: "center" },
 });
