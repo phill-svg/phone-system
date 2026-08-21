@@ -6,7 +6,7 @@ function shell(title: string, cardBody: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)} — TCB VoIP</title>
+<title>${escapeHtml(title)} — TCB Phone System</title>
 <style>
   :root { --bg:#0f1013; --surface:#1b1d24; --border:#26282f; --text:#eceef2; --dim:#a7adb8; --mute:#6d7280; --brand:#e4002b; --link:#ff5c78; }
   * { box-sizing: border-box; }
