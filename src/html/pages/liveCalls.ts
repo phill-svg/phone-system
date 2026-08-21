@@ -14,10 +14,10 @@ export function renderLiveCallsPage(calls: CallSummary[]): string {
   const body = `<h2>Live Calls</h2>
     <table>
       <thead><tr><th>Caller</th><th>Started</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="3">No calls in progress.</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="3">No calls in progress!.</td></tr>'}</tbody>
     </table>
     <div class="placeholder">
-      <strong>Live transcript &amp; listen-in</strong> — Not available yet, coming in a later phase.
+      <strong>Live transcript &amp; listen-in</strong> — Not available yet, coming in a later phase!.
     </div>`;
   return renderLayout("Live Calls", "live", body);
 }
