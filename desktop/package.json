@@ -2,7 +2,7 @@
   "name": "tcb-phone-desktop",
   "version": "1.0.0",
   "private": true,
-  "description": "Desktop shell for the TCB VoIP staff admin dashboard",
+  "description": "Desktop shell for the TCB staff admin dashboard",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

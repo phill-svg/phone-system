@@ -33,7 +33,7 @@ export function renderLayout(
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>${escapeHtml(title)} — TCB VoIP Admin</title>
+<title>${escapeHtml(title)} — TCB Phone </title>
 <style>
   :root {
     --admin-bg: #0f1013; --admin-surface: #1b1d24; --admin-surface-hover: #22242c;
@@ -73,7 +73,7 @@ export function renderLayout(
 ${opts?.extraHead ?? ""}
 </head>
 <body>
-<header><img class="brand-logo" src="/logo.png" alt="TCB"><h1>TCB VoIP Admin</h1>${nav}</header>
+<header><img class="brand-logo" src="/logo.png" alt="TCB"><h1>TCB Phone Admin</h1>${nav}</header>
 <main${mainClass}>${body}</main>
 </body>
 </html>`;
