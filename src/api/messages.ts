@@ -8,6 +8,7 @@ type Env = {
   TWILIO_API_KEY_SID: string;
   TWILIO_API_KEY_SECRET: string;
   TWILIO_FROM_NUMBER: string;
+  TWILIO_SMS_NUMBER?: string; // SMS-capable number; falls back to the voice number if unset
 };
 
 // Minimal AU-friendly normalization: keep +E.164 as-is, turn a local 0-prefixed number into +61.
@@ -42,7 +43,7 @@ export async function handleSendMessage(request: Request, env: Env): Promise<Res
   try {
     const { sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
       to: target,
-      from: env.TWILIO_FROM_NUMBER,
+      from: env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER,
       body: text,
     });
     await insertMessage(env.DB, { id: sid, direction: "outbound", peer_number: target, body: text, status: "sent", read: 1, createdAt: Date.now() });

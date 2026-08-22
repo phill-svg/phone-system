@@ -593,11 +593,37 @@ export default {
       }
 
 
+      // Admin-only: list the account's phone numbers (sid, number, SMS capability, current SmsUrl)
+      // so we can find the SMS-capable number to send from / wire inbound to.
+      if (url.pathname === "/api/debug/list-numbers") {
+        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
+        const authHeader = "Basic " + btoa(env.TWILIO_API_KEY_SID + ":" + env.TWILIO_API_KEY_SECRET);
+        const r = await fetch(
+          `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers.json?PageSize=50`,
+          { headers: { Authorization: authHeader } }
+        );
+        const text = await r.text();
+        let j: unknown;
+        try {
+          j = JSON.parse(text);
+        } catch {
+          j = text;
+        }
+        const nums = (j as { incoming_phone_numbers?: unknown[] })?.incoming_phone_numbers;
+        const out = Array.isArray(nums)
+          ? nums.map((n) => {
+              const nn = n as { sid?: string; phone_number?: string; sms_url?: string; capabilities?: { sms?: boolean } };
+              return { sid: nn.sid, number: nn.phone_number, sms_capable: nn.capabilities?.sms, sms_url: nn.sms_url };
+            })
+          : j;
+        return new Response(JSON.stringify({ status: r.status, numbers: out }, null, 2), { headers: { "Content-Type": "application/json" } });
+      }
+
       // One-time: point the business number's Messaging webhook at our inbound-SMS handler (with
       // the whsec auth secret) so incoming texts are captured. Uses the AU1 API key. Admin-only.
       if (url.pathname === "/api/debug/set-sms-webhook") {
         if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
-        const numberSid = "PN85f0875f9f35826a41c5eb674398c445";
+        const numberSid = "PNe59922cf5cf2de391b76a7f6ef4ead00"; // +61485034869, the SMS-capable number
         const smsUrl = `${url.origin}/webhooks/twilio/sms?whsec=${encodeURIComponent(env.TWILIO_WEBHOOK_SECRET ?? "")}`;
         const authHeader = "Basic " + btoa(env.TWILIO_API_KEY_SID + ":" + env.TWILIO_API_KEY_SECRET);
         const form = new URLSearchParams({ SmsUrl: smsUrl, SmsMethod: "POST" });

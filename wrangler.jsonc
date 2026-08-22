@@ -22,6 +22,7 @@
   "send_email": [{ "name": "EMAIL" }],
   "vars": {
     "TWILIO_FROM_NUMBER": "+61866108941",
+    "TWILIO_SMS_NUMBER": "+61485034869",
     "TWILIO_TWIML_APP_SID": "AP37a6e4263508806aa37efaf19285d2ed",
     "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CRa514b67c428755dd962c50503041de9a",
     "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au"
