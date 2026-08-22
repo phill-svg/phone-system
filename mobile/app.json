@@ -1,7 +1,8 @@
 {
   "expo": {
-    "name": "mobile",
+    "name": "TCB Phone",
     "slug": "mobile",
+    "owner": "skiptoolow",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/tcb-logo.png",
@@ -13,11 +14,10 @@
       }
     },
     "android": {
+      "package": "au.com.tcbpestcontrolcanberra.tcbphone",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/images/tcb-logo.png"
       },
       "predictiveBackGestureEnabled": false
     },
@@ -45,7 +45,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "4fc315fe-c2e1-4828-a6c2-97b53d072d51"
+        "projectId": "1a1e7d49-ffbb-4867-915e-2e153db8aa0a"
       }
     }
   }
