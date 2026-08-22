@@ -1,8 +1,11 @@
+import React, { createContext, useContext, useEffect, useState } from "react";
 import { useColorScheme } from "react-native";
+import * as SecureStore from "expo-secure-store";
 
 // TCB Phone design system.
 // One source of truth for colour, spacing, radius and type. Screens read tokens
-// through `useTheme()` so the whole app tracks the system Light/Dark setting.
+// through `useTheme()`. The app tracks the system Light/Dark setting by default, but
+// the user can force Light or Dark from Settings (persisted via ThemeProvider).
 // Accent is the TCB brand red; neutrals follow iOS system-colour conventions so
 // the app feels native rather than like a themed website.
 
@@ -93,16 +96,59 @@ const dark: ThemeColors = {
 
 const radius = { sm: 8, md: 12, lg: 16, xl: 22, pill: 999 };
 
-export function useTheme(): Theme {
-  const scheme = useColorScheme() ?? "light";
-  const isDark = scheme === "dark";
+function build(scheme: "light" | "dark"): Theme {
   return {
-    scheme: isDark ? "dark" : "light",
-    colors: isDark ? dark : light,
+    scheme,
+    colors: scheme === "dark" ? dark : light,
     spacing: (n: number) => n * 4,
     radius,
     hairline: 0.5,
   };
+}
+
+// ---- Theme preference (Light / Dark / System), persisted across launches ----
+export type ThemePreference = "light" | "dark" | "system";
+const PREF_KEY = "tcb_theme_preference";
+
+type ThemeCtxValue = {
+  preference: ThemePreference;
+  setPreference: (p: ThemePreference) => void;
+  scheme: "light" | "dark";
+};
+const ThemeCtx = createContext<ThemeCtxValue | null>(null);
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const system = useColorScheme() === "dark" ? "dark" : "light";
+  const [preference, setPref] = useState<ThemePreference>("system");
+
+  useEffect(() => {
+    SecureStore.getItemAsync(PREF_KEY)
+      .then((v) => {
+        if (v === "light" || v === "dark" || v === "system") setPref(v);
+      })
+      .catch(() => {});
+  }, []);
+
+  const setPreference = (p: ThemePreference) => {
+    setPref(p);
+    SecureStore.setItemAsync(PREF_KEY, p).catch(() => {});
+  };
+
+  const scheme: "light" | "dark" = preference === "system" ? system : preference;
+  return <ThemeCtx.Provider value={{ preference, setPreference, scheme }}>{children}</ThemeCtx.Provider>;
+}
+
+export function useThemePreference(): ThemeCtxValue {
+  const ctx = useContext(ThemeCtx);
+  if (ctx) return ctx;
+  // Fallback when used outside the provider (e.g. tests): follow system, no persistence.
+  return { preference: "system", setPreference: () => {}, scheme: "light" };
+}
+
+export function useTheme(): Theme {
+  const ctx = useContext(ThemeCtx);
+  const system = useColorScheme() === "dark" ? "dark" : "light";
+  return build(ctx ? ctx.scheme : system);
 }
 
 // Type scale — iOS-native sizes/weights. Use as `type.headline`, spread into a Text style.

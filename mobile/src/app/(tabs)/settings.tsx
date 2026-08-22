@@ -1,27 +1,30 @@
-import React, { useState } from "react";
+import React from "react";
 import { ScrollView, View, Text, Linking } from "react-native";
 import { router } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { Group, Row } from "../../components/ui/Grouped";
+import { Segmented } from "../../components/ui/Segmented";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
-import { useTheme } from "../../theme/theme";
+import { usePersistedBool } from "../../lib/prefs";
+import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
 export default function SettingsScreen() {
   const t = useTheme();
   const { user, signOut } = useAuth();
   const { status } = useRegistration();
+  const { preference, setPreference } = useThemePreference();
 
-  // Preferences kept locally for now; the native calling layer will persist and
-  // apply these when it lands. Toggles are real UI, not decoration.
-  const [callWaiting, setCallWaiting] = useState(true);
-  const [autoAnswer, setAutoAnswer] = useState(false);
-  const [recording, setRecording] = useState(true);
-  const [bluetooth, setBluetooth] = useState(true);
-  const [nIncoming, setNIncoming] = useState(true);
-  const [nMissed, setNMissed] = useState(true);
-  const [nVoicemail, setNVoicemail] = useState(true);
+  // Preferences persist across launches (SecureStore). The calling ones apply once the
+  // native calling layer reads them; theme applies immediately.
+  const [callWaiting, setCallWaiting] = usePersistedBool("pref_call_waiting", true);
+  const [autoAnswer, setAutoAnswer] = usePersistedBool("pref_auto_answer", false);
+  const [recording, setRecording] = usePersistedBool("pref_recording", true);
+  const [bluetooth, setBluetooth] = usePersistedBool("pref_bluetooth", true);
+  const [nIncoming, setNIncoming] = usePersistedBool("pref_notify_incoming", true);
+  const [nMissed, setNMissed] = usePersistedBool("pref_notify_missed", true);
+  const [nVoicemail, setNVoicemail] = usePersistedBool("pref_notify_voicemail", true);
 
   return (
     <Screen>
@@ -51,8 +54,18 @@ export default function SettingsScreen() {
           <Row icon="waveform" iconColor="#0A84FF" label="Voicemail" toggle={nVoicemail} onToggle={setNVoicemail} />
         </Group>
 
-        <Group title="Appearance" footer="TCB Phone follows your device's Light or Dark setting.">
-          <Row icon="circle.lefthalf.filled" iconColor="#8E8E93" label="Theme" value="System" />
+        <Group title="Appearance" footer="Choose Light or Dark, or follow your device's setting.">
+          <View style={{ paddingHorizontal: 14, paddingVertical: 12 }}>
+            <Segmented<ThemePreference>
+              options={[
+                { label: "System", value: "system" },
+                { label: "Light", value: "light" },
+                { label: "Dark", value: "dark" },
+              ]}
+              value={preference}
+              onChange={setPreference}
+            />
+          </View>
         </Group>
 
         <Group title="About">
