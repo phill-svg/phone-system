@@ -49,6 +49,15 @@ export async function getSoftphoneToken(platform: "android" | "ios" = "android")
   return token;
 }
 
+// Presence + heartbeat. The inbound ring plan only dials a staff member's softphone while they
+// are "available" with a heartbeat seen in the last 5 minutes (see src/dial/presence.ts).
+export async function setPresence(status: "available" | "away" | "offline"): Promise<void> {
+  await apiFetch("/api/softphone/presence", { method: "PUT", body: JSON.stringify({ status }) });
+}
+export async function sendHeartbeat(): Promise<void> {
+  await apiFetch("/api/softphone/heartbeat", { method: "POST" });
+}
+
 export type StaffUser = { email: string; role: "admin" | "staff" };
 
 export async function login(email: string, password: string): Promise<{ token: string; user: StaffUser }> {

@@ -3,10 +3,12 @@ import { Tabs, router } from "expo-router";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../../components/ui/Icon";
 import { registerForIncoming } from "../../lib/voice";
+import { setPresence, sendHeartbeat } from "../../lib/api";
 import { useTheme } from "../../theme/theme";
 
 // Register this device for incoming calls once the user is signed in (the tab group only
-// mounts when authed). On an incoming call, jump to the full-screen ringing UI.
+// mounts when authed). On an incoming call, jump to the full-screen ringing UI. Also mark the
+// softphone "available" and heartbeat, so the inbound ring plan will actually dial it.
 function useIncomingCalls() {
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -17,7 +19,16 @@ function useIncomingCalls() {
         unsub = u;
       })
       .catch(() => {});
-    return () => unsub?.();
+
+    setPresence("available").catch(() => {});
+    sendHeartbeat().catch(() => {});
+    const hb = setInterval(() => sendHeartbeat().catch(() => {}), 60_000);
+
+    return () => {
+      unsub?.();
+      clearInterval(hb);
+      setPresence("offline").catch(() => {});
+    };
   }, []);
 }
 
