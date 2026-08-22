@@ -10,6 +10,9 @@ import { useRegistration, REG_META } from "../../lib/registration";
 import { usePersistedBool } from "../../lib/prefs";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
+// Bumped on every OTA publish so we can confirm on-device that an update actually landed.
+const OTA_BUILD = "10";
+
 export default function SettingsScreen() {
   const t = useTheme();
   const { user, signOut } = useAuth();
@@ -70,6 +73,7 @@ export default function SettingsScreen() {
 
         <Group title="About">
           <Row icon="info.circle.fill" iconColor="#8E8E93" label="Version" value="1.0.0" />
+          <Row icon="arrow.triangle.2.circlepath" iconColor="#34C759" label="Update" value={`#${OTA_BUILD}`} />
           <Row icon="lifepreserver" iconColor="#0A84FF" label="Support" chevron onPress={() => Linking.openURL("mailto:phill@tcbpestcontrolcanberra.com.au")} />
           <Row icon="hand.raised.fill" iconColor="#5E5CE6" label="Privacy Policy" chevron onPress={() => {}} />
           <Row icon="doc.text.fill" iconColor="#8E8E93" label="Terms of Service" chevron onPress={() => {}} />
