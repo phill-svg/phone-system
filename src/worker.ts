@@ -420,13 +420,17 @@ export default {
       const fromEmail = params.From.startsWith("client:") ? params.From.slice("client:".length) : params.From;
       await recordCallLeg(env.DB, conferenceName, fromEmail, conferenceName);
 
-      await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
+      const { sid: targetSid } = await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
         to: target,
         from: env.TWILIO_FROM_NUMBER,
         url: appendWebhookSecret(`${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
         statusCallback: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
         statusCallbackEvent: ["completed"],
       });
+
+      // Remember the dialed-out leg so an agent hang-up (before the callee answers) can cancel it,
+      // instead of leaving the callee's phone ringing. Recorded on the call row we just inserted.
+      await env.DB.prepare("UPDATE calls SET outbound_target_sid = ? WHERE id = ?").bind(targetSid, conferenceName).run();
 
       return new Response(
         renderDialAgentIntoConference({

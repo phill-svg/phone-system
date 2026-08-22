@@ -527,6 +527,20 @@ export class CallSession extends DurableObject<Env> {
     // logic below deliberately ignores) may have left a lone participant behind.
     if (body.callStatus === "completed" || (body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus))) {
       await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+      // Softphone outbound: if the agent's leg ended, cancel the dialed-out (target) leg so it
+      // stops ringing the callee. No-op if that leg already answered/ended (cancel then errors,
+      // which we swallow). Skip when it's the target's own status firing this callback.
+      const outbound = await this.env.DB.prepare("SELECT outbound_target_sid FROM calls WHERE id = ?")
+        .bind(body.callSid)
+        .first<{ outbound_target_sid: string | null }>();
+      const targetSid = outbound?.outbound_target_sid ?? null;
+      if (targetSid && targetSid !== body.agentCallSid) {
+        try {
+          await this.cancelStaff(targetSid);
+        } catch {
+          /* target already connected or gone */
+        }
+      }
     }
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
     if (
