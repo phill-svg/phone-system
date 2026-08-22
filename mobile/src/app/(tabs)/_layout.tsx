@@ -1,8 +1,25 @@
-import React from "react";
-import { Tabs } from "expo-router";
+import React, { useEffect } from "react";
+import { Tabs, router } from "expo-router";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../../components/ui/Icon";
+import { registerForIncoming } from "../../lib/voice";
 import { useTheme } from "../../theme/theme";
+
+// Register this device for incoming calls once the user is signed in (the tab group only
+// mounts when authed). On an incoming call, jump to the full-screen ringing UI.
+function useIncomingCalls() {
+  useEffect(() => {
+    let unsub: (() => void) | undefined;
+    registerForIncoming((from) => {
+      router.push({ pathname: "/call-incoming", params: { number: from, name: "" } });
+    })
+      .then((u) => {
+        unsub = u;
+      })
+      .catch(() => {});
+    return () => unsub?.();
+  }, []);
+}
 
 function TabIcon(name: SymbolViewProps["name"], fallback: string) {
   const Cmp = ({ color, focused }: { color: string; focused: boolean }) => (
@@ -14,6 +31,7 @@ function TabIcon(name: SymbolViewProps["name"], fallback: string) {
 
 export default function TabsLayout() {
   const t = useTheme();
+  useIncomingCalls();
   return (
     <Tabs
       screenOptions={{

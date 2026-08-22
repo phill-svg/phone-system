@@ -8,6 +8,7 @@ import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
 import { formatPhone } from "../lib/phone";
+import { acceptIncoming, rejectIncoming } from "../lib/voice";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
 
@@ -29,12 +30,22 @@ export default function IncomingCallScreen() {
   const name = String(params.name ?? "");
   const title = name || formatPhone(number) || "Unknown";
 
-  function answer() {
+  async function answer() {
     haptics.success();
-    router.replace({ pathname: "/call-active", params: { number, name } });
+    try {
+      const call = await acceptIncoming();
+      if (call) {
+        router.replace({ pathname: "/call-active", params: { number, name, direction: "incoming" } });
+        return;
+      }
+    } catch {
+      /* accept failed — fall through to dismiss */
+    }
+    router.back();
   }
   function decline() {
     haptics.medium();
+    rejectIncoming().catch(() => {});
     router.back();
   }
 

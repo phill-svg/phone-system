@@ -23,6 +23,7 @@
   "vars": {
     "TWILIO_FROM_NUMBER": "+61866108941",
     "TWILIO_TWIML_APP_SID": "AP37a6e4263508806aa37efaf19285d2ed",
+    "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CR7b8522534d1d2afe09478d18d7c8b078",
     "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au"
   }
 }

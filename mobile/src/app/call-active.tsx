@@ -9,7 +9,7 @@ import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
 import { DialPad } from "../components/keypad/DialPad";
 import { formatPhone } from "../lib/phone";
-import { placeCall } from "../lib/voice";
+import { placeCall, getActiveCall } from "../lib/voice";
 import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
@@ -72,9 +72,10 @@ function Control({
 
 export default function ActiveCallScreen() {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ number?: string; name?: string }>();
+  const params = useLocalSearchParams<{ number?: string; name?: string; direction?: string }>();
   const number = String(params.number ?? "");
   const name = String(params.name ?? "");
+  const isIncoming = params.direction === "incoming";
 
   const [state, setState] = useState<CallState>("calling");
   const [seconds, setSeconds] = useState(0);
@@ -94,17 +95,23 @@ export default function ActiveCallScreen() {
     setTimeout(() => router.back(), 600);
   }
 
-  // Place the real outbound call and let Twilio Voice drive the on-screen state.
+  // Drive the on-screen state from the real Twilio call — an accepted incoming call (already
+  // connecting) for incoming, or a freshly placed outbound call otherwise.
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
-        const call = await placeCall(number);
+        const call = isIncoming ? getActiveCall() : await placeCall(number);
+        if (!call) {
+          finish();
+          return;
+        }
         if (!mounted) {
           call.disconnect();
           return;
         }
         callRef.current = call;
+        if (isIncoming) setState("connected");
         call.on(TwilioCall.Event.Ringing, () => setState("calling"));
         call.on(TwilioCall.Event.Connected, () => setState("connected"));
         call.on(TwilioCall.Event.Disconnected, () => finish());

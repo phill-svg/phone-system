@@ -19,7 +19,8 @@
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
