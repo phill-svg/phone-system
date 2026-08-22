@@ -61,7 +61,7 @@ export default function ContactDetailScreen() {
         </View>
 
         <View style={styles.quickRow}>
-          <QuickAction icon="message.fill" fallback="chatbubble" label="message" color="#34C759" onPress={call} />
+          <QuickAction icon="message.fill" fallback="chatbubble" label="message" color="#34C759" onPress={() => router.push({ pathname: "/thread/[number]", params: { number: contact!.phone } })} />
           <QuickAction icon="phone.fill" fallback="call" label="call" color="#34C759" onPress={call} />
           <QuickAction icon="video.fill" fallback="videocam" label="voip" color={t.colors.accent} onPress={call} />
         </View>

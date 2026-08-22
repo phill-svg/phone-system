@@ -31,6 +31,7 @@ export default function TabsLayout() {
     >
       <Tabs.Screen name="index" options={{ title: "Keypad", tabBarIcon: TabIcon("circle.grid.3x3.fill", "keypad") }} />
       <Tabs.Screen name="recents" options={{ title: "Recents", tabBarIcon: TabIcon("clock.fill", "time") }} />
+      <Tabs.Screen name="messages" options={{ title: "Messages", tabBarIcon: TabIcon("message.fill", "chatbubble") }} />
       <Tabs.Screen name="contacts" options={{ title: "Contacts", tabBarIcon: TabIcon("person.crop.circle.fill", "people") }} />
       <Tabs.Screen name="voicemail" options={{ title: "Voicemail", tabBarIcon: TabIcon("waveform", "recording-outline") }} />
       <Tabs.Screen name="settings" options={{ title: "Settings", tabBarIcon: TabIcon("gearshape.fill", "settings") }} />

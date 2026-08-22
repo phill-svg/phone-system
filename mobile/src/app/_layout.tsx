@@ -38,6 +38,7 @@ function RootNavigator() {
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="call/[id]" options={{ ...headerScreen, title: "Call Details" }} />
           <Stack.Screen name="contact/[id]" options={{ ...headerScreen, title: "" }} />
+          <Stack.Screen name="thread/[number]" options={{ animation: "slide_from_right" }} />
           <Stack.Screen name="call-active" options={{ presentation: "fullScreenModal", animation: "fade", gestureEnabled: false }} />
           <Stack.Screen name="call-incoming" options={{ presentation: "fullScreenModal", animation: "fade", gestureEnabled: false }} />
           <Stack.Screen name="transfer" options={{ presentation: "modal" }} />

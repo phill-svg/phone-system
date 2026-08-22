@@ -148,3 +148,49 @@ export async function updateContact(id: number, input: ContactInput): Promise<Co
 export async function deleteContact(id: number): Promise<void> {
   await apiFetch(`/api/contacts/${id}`, { method: "DELETE" });
 }
+
+// ---- Messaging (SMS) ----
+// The backend SMS endpoints + Twilio number are wired later; until then these
+// resolve to empty so the UI shows honest empty states rather than erroring.
+
+export type Message = {
+  id: string;
+  direction: "inbound" | "outbound";
+  body: string;
+  ts: number;
+  status?: string;
+};
+
+export type Conversation = {
+  number: string;
+  name?: string | null;
+  last_body: string;
+  last_ts: number;
+  unread: number;
+};
+
+export async function getConversations(): Promise<Conversation[]> {
+  try {
+    return await apiFetch<Conversation[]>("/api/messages");
+  } catch {
+    return [];
+  }
+}
+
+export async function getThread(number: string): Promise<Message[]> {
+  try {
+    return await apiFetch<Message[]>(`/api/messages/${encodeURIComponent(number)}`);
+  } catch {
+    return [];
+  }
+}
+
+// Returns true if sent, false if messaging isn't linked/available yet.
+export async function sendMessage(to: string, body: string): Promise<boolean> {
+  try {
+    await apiFetch("/api/messages", { method: "POST", body: JSON.stringify({ to, body }) });
+    return true;
+  } catch {
+    return false;
+  }
+}
