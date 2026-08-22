@@ -44,7 +44,7 @@ export default function RecentsScreen() {
   }
 
   return (
-    <Screen edges={["top"]}>
+    <Screen>
       <LargeHeader title="Recents" right={<StatusPill />} />
       <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
         <Segmented

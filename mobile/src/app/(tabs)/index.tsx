@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { Screen } from "../../components/ui/Screen";
+import { BrandBar } from "../../components/ui/BrandBar";
 import { Icon } from "../../components/ui/Icon";
 import { Avatar } from "../../components/ui/Avatar";
 import { StatusPill } from "../../components/ui/StatusPill";
@@ -41,9 +42,7 @@ export default function KeypadScreen() {
 
   return (
     <Screen>
-      <View style={[styles.top, { paddingTop: insets.top + t.spacing(2) }]}>
-        <StatusPill />
-      </View>
+      <BrandBar right={<StatusPill />} />
 
       {/* Number display */}
       <View style={styles.displayWrap}>

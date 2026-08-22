@@ -1,26 +1,29 @@
 import React from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { BrandBar } from "./BrandBar";
 import { useTheme, type } from "../../theme/theme";
 
-// iOS-style large-title header rendered inside each screen (we hide the tab-bar's
-// own header so titles get the big, native look with a trailing accessory slot).
+// The red TCB brand bar plus an iOS-style large title below it. Screens hide the tab-bar's
+// own header so the title gets the big native look with a trailing accessory slot.
 export function LargeHeader({ title, right }: { title: string; right?: React.ReactNode }) {
   const t = useTheme();
-  const insets = useSafeAreaInsets();
   return (
-    <View style={[styles.wrap, { paddingTop: insets.top + t.spacing(2) }]}>
-      <Text style={[type.largeTitle, { color: t.colors.label }]} numberOfLines={1}>
-        {title}
-      </Text>
-      {right ? <View style={styles.right}>{right}</View> : null}
+    <View>
+      <BrandBar />
+      <View style={styles.titleRow}>
+        <Text style={[type.largeTitle, { color: t.colors.label }]} numberOfLines={1}>
+          {title}
+        </Text>
+        {right ? <View style={styles.right}>{right}</View> : null}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: {
+  titleRow: {
     paddingHorizontal: 16,
+    paddingTop: 12,
     paddingBottom: 8,
     flexDirection: "row",
     alignItems: "flex-end",

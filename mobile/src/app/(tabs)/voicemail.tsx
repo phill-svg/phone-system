@@ -30,7 +30,7 @@ export default function VoicemailScreen() {
   }
 
   return (
-    <Screen edges={["top"]}>
+    <Screen>
       <LargeHeader title="Voicemail" right={<StatusPill />} />
       {calls.isLoading ? (
         <ActivityIndicator color={t.colors.accent} style={{ marginTop: 48 }} />

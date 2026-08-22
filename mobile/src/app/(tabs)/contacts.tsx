@@ -48,7 +48,7 @@ export default function ContactsScreen() {
   );
 
   return (
-    <Screen edges={["top"]}>
+    <Screen>
       <LargeHeader title="Contacts" right={header} />
       <View style={[styles.search, { backgroundColor: t.colors.fill }]}>
         <Icon name="magnifyingglass" fallback="search" size={17} color={t.colors.labelTertiary} />

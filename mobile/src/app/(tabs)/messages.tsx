@@ -38,7 +38,7 @@ export default function MessagesScreen() {
   }
 
   return (
-    <Screen edges={["top"]}>
+    <Screen>
       <LargeHeader title="Messages" right={header} />
       {convos.isLoading ? (
         <ActivityIndicator color={t.colors.accent} style={{ marginTop: 48 }} />

@@ -24,7 +24,7 @@ export default function SettingsScreen() {
   const [nVoicemail, setNVoicemail] = useState(true);
 
   return (
-    <Screen edges={["top"]}>
+    <Screen>
       <LargeHeader title="Settings" />
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
         <Group title="Account" footer="Signed in to the TCB phone system.">
