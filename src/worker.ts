@@ -568,6 +568,41 @@ export default {
         return new Response("Forbidden", { status: 403 });
       }
 
+      // Temporary diagnostic: pull recent Twilio error alerts (push/registration failures show
+      // here) using the worker's own creds, across both regional Monitor hosts. Admin-only.
+      if (url.pathname === "/api/debug/twilio-alerts") {
+        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
+        const authHeader = "Basic " + btoa(env.TWILIO_ACCOUNT_SID + ":" + env.TWILIO_AUTH_TOKEN);
+        const out: Record<string, unknown> = {};
+        for (const host of ["monitor.twilio.com", "monitor.au1.twilio.com"]) {
+          try {
+            const r = await fetch(`https://${host}/v1/Alerts?PageSize=30`, { headers: { Authorization: authHeader } });
+            const text = await r.text();
+            let j: unknown;
+            try {
+              j = JSON.parse(text);
+            } catch {
+              j = text;
+            }
+            const alerts = (j as { alerts?: unknown[] })?.alerts;
+            out[host] = {
+              status: r.status,
+              alerts: Array.isArray(alerts)
+                ? alerts.slice(0, 15).map((a) => {
+                    const al = a as { error_code?: string; alert_text?: string; date_generated?: string };
+                    return { code: al.error_code, text: (al.alert_text ?? "").slice(0, 220), date: al.date_generated };
+                  })
+                : typeof j === "string"
+                  ? j.slice(0, 220)
+                  : j,
+            };
+          } catch (e) {
+            out[host] = { error: String(e) };
+          }
+        }
+        return new Response(JSON.stringify(out, null, 2), { headers: { "Content-Type": "application/json" } });
+      }
+
       if (url.pathname === "/api/me") {
         return handleMe(staff);
       }
