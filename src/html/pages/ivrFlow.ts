@@ -233,7 +233,7 @@ export function renderIvrFlowPage(
         var next = opt && opt.nextNodeId ? opt.nextNodeId : '';
         return '<div class="gather-option-row">' +
           '<input type="text" class="opt-digit" placeholder="digit" value="' + escAttr(digit) + '">' +
-          '<input type="text" class="opt-next" placeholder="nextNodeId" value="' + escAttr(next) + '">' +
+          nodeSelect('opt-next', next) +
           '<button type="button" class="remove-option-btn">Remove option</button>' +
           '</div>';
       }
@@ -248,6 +248,25 @@ export function renderIvrFlowPage(
       // openAddPanel/save-node-btn below), permanently stuck there with no way to move it to the
       // greeting/menu node that should actually be the entry. This checkbox is the escape hatch:
       // check it on any OTHER node to transfer entryNodeId to that node on the next save.
+      // A "where does this go next" dropdown of every step in this flow (plus "End call") --
+      // replaces typing a raw node id, which was the single biggest bit of editor friction.
+      // Preserves a value that points at a node in another flow so editing doesn't drop it.
+      function nodeSelect(cls, currentValue) {
+        var cur = currentValue == null ? '' : String(currentValue);
+        var known = {};
+        var opts = '<option value=""' + (cur === '' ? ' selected' : '') + '>— End call —</option>';
+        currentNodes.forEach(function (n) {
+          known[n.id] = true;
+          var meta = NODE_META[n.type] || { label: n.type };
+          opts += '<option value="' + escAttr(n.id) + '"' + (cur === String(n.id) ? ' selected' : '') + '>' +
+            escText(meta.label + ' · ' + truncate(subtitleForNode(n) || ('#' + n.id), 24)) + '</option>';
+        });
+        if (cur && !known[cur]) {
+          opts += '<option value="' + escAttr(cur) + '" selected>' + escText(cur + ' (other flow)') + '</option>';
+        }
+        return '<select class="' + cls + ' ivr-next-select">' + opts + '</select>';
+      }
+
       function buildFieldsHtml(node, isNew) {
         var config = node.config || {};
         var html = '';
@@ -271,14 +290,14 @@ export function renderIvrFlowPage(
           '<select id="panel-type-select" style="display:none">' + typeOptionsHtml(node.type) + '</select>';
 
         html += '<div class="field-group" data-type="business_hours" style="display:' + (node.type === 'business_hours' ? 'block' : 'none') + '">' +
-          '<label>Open next node <input type="text" class="f-openNextNodeId" value="' + escAttr(config.openNextNodeId) + '"></label> ' +
-          '<label>Closed next node <input type="text" class="f-closedNextNodeId" value="' + escAttr(config.closedNextNodeId) + '"></label>' +
+          '<label>When open, go to</label>' + nodeSelect('f-openNextNodeId', config.openNextNodeId) +
+          '<label>When closed, go to</label>' + nodeSelect('f-closedNextNodeId', config.closedNextNodeId) +
           '</div>';
 
         html += '<div class="field-group" data-type="play" style="display:' + (node.type === 'play' ? 'block' : 'none') + '">' +
           '<label>Audio asset <select class="f-audioAssetId">' + audioOptionsHtml(config.audioAssetId) + '</select></label> ' +
           '<label>TTS text <input type="text" class="f-ttsText" value="' + escAttr(config.ttsText) + '"></label> ' +
-          '<label>Next node <input type="text" class="f-nextNodeId" value="' + escAttr(config.nextNodeId) + '"></label>' +
+          '<label>Then go to</label>' + nodeSelect('f-nextNodeId', config.nextNodeId) +
           '</div>';
 
         var options = Array.isArray(config.options) ? config.options : [];
@@ -288,7 +307,7 @@ export function renderIvrFlowPage(
           '<label>TTS text <input type="text" class="f-ttsText" value="' + escAttr(config.ttsText) + '"></label>' +
           '<div class="gather-options-list">' + optionRows + '</div>' +
           '<button type="button" class="add-option-btn">Add option</button> ' +
-          '<label>Default next node <input type="text" class="f-defaultNextNodeId" value="' + escAttr(config.defaultNextNodeId) + '"></label> ' +
+          '<label>If no or wrong input, go to</label>' + nodeSelect('f-defaultNextNodeId', config.defaultNextNodeId) + ' ' +
           '<label>Retry limit <input type="number" class="f-retryLimit" value="' + escAttr(config.retryLimit != null ? config.retryLimit : 3) + '"></label>' +
           '</div>';
 
@@ -306,14 +325,14 @@ export function renderIvrFlowPage(
           '<option value="simultaneous"' + (config.strategy === 'simultaneous' ? ' selected' : '') + '>simultaneous</option>' +
           '</select></label> ' +
           '<label>Timeout seconds <input type="number" class="f-timeoutSeconds" value="' + escAttr(config.timeoutSeconds != null ? config.timeoutSeconds : 20) + '"></label> ' +
-          '<label>No-answer next node <input type="text" class="f-noAnswerNextNodeId" value="' + escAttr(config.noAnswerNextNodeId) + '"></label>' +
+          '<label>If nobody answers, go to</label>' + nodeSelect('f-noAnswerNextNodeId', config.noAnswerNextNodeId) +
           '</div>';
 
         html += '<div class="field-group" data-type="wait" style="display:' + (node.type === 'wait' ? 'block' : 'none') + '">' +
           '<label>Audio asset <select class="f-audioAssetId">' + audioOptionsHtml(config.audioAssetId) + '</select></label> ' +
           '<label>TTS text <input type="text" class="f-ttsText" value="' + escAttr(config.ttsText) + '"></label> ' +
           '<label>Allow callback (*) <input type="checkbox" class="f-allowCallbackStar"' + (config.allowCallbackStar ? ' checked' : '') + '></label> ' +
-          '<label>Next node <input type="text" class="f-nextNodeId" value="' + escAttr(config.nextNodeId) + '"></label>' +
+          '<label>Then go to</label>' + nodeSelect('f-nextNodeId', config.nextNodeId) +
           '</div>';
 
         html += '<div class="field-group" data-type="voicemail" style="display:' + (node.type === 'voicemail' ? 'block' : 'none') + '">' +
@@ -326,15 +345,15 @@ export function renderIvrFlowPage(
         html += '<div class="field-group" data-type="date_rule" style="display:' + (node.type === 'date_rule' ? 'block' : 'none') + '">' +
           '<label>Closed dates <input type="text" class="f-closedDates" value="' + escAttr(closedDates) + '" placeholder="2026-12-25, 12-26, 2026-12-24..2027-01-02"></label>' +
           '<div style="font-size:0.72rem;color:#6b7280;margin:-0.3rem 0 0.4rem">Comma-separated. Use YYYY-MM-DD, MM-DD (every year), or start..end ranges.</div>' +
-          '<label>Open next node <input type="text" class="f-openNextNodeId" value="' + escAttr(config.openNextNodeId) + '"></label> ' +
-          '<label>Closed next node <input type="text" class="f-closedNextNodeId" value="' + escAttr(config.closedNextNodeId) + '"></label>' +
+          '<label>When open, go to</label>' + nodeSelect('f-openNextNodeId', config.openNextNodeId) +
+          '<label>When closed, go to</label>' + nodeSelect('f-closedNextNodeId', config.closedNextNodeId) +
           '</div>';
 
         html += '<div class="field-group" data-type="input" style="display:' + (node.type === 'input' ? 'block' : 'none') + '">' +
           '<label>Audio asset <select class="f-audioAssetId">' + audioOptionsHtml(config.audioAssetId) + '</select></label> ' +
           '<label>TTS text <input type="text" class="f-ttsText" value="' + escAttr(config.ttsText) + '"></label> ' +
           '<label>Max digits <input type="number" class="f-numDigits" value="' + escAttr(config.numDigits != null ? config.numDigits : 6) + '"></label> ' +
-          '<label>Next node <input type="text" class="f-nextNodeId" value="' + escAttr(config.nextNodeId) + '"></label>' +
+          '<label>Then go to</label>' + nodeSelect('f-nextNodeId', config.nextNodeId) +
           '</div>';
 
         html += '<div class="field-group" data-type="redirect" style="display:' + (node.type === 'redirect' ? 'block' : 'none') + '">' +
