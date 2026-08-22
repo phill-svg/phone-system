@@ -89,6 +89,8 @@ export function renderIvrFlowPage(
       .ivr-node-body { min-width: 0; }
       .ivr-node-title { font-weight: 600; font-size: 0.85rem; color: #111827; }
       .ivr-node-subtitle { font-size: 0.72rem; color: #6b7280; margin-top: 0.15rem; word-break: break-word; }
+      .ivr-node-card-warn { border-color: #f0b429; box-shadow: 0 0 0 1px #f0b429, 0 1px 3px rgba(0,0,0,0.1); }
+      .ivr-node-warn { font-size: 0.68rem; color: #b45309; margin-top: 0.25rem; font-weight: 600; }
       .ivr-node-idsmall { font-size: 0.62rem; color: #b0b5bd; margin-top: 0.25rem; }
       .ivr-pill { display: inline-flex; align-items: center; gap: 0.35rem; background: #12283f; color: white; border-radius: 999px; padding: 0.4rem 0.9rem; font-size: 0.78rem; font-weight: 500; cursor: default; white-space: nowrap; }
       #edit-panel { display: none; position: fixed; top: 0; right: 0; width: 380px; height: 100vh; background: white; border-left: 1px solid #e5e7eb; padding: 1.25rem; overflow-y: auto; box-shadow: -4px 0 16px rgba(0,0,0,0.08); z-index: 10; }
@@ -99,8 +101,9 @@ export function renderIvrFlowPage(
       #edit-panel-fields label:first-of-type { margin-top: 0; }
       #edit-panel-fields input[type=text], #edit-panel-fields input[type=number], #edit-panel-fields select {
         display: block; width: 100%; box-sizing: border-box; padding: 0.45rem 0.6rem; font-size: 0.85rem;
-        border: 1px solid #d1d5db; border-radius: 6px; background: white; margin-top: 0.15rem;
+        border: 1px solid #d1d5db; border-radius: 6px; background: white; color: #111827; margin-top: 0.15rem;
       }
+      #edit-panel-fields select option { color: #111827; background: #ffffff; }
       #edit-panel-fields input[readonly] { background: #f3f4f6; color: #6b7280; }
       #edit-panel-fields input[type=checkbox] { width: 34px; height: 18px; vertical-align: middle; accent-color: #1a3d2e; }
       #edit-panel-fields .gather-option-row { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.4rem; }
@@ -264,6 +267,7 @@ export function renderIvrFlowPage(
         if (cur && !known[cur]) {
           opts += '<option value="' + escAttr(cur) + '" selected>' + escText(cur + ' (other flow)') + '</option>';
         }
+        opts += '<option value="__new__">➕ Add a new step here…</option>';
         return '<select class="' + cls + ' ivr-next-select">' + opts + '</select>';
       }
 
@@ -271,17 +275,11 @@ export function renderIvrFlowPage(
         var config = node.config || {};
         var html = '';
         html += '<label>ID <input type="text" id="panel-id-input" value="' + escAttr(node.id) + '"' + (isNew ? '' : ' readonly') + '></label> ';
-        // Checked+disabled in both cases where unchecking it would leave the flow with zero (or,
-        // for the not-yet-saved forced-first-node case, an about-to-be-wrong) entry nodes -- the
-        // server requires entryNodeId to match exactly one payload node (see handlePutFlow), so
-        // the only way to move entry off a node is to check this box on a DIFFERENT node instead,
-        // same "set a different node as the entry first" rule the delete-node handler already
-        // enforces below.
-        var isCurrentEntry = !isNew && node.id === entryNodeId;
+        // The entry point is defined by what's wired to "Call comes in" on the canvas, so no entry
+        // checkbox in the panel. The first node added to an empty flow still auto-becomes the entry
+        // (see the save handler); a hidden checkbox keeps that handler's `.checked` lookup happy.
         var forcedFirstEntry = isNew && entryNodeId === null;
-        var entryLocked = isCurrentEntry || forcedFirstEntry;
-        html += '<label><input type="checkbox" id="panel-entry-checkbox"' + (entryLocked ? ' checked disabled' : '') + '> Entry node (call starts here)' +
-          (forcedFirstEntry ? ' -- automatic, this is the first node in the flow' : '') + '</label>';
+        html += '<input type="checkbox" id="panel-entry-checkbox" style="display:none"' + (forcedFirstEntry ? ' checked' : '') + '>';
         html += '<label>Type</label>' +
           '<div class="ivr-type-picker" id="panel-type-picker">' +
           '<button type="button" class="ivr-type-picker-btn" id="panel-type-picker-btn">' + typePickerBtnHtml(node.type) + '</button>' +
@@ -638,15 +636,26 @@ export function renderIvrFlowPage(
         return '';
       }
 
+      // A one-line "this step has a dead-end" warning, shown on the card. Focused on the case that
+      // actually breaks a live call: a Ring step with no "if nobody answers" step falls through to
+      // an error instead of voicemail.
+      function nodeWarning(node) {
+        var c = node.config || {};
+        if (node.type === 'ring' && !c.noAnswerNextNodeId) return 'No "if nobody answers" step set';
+        return '';
+      }
+
       function nodeHtml(node, branchLabel) {
         var meta = NODE_META[node.type] || { icon: '●', color: '#6b7280', label: node.type };
         var badge = branchLabel ? '<div class="ivr-branch-label">' + escText(branchLabel) + '</div>' : '';
+        var warn = nodeWarning(node);
         return badge +
-          '<div class="ivr-node-card">' +
+          '<div class="ivr-node-card' + (warn ? ' ivr-node-card-warn' : '') + '">' +
           '<div class="ivr-node-icon" style="background:' + meta.color + '">' + meta.icon + '</div>' +
           '<div class="ivr-node-body">' +
           '<div class="ivr-node-title">' + escText(meta.label) + '</div>' +
           '<div class="ivr-node-subtitle">' + escText(subtitleForNode(node)) + '</div>' +
+          (warn ? '<div class="ivr-node-warn">⚠ ' + escText(warn) + '</div>' : '') +
           '<div class="ivr-node-idsmall">' + escText(node.id) + '</div>' +
           '</div></div>';
       }
@@ -1040,6 +1049,24 @@ export function renderIvrFlowPage(
         }
       });
 
+      // "Add a new step here" from any "go to" dropdown: creates a new step (a voicemail -- the
+      // only type valid with no onward reference, so the save always passes -- which the user then
+      // retypes/edits), wires this field to it, saves the whole flow, and reopens the new step's
+      // editor after reload. This is the one-click "add connected step" from Aircall.
+      document.getElementById('edit-panel-fields').addEventListener('change', function (e) {
+        var sel = e.target;
+        if (!sel || !sel.classList || !sel.classList.contains('ivr-next-select') || sel.value !== '__new__') return;
+        var newId = 'step_' + Date.now().toString(36);
+        currentNodes.push({ id: newId, type: 'voicemail', config: { audioAssetId: null, ttsText: '', mailboxLabel: 'New step' }, positionX: null, positionY: null });
+        var opt = document.createElement('option');
+        opt.value = newId;
+        opt.textContent = 'Voicemail · New step';
+        sel.insertBefore(opt, sel.lastChild);
+        sel.value = newId;
+        try { sessionStorage.setItem('ivrOpenNode', newId); } catch (err) {}
+        document.getElementById('save-node-btn').click();
+      });
+
       // Nodes that still point AT targetId -- reuses the same outgoingRefs() the auto-layout
       // and connection-drawing code already rely on, so "who references this node" can never
       // drift out of sync with what actually gets saved/validated server-side.
@@ -1198,6 +1225,14 @@ export function renderIvrFlowPage(
       if (window.Drawflow) {
         buildCanvas();
         setTimeout(fitView, 60);
+        // If we just created a step via a "go to → add a new step" dropdown, reopen it for editing.
+        try {
+          var openId = sessionStorage.getItem('ivrOpenNode');
+          if (openId) {
+            sessionStorage.removeItem('ivrOpenNode');
+            setTimeout(function () { openEditPanel(openId); }, 120);
+          }
+        } catch (err) {}
       } else {
         document.getElementById('cdn-error').style.display = 'block';
       }
