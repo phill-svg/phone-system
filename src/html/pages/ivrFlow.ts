@@ -24,11 +24,16 @@ export function renderIvrFlowPage(
   const extraHead = `<link rel="stylesheet" href="${DRAWFLOW_CSS_URL}">
     <style>
       #canvas-wrap { position: relative; height: calc(100vh - 64px); }
+      #ivr-toolbar { position: absolute; top: 12px; left: 12px; z-index: 15; display: flex; gap: 10px; align-items: center; }
       #add-node-btn {
-        position: absolute; top: 12px; left: 12px; z-index: 15; background: #1a3d2e; color: white;
-        border: none; border-radius: 6px; padding: 0.5rem 0.9rem; font-size: 0.85rem; font-weight: 600;
+        background: #1a3d2e; color: white;
+        border: none; border-radius: 8px; padding: 0.55rem 1rem; font-size: 0.9rem; font-weight: 600;
         cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.15);
       }
+      #ivr-zoom { display: flex; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+      #ivr-zoom button { background: #fff; border: none; border-left: 1px solid #eef0f3; color: #374151; font-size: 0.9rem; font-weight: 600; padding: 0.5rem 0.75rem; cursor: pointer; min-width: 40px; }
+      #ivr-zoom button:first-child { border-left: none; }
+      #ivr-zoom button:hover { background: #f3f4f6; }
       #drawflow { width: 100%; height: 100%; background: #f8f9fa; background-image: radial-gradient(#e2e5ea 1px, transparent 1px); background-size: 16px 16px; }
       #cdn-error { display: none; padding: 1rem; background: #fde8e8; color: #9b1c1c; }
       /* Drawflow's own CSS lays a node out as a flex ROW (input on the left edge, content in the
@@ -137,7 +142,14 @@ export function renderIvrFlowPage(
 
   const body = `<div id="cdn-error">Could not load the flow editor library. Check your connection and reload the page.</div>
     <div id="canvas-wrap">
-      <button type="button" id="add-node-btn">+ Add node</button>
+      <div id="ivr-toolbar">
+        <button type="button" id="add-node-btn">+ Add step</button>
+        <div id="ivr-zoom">
+          <button type="button" id="zoom-out" title="Zoom out">&minus;</button>
+          <button type="button" id="zoom-fit" title="Fit flow to screen">Fit</button>
+          <button type="button" id="zoom-in" title="Zoom in">+</button>
+        </div>
+      </div>
       <div id="drawflow"></div>
     </div>
     <div id="edit-panel">
@@ -1118,8 +1130,55 @@ export function renderIvrFlowPage(
         }
       });
 
+      // ---- Zoom / fit-to-screen. The whole flow (nodes + connection SVGs) lives inside
+      // editor.precanvas, so scaling/translating that one element pans+zooms everything together;
+      // connection path coords are in pre-transform space, so they need no recompute here.
+      function nodesBBox() {
+        var els = editor.precanvas.querySelectorAll('.drawflow-node');
+        if (!els.length) return null;
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        els.forEach(function (el) {
+          var x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
+          var w = el.offsetWidth, h = el.offsetHeight;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x + w > maxX) maxX = x + w;
+          if (y + h > maxY) maxY = y + h;
+        });
+        return { minX: minX, minY: minY, w: maxX - minX, h: maxY - minY };
+      }
+      function applyTransform(z, tx, ty) {
+        editor.zoom = z;
+        editor.canvas_x = tx;
+        editor.canvas_y = ty;
+        editor.zoom_last_value = z;
+        editor.precanvas.style.transform = 'translate(' + tx + 'px, ' + ty + 'px) scale(' + z + ')';
+      }
+      function fitView() {
+        var box = nodesBBox();
+        if (!box || !editor.container) return;
+        var vw = editor.container.clientWidth, vh = editor.container.clientHeight, pad = 70;
+        var z = Math.min((vw - pad * 2) / Math.max(box.w, 1), (vh - pad * 2) / Math.max(box.h, 1), 1);
+        z = Math.max(z, 0.25);
+        applyTransform(z, (vw - box.w * z) / 2 - box.minX * z, pad - box.minY * z);
+      }
+      function zoomBy(factor) {
+        var old = editor.zoom || 1;
+        var z = Math.max(0.25, Math.min(1.5, old * factor));
+        var vw = editor.container.clientWidth, vh = editor.container.clientHeight;
+        var tx = vw / 2 - (vw / 2 - (editor.canvas_x || 0)) * (z / old);
+        var ty = vh / 2 - (vh / 2 - (editor.canvas_y || 0)) * (z / old);
+        applyTransform(z, tx, ty);
+      }
+      (function () {
+        var f = document.getElementById('zoom-fit'); if (f) f.addEventListener('click', fitView);
+        var i = document.getElementById('zoom-in'); if (i) i.addEventListener('click', function () { zoomBy(1.2); });
+        var o = document.getElementById('zoom-out'); if (o) o.addEventListener('click', function () { zoomBy(1 / 1.2); });
+      })();
+
       if (window.Drawflow) {
         buildCanvas();
+        setTimeout(fitView, 60);
       } else {
         document.getElementById('cdn-error').style.display = 'block';
       }
