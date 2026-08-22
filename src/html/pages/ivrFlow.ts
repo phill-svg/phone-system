@@ -91,6 +91,20 @@ export function renderIvrFlowPage(
       .ivr-node-subtitle { font-size: 0.72rem; color: #6b7280; margin-top: 0.15rem; word-break: break-word; }
       .ivr-node-card-warn { border-color: #f0b429; box-shadow: 0 0 0 1px #f0b429, 0 1px 3px rgba(0,0,0,0.1); }
       .ivr-node-warn { font-size: 0.68rem; color: #b45309; margin-top: 0.25rem; font-weight: 600; }
+      .ivr-add-ball {
+        position: absolute; width: 22px; height: 22px; margin-left: -11px; border-radius: 50%;
+        background: #1f9d55; color: #fff; display: flex; align-items: center; justify-content: center;
+        font-size: 15px; font-weight: 700; line-height: 1; cursor: pointer; z-index: 6;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.25); border: 2px solid #fff; transition: transform 0.1s;
+      }
+      .ivr-add-ball:hover { transform: scale(1.18); background: #178048; }
+      .ivr-add-menu {
+        position: fixed; z-index: 100; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px;
+        box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 6px; width: 230px; max-height: 70vh; overflow-y: auto;
+      }
+      .ivr-add-menu-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; color: #111827; }
+      .ivr-add-menu-row:hover { background: #f3f4f6; }
+      .ivr-add-menu-row .ivr-type-picker-icon { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.95rem; flex-shrink: 0; }
       .ivr-node-idsmall { font-size: 0.62rem; color: #b0b5bd; margin-top: 0.25rem; }
       .ivr-pill { display: inline-flex; align-items: center; gap: 0.35rem; background: #12283f; color: white; border-radius: 999px; padding: 0.4rem 0.9rem; font-size: 0.78rem; font-weight: 500; cursor: default; white-space: nowrap; }
       #edit-panel { display: none; position: fixed; top: 0; right: 0; width: 380px; height: 100vh; background: white; border-left: 1px solid #e5e7eb; padding: 1.25rem; overflow-y: auto; box-shadow: -4px 0 16px rgba(0,0,0,0.08); z-index: 10; }
@@ -931,6 +945,7 @@ export function renderIvrFlowPage(
           node.positionX = posX;
           node.positionY = posY;
           applyOrthogonalConnections(typeof startPillId !== 'undefined' ? [startPillId] : []);
+          renderAddBalls();
           fetch('/api/ivr/flows/' + encodeURIComponent(FLOW) + '/nodes/' + encodeURIComponent(ivrId) + '/position', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -1222,9 +1237,104 @@ export function renderIvrFlowPage(
         var o = document.getElementById('zoom-out'); if (o) o.addEventListener('click', function () { zoomBy(1 / 1.2); });
       })();
 
+      // ---- Aircall-style "+" ball: click a green ball on a step's empty exit → pick a widget →
+      // the step is created with sensible defaults, wired to that exit, saved, and opened for
+      // editing. The server already accepts empty forward refs, so any type can be added mid-build.
+      function defaultConfigForType(t) {
+        if (t === 'play') return { audioAssetId: null, ttsText: '', nextNodeId: '' };
+        if (t === 'gather') return { audioAssetId: null, ttsText: '', options: [], defaultNextNodeId: '', retryLimit: 3 };
+        if (t === 'input') return { audioAssetId: null, ttsText: '', numDigits: 6, nextNodeId: '' };
+        if (t === 'ring') return { target: 'all', strategy: 'simultaneous', timeoutSeconds: 20, noAnswerNextNodeId: '' };
+        if (t === 'wait') return { audioAssetId: null, ttsText: '', allowCallbackStar: false, nextNodeId: '' };
+        if (t === 'voicemail') return { audioAssetId: null, ttsText: '', mailboxLabel: 'New mailbox' };
+        if (t === 'redirect') return { number: '+61 000 000 000' };
+        if (t === 'business_hours') return { openNextNodeId: '', closedNextNodeId: '' };
+        if (t === 'date_rule') return { closedDates: [], openNextNodeId: '', closedNextNodeId: '' };
+        return {};
+      }
+      function setOutputTarget(node, idx, targetId) {
+        var c = node.config, t = node.type;
+        if (t === 'business_hours' || t === 'date_rule') { if (idx === 0) c.openNextNodeId = targetId; else c.closedNextNodeId = targetId; }
+        else if (t === 'play' || t === 'wait' || t === 'input') { c.nextNodeId = targetId; }
+        else if (t === 'ring') { if (idx === 1) c.noAnswerNextNodeId = targetId; }
+        else if (t === 'gather') {
+          var opts = Array.isArray(c.options) ? c.options : [];
+          if (idx < opts.length) opts[idx].nextNodeId = targetId; else c.defaultNextNodeId = targetId;
+        }
+      }
+      async function saveWholeFlow() {
+        var payload = { entryNodeId: entryNodeId, nodes: currentNodes.map(function (n) { return { id: n.id, type: n.type, config: n.config, positionX: n.positionX, positionY: n.positionY }; }) };
+        var res = await fetch('/api/ivr/flows/' + encodeURIComponent(FLOW), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (res.ok) { location.reload(); } else { alert('Could not add step: ' + (await res.text())); }
+      }
+      function renderAddBalls() {
+        if (!editor || !editor.precanvas) return;
+        editor.precanvas.querySelectorAll('.ivr-add-ball').forEach(function (b) { b.remove(); });
+        currentNodes.forEach(function (node) {
+          var dfId = ivrIdToDrawflowId[node.id];
+          if (dfId == null) return;
+          var el = document.getElementById('node-' + dfId);
+          if (!el) return;
+          var left = parseFloat(el.style.left) || 0, top = parseFloat(el.style.top) || 0;
+          var w = el.offsetWidth, h = el.offsetHeight;
+          var addable = [];
+          outputHandlesForType(node).forEach(function (hd, idx) {
+            if (hd.target !== '__pill_call_ends' && !hd.target) addable.push(idx);
+          });
+          addable.forEach(function (idx, i) {
+            var ball = document.createElement('div');
+            ball.className = 'ivr-add-ball';
+            ball.textContent = '+';
+            ball.style.left = (left + w / 2 + (i - (addable.length - 1) / 2) * 42) + 'px';
+            ball.style.top = (top + h + 10) + 'px';
+            ball.setAttribute('data-src', node.id);
+            ball.setAttribute('data-idx', String(idx));
+            ball.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+            editor.precanvas.appendChild(ball);
+          });
+        });
+      }
+      function closeAddMenu() { var m = document.getElementById('ivr-add-menu'); if (m) m.remove(); }
+      function showAddMenu(ball) {
+        closeAddMenu();
+        var rect = ball.getBoundingClientRect();
+        var types = ['date_rule', 'business_hours', 'play', 'gather', 'input', 'wait', 'ring', 'redirect', 'voicemail'];
+        var menu = document.createElement('div');
+        menu.className = 'ivr-add-menu';
+        menu.id = 'ivr-add-menu';
+        menu.setAttribute('data-src', ball.getAttribute('data-src'));
+        menu.setAttribute('data-idx', ball.getAttribute('data-idx'));
+        menu.innerHTML = types.map(function (t) {
+          var m = NODE_META[t];
+          return '<div class="ivr-add-menu-row" data-type="' + t + '"><span class="ivr-type-picker-icon" style="background:' + m.color + '">' + m.icon + '</span>' + escText(m.label) + '</div>';
+        }).join('');
+        document.body.appendChild(menu);
+        menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 12)) + 'px';
+        menu.style.top = Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 12) + 'px';
+      }
+      function addStepFromBall(srcId, idx, type) {
+        var newId = 'step_' + Date.now().toString(36);
+        currentNodes.push({ id: newId, type: type, config: defaultConfigForType(type), positionX: null, positionY: null });
+        var src = currentNodes.filter(function (n) { return n.id === srcId; })[0];
+        if (src) setOutputTarget(src, idx, newId);
+        try { sessionStorage.setItem('ivrOpenNode', newId); } catch (e) {}
+        saveWholeFlow();
+      }
+      document.addEventListener('click', function (e) {
+        var t = e.target;
+        if (t && t.classList && t.classList.contains('ivr-add-ball')) { e.stopPropagation(); showAddMenu(t); return; }
+        var row = t && t.closest ? t.closest('.ivr-add-menu-row') : null;
+        if (row) {
+          var menu = document.getElementById('ivr-add-menu');
+          if (menu) addStepFromBall(menu.getAttribute('data-src'), Number(menu.getAttribute('data-idx')), row.getAttribute('data-type'));
+          return;
+        }
+        if (!t || !t.closest || !t.closest('.ivr-add-menu')) closeAddMenu();
+      });
+
       if (window.Drawflow) {
         buildCanvas();
-        setTimeout(fitView, 60);
+        setTimeout(function () { fitView(); renderAddBalls(); }, 60);
         // If we just created a step via a "go to → add a new step" dropdown, reopen it for editing.
         try {
           var openId = sessionStorage.getItem('ivrOpenNode');
