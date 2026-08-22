@@ -73,7 +73,7 @@ export function renderLayout(
 ${opts?.extraHead ?? ""}
 </head>
 <body>
-<header><img class="brand-logo" src="/logo.png" alt="TCB"><h1>TCB Phone Admin</h1>${nav}</header>
+<header><img class="brand-logo" src="/logo.png" alt="TCB"><h1>TCB Phone </h1>${nav}</header>
 <main${mainClass}>${body}</main>
 </body>
 </html>`;
