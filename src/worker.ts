@@ -30,6 +30,8 @@ import {
   handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffPriority,
   handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
 } from "./api/staff";
+import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
+import { insertMessage } from "./db/messages";
 import type { SendEmailBinding } from "./email/sendgrid";
 import {
   handleListContacts,
@@ -551,6 +553,28 @@ export default {
       }
     }
 
+    // Inbound SMS from a customer -> stored as a message. Public webhook, whsec-authed like the
+    // voice ones. Point the number's Messaging webhook at this URL (with ?whsec=<secret>).
+    if (url.pathname === "/webhooks/twilio/sms" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) params[key] = String(value);
+      const valid = await authorizeTwilioWebhook(request, params, env);
+      if (!valid) return new Response("invalid signature", { status: 401 });
+      if (params.From) {
+        await insertMessage(env.DB, {
+          id: params.MessageSid || crypto.randomUUID(),
+          direction: "inbound",
+          peer_number: params.From,
+          body: params.Body ?? "",
+          status: "received",
+          read: 0,
+          createdAt: Date.now(),
+        });
+      }
+      return new Response('<?xml version="1.0" encoding="UTF-8"?><Response/>', { headers: { "Content-Type": "text/xml" } });
+    }
+
     if (url.pathname.startsWith("/api/")) {
       const staffOrResponse = await requireStaffUser(request, env, { isApi: true });
       if (staffOrResponse instanceof Response) return staffOrResponse;
@@ -568,6 +592,25 @@ export default {
         return new Response("Forbidden", { status: 403 });
       }
 
+
+      // One-time: point the business number's Messaging webhook at our inbound-SMS handler (with
+      // the whsec auth secret) so incoming texts are captured. Uses the AU1 API key. Admin-only.
+      if (url.pathname === "/api/debug/set-sms-webhook") {
+        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
+        const numberSid = "PN85f0875f9f35826a41c5eb674398c445";
+        const smsUrl = `${url.origin}/webhooks/twilio/sms?whsec=${encodeURIComponent(env.TWILIO_WEBHOOK_SECRET ?? "")}`;
+        const authHeader = "Basic " + btoa(env.TWILIO_API_KEY_SID + ":" + env.TWILIO_API_KEY_SECRET);
+        const form = new URLSearchParams({ SmsUrl: smsUrl, SmsMethod: "POST" });
+        const r = await fetch(
+          `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers/${numberSid}.json`,
+          { method: "POST", headers: { Authorization: authHeader, "Content-Type": "application/x-www-form-urlencoded" }, body: form }
+        );
+        const text = await r.text();
+        return new Response(
+          JSON.stringify({ status: r.status, ok: r.ok, smsUrl: smsUrl.replace(/whsec=[^&]+/, "whsec=***"), response: text.slice(0, 300) }, null, 2),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      }
 
       if (url.pathname === "/api/me") {
         return handleMe(staff);
@@ -725,6 +768,16 @@ export default {
         const contactId = Number(contactIdMatch[1]);
         if (request.method === "PUT") return handleUpdateContact(request, env.DB, contactId);
         if (request.method === "DELETE") return handleDeleteContact(env.DB, contactId);
+      }
+
+      // SMS messaging. /api/messages: GET conversations, POST send. /api/messages/:number: thread.
+      if (url.pathname === "/api/messages") {
+        if (request.method === "GET") return handleListConversations(env.DB);
+        if (request.method === "POST") return handleSendMessage(request, env);
+      }
+      const messageThreadMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
+      if (messageThreadMatch && request.method === "GET") {
+        return handleGetThread(env.DB, decodeURIComponent(messageThreadMatch[1]));
       }
 
       return new Response("not found", { status: 404 });
