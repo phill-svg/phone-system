@@ -11,12 +11,16 @@
     "ios": {
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "bundleIdentifier": "au.com.tcbpestcontrolcanberra.tcbphone"
     },
     "android": {
       "package": "au.com.tcbpestcontrolcanberra.tcbphone",
       "googleServicesFile": "./google-services.json",
-      "permissions": ["android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS"],
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/tcb-logo.png"
@@ -41,7 +45,8 @@
       "expo-audio"
     ],
     "updates": {
-      "enabled": false
+      "enabled": true,
+      "url": "https://u.expo.dev/1a1e7d49-ffbb-4867-915e-2e153db8aa0a"
     },
     "experiments": {
       "typedRoutes": true
@@ -51,6 +56,9 @@
       "eas": {
         "projectId": "1a1e7d49-ffbb-4867-915e-2e153db8aa0a"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
     }
   }
 }

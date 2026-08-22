@@ -1,15 +1,29 @@
 {
-  "cli": { "version": ">= 5.0.0" },
+  "cli": {
+    "version": ">= 5.0.0"
+  },
   "build": {
-    "development": { "developmentClient": true, "distribution": "internal" },
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development"
+    },
     "preview": {
       "distribution": "internal",
-      "android": { "buildType": "apk" }
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "preview"
     },
     "test": {
       "distribution": "internal",
-      "env": { "APP_VARIANT": "test" }
+      "env": {
+        "APP_VARIANT": "test"
+      },
+      "channel": "test"
     },
-    "production": {}
+    "production": {
+      "channel": "production"
+    }
   }
 }
