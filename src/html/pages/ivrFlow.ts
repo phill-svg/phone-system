@@ -1106,15 +1106,19 @@ export function renderIvrFlowPage(
           // delete/replace the first step (the "Call comes in" step) and restructure freely.
           entryNodeId = others[0].id;
         }
-        var referencing = referencingNodes(deleteId);
-        if (referencing.length > 0) {
-          var names = referencing.map(function (n) { return n.id; }).join(', ');
-          status.textContent = 'Still referenced by: ' + names + ' -- repoint those first.';
+        if (!window.confirm('Delete this step? Any steps pointing to it will simply lose that link.')) {
           return;
         }
-        if (!window.confirm('Delete node "' + deleteId + '"? This cannot be undone.')) {
-          return;
-        }
+        // Aircall-style: never block on references -- clear any pointers to the deleted step (those
+        // exits just become open / end-call), so deleting always works.
+        currentNodes.forEach(function (n) {
+          if (n.id === deleteId) return;
+          var c = n.config || {};
+          ['nextNodeId', 'openNextNodeId', 'closedNextNodeId', 'defaultNextNodeId', 'noAnswerNextNodeId'].forEach(function (k) {
+            if (c[k] === deleteId) c[k] = '';
+          });
+          if (Array.isArray(c.options)) c.options.forEach(function (o) { if (o.nextNodeId === deleteId) o.nextNodeId = ''; });
+        });
 
         var remainingNodes = currentNodes.filter(function (n) { return n.id !== deleteId; });
         var payload = {
