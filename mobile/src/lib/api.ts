@@ -42,6 +42,13 @@ export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}
   return (await res.json()) as T;
 }
 
+// Twilio Voice access token for the native softphone. Minted server-side with a VoiceGrant
+// scoped to this staff member's identity (see /api/softphone/token).
+export async function getSoftphoneToken(platform: "android" | "ios" = "android"): Promise<string> {
+  const { token } = await apiFetch<{ token: string }>(`/api/softphone/token?platform=${platform}`);
+  return token;
+}
+
 export type StaffUser = { email: string; role: "admin" | "staff" };
 
 export async function login(email: string, password: string): Promise<{ token: string; user: StaffUser }> {

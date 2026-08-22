@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "223638452812",
+    "project_id": "tcb-phone",
+    "storage_bucket": "tcb-phone.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:223638452812:android:e7e7164cd2008605c652e9",
+        "android_client_info": {
+          "package_name": "au.com.tcbpestcontrolcanberra.tcbphone"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDEzKDnONL-fcL48aIq8ylVHz5jl1SjM24"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

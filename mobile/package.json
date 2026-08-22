@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
+    "@twilio/voice-react-native-sdk": "^2.0.0-preview.2",
     "expo": "~54.0.0",
     "expo-audio": "~1.1.1",
     "expo-blur": "~15.0.8",

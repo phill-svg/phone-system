@@ -9,6 +9,8 @@ import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
 import { DialPad } from "../components/keypad/DialPad";
 import { formatPhone } from "../lib/phone";
+import { placeCall } from "../lib/voice";
+import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
 
@@ -82,13 +84,44 @@ export default function ActiveCallScreen() {
   const [recording, setRecording] = useState(false);
   const [showKeypad, setShowKeypad] = useState(false);
   const [entered, setEntered] = useState("");
+  const [errorText, setErrorText] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const callRef = useRef<TwilioCall | null>(null);
 
-  // Placeholder connection progression so the connected UI is reviewable on device.
-  // The real Twilio Voice layer will drive setState/duration instead.
+  function finish() {
+    if (timer.current) clearInterval(timer.current);
+    setState("ended");
+    setTimeout(() => router.back(), 600);
+  }
+
+  // Place the real outbound call and let Twilio Voice drive the on-screen state.
   useEffect(() => {
-    const connectAt = setTimeout(() => setState("connected"), 2200);
-    return () => clearTimeout(connectAt);
+    let mounted = true;
+    (async () => {
+      try {
+        const call = await placeCall(number);
+        if (!mounted) {
+          call.disconnect();
+          return;
+        }
+        callRef.current = call;
+        call.on(TwilioCall.Event.Ringing, () => setState("calling"));
+        call.on(TwilioCall.Event.Connected, () => setState("connected"));
+        call.on(TwilioCall.Event.Disconnected, () => finish());
+        call.on(TwilioCall.Event.ConnectFailure, (e: unknown) => {
+          setErrorText((e as { message?: string })?.message ?? "Call failed");
+          finish();
+        });
+      } catch (e) {
+        setErrorText(e instanceof Error ? e.message : "Couldn't start the call");
+        finish();
+      }
+    })();
+    return () => {
+      mounted = false;
+      callRef.current?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -102,13 +135,18 @@ export default function ActiveCallScreen() {
 
   function endCall() {
     haptics.heavy();
-    setState("ended");
-    if (timer.current) clearInterval(timer.current);
-    setTimeout(() => router.back(), 550);
+    if (callRef.current) callRef.current.disconnect();
+    else finish();
+  }
+
+  function toggleMute() {
+    const next = !muted;
+    callRef.current?.mute(next);
+    setMuted(next);
   }
 
   const statusLine =
-    state === "calling" ? "Calling…" : state === "ended" ? "Call Ended" : held ? "On Hold" : fmtDuration(seconds);
+    state === "calling" ? "Calling…" : state === "ended" ? (errorText ?? "Call Ended") : held ? "On Hold" : fmtDuration(seconds);
   const title = name || formatPhone(number) || "Unknown";
 
   return (
@@ -144,7 +182,7 @@ export default function ActiveCallScreen() {
           </View>
         ) : (
           <View style={styles.grid}>
-            <Control icon="mic.slash.fill" fallback="mic-off" label="mute" active={muted} onPress={() => setMuted((m) => !m)} />
+            <Control icon="mic.slash.fill" fallback="mic-off" label="mute" active={muted} onPress={toggleMute} />
             <Control icon="circle.grid.3x3.fill" fallback="keypad" label="keypad" disabled={state !== "connected"} onPress={() => setShowKeypad(true)} />
             <Control icon="speaker.wave.2.fill" fallback="volume-high" label="speaker" active={speaker} onPress={() => setSpeaker((s) => !s)} />
             <Control icon="plus" fallback="add" label="add call" disabled={state !== "connected"} onPress={() => router.push("/contacts")} />

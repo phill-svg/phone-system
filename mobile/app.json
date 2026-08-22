@@ -15,6 +15,8 @@
     },
     "android": {
       "package": "au.com.tcbpestcontrolcanberra.tcbphone",
+      "googleServicesFile": "./google-services.json",
+      "permissions": ["android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS"],
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/tcb-logo.png"
