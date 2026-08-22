@@ -6,10 +6,10 @@ import { renderFlowCommandsFragment, wrapResponse } from "./flowTwiml";
  * renderers in this codebase). flowTwiml.ts has its own copy but does not export it,
  * so we keep a small local copy here.
  */
-// Default hold music played while a caller waits for staff to be dialed, when the wait node has
-// no custom hold content of its own. Twilio-hosted, https, so no asset upload is required to get
-// music instead of silence. Overridable per flow by giving the wait node its own audio/TTS.
-const DEFAULT_HOLD_MUSIC_URL = "https://demo.twilio.com/docs/classic.mp3";
+// While a caller waits for staff to be dialed (a ring with no explicit wait node), they hear a
+// ringing tone -- Twilio's own outgoing-call ringback -- so it sounds like a normal ringing phone
+// rather than hold music. A real "wait node" with its own audio/TTS still overrides this.
+const RINGBACK_URL = "https://sdk.twilio.com/js/client/sounds/releases/1.0.0/outgoing.mp3";
 
 function escapeXml(text: string): string {
   return text
@@ -48,7 +48,7 @@ export function renderHold(opts: {
   // hears something rather than dead air between hold polls.
   const content = opts.play
     ? renderFlowCommandsFragment([opts.play], { baseUrl: opts.baseUrl })
-    : `<Play>${DEFAULT_HOLD_MUSIC_URL}</Play>`;
+    : `<Play loop="0">${RINGBACK_URL}</Play>`;
   return wrapResponse(
     `<Gather input="dtmf" numDigits="1" timeout="${opts.timeoutSeconds}" ` +
       `actionOnEmptyResult="true" action="${opts.gatherAction}">${content}</Gather>`

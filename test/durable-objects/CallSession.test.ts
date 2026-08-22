@@ -710,7 +710,7 @@ describe("CallSession", () => {
     expect(body.get("Timeout")).toBe("20");
   });
 
-  it("hold music plays instead of silence when the wait node has no custom content", async () => {
+  it("plays a ringback tone (not silence) while ringing when the wait node has no custom content", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
@@ -721,8 +721,8 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-music", { digits: "1" }));
 
     const poll = await send(stub, { kind: "hold_poll", callSid: "CA-music", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
-    expect(poll.xml).toContain("<Play>");
-    expect(poll.xml).toContain("demo.twilio.com/docs/classic.mp3");
+    expect(poll.xml).toContain("<Play");
+    expect(poll.xml).toContain("sdk.twilio.com/js/client/sounds/releases/1.0.0/outgoing.mp3");
   });
 
   it("caller hanging up mid-ring cancels the outstanding staff legs (no phones left ringing)", async () => {
