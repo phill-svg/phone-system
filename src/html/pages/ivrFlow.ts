@@ -151,7 +151,7 @@ export function renderIvrFlowPage(
         border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.12);
         z-index: 20; max-height: 260px; overflow-y: auto;
       }
-      .ivr-type-picker-row { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0.65rem; font-size: 0.85rem; cursor: pointer; }
+      .ivr-type-picker-row { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0.65rem; font-size: 0.85rem; color: #111827; cursor: pointer; }
       .ivr-type-picker-row:hover { background: #f3f4f6; }
       .ivr-type-picker-row.selected { background: #eef1f5; font-weight: 600; }
       .ivr-type-picker-icon { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.75rem; }
@@ -1097,8 +1097,14 @@ export function renderIvrFlowPage(
         var deleteId = editingIvrId;
 
         if (deleteId === entryNodeId) {
-          status.textContent = "Can't delete the entry node -- set a different node as the entry first.";
-          return;
+          var others = currentNodes.filter(function (n) { return n.id !== deleteId; });
+          if (others.length === 0) {
+            status.textContent = "This is the only step. Change its Type instead, or add another step first, then delete this one.";
+            return;
+          }
+          // Promote another step to be the new entry so the flow still starts somewhere -- lets you
+          // delete/replace the first step (the "Call comes in" step) and restructure freely.
+          entryNodeId = others[0].id;
         }
         var referencing = referencingNodes(deleteId);
         if (referencing.length > 0) {
