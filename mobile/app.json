@@ -38,9 +38,11 @@
       "expo-secure-store",
       "expo-audio"
     ],
+    "updates": {
+      "enabled": false
+    },
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
     },
     "extra": {
       "router": {},
