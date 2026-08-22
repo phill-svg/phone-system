@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { ScrollView, View, Text, Linking } from "react-native";
 import { router } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
@@ -7,17 +7,20 @@ import { Group, Row } from "../../components/ui/Grouped";
 import { Segmented } from "../../components/ui/Segmented";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
+import { onRegStatus } from "../../lib/voice";
 import { usePersistedBool } from "../../lib/prefs";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "10";
+const OTA_BUILD = "11";
 
 export default function SettingsScreen() {
   const t = useTheme();
   const { user, signOut } = useAuth();
   const { status } = useRegistration();
   const { preference, setPreference } = useThemePreference();
+  const [voiceReg, setVoiceReg] = useState("…");
+  useEffect(() => onRegStatus(setVoiceReg), []);
 
   // Preferences persist across launches (SecureStore). The calling ones apply once the
   // native calling layer reads them; theme applies immediately.
@@ -37,6 +40,7 @@ export default function SettingsScreen() {
           <Row icon="person.fill" iconColor={t.colors.accent} label="Account" value={user?.email ?? "—"} />
           <Row icon="antenna.radiowaves.left.and.right" iconColor={REG_META[status].tone === "success" ? t.colors.success : t.colors.warning} label="Registration" value={REG_META[status].label} />
           <Row icon="number" iconColor="#8E8E93" label="Role" value={user?.role === "admin" ? "Administrator" : "Staff"} />
+          <Row icon="bell.badge" iconColor={voiceReg.startsWith("registered") ? t.colors.success : t.colors.warning} label="Incoming calls" value={voiceReg} />
         </Group>
 
         <Group title="Calling" footer="Applies once native calling is enabled on this device.">

@@ -10,6 +10,25 @@ const voice = new Voice();
 let activeCall: Call | null = null;
 let pendingInvite: CallInvite | null = null;
 
+// Twilio registration status, surfaced in Settings so we can see on-device whether the softphone
+// actually registered for incoming-call push (vs. failing silently).
+let regStatus = "not started";
+let regListeners: ((s: string) => void)[] = [];
+function setRegStatus(s: string): void {
+  regStatus = s;
+  regListeners.forEach((l) => l(s));
+}
+export function getRegStatus(): string {
+  return regStatus;
+}
+export function onRegStatus(fn: (s: string) => void): () => void {
+  regListeners.push(fn);
+  fn(regStatus);
+  return () => {
+    regListeners = regListeners.filter((l) => l !== fn);
+  };
+}
+
 export function getActiveCall(): Call | null {
   return activeCall;
 }
@@ -61,12 +80,25 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     onInvite(invite.getFrom());
   };
   voice.on(Voice.Event.CallInvite, handler);
+  const onRegistered = () => setRegStatus("registered ✓");
+  const onError = (e: unknown) => setRegStatus("error: " + ((e as { message?: string })?.message ?? String(e)));
+  voice.on(Voice.Event.Registered, onRegistered);
+  voice.on(Voice.Event.Error, onError);
 
-  const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
-  await voice.register(token);
+  setRegStatus("registering…");
+  try {
+    const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
+    await voice.register(token);
+    // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
+    if (regStatus === "registering…") setRegStatus("registered ✓");
+  } catch (e) {
+    setRegStatus("register failed: " + (e instanceof Error ? e.message : String(e)));
+  }
 
   return () => {
     voice.off(Voice.Event.CallInvite, handler);
+    voice.off(Voice.Event.Registered, onRegistered);
+    voice.off(Voice.Event.Error, onError);
   };
 }
 
