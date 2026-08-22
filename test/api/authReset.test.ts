@@ -14,9 +14,8 @@ describe("forgot/set password routes", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("POST /forgot-password always returns the neutral 'check your email' page", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 202 })));
-    env.SENDGRID_API_KEY = "SG.test";
-    env.AUTH_FROM_EMAIL = "no-reply@tcbpestcontrolcanberra.com.au";
+    // The handler swallows any email-send error to avoid revealing account existence, so this
+    // path returns the neutral page whether or not the send_email binding is available in tests.
     for (const email of [EMAIL, "nobody@example.com"]) {
       const res = await SELF.fetch("https://example.com/forgot-password", {
         method: "POST",

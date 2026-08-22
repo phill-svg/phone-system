@@ -25,7 +25,7 @@ function formatOutcome(call: CallSummary): string {
   return OUTCOME_LABELS[call.ivr_path] ?? humanizeIvrPath(call.ivr_path);
 }
 
-export function renderCallHistoryPage(calls: CallSummary[]): string {
+export function renderCallHistoryPage(calls: CallSummary[], role: "admin" | "staff" = "admin"): string {
   const rows = calls
     .map(
       (call) => `<tr>
@@ -41,5 +41,5 @@ export function renderCallHistoryPage(calls: CallSummary[]): string {
       <thead><tr><th>Started</th><th>Caller</th><th>Outcome</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="4">No calls yet.</td></tr>'}</tbody>
     </table>`;
-  return renderLayout("Call History", "calls", body);
+  return renderLayout("Call History", "calls", body, { role });
 }

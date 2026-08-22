@@ -12,7 +12,7 @@ function formatEvent(event: CallEventRow): string {
   }
 }
 
-export function renderCallDetailPage(call: CallSummary, events: CallEventRow[]): string {
+export function renderCallDetailPage(call: CallSummary, events: CallEventRow[], role: "admin" | "staff" = "admin"): string {
   const eventRows = events
     .map(
       (event) =>
@@ -38,5 +38,5 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[]):
         ? `<h3>Voicemail transcript</h3><p style="white-space:pre-wrap">${escapeHtml(call.transcription)}</p>`
         : ""
     }`;
-  return renderLayout(`Call ${call.id}`, "calls", body);
+  return renderLayout(`Call ${call.id}`, "calls", body, { role });
 }

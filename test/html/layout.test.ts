@@ -16,4 +16,24 @@ describe("renderLayout", () => {
     expect(html).toContain('class="nav-link active"');
     expect(html).toContain("<p>body</p>");
   });
+
+  it("shows every nav link to an admin (default)", () => {
+    const html = renderLayout("Settings", "settings", "");
+    for (const href of ["/admin/settings", "/admin/analytics", "/admin/ivr/main", "/admin/phone", "/admin/calls"]) {
+      expect(html).toContain(href);
+    }
+  });
+
+  it("hides admin-only nav links (Settings, Analytics, IVR) from staff", () => {
+    const html = renderLayout("Phone", "phone", "", { role: "staff" });
+    // Staff keep these
+    expect(html).toContain("/admin/phone");
+    expect(html).toContain("/admin/calls");
+    expect(html).toContain("/admin/live");
+    expect(html).toContain("/admin/callbacks");
+    // Admin-only links are gone
+    expect(html).not.toContain("/admin/settings");
+    expect(html).not.toContain("/admin/analytics");
+    expect(html).not.toContain("/admin/ivr/");
+  });
 });

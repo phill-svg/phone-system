@@ -38,7 +38,7 @@ const ICON_IMPORT = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none"
 const ICON_EDIT = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3.5l3 3L8 15l-4 1 1-4z"/></svg>`;
 const ICON_TRASH = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M8 6V4h4v2M6 6l.7 10a1 1 0 001 1h4.6a1 1 0 001-1L15 6"/></svg>`;
 
-export function renderPhonePage(staffEmail: string): string {
+export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "admin"): string {
   const staffInitials = escapeHtml((staffEmail.split("@")[0] || "?").slice(0, 2).toUpperCase());
   const staffEmailSafe = escapeHtml(staffEmail);
 
@@ -1512,5 +1512,5 @@ export function renderPhonePage(staffEmail: string): string {
       }
     </script>`;
 
-  return renderLayout("Phone", "phone", body, { extraHead: extraHead, fullWidth: true });
+  return renderLayout("Phone", "phone", body, { extraHead: extraHead, fullWidth: true, role });
 }

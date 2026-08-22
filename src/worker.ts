@@ -552,6 +552,18 @@ export default {
       if (staffOrResponse instanceof Response) return staffOrResponse;
       const staff = staffOrResponse;
 
+      // Admin-only read endpoints (the settings + IVR surfaces). Mutations under these paths
+      // already role-check inside their handlers; this closes the matching GET reads so a staff
+      // member can't fetch the data directly. The staff ROSTER (/api/staff GET) is intentionally
+      // NOT gated -- the softphone transfer picker needs the colleague list.
+      const adminOnlyRead =
+        url.pathname.startsWith("/api/ivr/") ||
+        (request.method === "GET" &&
+          (url.pathname === "/api/settings/business-hours" || url.pathname === "/api/settings/call-blocklist"));
+      if (adminOnlyRead && staff.role !== "admin") {
+        return new Response("Forbidden", { status: 403 });
+      }
+
       if (url.pathname === "/api/me") {
         return handleMe(staff);
       }
@@ -717,18 +729,28 @@ export default {
       const staffOrResponse = await requireStaffUser(request, env, { isApi: false });
       if (staffOrResponse instanceof Response) return staffOrResponse;
 
+      // Admin-only pages: Settings (schedules/blocklist/staff), Analytics, and the IVR Flow
+      // editor. A non-admin who types the URL is sent to their Phone page instead of seeing it.
+      const adminOnlyPage =
+        url.pathname === "/admin/settings" ||
+        url.pathname === "/admin/analytics" ||
+        url.pathname.startsWith("/admin/ivr/");
+      if (adminOnlyPage && staffOrResponse.role !== "admin") {
+        return Response.redirect(new URL("/admin/phone", url).toString(), 302);
+      }
+
       if (url.pathname === "/admin/phone") {
-        const html = renderPhonePage(staffOrResponse.email);
+        const html = renderPhonePage(staffOrResponse.email, staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
       if (url.pathname === "/admin/live") {
-        const html = renderLiveCallsPage(await listLiveCalls(env.DB));
+        const html = renderLiveCallsPage(await listLiveCalls(env.DB), staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
       if (url.pathname === "/admin/calls") {
-        const html = renderCallHistoryPage(await listCalls(env.DB));
+        const html = renderCallHistoryPage(await listCalls(env.DB), staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
       const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
@@ -736,7 +758,7 @@ export default {
         try {
           const detail = await getCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
           if (!detail) return new Response("not found", { status: 404 });
-          const html = renderCallDetailPage(detail.call, detail.events);
+          const html = renderCallDetailPage(detail.call, detail.events, staffOrResponse.role);
           return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
         } catch (e) {
           if (e instanceof URIError) {
@@ -758,7 +780,7 @@ export default {
       }
 
       if (url.pathname === "/admin/callbacks") {
-        const html = renderCallbackRequestsPage(await listOpenCallbackRequests(env.DB));
+        const html = renderCallbackRequestsPage(await listOpenCallbackRequests(env.DB), staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 

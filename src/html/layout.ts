@@ -11,9 +11,9 @@ const NAV_ITEMS = [
   { href: "/admin/phone", label: "Phone", key: "phone" },
   { href: "/admin/live", label: "Live Calls", key: "live" },
   { href: "/admin/calls", label: "Call History", key: "calls" },
-  { href: "/admin/analytics", label: "Analytics", key: "analytics" },
-  { href: "/admin/settings", label: "Settings", key: "settings" },
-  { href: "/admin/ivr/main", label: "IVR Flow", key: "ivr" },
+  { href: "/admin/analytics", label: "Analytics", key: "analytics", adminOnly: true },
+  { href: "/admin/settings", label: "Settings", key: "settings", adminOnly: true },
+  { href: "/admin/ivr/main", label: "IVR Flow", key: "ivr", adminOnly: true },
   { href: "/admin/callbacks", label: "Callback Requests", key: "callbacks" },
 ];
 
@@ -21,12 +21,15 @@ export function renderLayout(
   title: string,
   activeNav: string,
   body: string,
-  opts?: { extraHead?: string; fullWidth?: boolean }
+  opts?: { extraHead?: string; fullWidth?: boolean; role?: "admin" | "staff" }
 ): string {
-  const nav = NAV_ITEMS.map(
-    (item) =>
-      `<a href="${item.href}" class="nav-link${item.key === activeNav ? " active" : ""}">${escapeHtml(item.label)}</a>`
-  ).join("");
+  const isAdmin = (opts?.role ?? "admin") === "admin";
+  const nav = NAV_ITEMS.filter((item) => isAdmin || !item.adminOnly)
+    .map(
+      (item) =>
+        `<a href="${item.href}" class="nav-link${item.key === activeNav ? " active" : ""}">${escapeHtml(item.label)}</a>`
+    )
+    .join("");
   const mainClass = opts?.fullWidth ? ' class="full-width"' : "";
 
   return `<!DOCTYPE html>
