@@ -78,7 +78,7 @@ function renderStaffAccess(
         if(!email)return staffMsg('Enter an email.');
         var r=await fetch('/api/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,role:role})});
         var d=await r.json().catch(function(){return {};});
-        if(r.ok){location.reload();}else{staffMsg(d.error||'Invite failed.');}
+        if(r.ok){location.reload();}else{staffMsg((d.error||'Invite failed.')+(d.detail?(' — '+d.detail):''));}
       }
       async function staffAction(email,kind){
         var r=await fetch('/api/staff/'+encodeURIComponent(email)+'/'+kind,{method:'POST'});

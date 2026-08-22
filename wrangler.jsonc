@@ -17,10 +17,12 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
   "routes": [{ "pattern": "phone.tcbpestcontrolcanberra.com.au", "custom_domain": true }],
+  "observability": { "enabled": true },
   "r2_buckets": [{ "binding": "AUDIO_ASSETS", "bucket_name": "tcb-voip-audio" }],
+  "send_email": [{ "name": "EMAIL" }],
   "vars": {
     "TWILIO_FROM_NUMBER": "+61866108941",
     "TWILIO_TWIML_APP_SID": "AP37a6e4263508806aa37efaf19285d2ed",
-    "AUTH_FROM_EMAIL": "no-reply@tcbpestcontrolcanberra.com.au"
+    "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au"
   }
 }

@@ -3,7 +3,7 @@ import { verifyPassword, getDummyHash, hashPassword } from "../access/password";
 import { createSession, destroySession, destroySessionsForEmail, parseSessionCookie, sessionCookieHeader, clearSessionCookieHeader, parseBearerToken } from "../access/session";
 import { isRateLimited, recordFailedAttempt, clearAttempts } from "../access/loginAttempts";
 import { issueToken, peekToken, consumeToken } from "../access/passwordTokens";
-import { sendEmail, resetEmail } from "../email/sendgrid";
+import { sendEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
 import { renderLoginPage, renderForgotPasswordPage, renderSetPasswordPage, renderAuthMessagePage } from "../html/pages/login";
 import { jsonResponse } from "./respond";
 
@@ -11,8 +11,7 @@ type Env = {
   DB: D1Database;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
-  SENDGRID_API_KEY?: string;
-  AUTH_FROM_EMAIL?: string;
+  EMAIL?: SendEmailBinding;
 };
 
 function html(body: string, status = 200, extraHeaders?: Record<string, string>): Response {

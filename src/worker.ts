@@ -30,6 +30,7 @@ import {
   handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffPriority,
   handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
 } from "./api/staff";
+import type { SendEmailBinding } from "./email/sendgrid";
 import {
   handleListContacts,
   handleCreateContact,
@@ -71,8 +72,7 @@ type Env = {
   TWILIO_PUSH_CREDENTIAL_SID_ANDROID?: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
-  SENDGRID_API_KEY?: string;
-  AUTH_FROM_EMAIL?: string;
+  EMAIL?: SendEmailBinding;
 };
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.

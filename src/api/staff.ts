@@ -2,7 +2,7 @@ import { jsonResponse } from "./respond";
 import { getStaffRoster, setStaffSchedule, setStaffPriority, createInvitedStaff, deleteStaff } from "../db/staff";
 import type { StaffUser } from "../access/requireStaffUser";
 import { issueToken } from "../access/passwordTokens";
-import { sendEmail, inviteEmail, resetEmail } from "../email/sendgrid";
+import { sendEmail, inviteEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
 import { destroySessionsForEmail } from "../access/session";
 
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -56,7 +56,7 @@ export async function handlePutStaffPriority(request: Request, db: D1Database, e
   return jsonResponse({ ok: true });
 }
 
-type StaffAdminEnv = { DB: D1Database; SENDGRID_API_KEY?: string; AUTH_FROM_EMAIL?: string };
+type StaffAdminEnv = { DB: D1Database; EMAIL?: SendEmailBinding };
 
 const EMAIL_RE = /^[^@\s'"<>();\\`]+@[^@\s'"<>();\\`]+\.[^@\s'"<>();\\`]+$/;
 
@@ -78,6 +78,7 @@ export async function handleInviteStaff(request: Request, env: StaffAdminEnv, st
   try {
     await sendEmail(env, { to: email, subject, html });
   } catch (e) {
+    console.error("INVITE_EMAIL_SEND_FAILED", String(e));
     return jsonResponse({ error: "User created, but the invite email failed to send. Use 'Resend invite'.", detail: String(e) }, 502);
   }
   return jsonResponse({ ok: true });

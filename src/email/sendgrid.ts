@@ -1,20 +1,31 @@
-type Env = { SENDGRID_API_KEY?: string; AUTH_FROM_EMAIL?: string };
+// Transactional email via Cloudflare's native `send_email` binding (Email Routing) —
+// the exact mechanism the TCB Pest Control booking site uses. Sends from the verified
+// mail.tcbpestcontrolcanberra.com.au domain; no external service or API key involved.
+export type SendEmailBinding = {
+  send(message: { from: string; to: string; reply_to?: string; subject: string; text?: string; html: string }): Promise<void>;
+};
 
-export async function sendEmail(env: Env, msg: { to: string; subject: string; html: string }): Promise<void> {
-  if (!env.SENDGRID_API_KEY || !env.AUTH_FROM_EMAIL) {
-    throw new Error("email not configured: SENDGRID_API_KEY / AUTH_FROM_EMAIL missing");
+type Env = { EMAIL?: SendEmailBinding };
+
+const FROM_ADDRESS = "noreply@mail.tcbpestcontrolcanberra.com.au";
+const REPLY_TO = "office@tcbpestcontrolcanberra.com.au";
+
+function htmlToText(html: string): string {
+  return html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+}
+
+export async function sendEmail(env: Env, msg: { to: string; subject: string; html: string; text?: string }): Promise<void> {
+  if (!env.EMAIL || typeof env.EMAIL.send !== "function") {
+    throw new Error("EMAIL binding not configured");
   }
-  const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.SENDGRID_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      personalizations: [{ to: [{ email: msg.to }] }],
-      from: { email: env.AUTH_FROM_EMAIL, name: "TCB VoIP" },
-      subject: msg.subject,
-      content: [{ type: "text/html", value: msg.html }],
-    }),
+  await env.EMAIL.send({
+    from: FROM_ADDRESS,
+    to: msg.to,
+    reply_to: REPLY_TO,
+    subject: msg.subject,
+    text: msg.text ?? htmlToText(msg.html),
+    html: msg.html,
   });
-  if (!res.ok) throw new Error(`sendgrid ${res.status}: ${await res.text()}`);
 }
 
 function wrap(heading: string, intro: string, link: string, cta: string): string {
