@@ -63,7 +63,7 @@ function renderStaffAccess(
   return `<form class="settings-form" onsubmit="return false">
     <h3>Staff access</h3>
     <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.9rem;flex-wrap:wrap;">
-      <input id="invite-email" type="email" placeholder="new.staff@tcbpestcontrolcanberra.com.au" style="flex:1;min-width:220px;">
+      <input id="invite-email" type="email" placeholder="name@anyemail.com — any address you invite" style="flex:1;min-width:220px;">
       <select id="invite-role"><option value="staff">Staff</option><option value="admin">Admin</option></select>
       <button type="button" id="staff-invite-btn">Invite</button>
     </div>
