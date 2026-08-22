@@ -277,7 +277,7 @@ export function renderIvrFlowPage(
         html += '<label>ID <input type="text" id="panel-id-input" value="' + escAttr(node.id) + '"' + (isNew ? '' : ' readonly') + '></label> ';
         // The entry point is defined by what's wired to "Call comes in" on the canvas, so no entry
         // checkbox in the panel. The first node added to an empty flow still auto-becomes the entry
-        // (see the save handler); a hidden checkbox keeps that handler's `.checked` lookup happy.
+        // (see the save handler); a hidden checkbox keeps that handler's checked lookup happy.
         var forcedFirstEntry = isNew && entryNodeId === null;
         html += '<input type="checkbox" id="panel-entry-checkbox" style="display:none"' + (forcedFirstEntry ? ' checked' : '') + '>';
         html += '<label>Type</label>' +
