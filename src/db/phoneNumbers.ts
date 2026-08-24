@@ -23,27 +23,30 @@ export type PhoneNumberInput = {
 };
 
 export async function createPhoneNumber(db: D1Database, input: PhoneNumberInput): Promise<PhoneNumber> {
-  // Only one default per channel: clear the flag on every other row before setting it here.
+  // Only one default per channel: clear the flag on every other row, AND insert, in ONE atomic
+  // batch (D1 batches run in a transaction). Doing the clears separately meant a failed insert
+  // (e.g. duplicate e164) left the table with every default already wiped and no replacement set.
   const stmts: D1PreparedStatement[] = [];
   if (input.is_default_voice) stmts.push(db.prepare("UPDATE phone_numbers SET is_default_voice = 0"));
   if (input.is_default_sms) stmts.push(db.prepare("UPDATE phone_numbers SET is_default_sms = 0"));
-  if (stmts.length) await db.batch(stmts);
-  const row = await db
-    .prepare(
-      "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region"
-    )
-    .bind(
-      input.e164.trim(),
-      input.label.trim(),
-      input.voice_enabled ? 1 : 0,
-      input.sms_enabled ? 1 : 0,
-      input.is_default_voice ? 1 : 0,
-      input.is_default_sms ? 1 : 0,
-      input.region,
-      Date.now()
-    )
-    .first<PhoneNumber>();
-  return row as PhoneNumber;
+  stmts.push(
+    db
+      .prepare(
+        "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region"
+      )
+      .bind(
+        input.e164.trim(),
+        input.label.trim(),
+        input.voice_enabled ? 1 : 0,
+        input.sms_enabled ? 1 : 0,
+        input.is_default_voice ? 1 : 0,
+        input.is_default_sms ? 1 : 0,
+        input.region,
+        Date.now()
+      )
+  );
+  const results = await db.batch<PhoneNumber>(stmts);
+  return results[results.length - 1].results[0];
 }
 
 export async function updatePhoneNumber(db: D1Database, id: number, input: PhoneNumberInput): Promise<boolean> {

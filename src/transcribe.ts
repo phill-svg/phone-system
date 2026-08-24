@@ -6,14 +6,19 @@ import { authHeader } from "./twilio/conferenceClient";
 // multi-minute recordings a real call produces; the base whisper model truncates long audio.
 
 // Whisper on silence tends to emit either a short token repeated ("Q2. Q2. Q2…") or a lone stock
-// artefact ("Merci.", "Thank you.", "you"). Treat those as no transcript rather than store nonsense.
+// artefact. We drop the repeated-token case, punctuation-only output, and a few artefacts that are
+// never a real standalone voicemail ("you", "so", "merci", YouTube-style outros). We deliberately do
+// NOT drop plausible short real messages like "Thanks." / "Bye." — dropping a genuine transcript is
+// worse than occasionally storing a stray hallucinated word (vad_filter already suppresses most
+// silence). A cleaner long-term signal is Whisper's own no_speech_prob, not this wordlist.
 function isLikelyHallucination(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   const tokens = t.replace(/[.,!?]/g, " ").split(/\s+/).filter(Boolean);
   if (tokens.length >= 4 && new Set(tokens.map((w) => w.toLowerCase())).size <= 2) return true;
   const stripped = t.toLowerCase().replace(/[.!?]/g, "").trim();
-  const junk = new Set(["merci", "thank you", "thanks", "thanks for watching", "you", "bye", "so", "."]);
+  if (!stripped) return true; // punctuation-only (".", "...")
+  const junk = new Set(["you", "so", "merci", "thanks for watching", "please subscribe"]);
   return junk.has(stripped);
 }
 
