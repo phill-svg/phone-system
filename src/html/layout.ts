@@ -7,15 +7,58 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Analytics and IVR Flow are reached from within Settings (sub-sections), not the top nav.
 const NAV_ITEMS = [
   { href: "/admin/phone", label: "Phone", key: "phone" },
+  { href: "/admin/messages", label: "Messages", key: "messages" },
   { href: "/admin/live", label: "Live Calls", key: "live" },
   { href: "/admin/calls", label: "Call History", key: "calls" },
-  { href: "/admin/analytics", label: "Analytics", key: "analytics", adminOnly: true },
-  { href: "/admin/settings", label: "Settings", key: "settings", adminOnly: true },
-  { href: "/admin/ivr/main", label: "IVR Flow", key: "ivr", adminOnly: true },
   { href: "/admin/callbacks", label: "Callback Requests", key: "callbacks" },
+  { href: "/admin/settings", label: "Settings", key: "settings", adminOnly: true },
 ];
+
+// Desktop/web notifications. Injected on every dashboard page so new inbound SMS and calls raise a
+// native OS notification whenever the dashboard (browser tab or Electron desktop app) is running --
+// including minimised or in the background. No backticks or ${} in here (embedded in a template
+// literal below). It polls the same read-only endpoints the pages already use; /api/messages does
+// NOT mark anything read, so badges are untouched.
+const NOTIFY_JS = [
+  '(function(){',
+  '  if (!("Notification" in window)) return;',
+  '  function ensurePerm(){ try { if (Notification.permission === "default") Notification.requestPermission(); } catch(e){} }',
+  '  ensurePerm();',
+  '  document.addEventListener("click", ensurePerm, { once: true });',
+  '  var LS_MSG = "tcbNotifyLastMsgTs", LS_CALL = "tcbNotifyLastCallTs";',
+  '  var lastMsgTs = Number(localStorage.getItem(LS_MSG) || 0);',
+  '  var lastCallTs = Number(localStorage.getItem(LS_CALL) || 0);',
+  '  var primedMsg = false, primedCall = false;',
+  '  function fire(title, body, url, tag){',
+  '    if (Notification.permission !== "granted") return;',
+  '    try { var n = new Notification(title, { body: body, icon: "/logo.png", tag: tag });',
+  '      n.onclick = function(){ try { window.focus(); } catch(e){} if (url) window.location.href = url; n.close(); }; } catch(e){}',
+  '  }',
+  '  function pollMessages(){',
+  '    fetch("/api/messages", { credentials: "same-origin" }).then(function(r){ return r.ok ? r.json() : []; }).then(function(list){',
+  '      list = list || []; var maxTs = lastMsgTs;',
+  '      for (var i=0;i<list.length;i++){ var c = list[i];',
+  '        if (primedMsg && c.unread > 0 && c.last_ts > lastMsgTs) {',
+  '          fire("New message", (c.name || c.number) + ": " + (c.last_body || ""), "/admin/messages?to=" + encodeURIComponent(c.number), "msg:" + c.number);',
+  '        }',
+  '        if (c.last_ts > maxTs) maxTs = c.last_ts;',
+  '      }',
+  '      lastMsgTs = maxTs; try { localStorage.setItem(LS_MSG, String(maxTs)); } catch(e){} primedMsg = true;',
+  '    }).catch(function(){});',
+  '  }',
+  // NOTE: incoming-CALL notifications are fired in real time from the phone page (phone.ts
+  // showIncomingBanner, off the Twilio Device event) — NOT polled here. Polling /api/calls lagged
+  // up to 6s and the toast could arrive after the caller had already hung up. Messages stay polled
+  // (SMS has no sub-second requirement).',
+  '  pollMessages();',
+  '  setInterval(pollMessages, 8000);',
+  '  // Exposed for the Electron shell to trigger an immediate catch-up on wake/resume.',
+  '  window.tcbNotifyPollNow = function(){ pollMessages(); };',
+  '})();',
+].join("\n");
 
 export function renderLayout(
   title: string,
@@ -78,6 +121,7 @@ ${opts?.extraHead ?? ""}
 <body>
 <header><img class="brand-logo" src="/logo.png" alt="TCB"><h1>TCB Phone </h1>${nav}</header>
 <main${mainClass}>${body}</main>
+<script>${NOTIFY_JS}</script>
 </body>
 </html>`;
 }

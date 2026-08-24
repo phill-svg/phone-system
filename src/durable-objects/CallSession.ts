@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { advanceFlow, walkFromNode, type FlowCommand } from "../ivr/flowEngine";
-import { renderFlowTwiml, renderFlowCommandsFragment, wrapResponse } from "../twilio/flowTwiml";
+import { renderFlowTwiml, renderFlowCommandsFragment, wrapResponse, escapeXml } from "../twilio/flowTwiml";
 import {
   renderEnqueue,
   renderHold,
@@ -50,6 +50,10 @@ type ActiveRing = {
   ringConfig: RingConfig;
   ringPlanState: RingPlanState;
   attemptSids: string[];
+  // When a greeting must play to the caller BEFORE staff ring, the initial batch of numbers is
+  // stashed here and dialed on the first hold-poll (i.e. once the caller has heard the greeting)
+  // instead of up-front. Cleared once dialed.
+  pendingDial?: string[];
 };
 
 type IvrPosition = { nodeId: string; attempt: number };
@@ -234,8 +238,17 @@ export class CallSession extends DurableObject<Env> {
       await this.ctx.storage.put("awaitingVoicemailNodeId", voicemailNodeId);
       const resolvedVoicemailCommands = await this.resolveAudioCommands(walkResult.commands);
       const fragment = renderFlowCommandsFragment(resolvedVoicemailCommands, { baseUrl: origin });
-      const transcribeCallback = appendWebhookSecret(`${origin}/webhooks/twilio/transcription?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET);
-      const record = `<Record action="${appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET)}" method="POST" maxLength="120" timeout="5" playBeep="true" transcribe="true" transcribeCallback="${transcribeCallback}"/>`;
+      // These URLs carry two query params (callSid + whsec/vm), so the joining "&" MUST be XML-escaped
+      // to "&amp;" — an unescaped "&" in a TwiML attribute is a document parse error ("application
+      // error") at Twilio. (The single-param URLs elsewhere don't hit this, which is why it lurked.)
+      //
+      // Voicemail transcription now uses Whisper (via the recording-status → transcribeCallRecording
+      // path, ?vm=1 so it lands in `transcription`), NOT Twilio's `transcribe="true"` — cheaper,
+      // better, and consistent with answered-call transcripts. The `recordingStatusCallback` also
+      // means the voicemail recording gets stored + becomes playable.
+      const recordingStatusCb = appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${callSid}&vm=1`, this.env.TWILIO_WEBHOOK_SECRET);
+      const recordAction = appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET);
+      const record = `<Record action="${escapeXml(recordAction)}" method="POST" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="${escapeXml(recordingStatusCb)}" recordingStatusCallbackEvent="completed"/>`;
       return wrapResponse(fragment + record);
     }
 
@@ -282,13 +295,32 @@ export class CallSession extends DurableObject<Env> {
     }
 
     const ringConfig = (await this.loadNodeConfig(ringNodeId)) as unknown as RingConfig;
+
+    // Greeting/prompt accumulated on the way to a DIRECT ring (e.g. business_hours -> play greeting
+    // -> ring) must play ONCE before anything else -- whether we go on to ring staff OR (nobody
+    // available) fall straight through to the next node. Computed up-front so BOTH paths include it.
+    // Skipped for the viaWait path, whose PLAY is the wait node's hold content and is already spoken
+    // during the hold loop (don't double-play).
+    let greetingPrefix = "";
+    if (!viaWait) {
+      const greetingCommands = walkResult.commands.filter((c) => c.type === "PLAY");
+      if (greetingCommands.length > 0) {
+        const resolved = await this.resolveAudioCommands(greetingCommands);
+        greetingPrefix = renderFlowCommandsFragment(resolved, { baseUrl: origin });
+      }
+    }
+
     const now = new Date();
     const numbers = await resolveRingTargets(this.env.DB, ringConfig.target, now);
 
-    // Zero on-call numbers: skip the whole ring/enqueue dance and continue the flow from the
-    // ring node's noAnswerNextNodeId (e.g. an emergency ring with nobody on call → voicemail).
+    // Zero on-call numbers: skip the ring/enqueue dance and continue the flow from the ring node's
+    // noAnswerNextNodeId (e.g. nobody on call → voicemail/menu) -- but still play the greeting first
+    // (inject it right after the opening <Response> of the fall-through document).
     if (numbers.length === 0) {
-      return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
+      const fallthrough = await this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
+      // Function replacer: a plain string here would interpret $&, $', $` and $$ inside admin-
+      // authored greeting text as replacement patterns and corrupt the TwiML.
+      return greetingPrefix ? fallthrough.replace("<Response>", () => "<Response>" + greetingPrefix) : fallthrough;
     }
 
     const { state: ringPlanState, commands: ringCommands } = reduceRingPlan(null, {
@@ -305,38 +337,41 @@ export class CallSession extends DurableObject<Env> {
       else if (command.type === "DIAL_ALL") numbersToDial.push(...command.numbers);
     }
 
-    // Dial each leg in its own try/catch. If any create-call throws part-way through a
-    // multi-number simultaneous batch, the earlier legs are REAL ringing Twilio calls — cancel
-    // every leg we did manage to create, then fall through to the no-answer path so the caller
-    // still gets valid TwiML (voicemail/etc.) instead of an opaque 500. Only build + persist
-    // `activeRing` once the WHOLE batch has succeeded, so a later agent_answer never reads a
-    // half-populated (or missing) activeRing.
+    // If there's a greeting to play FIRST (direct ring), DEFER dialing staff until the caller has
+    // actually heard it — otherwise the staff phones ring while the caller is still on the welcome
+    // message (and whoever answers catches the caller mid-recording). The deferred dial runs on the
+    // first hold-poll (waitUrl), which Twilio fetches right after the greeting <Play> finishes.
+    // Without a greeting, dial immediately (original behaviour).
+    //
+    // Dial each leg in its own try/catch. If any create-call throws part-way through a multi-number
+    // simultaneous batch, the earlier legs are REAL ringing Twilio calls — cancel every leg we did
+    // manage to create, then fall through to the no-answer path so the caller still gets valid TwiML.
     const attemptSids: string[] = [];
-    let dialFailed = false;
-    for (const number of numbersToDial) {
-      try {
-        attemptSids.push(await this.dialStaff(number, callSid, origin, ringConfig.timeoutSeconds));
-      } catch (err) {
-        // Swallowing this silently once hid a credentials outage for a full day -- always log it.
-        console.log(
-          "DIAL_STAFF_FAILED",
-          JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) })
-        );
-        dialFailed = true;
-        break;
-      }
-    }
-
-    if (dialFailed) {
-      for (const sid of attemptSids) {
-        // Best-effort cleanup: a cancel failure must not itself abort the fallthrough TwiML.
+    if (!greetingPrefix) {
+      let dialFailed = false;
+      for (const number of numbersToDial) {
         try {
-          await this.cancelStaff(sid);
-        } catch {
-          /* leg may already be torn down; ignore */
+          attemptSids.push(await this.dialStaff(number, callSid, origin, ringConfig.timeoutSeconds));
+        } catch (err) {
+          // Swallowing this silently once hid a credentials outage for a full day -- always log it.
+          console.log(
+            "DIAL_STAFF_FAILED",
+            JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) })
+          );
+          dialFailed = true;
+          break;
         }
       }
-      return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
+      if (dialFailed) {
+        for (const sid of attemptSids) {
+          try {
+            await this.cancelStaff(sid);
+          } catch {
+            /* leg may already be torn down; ignore */
+          }
+        }
+        return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
+      }
     }
 
     const activeRing: ActiveRing = {
@@ -346,14 +381,16 @@ export class CallSession extends DurableObject<Env> {
       ringConfig,
       ringPlanState,
       attemptSids,
+      pendingDial: greetingPrefix ? numbersToDial : undefined,
     };
     await this.ctx.storage.put("activeRing", activeRing);
-    await this.logEvent(callSid, "ring_started", { targets: numbers.length, strategy: ringConfig.strategy });
+    if (!greetingPrefix) await this.logEvent(callSid, "ring_started", { targets: numbers.length, strategy: ringConfig.strategy });
 
     return renderEnqueue({
       queueName: callSid,
       waitUrl: appendWebhookSecret(`${origin}/webhooks/twilio/hold`, this.env.TWILIO_WEBHOOK_SECRET),
       actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/queue-left`, this.env.TWILIO_WEBHOOK_SECRET),
+      prefix: greetingPrefix,
     });
   }
 
@@ -379,10 +416,60 @@ export class CallSession extends DurableObject<Env> {
   private async handleHoldPoll(body: HoldPollEvent): Promise<Response> {
     const origin = new URL(body.webhookUrl).origin;
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
+
+    // Deferred-dial: the greeting has now finished (the caller is in the hold loop), so THIS is when
+    // we actually ring staff for a greeting-first ring. DO handlers are serialized, so a subsequent
+    // hold-poll can't race this — pendingDial is cleared before the next poll runs.
+    if (activeRing && activeRing.pendingDial && activeRing.pendingDial.length > 0) {
+      await this.performDeferredDial(activeRing, body.callSid, origin);
+      const updated = await this.ctx.storage.get<ActiveRing>("activeRing");
+      if (updated && updated.ringPlanState.name === "DIALING") {
+        return this.xml(this.renderHoldFor(updated, origin));
+      }
+      // Dial failed -> leave the queue so the caller falls through to the no-answer node.
+      return this.xml(renderLeave());
+    }
+
     if (activeRing && activeRing.ringPlanState.name === "DIALING") {
       return this.xml(this.renderHoldFor(activeRing, origin));
     }
     return this.xml(renderLeave());
+  }
+
+  // Rings the deferred initial batch (greeting-first ring) once the caller has heard the greeting.
+  // On failure it cancels any placed legs and marks the ring DONE{no_answer} so the caller leaves
+  // the queue into the no-answer fall-through (mirrors startRing's immediate-dial failure path).
+  private async performDeferredDial(activeRing: ActiveRing, callSid: string, origin: string): Promise<void> {
+    const numbersToDial = activeRing.pendingDial ?? [];
+    const attemptSids: string[] = [];
+    let dialFailed = false;
+    for (const number of numbersToDial) {
+      try {
+        attemptSids.push(await this.dialStaff(number, callSid, origin, activeRing.ringConfig.timeoutSeconds));
+      } catch (err) {
+        console.log("DIAL_STAFF_FAILED", JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) }));
+        dialFailed = true;
+        break;
+      }
+    }
+    if (dialFailed) {
+      for (const sid of attemptSids) {
+        try {
+          await this.cancelStaff(sid);
+        } catch {
+          /* already torn down */
+        }
+      }
+      activeRing.pendingDial = undefined;
+      activeRing.attemptSids = [];
+      activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+      await this.ctx.storage.put("activeRing", activeRing);
+      return;
+    }
+    activeRing.attemptSids = attemptSids;
+    activeRing.pendingDial = undefined;
+    await this.ctx.storage.put("activeRing", activeRing);
+    await this.logEvent(callSid, "ring_started", { targets: attemptSids.length, strategy: activeRing.ringConfig.strategy });
   }
 
   // -------------------------------------------------------------------------

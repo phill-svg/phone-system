@@ -32,7 +32,18 @@ export async function listConversations(db: D1Database): Promise<ConversationRow
   return rows.results.map((r) => ({ number: r.number, name: null, last_body: r.last_body, last_ts: r.last_ts, unread: r.unread }));
 }
 
-export async function listThread(db: D1Database, peer: string): Promise<MessageRow[]> {
+// `limit` returns only the LAST n messages (still in ascending order) — used by the call-detail
+// SMS peek, which only shows a handful and shouldn't pull a whole long-running thread out of D1.
+export async function listThread(db: D1Database, peer: string, limit?: number): Promise<MessageRow[]> {
+  if (limit != null) {
+    const rows = await db
+      .prepare(
+        "SELECT * FROM (SELECT id, direction, body, created_at AS ts, status FROM messages WHERE peer_number = ? ORDER BY created_at DESC LIMIT ?) ORDER BY ts ASC"
+      )
+      .bind(peer, limit)
+      .all<MessageRow>();
+    return rows.results;
+  }
   const rows = await db
     .prepare("SELECT id, direction, body, created_at AS ts, status FROM messages WHERE peer_number = ? ORDER BY created_at ASC")
     .bind(peer)

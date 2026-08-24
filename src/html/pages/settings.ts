@@ -108,24 +108,66 @@ export function renderSettingsPage(
 ): string {
   const dayRows = renderDayRows(schedule, "hours");
 
+  const staffOptions = staffRoster
+    .map((s) => `<option value="${escapeHtml(s.email)}">${escapeHtml(s.email)} (${escapeHtml(s.role)})</option>`)
+    .join("");
+
   const staffForms = staffRoster
     .map((staffMember) => {
       const idPrefix = `staff-${domIdSafe(staffMember.email)}`;
-      return `<form class="settings-form staff-schedule-form" id="${idPrefix}-form" data-email="${escapeHtml(staffMember.email)}">
-        <h4>${escapeHtml(staffMember.email)} <small>(${escapeHtml(staffMember.role)})</small></h4>
-        <label class="staff-priority-label">Ring priority (lower rings first)
-          <input type="number" class="staff-priority-input" value="${staffMember.ringPriority}" min="0" max="9999" step="1">
-          <button type="button" class="staff-priority-save">Save priority</button>
-          <span class="staff-priority-status"></span>
-        </label>
-        ${renderDayRows(staffMember.schedule, idPrefix)}
-        <button type="submit">Save Schedule</button>
-        <span class="staff-save-status"></span>
-      </form>`;
+      return `<div class="staff-form-wrap" data-staff="${escapeHtml(staffMember.email)}" style="display:none">
+        <form class="staff-schedule-form" id="${idPrefix}-form" data-email="${escapeHtml(staffMember.email)}">
+          <div class="staff-availability">
+            <span class="staff-avail-label">Availability</span>
+            <button type="button" class="staff-status-btn${staffMember.status === "available" ? " active" : ""}" data-status="available">Available</button>
+            <button type="button" class="staff-status-btn${staffMember.status === "away" ? " active" : ""}" data-status="away">Away</button>
+            <span class="staff-status-msg"></span>
+          </div>
+          <label class="staff-priority-label">Ring priority (lower rings first)
+            <input type="number" class="staff-priority-input" value="${staffMember.ringPriority}" min="0" max="9999" step="1">
+            <button type="button" class="staff-priority-save">Save priority</button>
+            <span class="staff-priority-status"></span>
+          </label>
+          ${renderDayRows(staffMember.schedule, idPrefix)}
+          <button type="submit">Save Schedule</button>
+          <span class="staff-save-status"></span>
+        </form>
+      </div>`;
     })
     .join("");
 
   const body = `<h2>Settings</h2>
+    <style>
+      .settings-subnav { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+      .settings-subnav-card { flex: 1; min-width: 200px; display: block; text-decoration: none; background: var(--admin-surface); border: 1px solid var(--admin-border); border-radius: 12px; padding: 0.9rem 1.1rem; color: var(--admin-text); transition: background 0.12s, border-color 0.12s; }
+      .settings-subnav-card:hover { background: var(--admin-surface-hover); border-color: var(--admin-brand); }
+      .settings-subnav-card strong { display: block; font-size: 0.98rem; }
+      .settings-subnav-card span { color: var(--admin-dim); font-size: 0.82rem; }
+      .staff-picker-label { display: block; margin-bottom: 1rem; font-weight: 600; }
+      .staff-picker-label select { margin-left: 0.5rem; min-width: 260px; font-weight: 400; }
+      .staff-form-wrap .staff-schedule-form { border: 1px solid var(--admin-border); border-radius: 10px; padding: 0.6rem 0.9rem 0.9rem; background: var(--admin-bg); }
+      .staff-form-wrap .staff-schedule-form label { display: block; margin-bottom: 0.6rem; margin-top: 0.6rem; }
+      .staff-form-wrap .staff-schedule-form input { margin-left: 0.4rem; }
+      .staff-form-wrap .staff-schedule-form button[type=submit] { background: var(--admin-brand); border-color: var(--admin-brand); color: #fff; font-weight: 600; margin-top: 0.5rem; }
+      .staff-availability { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+      .staff-avail-label { color: var(--admin-dim); font-size: 0.82rem; margin-right: 0.2rem; }
+      .staff-status-btn { padding: 0.3rem 0.8rem; border-radius: 999px; font-size: 0.82rem; }
+      .staff-status-btn.active[data-status=available] { background: rgba(52,199,89,0.18); border-color: #34c759; color: #5ad19a; }
+      .staff-status-btn.active[data-status=away] { background: rgba(228,0,43,0.18); border-color: var(--admin-brand); color: #ff8ea0; }
+      .staff-status-msg { color: var(--admin-dim); font-size: 0.8rem; }
+      .num-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.6rem 0; border-bottom: 1px solid var(--admin-border); }
+      .num-row .num-e164 { font-family: monospace; color: var(--admin-dim); min-width: 130px; }
+      .num-row input[type=text] { min-width: 160px; }
+      .num-row label { font-size: 0.82rem; color: var(--admin-dim); display: inline-flex; align-items: center; gap: 0.25rem; }
+      .num-row button { padding: 0.3rem 0.7rem; font-size: 0.82rem; }
+      .num-add-grid { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+      .num-add-grid label { font-size: 0.82rem; color: var(--admin-dim); display: inline-flex; align-items: center; gap: 0.25rem; }
+      .num-add-grid button { background: var(--admin-brand); border-color: var(--admin-brand); color: #fff; font-weight: 600; }
+    </style>
+    <div class="settings-subnav">
+      <a class="settings-subnav-card" href="/admin/analytics"><strong>Analytics</strong><span>Call volume, answer rates &amp; trends</span></a>
+      <a class="settings-subnav-card" href="/admin/ivr/main"><strong>IVR Flow</strong><span>Edit the phone menu &amp; call routing</span></a>
+    </div>
     <form class="settings-form" id="business-hours-form">
       <h3>Business Hours</h3>
       ${dayRows}
@@ -138,9 +180,39 @@ export function renderSettingsPage(
       <button type="submit">Save Blocklist</button>
       <span id="blocklist-save-status"></span>
     </form>
+    ${
+      currentRole === "admin"
+        ? `<section class="settings-form" id="numbers-section">
+      <h3>Phone Numbers</h3>
+      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">The <strong>label</strong> is the name staff see in the "Call from" / "From" pickers. Tick <em>Voice</em>/<em>SMS</em> for what a number can do, and mark the defaults. (A number must already be set up in Twilio to actually send/receive.)</p>
+      <div id="numbers-list">Loading…</div>
+      <div style="margin-top:1rem;border-top:1px solid var(--admin-border);padding-top:1rem">
+        <h4 style="margin:0 0 0.6rem">Add a number</h4>
+        <div class="num-add-grid">
+          <input type="text" id="num-add-e164" placeholder="+61…">
+          <input type="text" id="num-add-label" placeholder="Label staff see">
+          <label><input type="checkbox" id="num-add-voice"> Voice</label>
+          <label><input type="checkbox" id="num-add-sms"> SMS</label>
+          <button type="button" id="num-add-btn">Add</button>
+          <span id="num-add-status" style="font-size:0.8rem;color:var(--admin-dim)"></span>
+        </div>
+      </div>
+    </section>`
+        : ""
+    }
     <section class="settings-form">
       <h3>Staff Working Hours</h3>
-      ${staffForms || "<p>No staff members found.</p>"}
+      ${
+        staffRoster.length === 0
+          ? "<p>No staff members found.</p>"
+          : `<label class="staff-picker-label">Staff member
+              <select id="staff-picker">
+                <option value="">Select a staff member…</option>
+                ${staffOptions}
+              </select>
+            </label>
+            <div id="staff-forms">${staffForms}</div>`
+      }
     </section>
     ${currentRole === "admin" ? renderStaffAccess(staffAccess) : ""}
     <script>
@@ -219,7 +291,92 @@ export function renderSettingsPage(
           });
         }
         saveField('.staff-priority-save', '.staff-priority-status', '.staff-priority-input', '/priority', 'priority');
+
+        form.querySelectorAll('.staff-status-btn').forEach(function (btn) {
+          btn.addEventListener('click', async function () {
+            const email = form.dataset.email;
+            const status = btn.dataset.status;
+            const msg = form.querySelector('.staff-status-msg');
+            const res = await fetch('/api/staff/' + encodeURIComponent(email) + '/status', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: status }),
+            });
+            if (res.ok) {
+              form.querySelectorAll('.staff-status-btn').forEach(function (b) { b.classList.toggle('active', b === btn); });
+              msg.textContent = 'Saved.';
+            } else {
+              msg.textContent = 'Failed to save.';
+            }
+          });
+        });
       });
+
+      var staffPicker = document.getElementById('staff-picker');
+      if (staffPicker) {
+        staffPicker.addEventListener('change', function () {
+          var wraps = document.querySelectorAll('.staff-form-wrap');
+          for (var i = 0; i < wraps.length; i++) {
+            wraps[i].style.display = wraps[i].getAttribute('data-staff') === this.value ? 'block' : 'none';
+          }
+        });
+      }
+
+      // ---- Phone numbers (admin): rename / toggle capabilities / set defaults / add / delete ----
+      async function loadNumbers() {
+        var list = document.getElementById('numbers-list');
+        if (!list) return;
+        try {
+          var res = await fetch('/api/numbers');
+          if (!res.ok) { list.textContent = 'Could not load numbers.'; return; }
+          renderNumbers((await res.json()) || []);
+        } catch (e) { list.textContent = 'Could not load numbers.'; }
+      }
+      function renderNumbers(nums) {
+        var list = document.getElementById('numbers-list');
+        list.innerHTML = '';
+        if (!nums.length) { list.textContent = 'No numbers yet.'; return; }
+        nums.forEach(function (n) {
+          var row = document.createElement('div'); row.className = 'num-row';
+          var e = document.createElement('span'); e.className = 'num-e164'; e.textContent = n.e164;
+          var label = document.createElement('input'); label.type = 'text'; label.value = n.label;
+          function chk(checked, text) { var l = document.createElement('label'); var i = document.createElement('input'); i.type = 'checkbox'; i.checked = !!checked; l.appendChild(i); l.appendChild(document.createTextNode(' ' + text)); l._input = i; return l; }
+          var voice = chk(n.voice_enabled, 'Voice');
+          var sms = chk(n.sms_enabled, 'SMS');
+          var dv = chk(n.is_default_voice, 'Default call');
+          var ds = chk(n.is_default_sms, 'Default text');
+          var save = document.createElement('button'); save.type = 'button'; save.textContent = 'Save';
+          var del = document.createElement('button'); del.type = 'button'; del.textContent = 'Delete';
+          var st = document.createElement('span'); st.style.cssText = 'font-size:0.8rem;color:var(--admin-dim)';
+          save.addEventListener('click', function () {
+            st.textContent = 'Saving…';
+            fetch('/api/numbers/' + n.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: n.e164, label: label.value, voice_enabled: voice._input.checked, sms_enabled: sms._input.checked, is_default_voice: dv._input.checked, is_default_sms: ds._input.checked, region: n.region }) })
+              .then(function (r) { st.textContent = r.ok ? 'Saved.' : 'Failed.'; if (r.ok) loadNumbers(); })
+              .catch(function () { st.textContent = 'Failed.'; });
+          });
+          del.addEventListener('click', function () {
+            if (!window.confirm('Delete ' + n.label + ' (' + n.e164 + ')?')) return;
+            fetch('/api/numbers/' + n.id, { method: 'DELETE' }).then(function (r) { if (r.ok) loadNumbers(); });
+          });
+          [e, label, voice, sms, dv, ds, save, del, st].forEach(function (x) { row.appendChild(x); });
+          list.appendChild(row);
+        });
+      }
+      (function () {
+        var btn = document.getElementById('num-add-btn');
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+          var status = document.getElementById('num-add-status');
+          var e164 = document.getElementById('num-add-e164').value.trim();
+          var label = document.getElementById('num-add-label').value.trim();
+          if (!e164 || !label) { status.textContent = 'Enter a number and a label.'; return; }
+          status.textContent = 'Adding…';
+          fetch('/api/numbers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: e164, label: label, voice_enabled: document.getElementById('num-add-voice').checked, sms_enabled: document.getElementById('num-add-sms').checked }) })
+            .then(function (r) { if (r.ok) { status.textContent = 'Added.'; document.getElementById('num-add-e164').value = ''; document.getElementById('num-add-label').value = ''; loadNumbers(); } else { status.textContent = 'Could not add (already exists?).'; } })
+            .catch(function () { status.textContent = 'Could not add.'; });
+        });
+      })();
+      loadNumbers();
     </script>`;
   return renderLayout("Settings", "settings", body);
 }

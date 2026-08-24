@@ -5,7 +5,6 @@ import {
   listCalls,
   listLiveCalls,
   updateCallMeta,
-  setCallTranscription,
   getCallStats,
   appendCallEvent,
 } from "../../src/db/calls";
@@ -85,14 +84,12 @@ describe("db/calls", () => {
 
   // --- Phase 4: post-call fields + analytics ---
 
-  it("updateCallMeta stores disposition and notes; setCallTranscription stores the transcript", async () => {
+  it("updateCallMeta stores disposition and notes", async () => {
     await seedCall("CA-meta");
     expect(await updateCallMeta(env.DB, "CA-meta", { disposition: "New booking", notes: "Wants a quote" })).toBe(true);
-    await setCallTranscription(env.DB, "CA-meta", "Hi, please call me back about a booking.");
     const detail = await getCallDetail(env.DB, "CA-meta");
     expect(detail?.call.disposition).toBe("New booking");
     expect(detail?.call.notes).toBe("Wants a quote");
-    expect(detail?.call.transcription).toBe("Hi, please call me back about a booking.");
     expect(await updateCallMeta(env.DB, "CA-missing", { disposition: "x", notes: null })).toBe(false);
   });
 

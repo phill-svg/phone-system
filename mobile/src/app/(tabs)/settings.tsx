@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { ScrollView, View, Text, Linking } from "react-native";
+import { ScrollView, View, Text, Linking, Alert } from "react-native";
+import * as Updates from "expo-updates";
 import { router } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
@@ -12,7 +13,7 @@ import { usePersistedBool } from "../../lib/prefs";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "11";
+const OTA_BUILD = "17";
 
 export default function SettingsScreen() {
   const t = useTheme();
@@ -21,6 +22,34 @@ export default function SettingsScreen() {
   const { preference, setPreference } = useThemePreference();
   const [voiceReg, setVoiceReg] = useState("…");
   useEffect(() => onRegStatus(setVoiceReg), []);
+  const [checking, setChecking] = useState(false);
+
+  // Pull the latest over-the-air (EAS) update on demand, then restart into it. In Expo Go / dev the
+  // updates module is disabled, so we say so rather than throwing.
+  async function checkForUpdates() {
+    if (checking) return;
+    if (!Updates.isEnabled) {
+      Alert.alert("Updates", "Over-the-air updates aren't available in this build (dev/Expo Go).");
+      return;
+    }
+    setChecking(true);
+    try {
+      const result = await Updates.checkForUpdateAsync();
+      if (result.isAvailable) {
+        await Updates.fetchUpdateAsync();
+        Alert.alert("Update ready", "A new version was downloaded. Restart now to apply it?", [
+          { text: "Later", style: "cancel" },
+          { text: "Restart", onPress: () => Updates.reloadAsync() },
+        ]);
+      } else {
+        Alert.alert("Up to date", `You're on the latest version (#${OTA_BUILD}).`);
+      }
+    } catch {
+      Alert.alert("Update check failed", "Couldn't check for updates just now. Try again on Wi-Fi.");
+    } finally {
+      setChecking(false);
+    }
+  }
 
   // Preferences persist across launches (SecureStore). The calling ones apply once the
   // native calling layer reads them; theme applies immediately.
@@ -77,7 +106,7 @@ export default function SettingsScreen() {
 
         <Group title="About">
           <Row icon="info.circle.fill" iconColor="#8E8E93" label="Version" value="1.0.0" />
-          <Row icon="arrow.triangle.2.circlepath" iconColor="#34C759" label="Update" value={`#${OTA_BUILD}`} />
+          <Row icon="arrow.triangle.2.circlepath" iconColor="#34C759" label={checking ? "Checking…" : "Check for Updates"} value={`#${OTA_BUILD}`} chevron onPress={checkForUpdates} />
           <Row icon="lifepreserver" iconColor="#0A84FF" label="Support" chevron onPress={() => Linking.openURL("mailto:phill@tcbpestcontrolcanberra.com.au")} />
           <Row icon="hand.raised.fill" iconColor="#5E5CE6" label="Privacy Policy" chevron onPress={() => {}} />
           <Row icon="doc.text.fill" iconColor="#8E8E93" label="Terms of Service" chevron onPress={() => {}} />

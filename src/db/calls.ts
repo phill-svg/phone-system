@@ -12,6 +12,7 @@ export type CallSummary = {
   direction: "inbound" | "outbound";
   mailbox_label: string | null;
   transcription: string | null;
+  call_transcript: string | null;
   disposition: string | null;
   notes: string | null;
 };
@@ -59,15 +60,16 @@ export async function appendCallEvent(
 }
 
 export async function listLiveCalls(db: D1Database): Promise<CallSummary[]> {
+  // Only calls started in the last 3 hours count as "live". If a call's completion status callback
+  // is ever missed, its row lingers as `in_progress` forever — those stale rows must NOT show as
+  // live (a real phone call never runs 3h), otherwise e.g. listen-in joins a long-dead conference
+  // and just plays hold music.
+  const cutoff = Date.now() - 3 * 60 * 60 * 1000;
   const result = await db
-    .prepare("SELECT * FROM calls WHERE status = 'in_progress' ORDER BY started_at DESC")
+    .prepare("SELECT * FROM calls WHERE status = 'in_progress' AND started_at >= ? ORDER BY started_at DESC")
+    .bind(cutoff)
     .all<CallSummary>();
   return result.results;
-}
-
-// Stores the voicemail transcription text Twilio posts back to the transcribeCallback.
-export async function setCallTranscription(db: D1Database, callId: string, text: string): Promise<void> {
-  await db.prepare("UPDATE calls SET transcription = ? WHERE id = ?").bind(text, callId).run();
 }
 
 // Sets the staff-entered disposition (outcome tag) and/or notes on a call.

@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { getStaffRoster, setStaffSchedule, setStaffPriority, createInvitedStaff, deleteStaff } from "../db/staff";
+import { getStaffRoster, setStaffSchedule, setStaffPriority, setStaffStatus, createInvitedStaff, deleteStaff } from "../db/staff";
 import type { StaffUser } from "../access/requireStaffUser";
 import { issueToken } from "../access/passwordTokens";
 import { sendEmail, inviteEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
@@ -53,6 +53,23 @@ export async function handlePutStaffPriority(request: Request, db: D1Database, e
     return jsonResponse({ error: "Priority must be a number between 0 and 9999." }, 400);
   }
   await setStaffPriority(db, email, priority);
+  return jsonResponse({ ok: true });
+}
+
+// Admin override of a staff member's availability. "away" force-benches them from the ring
+// cascade; "available" clears the override (they still also need a live app/heartbeat to ring).
+export async function handlePutStaffStatus(request: Request, db: D1Database, email: string, staff: StaffUser): Promise<Response> {
+  if (staff.role !== "admin") return new Response("forbidden", { status: 403 });
+  let body: { status?: unknown };
+  try {
+    body = (await request.json()) as { status?: unknown };
+  } catch {
+    return new Response("invalid request body", { status: 400 });
+  }
+  if (body.status !== "available" && body.status !== "away") {
+    return jsonResponse({ error: "Status must be 'available' or 'away'." }, 400);
+  }
+  await setStaffStatus(db, email, body.status, null);
   return jsonResponse({ ok: true });
 }
 

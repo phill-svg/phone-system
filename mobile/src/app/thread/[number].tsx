@@ -1,11 +1,12 @@
 import React, { useState } from "react";
-import { View, Text, TextInput, Pressable, FlatList, KeyboardAvoidingView, Platform, Alert, StyleSheet } from "react-native";
+import { View, Text, TextInput, Pressable, FlatList, Alert, StyleSheet, Platform } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
 import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { getThread, getContacts, sendMessage, type Message } from "../../lib/api";
+import { getThread, getContacts, sendMessage, getNumbers, type Message } from "../../lib/api";
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
@@ -22,6 +23,12 @@ export default function ThreadScreen() {
 
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
   const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2 });
+  const numbers = useQuery({ queryKey: ["numbers"], queryFn: getNumbers, staleTime: 300_000 });
+
+  const smsNums = (numbers.data ?? []).filter((n) => n.sms_enabled);
+  const [fromNum, setFromNum] = useState<string | null>(null);
+  // Effective sending number: the picked one, else the default SMS number, else the first available.
+  const effectiveFrom = fromNum ?? smsNums.find((n) => n.is_default_sms)?.e164 ?? smsNums[0]?.e164;
 
   const contactName = contactForNumber(to, contacts.data ?? [])?.name;
   const title = contactName ?? (to ? formatPhone(to) : "New Message");
@@ -30,7 +37,7 @@ export default function ThreadScreen() {
     const body = text.trim();
     if (!body || !to.trim() || sending) return;
     setSending(true);
-    const ok = await sendMessage(to.trim(), body);
+    const ok = await sendMessage(to.trim(), body, effectiveFrom);
     setSending(false);
     if (ok) {
       haptics.success();
@@ -64,20 +71,23 @@ export default function ThreadScreen() {
             placeholderTextColor={t.colors.labelTertiary}
             keyboardType="phone-pad"
             autoFocus
-            style={[type.body, { color: t.colors.label, flex: 1 }]}
+            style={{ fontSize: 17, fontWeight: "400", color: t.colors.label, flex: 1 }}
           />
         </View>
       ) : null}
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={0}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         {(thread.data ?? []).length === 0 ? (
-          <EmptyState
-            icon="message"
-            title={isNew ? "New Message" : "No Messages Yet"}
-            message={isNew ? "Enter a number above and write your message." : "Send the first message below."}
-          />
+          <View style={{ flex: 1 }}>
+            <EmptyState
+              icon="message"
+              title={isNew ? "New Message" : "No Messages Yet"}
+              message={isNew ? "Enter a number above and write your message." : "Send the first message below."}
+            />
+          </View>
         ) : (
           <FlatList
+            style={{ flex: 1 }}
             data={thread.data}
             keyExtractor={(m) => m.id}
             contentContainerStyle={{ padding: 16, gap: 8 }}
@@ -94,6 +104,25 @@ export default function ThreadScreen() {
           />
         )}
 
+        {/* "From" picker — a chip row when there are 2+ SMS numbers, a static line for one, hidden for none. */}
+        {smsNums.length >= 2 ? (
+          <View style={[styles.fromBar, { borderTopColor: t.colors.separator }]}>
+            <Text style={[type.caption, { color: t.colors.labelSecondary }]}>From</Text>
+            {smsNums.map((n) => {
+              const active = effectiveFrom === n.e164;
+              return (
+                <Pressable key={n.id} onPress={() => setFromNum(n.e164)} style={[styles.fromChip, { backgroundColor: active ? t.colors.accent : t.colors.fill }]}>
+                  <Text style={[type.caption, { color: active ? "#FFFFFF" : t.colors.label }]}>{n.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : smsNums.length === 1 ? (
+          <View style={[styles.fromBar, { borderTopColor: t.colors.separator }]}>
+            <Text style={[type.caption, { color: t.colors.labelSecondary }]}>From {smsNums[0].label} · {formatPhone(smsNums[0].e164)}</Text>
+          </View>
+        ) : null}
+
         {/* Compose */}
         <View style={[styles.compose, { borderTopColor: t.colors.separator, paddingBottom: insets.bottom + 8 }]}>
           <View style={[styles.inputWrap, { backgroundColor: t.colors.fill }]}>
@@ -102,7 +131,17 @@ export default function ThreadScreen() {
               onChangeText={setText}
               placeholder="Text Message"
               placeholderTextColor={t.colors.labelTertiary}
-              style={[type.body, { color: t.colors.label, flex: 1, maxHeight: 100 }]}
+              selectionColor={t.colors.accent}
+              // Samsung One UI renders the keyboard's *composing* text (the underlined word before you
+              // press space) in WHITE on multiline fields, ignoring `color` — so typing looked invisible
+              // on the S25 FE. Just disabling autocorrect wasn't enough. keyboardType="visible-password"
+              // on Android forces a no-composing keyboard, so every character commits immediately in the
+              // real text colour. iOS keeps the normal keyboard.
+              keyboardType={Platform.OS === "android" ? "visible-password" : "default"}
+              autoCorrect={false}
+              autoComplete="off"
+              spellCheck={false}
+              style={{ fontSize: 17, fontWeight: "400", color: t.colors.label, flex: 1, maxHeight: 100, textAlignVertical: "top" }}
               multiline
             />
           </View>
@@ -121,6 +160,8 @@ const styles = StyleSheet.create({
   toRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
   bubbleRow: { flexDirection: "row" },
   bubble: { maxWidth: "78%", paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20 },
+  fromBar: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingHorizontal: 14, paddingVertical: 7, borderTopWidth: StyleSheet.hairlineWidth },
+  fromChip: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999 },
   compose: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingHorizontal: 12, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth },
   inputWrap: { flex: 1, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, minHeight: 38, justifyContent: "center" },
   sendBtn: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },

@@ -43,7 +43,13 @@
         }
       ],
       "expo-secure-store",
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "color": "#D32F2F"
+        }
+      ]
     ],
     "updates": {
       "enabled": true,

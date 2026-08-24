@@ -9,7 +9,8 @@ import { renderFlowCommandsFragment, wrapResponse } from "./flowTwiml";
 // While a caller waits for staff to be dialed (a ring with no explicit wait node), they hear a
 // ringing tone -- Twilio's own outgoing-call ringback -- so it sounds like a normal ringing phone
 // rather than hold music. A real "wait node" with its own audio/TTS still overrides this.
-const RINGBACK_URL = "https://sdk.twilio.com/js/client/sounds/releases/1.0.0/outgoing.mp3";
+// Self-hosted (see conferenceTwiml.ts): sdk.twilio.com's copy now returns 403 to Twilio's servers.
+const RINGBACK_URL = "https://phone.tcbpestcontrolcanberra.com.au/media/system/ringback.mp3";
 
 function escapeXml(text: string): string {
   return text
@@ -24,9 +25,12 @@ function escapeXml(text: string): string {
  * Renders the caller-leg <Enqueue> TwiML: parks the caller in a per-call queue while
  * staff are dialed via outbound REST. Complete TwiML document by itself.
  */
-export function renderEnqueue(opts: { queueName: string; waitUrl: string; actionUrl: string }): string {
+// `prefix` is optional already-rendered TwiML (e.g. a greeting <Play>/<Say>) played once, before
+// the caller is enqueued into the hold/ring loop.
+export function renderEnqueue(opts: { queueName: string; waitUrl: string; actionUrl: string; prefix?: string }): string {
   return wrapResponse(
-    `<Enqueue waitUrl="${opts.waitUrl}" waitUrlMethod="POST" action="${opts.actionUrl}" method="POST">` +
+    (opts.prefix ?? "") +
+      `<Enqueue waitUrl="${opts.waitUrl}" waitUrlMethod="POST" action="${opts.actionUrl}" method="POST">` +
       `${escapeXml(opts.queueName)}</Enqueue>`
   );
 }
