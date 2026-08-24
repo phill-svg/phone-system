@@ -1,7 +1,7 @@
 "use strict";
 
 const path = require("path");
-const { app, BrowserWindow, shell, session, Tray, Menu, ipcMain, Notification } = require("electron");
+const { app, BrowserWindow, shell, session, Tray, Menu, ipcMain, Notification, powerMonitor } = require("electron");
 
 // Single source of truth for the dashboard URL. If the worker is ever moved
 // to a custom domain, update this one line.
@@ -9,6 +9,13 @@ const DASHBOARD_URL = "https://phone.tcbpestcontrolcanberra.com.au/admin/phone";
 
 let mainWindow = null;
 let tray = null;
+
+// True when Windows auto-started us at login (we pass --hidden in the login-item
+// args) OR when a manual "run hidden" is requested. In that case we bring the app
+// up silently into the tray -- like a real desk phone that's simply always on --
+// instead of popping a window in the user's face on every boot.
+const startHidden =
+  process.argv.includes("--hidden") || app.getLoginItemSettings().wasOpenedAtLogin === true;
 
 // The app lives in the tray, so launching the shortcut again while it's hidden
 // must surface the existing window -- NOT start a second instance sharing the
@@ -31,6 +38,10 @@ function createWindow() {
     minHeight: 600,
     title: "TCB Phone",
     icon: path.join(__dirname, "icon.png"),
+    // When auto-launched at login we come up straight into the tray (no window
+    // flashes on the desktop); the page still loads and runs in the background,
+    // keeping the softphone registered and notifications polling.
+    show: !startHidden,
     autoHideMenuBar: true, // no custom menu items needed for a pure wrapper
     webPreferences: {
       contextIsolation: true,
@@ -94,11 +105,50 @@ ipcMain.on("incoming-call", (_event, fromLabel) => {
   notification.show();
 });
 
+// Make the phone app behave like a real desk phone: launch automatically when
+// the user logs in, and come up hidden in the tray. Only in the packaged build
+// -- during `npm start` dev we don't want to register a login item pointing at
+// the Electron dev binary. Windows/macOS only; a no-op elsewhere.
+function configureAutoLaunch() {
+  if (!app.isPackaged) return;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: true,
+      // macOS honours openAsHidden directly; Windows ignores it, so we also pass
+      // --hidden as a launch arg and key off that (see startHidden above).
+      openAsHidden: true,
+      args: ["--hidden"],
+    });
+  } catch (e) {
+    // Non-fatal: a locked-down machine may refuse the login item. The app still
+    // works, it just won't auto-start.
+  }
+}
+
+// When the machine wakes from sleep, nudge the page to poll immediately so a
+// missed call/text surfaces within a second or two instead of waiting for the
+// next polling tick. (Nothing can be delivered *while* asleep -- no process
+// runs -- so catching up on resume is the best achievable behaviour.)
+function pollNow() {
+  try {
+    mainWindow?.webContents.executeJavaScript(
+      "window.tcbNotifyPollNow && window.tcbNotifyPollNow();",
+      true
+    );
+  } catch (e) {
+    // Window may be gone; ignore.
+  }
+}
+
 app.whenReady().then(() => {
   // Windows groups taskbar buttons and attributes notifications by this ID.
   // Set it to the packaged appId so the app shows as "TCB Phone" with its own
   // icon rather than being grouped under the generic Electron identity.
   app.setAppUserModelId("au.com.tcbpestcontrolcanberra.tcbphone");
+
+  configureAutoLaunch();
+  powerMonitor.on("resume", pollNow);
+  powerMonitor.on("unlock-screen", pollNow);
 
   // The softphone needs mic access to place/receive calls via the Twilio
   // Voice SDK. Electron blocks all permission requests by default, so this

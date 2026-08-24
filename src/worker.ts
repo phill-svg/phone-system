@@ -1,5 +1,5 @@
 import { authorizeTwilioWebhook, appendWebhookSecret } from "./twilio/webhookAuth";
-import { renderJoinConference, renderDialAgentIntoConference } from "./twilio/conferenceTwiml";
+import { renderJoinConference, renderDialAgentIntoConference, renderListenConference } from "./twilio/conferenceTwiml";
 import { createOutboundCall } from "./twilio/restClient";
 import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
@@ -12,7 +12,7 @@ import {
   handleSetPasswordPage, handleSetPasswordSubmit,
   handleApiLogin, handleApiLogout,
 } from "./api/auth";
-import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta } from "./api/calls";
+import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta, getLiveCalls, reconcileStaleCalls } from "./api/calls";
 import { handleGetBusinessHours, handleGetCallBlocklist, handlePutBusinessHours, handlePutCallBlocklist } from "./api/settings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
@@ -27,11 +27,12 @@ import {
   handlePostCompleteTransfer,
 } from "./api/softphone";
 import {
-  handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffPriority,
+  handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffPriority, handlePutStaffStatus,
   handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
 } from "./api/staff";
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage } from "./db/messages";
+import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
 import type { SendEmailBinding } from "./email/sendgrid";
 import {
   handleListContacts,
@@ -44,10 +45,12 @@ import { renderPhonePage } from "./html/pages/phone";
 import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
+import { renderWebhooksPage } from "./html/pages/webhooks";
 import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
-import { getCallDetail, listCalls, listLiveCalls, appendCallEvent, setCallTranscription, getCallStats } from "./db/calls";
+import { renderMessagesPage } from "./html/pages/messages";
+import { getCallDetail, listCalls, appendCallEvent, getCallStats } from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist } from "./db/settings";
@@ -56,19 +59,28 @@ import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listOpenCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
+import { transcribeCallRecording } from "./transcribe";
+import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
+import { resolveSendingNumber } from "./db/phoneNumbers";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
   DB: D1Database;
   CALL_SESSION: DurableObjectNamespace;
   AUDIO_ASSETS: R2Bucket;
+  AI: { run: (model: string, input: Record<string, unknown>) => Promise<{ text?: string; transcription_info?: { text?: string } }> };
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   TWILIO_AUTH_TOKEN_SECONDARY?: string;
   TWILIO_WEBHOOK_SECRET?: string;
+  TWILIO_WEBHOOK_SECRET_SECONDARY?: string;
   TWILIO_FROM_NUMBER: string;
+  TWILIO_SMS_NUMBER?: string;
   TWILIO_API_KEY_SID: string;
   TWILIO_API_KEY_SECRET: string;
+  // US1-region API key, used for SMS (the Messages API is US1-only; the AU1 key/token 401s there).
+  TWILIO_US1_API_KEY_SID?: string;
+  TWILIO_US1_API_KEY_SECRET?: string;
   TWILIO_TWIML_APP_SID: string;
   TWILIO_PUSH_CREDENTIAL_SID_IOS?: string;
   TWILIO_PUSH_CREDENTIAL_SID_ANDROID?: string;
@@ -90,7 +102,7 @@ function normalizeAuNumber(raw: string | undefined): string | undefined {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/") {
@@ -402,9 +414,32 @@ export default {
         return new Response("invalid signature", { status: 401 });
       }
 
+      // Live listen-in: an ADMIN's softphone joins an existing call's conference muted. Gated on the
+      // caller's own client identity being an admin (a Twilio webhook has no session, so we look the
+      // role up by email) — otherwise any staff softphone could silently listen to any call.
+      if (params.Listen) {
+        const listenerEmail = params.From.startsWith("client:") ? params.From.slice("client:".length) : params.From;
+        const row = await env.DB.prepare("SELECT role FROM staff_users WHERE email = ?")
+          .bind(listenerEmail)
+          .first<{ role: string }>();
+        if (row?.role !== "admin") {
+          return new Response(
+            '<?xml version="1.0" encoding="UTF-8"?><Response><Say>You are not authorised to listen to calls.</Say><Hangup/></Response>',
+            { headers: { "Content-Type": "text/xml" } }
+          );
+        }
+        return new Response(renderListenConference({ conferenceName: params.Listen }), {
+          headers: { "Content-Type": "text/xml" },
+        });
+      }
+
       const conferenceName = params.CallSid; // the agent's own browser-originated leg
       const target = normalizeAuNumber(params.To);
       if (!target) return new Response("missing To", { status: 400 });
+
+      // Caller-ID the staff member picked in the dialer (params.CallerId). Honoured only if it's an
+      // enabled voice number (see resolveSendingNumber); otherwise the default voice number.
+      const fromNumber = (await resolveSendingNumber(env.DB, "voice", params.CallerId || null)) ?? env.TWILIO_FROM_NUMBER;
 
       // Outbound calls otherwise create no `calls` row, so they never show up in Call
       // History/Live Calls, and the recording-status callback (which matches on this same
@@ -413,7 +448,7 @@ export default {
       await env.DB.prepare(
         "INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours, status, direction) VALUES (?, ?, ?, ?, ?, ?, ?)"
       )
-        .bind(conferenceName, env.TWILIO_FROM_NUMBER, target, Date.now(), 0, "in_progress", "outbound")
+        .bind(conferenceName, fromNumber, target, Date.now(), 0, "in_progress", "outbound")
         .run();
 
       // params.From is the agent's own `client:{email}` identity (set by the Voice SDK). Record
@@ -424,7 +459,7 @@ export default {
 
       const { sid: targetSid } = await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
         to: target,
-        from: env.TWILIO_FROM_NUMBER,
+        from: fromNumber,
         url: appendWebhookSecret(`${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
         statusCallback: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
         statusCallbackEvent: ["completed"],
@@ -509,33 +544,16 @@ export default {
         .bind(params.RecordingUrl ?? null, params.RecordingSid ?? null, callSid)
         .run();
 
-      return new Response("ok", { status: 200 });
-    }
-
-    // Twilio posts the voicemail transcription here (from <Record transcribeCallback>). Store the
-    // text against the call so it shows on the call-detail pane.
-    if (url.pathname === "/webhooks/twilio/transcription" && request.method === "POST") {
-      const formData = await request.formData();
-      const params: Record<string, string> = {};
-      for (const [key, value] of formData.entries()) {
-        params[key] = String(value);
+      // Kick off transcription (Whisper) in the background — never block the webhook ack. A voicemail
+      // Record posts here with ?vm=1 so its transcript lands in `transcription` ("Voicemail
+      // transcript"); answered-call recordings land in `call_transcript` ("Call transcript").
+      if (params.RecordingUrl) {
+        const column = url.searchParams.get("vm") === "1" ? "transcription" : "call_transcript";
+        const job = transcribeCallRecording(env, callSid, params.RecordingUrl, column);
+        if (ctx) ctx.waitUntil(job);
+        else await job;
       }
 
-      const valid = await authorizeTwilioWebhook(request, params, env);
-      if (!valid) {
-        return new Response("invalid signature", { status: 401 });
-      }
-
-      const callSid = url.searchParams.get("callSid") ?? params.CallSid ?? "";
-      const text = params.TranscriptionText ?? "";
-      if (callSid && params.TranscriptionStatus === "completed" && text) {
-        await setCallTranscription(env.DB, callSid, text);
-        try {
-          await appendCallEvent(env.DB, callSid, "voicemail_transcribed");
-        } catch {
-          /* best-effort timeline entry */
-        }
-      }
       return new Response("ok", { status: 200 });
     }
 
@@ -571,6 +589,10 @@ export default {
           read: 0,
           createdAt: Date.now(),
         });
+        // Notify staff devices (don't let a push failure break the webhook ack).
+        const notify = notifyInboundSms(env.DB, params.From, params.Body ?? "").catch(() => {});
+        if (ctx) ctx.waitUntil(notify);
+        else await notify;
       }
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response/>', { headers: { "Content-Type": "text/xml" } });
     }
@@ -592,57 +614,11 @@ export default {
         return new Response("Forbidden", { status: 403 });
       }
 
-
-      // Admin-only: list the account's phone numbers (sid, number, SMS capability, current SmsUrl)
-      // so we can find the SMS-capable number to send from / wire inbound to.
-      if (url.pathname === "/api/debug/list-numbers") {
-        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
-        const authHeader = "Basic " + btoa(env.TWILIO_API_KEY_SID + ":" + env.TWILIO_API_KEY_SECRET);
-        const r = await fetch(
-          `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers.json?PageSize=50`,
-          { headers: { Authorization: authHeader } }
-        );
-        const text = await r.text();
-        let j: unknown;
-        try {
-          j = JSON.parse(text);
-        } catch {
-          j = text;
-        }
-        const nums = (j as { incoming_phone_numbers?: unknown[] })?.incoming_phone_numbers;
-        const out = Array.isArray(nums)
-          ? nums.map((n) => {
-              const nn = n as { sid?: string; phone_number?: string; sms_url?: string; capabilities?: { sms?: boolean } };
-              return { sid: nn.sid, number: nn.phone_number, sms_capable: nn.capabilities?.sms, sms_url: nn.sms_url };
-            })
-          : j;
-        return new Response(JSON.stringify({ status: r.status, numbers: out }, null, 2), { headers: { "Content-Type": "application/json" } });
-      }
-
-      // One-time: point the business number's Messaging webhook at our inbound-SMS handler (with
-      // the whsec auth secret) so incoming texts are captured. Uses the AU1 API key. Admin-only.
-      if (url.pathname === "/api/debug/set-sms-webhook") {
-        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
-        const numberSid = "PNe59922cf5cf2de391b76a7f6ef4ead00"; // +61485034869, the SMS-capable number
-        const smsUrl = `${url.origin}/webhooks/twilio/sms?whsec=${encodeURIComponent(env.TWILIO_WEBHOOK_SECRET ?? "")}`;
-        const authHeader = "Basic " + btoa(env.TWILIO_API_KEY_SID + ":" + env.TWILIO_API_KEY_SECRET);
-        const form = new URLSearchParams({ SmsUrl: smsUrl, SmsMethod: "POST" });
-        const r = await fetch(
-          `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers/${numberSid}.json`,
-          { method: "POST", headers: { Authorization: authHeader, "Content-Type": "application/x-www-form-urlencoded" }, body: form }
-        );
-        const text = await r.text();
-        return new Response(
-          JSON.stringify({ status: r.status, ok: r.ok, smsUrl: smsUrl.replace(/whsec=[^&]+/, "whsec=***"), response: text.slice(0, 300) }, null, 2),
-          { headers: { "Content-Type": "application/json" } }
-        );
-      }
-
       if (url.pathname === "/api/me") {
         return handleMe(staff);
       }
       if (url.pathname === "/api/calls/live") {
-        return handleLiveCalls(env.DB);
+        return handleLiveCalls(env);
       }
       if (url.pathname === "/api/calls") {
         return handleListCalls(env.DB);
@@ -764,6 +740,10 @@ export default {
       if (staffPriorityMatch && request.method === "PUT") {
         return handlePutStaffPriority(request, env.DB, decodeURIComponent(staffPriorityMatch[1]), staff);
       }
+      const staffStatusMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/status$/);
+      if (staffStatusMatch && request.method === "PUT") {
+        return handlePutStaffStatus(request, env.DB, decodeURIComponent(staffStatusMatch[1]), staff);
+      }
       const staffInviteMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/invite$/);
       if (staffInviteMatch && request.method === "POST") {
         return handleResendInvite(env, staff, decodeURIComponent(staffInviteMatch[1]).toLowerCase(), url.origin);
@@ -786,6 +766,20 @@ export default {
         if (request.method === "GET") return handleListContacts(env.DB);
         if (request.method === "POST") return handleCreateContact(request, env.DB);
       }
+      if (url.pathname === "/api/numbers") {
+        if (request.method === "GET") return handleListNumbers(env.DB);
+        if (request.method === "POST") {
+          if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
+          return handleCreateNumber(request, env.DB);
+        }
+      }
+      const numberIdMatch = url.pathname.match(/^\/api\/numbers\/(\d+)$/);
+      if (numberIdMatch) {
+        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
+        const nid = Number(numberIdMatch[1]);
+        if (request.method === "PUT") return handleUpdateNumber(request, env.DB, nid);
+        if (request.method === "DELETE") return handleDeleteNumber(env.DB, nid);
+      }
       if (url.pathname === "/api/contacts/import" && request.method === "POST") {
         return handleImportContacts(request, env.DB);
       }
@@ -796,6 +790,11 @@ export default {
         if (request.method === "DELETE") return handleDeleteContact(env.DB, contactId);
       }
 
+      // A staff device registers its Expo push token so it can be notified of inbound SMS.
+      if (url.pathname === "/api/push/register" && request.method === "POST") {
+        return handleRegisterPushToken(request, env.DB, staff);
+      }
+
       // SMS messaging. /api/messages: GET conversations, POST send. /api/messages/:number: thread.
       if (url.pathname === "/api/messages") {
         if (request.method === "GET") return handleListConversations(env.DB);
@@ -803,7 +802,10 @@ export default {
       }
       const messageThreadMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
       if (messageThreadMatch && request.method === "GET") {
-        return handleGetThread(env.DB, decodeURIComponent(messageThreadMatch[1]));
+        // ?peek=1 fetches the thread WITHOUT marking it read (used by the call detail preview,
+        // where merely viewing a call shouldn't clear the SMS unread badge).
+        const peek = url.searchParams.get("peek") === "1";
+        return handleGetThread(env.DB, decodeURIComponent(messageThreadMatch[1]), peek);
       }
 
       return new Response("not found", { status: 404 });
@@ -818,6 +820,7 @@ export default {
       const adminOnlyPage =
         url.pathname === "/admin/settings" ||
         url.pathname === "/admin/analytics" ||
+        url.pathname === "/admin/webhooks" ||
         url.pathname.startsWith("/admin/ivr/");
       if (adminOnlyPage && staffOrResponse.role !== "admin") {
         return Response.redirect(new URL("/admin/phone", url).toString(), 302);
@@ -828,8 +831,18 @@ export default {
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
+      if (url.pathname === "/admin/messages") {
+        const html = renderMessagesPage(staffOrResponse.role);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+
       if (url.pathname === "/admin/live") {
-        const html = renderLiveCallsPage(await listLiveCalls(env.DB), staffOrResponse.role);
+        const html = renderLiveCallsPage(await getLiveCalls(env), staffOrResponse.role);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+
+      if (url.pathname === "/admin/webhooks") {
+        const html = renderWebhooksPage(url.origin, env.TWILIO_WEBHOOK_SECRET ?? "", staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
@@ -903,5 +916,12 @@ export default {
     }
 
     return new Response("not found", { status: 404 });
+  },
+
+  // Cron: reconcile any calls stuck as `in_progress` (a missed Twilio status callback) against
+  // Twilio's real state, so Call History / analytics / Live Calls stay accurate without depending
+  // on every status webhook landing. See reconcileStaleCalls.
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(reconcileStaleCalls(env).catch(() => {}));
   },
 };

@@ -1,12 +1,14 @@
 import { jsonResponse } from "./respond";
 import { listConversations, listThread, markThreadRead, insertMessage } from "../db/messages";
+import { resolveSendingNumber } from "../db/phoneNumbers";
 import { sendSms } from "../twilio/smsClient";
 
 type Env = {
   DB: D1Database;
   TWILIO_ACCOUNT_SID: string;
-  TWILIO_API_KEY_SID: string;
-  TWILIO_API_KEY_SECRET: string;
+  // SMS uses the US1-region API key: the Messages API is US1-only and the AU1 key/token 401 there.
+  TWILIO_US1_API_KEY_SID?: string;
+  TWILIO_US1_API_KEY_SECRET?: string;
   TWILIO_FROM_NUMBER: string;
   TWILIO_SMS_NUMBER?: string; // SMS-capable number; falls back to the voice number if unset
 };
@@ -23,15 +25,16 @@ export async function handleListConversations(db: D1Database): Promise<Response>
   return jsonResponse(await listConversations(db));
 }
 
-export async function handleGetThread(db: D1Database, peer: string): Promise<Response> {
-  await markThreadRead(db, peer);
+export async function handleGetThread(db: D1Database, peer: string, peek = false): Promise<Response> {
+  // peek: read-only preview (call detail) — don't clear the unread badge just by looking.
+  if (!peek) await markThreadRead(db, peer);
   return jsonResponse(await listThread(db, peer));
 }
 
 export async function handleSendMessage(request: Request, env: Env): Promise<Response> {
-  let body: { to?: unknown; body?: unknown };
+  let body: { to?: unknown; body?: unknown; from?: unknown };
   try {
-    body = (await request.json()) as { to?: unknown; body?: unknown };
+    body = (await request.json()) as { to?: unknown; body?: unknown; from?: unknown };
   } catch {
     return new Response("invalid request body", { status: 400 });
   }
@@ -40,10 +43,16 @@ export async function handleSendMessage(request: Request, env: Env): Promise<Res
   if (!to || !text) return jsonResponse({ error: "Enter a number and a message." }, 400);
 
   const target = normalizeNumber(to);
+  if (!env.TWILIO_US1_API_KEY_SID || !env.TWILIO_US1_API_KEY_SECRET)
+    return jsonResponse({ error: "SMS is not configured." }, 500);
+  // "From" number the user picked in the composer (validated against SMS-enabled numbers).
+  const requestedFrom = String(body.from ?? "").trim() || null;
+  const fromNumber =
+    (await resolveSendingNumber(env.DB, "sms", requestedFrom)) ?? env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER;
   try {
-    const { sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
+    const { sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET, {
       to: target,
-      from: env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER,
+      from: fromNumber,
       body: text,
     });
     await insertMessage(env.DB, { id: sid, direction: "outbound", peer_number: target, body: text, status: "sent", read: 1, createdAt: Date.now() });

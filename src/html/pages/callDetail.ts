@@ -1,4 +1,5 @@
 import { escapeHtml, renderLayout } from "../layout";
+import { formatAuNumber } from "../formatPhone";
 import type { CallEventRow, CallSummary } from "../../db/calls";
 
 function formatEvent(event: CallEventRow): string {
@@ -20,7 +21,7 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[], 
     )
     .join("");
   const body = `<h2>Call ${escapeHtml(call.id)}</h2>
-    <p><strong>Caller:</strong> ${escapeHtml(call.caller_number)} &rarr; ${escapeHtml(call.called_number)}</p>
+    <p><strong>Caller:</strong> ${escapeHtml(formatAuNumber(call.caller_number))} &rarr; ${escapeHtml(formatAuNumber(call.called_number))}</p>
     <p><strong>Started:</strong> ${escapeHtml(new Date(call.started_at).toLocaleString("en-AU"))}</p>
     <p><strong>Status:</strong> ${escapeHtml(call.status)}</p>
     ${call.disposition || call.notes ? `<p><strong>Disposition:</strong> ${escapeHtml(call.disposition ?? "—")}</p>${call.notes ? `<p><strong>Notes:</strong> ${escapeHtml(call.notes)}</p>` : ""}` : ""}
@@ -36,6 +37,11 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[], 
     ${
       call.transcription
         ? `<h3>Voicemail transcript</h3><p style="white-space:pre-wrap">${escapeHtml(call.transcription)}</p>`
+        : ""
+    }
+    ${
+      call.call_transcript
+        ? `<h3>Call transcript</h3><p style="white-space:pre-wrap">${escapeHtml(call.call_transcript)}</p>`
         : ""
     }`;
   return renderLayout(`Call ${call.id}`, "calls", body, { role });

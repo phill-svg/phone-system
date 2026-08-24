@@ -265,6 +265,47 @@ describe("CallSession", () => {
     expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
   });
 
+  it("plays a greeting (play node) BEFORE enqueuing when a play precedes a direct ring", async () => {
+    await seedNode({
+      id: "greet",
+      isEntry: true,
+      type: "play",
+      config: { audioAssetId: null, ttsText: "Welcome to TCB Pest Control.", nextNodeId: "main_ring" },
+    });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-greet");
+    const { status, xml } = await send(stub, mainEvent("CA-greet"));
+
+    expect(status).toBe(200);
+    expect(xml).toContain("Welcome to TCB Pest Control.");
+    expect(xml).toContain("<Enqueue");
+    // The greeting must be spoken before the caller is put in the hold/ring queue.
+    expect(xml.indexOf("Welcome to TCB Pest Control.")).toBeLessThan(xml.indexOf("<Enqueue"));
+  });
+
+  it("voicemail <Record> callback URLs are XML-escaped (no raw & that would break TwiML parsing)", async () => {
+    // A voicemail's <Record> recordingStatusCallback carries callSid + vm + whsec joined by "&";
+    // that "&" must be escaped to "&amp;" or Twilio rejects the whole document ("application error"). The
+    // test env has no webhook secret (so no "&" is produced here), but the invariant still holds:
+    // every "&" in the rendered TwiML must be part of a valid "&amp;" entity.
+    await seedNode({
+      id: "vm_entry",
+      isEntry: true,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "Please leave a message.", mailboxLabel: "vm" },
+    });
+
+    const stub = stubFor("CA-vm");
+    const { status, xml } = await send(stub, mainEvent("CA-vm"));
+
+    expect(status).toBe(200);
+    expect(xml).toContain("<Record");
+    expect(xml.split("&amp;").join("")).not.toContain("&");
+  });
+
   it("dialStaff records a softphone_call_legs row so hold/transfer can later verify leg ownership", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });

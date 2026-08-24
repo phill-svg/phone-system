@@ -36,6 +36,7 @@ const ICON_CONTACTS = `<svg viewBox="0 0 20 20" width="20" height="20" fill="non
 const ICON_ADD = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg>`;
 const ICON_IMPORT = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v9M6.5 8.5L10 12l3.5-3.5"/><path d="M4 14v2a1 1 0 001 1h10a1 1 0 001-1v-2"/></svg>`;
 const ICON_EDIT = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3.5l3 3L8 15l-4 1 1-4z"/></svg>`;
+const ICON_CHAT = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5A1.5 1.5 0 014.5 4h11A1.5 1.5 0 0117 5.5v7a1.5 1.5 0 01-1.5 1.5H8l-4 3v-3H4.5A1.5 1.5 0 013 12.5z"/></svg>`;
 const ICON_TRASH = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M8 6V4h4v2M6 6l.7 10a1 1 0 001 1h4.6a1 1 0 001-1L15 6"/></svg>`;
 
 export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "admin"): string {
@@ -201,6 +202,8 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       .round-btn:active { transform: scale(0.94); }
       .round-btn-accept { background: var(--ok); }
       .round-btn-accept:hover { background: #16a34a; }
+      .round-btn-msg { background: var(--surface-active); color: var(--text); }
+      .round-btn-msg:hover { background: var(--surface-hover); }
       .round-btn-reject, .round-btn-hangup { background: var(--brand); }
       .round-btn-reject:hover, .round-btn-hangup:hover { background: var(--brand-hover); }
       .round-btn-reject svg, .round-btn-hangup svg { transform: rotate(135deg); }
@@ -217,6 +220,11 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       .info-name { font-size: 1.25rem; font-weight: 700; word-break: break-word; }
       .info-when { font-size: 0.82rem; color: var(--text-mute); margin-top: 0.15rem; }
       .info-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.55rem 1.2rem; font-size: 0.88rem; }
+      .msg-preview { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+      .msg-preview:last-child { border-bottom: none; padding-bottom: 0; }
+      .msg-preview-meta { font-size: 0.72rem; color: var(--text-mute); margin-bottom: 0.15rem; }
+      .msg-preview-body { white-space: pre-wrap; word-break: break-word; color: var(--text); }
+      .msg-preview.in .msg-preview-body { color: var(--text-dim); }
       .info-grid dt { color: var(--text-mute); }
       .info-grid dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
       .info-rec-link { display: inline-flex; align-items: center; gap: 0.45rem; color: var(--brand); text-decoration: none; font-weight: 600; font-size: 0.88rem; }
@@ -362,6 +370,7 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         <section class="detail-view" data-detail="dialpad">
           <h2 class="detail-title">New call</h2>
           <div class="card">
+            <div id="from-row" style="display:none;margin-bottom:0.6rem"></div>
             <input type="text" id="dial-input" class="dial-input" placeholder="Number or extension">
             <div id="dialpad-grid" class="keypad-grid">
               ${keypadHtml}
@@ -524,6 +533,7 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       var IC_PLAY = ${safeJsonForScript(ICON_PLAY)};
       var IC_CALL = ${safeJsonForScript(ICON_PHONE)};
       var IC_EDIT = ${safeJsonForScript(ICON_EDIT)};
+      var IC_MSG = ${safeJsonForScript(ICON_CHAT)};
       var IC_TRASH = ${safeJsonForScript(ICON_TRASH)};
 
       // ---- Detail-pane router. Owns only .detail-view wrappers via the --active class, never
@@ -644,7 +654,7 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           var contact = contactsByNorm[normalizePhoneJS(num)];
           var title = document.createElement('div');
           title.className = 'call-title';
-          title.textContent = contact ? contact.name : num;
+          title.textContent = contact ? contact.name : formatAu(num);
           var sub = document.createElement('div');
           sub.className = 'call-sub';
           sub.textContent = subLabel(c);
@@ -715,12 +725,23 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         var infoContact = contactsByNorm[normalizePhoneJS(callDisplayNumber(c))];
         var name = document.createElement('div');
         name.className = 'info-name';
-        name.textContent = infoContact ? infoContact.name : callDisplayNumber(c);
+        name.textContent = infoContact ? infoContact.name : formatAu(callDisplayNumber(c));
         var when = document.createElement('div');
         when.className = 'info-when';
         when.textContent = new Date(c.started_at).toLocaleString('en-AU');
         htext.appendChild(name); htext.appendChild(when);
         header.appendChild(avatar); header.appendChild(htext);
+        // Unknown caller -> offer a one-tap "Save contact" (opens the contact form prefilled).
+        if (!infoContact && normalizePhoneJS(callDisplayNumber(c))) {
+          var saveContactBtn = document.createElement('button');
+          saveContactBtn.type = 'button';
+          saveContactBtn.className = 'pill-btn pill-btn-secondary';
+          saveContactBtn.style.marginLeft = 'auto';
+          saveContactBtn.style.alignSelf = 'center';
+          saveContactBtn.innerHTML = '<span>+ Save contact</span>';
+          saveContactBtn.addEventListener('click', function () { saveCallerAsContact(callDisplayNumber(c)); });
+          header.appendChild(saveContactBtn);
+        }
         info.appendChild(header);
 
         var card = document.createElement('div');
@@ -730,8 +751,8 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         var dur = fmtDuration(c);
         var rows = [
           ['Direction', c.direction === 'outbound' ? 'Outgoing' : 'Incoming'],
-          ['From', c.caller_number],
-          ['To', c.called_number],
+          ['From', formatAu(c.caller_number)],
+          ['To', formatAu(c.called_number)],
           ['Outcome', outcomeLabel(c)],
           ['Status', humanize(c.status)]
         ];
@@ -764,6 +785,52 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         card.appendChild(recWrap);
         info.appendChild(card);
 
+        // Recent SMS with this number (read-only "peek" so viewing a call doesn't clear unread badges).
+        var msgCard = document.createElement('div');
+        msgCard.className = 'card';
+        var msgHead = document.createElement('div');
+        msgHead.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:0.6rem';
+        var msgLabel = document.createElement('p'); msgLabel.className = 'card-label'; msgLabel.style.margin = '0'; msgLabel.textContent = 'Recent messages';
+        var msgBtn = document.createElement('button'); msgBtn.type = 'button'; msgBtn.className = 'pill-btn pill-btn-secondary';
+        msgBtn.innerHTML = '<span>Message</span>';
+        msgBtn.addEventListener('click', function () { messageContact(callDisplayNumber(c), infoContact ? infoContact.name : null); });
+        msgHead.appendChild(msgLabel); msgHead.appendChild(msgBtn);
+        var msgBody = document.createElement('div');
+        msgBody.style.marginTop = '0.7rem';
+        var msgStatus = document.createElement('span'); msgStatus.className = 'info-none'; msgStatus.textContent = 'Loading messages…';
+        msgBody.appendChild(msgStatus);
+        msgCard.appendChild(msgHead); msgCard.appendChild(msgBody);
+        info.appendChild(msgCard);
+        (function () {
+          var num = callDisplayNumber(c);
+          if (!num) { msgStatus.textContent = 'No number to look up.'; return; }
+          fetch('/api/messages/' + encodeURIComponent(num) + '?peek=1')
+            .then(function (r) { return r.ok ? r.json() : []; })
+            .then(function (msgs) {
+              msgBody.innerHTML = '';
+              if (!msgs || !msgs.length) {
+                var none = document.createElement('span'); none.className = 'info-none'; none.textContent = 'No messages with this number.';
+                msgBody.appendChild(none);
+                return;
+              }
+              msgs.slice(-6).forEach(function (m) {
+                var line = document.createElement('div');
+                line.className = 'msg-preview ' + (m.direction === 'outbound' ? 'out' : 'in');
+                var meta = document.createElement('div'); meta.className = 'msg-preview-meta';
+                meta.textContent = (m.direction === 'outbound' ? 'You' : 'Them') + ' \\u00b7 ' +
+                  new Date(m.ts).toLocaleString('en-AU', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+                var txt = document.createElement('div'); txt.className = 'msg-preview-body'; txt.textContent = m.body;
+                line.appendChild(meta); line.appendChild(txt);
+                msgBody.appendChild(line);
+              });
+            })
+            .catch(function () {
+              msgBody.innerHTML = '';
+              var err = document.createElement('span'); err.className = 'info-none'; err.textContent = 'Could not load messages.';
+              msgBody.appendChild(err);
+            });
+        })();
+
         if (c.transcription) {
           var tcard = document.createElement('div');
           tcard.className = 'card';
@@ -773,6 +840,17 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           ttext.textContent = c.transcription;
           tcard.appendChild(tlabel); tcard.appendChild(ttext);
           info.appendChild(tcard);
+        }
+
+        if (c.call_transcript) {
+          var ctcard = document.createElement('div');
+          ctcard.className = 'card';
+          var ctlabel = document.createElement('p'); ctlabel.className = 'card-label'; ctlabel.textContent = 'Call transcript';
+          var cttext = document.createElement('p');
+          cttext.style.whiteSpace = 'pre-wrap'; cttext.style.margin = '0'; cttext.style.fontSize = '0.9rem';
+          cttext.textContent = c.call_transcript;
+          ctcard.appendChild(ctlabel); ctcard.appendChild(cttext);
+          info.appendChild(ctcard);
         }
 
         // Disposition + notes editor (saved back to the call).
@@ -862,6 +940,20 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         if (digits.charAt(0) === '0') return '61' + digits.slice(1);
         return digits;
       }
+      // Display AU numbers in national form: +61 / 61 -> 0, grouped like "0472 762 158".
+      function formatAu(raw) {
+        var s = String(raw == null ? '' : raw);
+        var d = s.replace(/[^\\d+]/g, '');
+        var n;
+        if (d.charAt(0) === '+') { n = d.indexOf('+61') === 0 ? '0' + d.slice(3) : d; }
+        else if (d.indexOf('61') === 0 && d.length > 9) { n = '0' + d.slice(2); }
+        else { n = d; }
+        if (/^04\\d{8}$/.test(n)) return n.slice(0, 4) + ' ' + n.slice(4, 7) + ' ' + n.slice(7);
+        if (/^0[2378]\\d{8}$/.test(n)) return n.slice(0, 2) + ' ' + n.slice(2, 6) + ' ' + n.slice(6);
+        if (/^13\\d{4}$/.test(n)) return n.slice(0, 2) + ' ' + n.slice(2);
+        if (/^1[38]00\\d{6}$/.test(n)) return n.slice(0, 4) + ' ' + n.slice(4, 7) + ' ' + n.slice(7);
+        return n || s;
+      }
       function contactInitials(name) {
         var parts = String(name || '?').trim().split(/\\s+/);
         if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
@@ -909,7 +1001,7 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           bodyEl.className = 'contact-body';
           var nm = document.createElement('div'); nm.className = 'contact-name'; nm.textContent = c.name;
           var sub = document.createElement('div'); sub.className = 'contact-sub';
-          sub.textContent = c.company ? c.company + ' · ' + c.phone : c.phone;
+          sub.textContent = c.company ? c.company + ' · ' + formatAu(c.phone) : formatAu(c.phone);
           bodyEl.appendChild(nm); bodyEl.appendChild(sub);
           var callBtn = document.createElement('button');
           callBtn.type = 'button'; callBtn.className = 'contact-call'; callBtn.title = 'Call';
@@ -942,11 +1034,16 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         var card = document.createElement('div'); card.className = 'card';
         var label = document.createElement('p'); label.className = 'card-label'; label.textContent = 'Phone';
         var numRow = document.createElement('div'); numRow.className = 'contact-number-row';
-        var numEl = document.createElement('span'); numEl.className = 'contact-number'; numEl.textContent = c.phone;
+        var numEl = document.createElement('span'); numEl.className = 'contact-number'; numEl.textContent = formatAu(c.phone);
+        var numBtns = document.createElement('div'); numBtns.style.cssText = 'display:flex;gap:0.6rem;align-items:center';
+        var msgRound = document.createElement('button'); msgRound.type = 'button'; msgRound.className = 'round-btn round-btn-msg'; msgRound.title = 'Message';
+        msgRound.innerHTML = IC_MSG;
+        msgRound.addEventListener('click', function () { messageContact(c.phone, c.name); });
         var callRound = document.createElement('button'); callRound.type = 'button'; callRound.className = 'round-btn round-btn-accept'; callRound.title = 'Call';
         callRound.innerHTML = IC_CALL;
         callRound.addEventListener('click', function () { callContact(c.phone); });
-        numRow.appendChild(numEl); numRow.appendChild(callRound);
+        numBtns.appendChild(msgRound); numBtns.appendChild(callRound);
+        numRow.appendChild(numEl); numRow.appendChild(numBtns);
         card.appendChild(label); card.appendChild(numRow);
 
         var actions = document.createElement('div'); actions.className = 'contact-actions';
@@ -966,6 +1063,14 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         if (device) placeCall(number).catch(function (err) { setDeviceStatusText('Call failed: ' + describeError(err)); });
       }
 
+      // Jump to the Messages page with this number's thread open (deep-link handled there).
+      function messageContact(number, name) {
+        if (!number) return;
+        var url = '/admin/messages?to=' + encodeURIComponent(number);
+        if (name) url += '&name=' + encodeURIComponent(name);
+        window.location.href = url;
+      }
+
       function openContactForm(c) {
         document.getElementById('contactform-title').textContent = c ? 'Edit contact' : 'Add contact';
         document.getElementById('contactform-id').value = c ? String(c.id) : '';
@@ -979,6 +1084,18 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       }
       function newContact() { openContactForm(null); }
       function editContact(c) { openContactForm(c); }
+      // Open the Add-contact form prefilled with a caller's number (from the call detail panel).
+      function saveCallerAsContact(number) {
+        document.getElementById('contactform-title').textContent = 'Add contact';
+        document.getElementById('contactform-id').value = '';
+        document.getElementById('contactform-name').value = '';
+        document.getElementById('contactform-phone').value = number || '';
+        document.getElementById('contactform-company').value = '';
+        var result = document.getElementById('contactform-result');
+        result.textContent = ''; result.classList.remove('error');
+        showDetail('contactform');
+        document.getElementById('contactform-name').focus();
+      }
 
       async function saveContact() {
         var idVal = document.getElementById('contactform-id').value;
@@ -1271,8 +1388,17 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       function showIncomingBanner(call) {
         var from = (call.parameters && call.parameters.From) || 'Unknown';
         var contact = contactsByNorm[normalizePhoneJS(from)];
-        document.getElementById('incoming-caller').textContent = contact ? contact.name : from;
+        var label = contact ? contact.name : formatAu(from);
+        document.getElementById('incoming-caller').textContent = label;
         document.getElementById('incoming-banner').style.display = 'block';
+        // Fire the OS/desktop notification RIGHT NOW, off the Twilio Device's real-time incoming
+        // event — not the layout poller, which lagged 6s and could arrive after the call ended.
+        try {
+          if (window.Notification && Notification.permission === 'granted') {
+            var n = new Notification('Incoming call', { body: label, icon: '/logo.png', tag: 'tcb-incoming' });
+            n.onclick = function () { try { window.focus(); } catch (e) {} n.close(); };
+          }
+        } catch (e) {}
       }
       function hideIncomingBanner() {
         document.getElementById('incoming-banner').style.display = 'none';
@@ -1302,9 +1428,12 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         hideIncomingBanner();
         isOnHold = false;
         var peer = (call.parameters && (call.parameters.From || call.parameters.To)) || document.getElementById('dial-input').value || 'call';
-        document.getElementById('active-call-peer').textContent = peer;
+        var peerContact = contactsByNorm[normalizePhoneJS(peer)];
+        document.getElementById('active-call-peer').textContent = peerContact ? peerContact.name : formatAu(peer);
         document.getElementById('mute-btn').textContent = 'Mute';
+        document.getElementById('mute-btn').style.display = '';
         document.getElementById('hold-btn').textContent = 'Hold';
+        document.getElementById('hold-btn').style.display = '';
         document.getElementById('complete-transfer-btn').style.display = 'none';
         document.getElementById('transfer-status').textContent = '';
         document.getElementById('active-call-controls').style.display = 'block';
@@ -1322,13 +1451,73 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         setTimeout(loadCalls, 1500);
       }
 
+      // Load the business's voice numbers into the dialer "Call from" row. 2+ numbers => a dropdown
+      // picker; exactly 1 => a static "Calling from …" line; 0 => hidden. Ported numbers make the
+      // picker appear automatically.
+      async function loadNumbers() {
+        try {
+          var res = await fetch('/api/numbers');
+          if (!res.ok) return;
+          var nums = await res.json();
+          var voice = (nums || []).filter(function (n) { return n.voice_enabled; });
+          var row = document.getElementById('from-row');
+          row.innerHTML = '';
+          if (voice.length === 0) { row.style.display = 'none'; return; }
+          row.style.display = 'block';
+          if (voice.length === 1) {
+            var info = document.createElement('div');
+            info.style.cssText = 'font-size:0.75rem;color:var(--text-mute)';
+            info.textContent = 'Calling from ' + voice[0].label + ' · ' + formatAu(voice[0].e164);
+            row.appendChild(info);
+          } else {
+            var lbl = document.createElement('div');
+            lbl.style.cssText = 'font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-mute);margin-bottom:0.25rem';
+            lbl.textContent = 'Call from';
+            var sel = document.createElement('select');
+            sel.id = 'from-select'; sel.className = 'phone-select'; sel.style.width = '100%';
+            voice.forEach(function (n) {
+              var o = document.createElement('option');
+              o.value = n.e164;
+              o.textContent = n.label + ' · ' + formatAu(n.e164);
+              if (n.is_default_voice) o.selected = true;
+              sel.appendChild(o);
+            });
+            row.appendChild(lbl); row.appendChild(sel);
+          }
+        } catch (e) {}
+      }
+
       async function placeCall(to) {
         if (!device || !to) return;
-        activeCall = await device.connect({ params: { To: to } });
+        var fromSel = document.getElementById('from-select');
+        var params = { To: to };
+        if (fromSel && fromSel.value) params.CallerId = fromSel.value;
+        activeCall = await device.connect({ params: params });
         activeCall.on('accept', onCallConnected);
         activeCall.on('disconnect', onCallEnded);
         activeCall.on('cancel', onCallEnded);
         activeCall.on('reject', onCallEnded);
+      }
+
+      // Live listen-in: join a live call's conference muted (server verifies admin + returns the
+      // muted-Conference TwiML). Triggered by /admin/phone?listen=<callSid> from the Live Calls page.
+      async function listenCall(callSid) {
+        if (!device || !callSid) return;
+        try {
+          activeCall = await device.connect({ params: { Listen: callSid } });
+          activeCall.on('accept', function (c) {
+            onCallConnected(c);
+            document.getElementById('active-call-peer').textContent = '🎧 Listening (muted)';
+            // Hide the controls that don't apply while silently monitoring; keep the hang-up.
+            var ctrls = document.getElementById('active-call-controls');
+            if (ctrls) { var mb = document.getElementById('mute-btn'); var hb = document.getElementById('hold-btn'); if (mb) mb.style.display = 'none'; if (hb) hb.style.display = 'none'; }
+          });
+          activeCall.on('disconnect', onCallEnded);
+          activeCall.on('cancel', onCallEnded);
+          activeCall.on('reject', onCallEnded);
+        } catch (err) {
+          setDeviceStatusText('Listen failed: ' + describeError(err));
+        }
       }
 
       document.getElementById('call-btn').addEventListener('click', function () {
@@ -1444,9 +1633,15 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           var data = await res.json();
           device = new Twilio.Device(data.token, { codecPreferences: ['opus', 'pcmu'], edge: 'sydney' });
           if (device.audio && device.audio.on) device.audio.on('deviceChange', populateAudioDevices);
+          var listenStarted = false;
           device.on('registered', function () {
             setDeviceStatusText('Registered', true);
             populateAudioDevices();
+            // Auto-start a listen session if we arrived via /admin/phone?listen=<callSid>.
+            if (!listenStarted) {
+              var lc = new URLSearchParams(location.search).get('listen');
+              if (lc) { listenStarted = true; listenCall(lc); }
+            }
           });
           device.on('unregistered', function () {
             var el = document.getElementById('device-status');
@@ -1503,7 +1698,17 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       loadInitialStatus();
       loadCalls();
       loadContacts();
+      loadNumbers();
       setInterval(loadCalls, 30000);
+      // Deep-link from the Messages contact preview: /admin/phone?dial=<number> pre-fills the dialpad.
+      (function () {
+        var d = new URLSearchParams(location.search).get('dial');
+        if (d) {
+          var inp = document.getElementById('dial-input');
+          if (inp) inp.value = d;
+          showDetail('dialpad');
+        }
+      })();
       if (window.Twilio) {
         initDevice();
       } else {

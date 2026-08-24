@@ -72,9 +72,10 @@ function Control({
 
 export default function ActiveCallScreen() {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ number?: string; name?: string; direction?: string }>();
+  const params = useLocalSearchParams<{ number?: string; name?: string; direction?: string; from?: string }>();
   const number = String(params.number ?? "");
   const name = String(params.name ?? "");
+  const fromNumber = String(params.from ?? "") || undefined;
   const isIncoming = params.direction === "incoming";
 
   const [state, setState] = useState<CallState>("calling");
@@ -101,7 +102,7 @@ export default function ActiveCallScreen() {
     let mounted = true;
     (async () => {
       try {
-        const call = isIncoming ? getActiveCall() : await placeCall(number);
+        const call = isIncoming ? getActiveCall() : await placeCall(number, fromNumber);
         if (!call) {
           finish();
           return;

@@ -1,13 +1,18 @@
 import type { Contact } from "./api";
 
-// Digits-only canonical form for matching, tuned for AU numbers: strip formatting
-// and fold +61 / 61 international prefixes to the national 0x form so a typed
-// "0400…" matches a stored "+61400…". Mirrors the backend's normalisation.
+// Digits-only canonical form for matching, tuned for AU numbers. MUST match the backend's
+// normalizePhone() in src/db/contacts.ts (and the web copy in src/html/pages/phone.ts) EXACTLY,
+// because contacts are matched against the stored `phone_normalized`, which the backend writes in
+// international 61x form (e.g. "61400123456", NOT "0400123456"). A "+" means already-international;
+// a leading 0 is the AU national trunk prefix that becomes "61".
 export function normalizePhone(raw: string): string {
-  let d = raw.replace(/[^\d+]/g, "");
-  if (d.startsWith("+61")) d = "0" + d.slice(3);
-  else if (d.startsWith("61") && d.length > 9) d = "0" + d.slice(2);
-  return d.replace(/\D/g, "");
+  if (!raw) return "";
+  const hasPlus = raw.trim().charAt(0) === "+";
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (hasPlus) return digits;
+  if (digits.charAt(0) === "0") return "61" + digits.slice(1);
+  return digits;
 }
 
 // Pretty display for AU numbers; falls back to loose 3/4 grouping otherwise.

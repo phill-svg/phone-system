@@ -8,7 +8,7 @@ export type FlowTwimlOptions = {
  * Escapes XML special characters. Used for text content in TwiML elements
  * like <Say>, attributes, and URLs.
  */
-function escapeXml(text: string): string {
+export function escapeXml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

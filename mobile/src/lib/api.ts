@@ -201,10 +201,41 @@ export async function getThread(number: string): Promise<Message[]> {
   }
 }
 
-// Returns true if sent, false if messaging isn't linked/available yet.
-export async function sendMessage(to: string, body: string): Promise<boolean> {
+// Returns true if sent, false if messaging isn't linked/available yet. `from` optionally picks the
+// sending number (validated server-side against SMS-enabled numbers).
+export async function sendMessage(to: string, body: string, from?: string): Promise<boolean> {
   try {
-    await apiFetch("/api/messages", { method: "POST", body: JSON.stringify({ to, body }) });
+    await apiFetch("/api/messages", { method: "POST", body: JSON.stringify({ to, body, from }) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---- Sending numbers (caller-ID / SMS-from picker) ----
+export type PhoneNumber = {
+  id: number;
+  e164: string;
+  label: string;
+  voice_enabled: number;
+  sms_enabled: number;
+  is_default_voice: number;
+  is_default_sms: number;
+  region: string | null;
+};
+
+export async function getNumbers(): Promise<PhoneNumber[]> {
+  try {
+    return await apiFetch<PhoneNumber[]>("/api/numbers");
+  } catch {
+    return [];
+  }
+}
+
+// Register this device's Expo push token so the server can notify it of inbound SMS.
+export async function registerPushToken(token: string, platform: string): Promise<boolean> {
+  try {
+    await apiFetch("/api/push/register", { method: "POST", body: JSON.stringify({ token, platform }) });
     return true;
   } catch {
     return false;

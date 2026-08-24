@@ -3,6 +3,7 @@ import { Tabs, router } from "expo-router";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../../components/ui/Icon";
 import { registerForIncoming } from "../../lib/voice";
+import { registerForPushNotifications } from "../../lib/push";
 import { setPresence, sendHeartbeat } from "../../lib/api";
 import { useTheme } from "../../theme/theme";
 
@@ -19,6 +20,8 @@ function useIncomingCalls() {
         unsub = u;
       })
       .catch(() => {});
+
+    registerForPushNotifications().catch(() => {});
 
     setPresence("available").catch(() => {});
     sendHeartbeat().catch(() => {});

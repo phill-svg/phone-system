@@ -1,4 +1,5 @@
 import { escapeHtml, renderLayout } from "../layout";
+import { formatAuNumber } from "../formatPhone";
 import type { CallSummary } from "../../db/calls";
 
 const OUTCOME_LABELS: Record<string, string> = {
@@ -30,7 +31,7 @@ export function renderCallHistoryPage(calls: CallSummary[], role: "admin" | "sta
     .map(
       (call) => `<tr>
         <td><a href="/admin/calls/${escapeHtml(encodeURIComponent(call.id))}">${escapeHtml(new Date(call.started_at).toLocaleString("en-AU"))}</a></td>
-        <td>${escapeHtml(call.caller_number)}</td>
+        <td>${escapeHtml(formatAuNumber(call.caller_number))}</td>
         <td>${escapeHtml(formatOutcome(call))}</td>
         <td>${call.is_after_hours ? '<span class="badge badge-after-hours">After hours</span>' : ""}</td>
       </tr>`

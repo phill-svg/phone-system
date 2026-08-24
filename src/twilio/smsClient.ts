@@ -1,6 +1,7 @@
-// SMS send via Twilio's Messages API. AU1-homed like the rest of this account's REST calls
-// (see restClient.ts) -- au1 endpoint, au1 API key.
-const TWILIO_API_BASE = "https://api.sydney.au1.twilio.com";
+// SMS send via Twilio's Messages API. Unlike this account's voice (au1), the Messages endpoint is
+// NOT served in the au1 realm ("Endpoint is not supported in realm 'au1'"), so SMS goes through the
+// default (us1) API host -- even for the au1-homed number.
+const TWILIO_API_BASE = "https://api.twilio.com";
 
 export async function sendSms(
   accountSid: string,

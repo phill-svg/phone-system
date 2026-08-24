@@ -72,5 +72,5 @@ export function renderAnalyticsPage(stats: CallStats, days: number): string {
       </div>
     </div>`;
 
-  return renderLayout("Analytics", "analytics", body, { extraHead });
+  return renderLayout("Analytics", "settings", body, { extraHead });
 }

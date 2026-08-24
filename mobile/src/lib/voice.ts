@@ -55,10 +55,14 @@ async function ensureMicPermission(): Promise<void> {
 }
 
 // ---- Outbound ----
-export async function placeCall(to: string): Promise<Call> {
+// `from` optionally sets the caller-ID (validated server-side in /twiml/voice-app against the
+// business's voice-enabled numbers); omit to use the default number.
+export async function placeCall(to: string, from?: string): Promise<Call> {
   await ensureMicPermission();
   const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
-  const call = await voice.connect(token, { params: { To: to } });
+  const params: Record<string, string> = { To: to };
+  if (from) params.CallerId = from;
+  const call = await voice.connect(token, { params });
   activeCall = call;
   return call;
 }
