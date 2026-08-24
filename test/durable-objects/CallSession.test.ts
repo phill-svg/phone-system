@@ -763,7 +763,7 @@ describe("CallSession", () => {
 
     const poll = await send(stub, { kind: "hold_poll", callSid: "CA-music", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
     expect(poll.xml).toContain("<Play");
-    expect(poll.xml).toContain("sdk.twilio.com/js/client/sounds/releases/1.0.0/outgoing.mp3");
+    expect(poll.xml).toContain("phone.tcbpestcontrolcanberra.com.au/media/system/ringback.mp3");
   });
 
   it("caller hanging up mid-ring cancels the outstanding staff legs (no phones left ringing)", async () => {

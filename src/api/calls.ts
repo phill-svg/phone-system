@@ -1,6 +1,7 @@
 import { jsonResponse } from "./respond";
 import { getCallDetail, listCalls, listLiveCalls, updateCallMeta } from "../db/calls";
 import { normalizeCallStatus } from "../twilio/statusCallback";
+import { authHeader } from "../twilio/conferenceClient";
 
 export async function handleListCalls(db: D1Database): Promise<Response> {
   return jsonResponse(await listCalls(db));
@@ -27,7 +28,7 @@ export async function getLiveCalls(env: LiveEnv) {
   const rows = await listLiveCalls(env.DB);
   if (rows.length === 0) return rows;
   try {
-    const auth = "Basic " + btoa(env.TWILIO_ACCOUNT_SID + ":" + env.TWILIO_AUTH_TOKEN);
+    const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
     const r = await fetch(
       `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json?Status=in-progress&PageSize=50`,
       { headers: { Authorization: auth } }
@@ -62,7 +63,7 @@ export async function reconcileStaleCalls(env: LiveEnv): Promise<number> {
   ).results;
   if (rows.length === 0) return 0;
 
-  const auth = "Basic " + btoa(env.TWILIO_ACCOUNT_SID + ":" + env.TWILIO_AUTH_TOKEN);
+  const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
   const base = `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}`;
   let liveSids: Set<string | undefined>;
   try {

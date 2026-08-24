@@ -9,7 +9,7 @@ describe("auth pages", () => {
     expect(html).toContain('action="/login"');
     expect(html).toContain('name="email"');
     expect(html).toContain('name="password"');
-    expect(html).toContain("TCB VoIP");
+    expect(html).toContain("TCB Phone System");
     expect(html).toContain("#e4002b");
     expect(html).not.toContain("nav-link"); // not the admin shell
   });

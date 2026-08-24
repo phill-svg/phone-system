@@ -7,7 +7,7 @@ describe("renderJoinConference", () => {
     // Pinned to a fixed region (au1) so this leg mixes in the SAME room as the other leg's
     // <Conference>, regardless of which Twilio region created/is processing either underlying call.
     expect(xml).toContain('<Conference region="au1"');
-    expect(xml).toContain('waitUrl="https://sdk.twilio.com/js/client/sounds/releases/1.0.0/outgoing.mp3"');
+    expect(xml).toContain('waitUrl="https://phone.tcbpestcontrolcanberra.com.au/media/system/ringback.mp3"');
     expect(xml).toContain('beep="false"');
     expect(xml).toContain(">CAcaller</Conference></Dial>");
   });

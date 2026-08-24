@@ -417,7 +417,10 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("Content-Type")).toBe("text/xml");
       const xml = await response.text();
-      expect(xml).toContain('<Conference region="au1">CAcaller</Conference>');
+      // Ringback (not silence) plays while the first participant waits; no join beep.
+      expect(xml).toContain(
+        '<Conference region="au1" beep="false" waitUrl="https://phone.tcbpestcontrolcanberra.com.au/media/system/ringback.mp3">CAcaller</Conference>'
+      );
     });
   });
 });
@@ -638,12 +641,13 @@ describe("GET /api/me and /api/calls*", () => {
     await env.DB.prepare(
       "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, 'completed')"
     )
-      .bind("CA-api-done", "+61400000000", "+61200000000", 1000)
+      .bind("CA-api-done", "+61400000000", "+61200000000", Date.now() - 1000)
       .run();
+    // Must be recent: listLiveCalls only counts calls started in the last 3h as live.
     await env.DB.prepare(
       "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, 'in_progress')"
     )
-      .bind("CA-api-live", "+61400000001", "+61200000000", 2000)
+      .bind("CA-api-live", "+61400000001", "+61200000000", Date.now())
       .run();
 
     const response = await SELF.fetch("https://example.com/api/calls/live");
@@ -799,7 +803,8 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
     const response = await SELF.fetch("https://example.com/admin/calls");
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("+61400000000");
+    // Numbers render in AU national grouped form (formatAuNumber), not raw E.164.
+    expect(html).toContain("0400 000 000");
     expect(html).toContain('href="/admin/calls/CA-html-1"');
   });
 
@@ -874,7 +879,7 @@ describe("GET /admin/live", () => {
     await env.DB.prepare("DELETE FROM calls").run();
   });
 
-  it("renders in-progress calls with a disabled Listen button and an honest placeholder", async () => {
+  it("renders in-progress calls with a Listen link into the muted conference join", async () => {
     await env.DB.prepare(
       "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, 'in_progress')"
     )
@@ -884,9 +889,10 @@ describe("GET /admin/live", () => {
     const response = await SELF.fetch("https://example.com/admin/live");
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("+61400000000");
-    expect(html).toContain("disabled");
-    expect(html).toContain("Not available yet");
+    // Numbers render in AU national grouped form (formatAuNumber), not raw E.164.
+    expect(html).toContain("0400 000 000");
+    // Listen-in is live for admins: link joins the call's conference muted via the softphone.
+    expect(html).toContain('href="/admin/phone?listen=CA-live-1"');
   });
 
   it("shows an empty-state message when nothing is in progress", async () => {
@@ -1079,9 +1085,8 @@ describe("Task 12 IVR flow editor routes", () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain("wt-entry");
-    // Phase 1 canvas editor (Drawflow) replaced the old flat node-card list -- the node data is
-    // now embedded as JSON for the client-side canvas to render, inside the #drawflow container.
-    expect(html).toContain('id="drawflow"');
+    // The canvas editor renders nodes client-side from embedded JSON, inside #ivrCanvas.
+    expect(html).toContain('id="ivrCanvas"');
   });
 
   it("GET /api/ivr/flows/:flow returns the flow's entryNodeId + nodes", async () => {

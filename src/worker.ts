@@ -584,6 +584,7 @@ export default {
           id: params.MessageSid || crypto.randomUUID(),
           direction: "inbound",
           peer_number: params.From,
+          our_number: params.To || null,
           body: params.Body ?? "",
           status: "received",
           read: 0,

@@ -1,7 +1,9 @@
 // Conferences are au1-homed (see restClient.ts) -- au1 endpoint, au1 credentials.
 const TWILIO_API_BASE = "https://api.sydney.au1.twilio.com";
 
-function authHeader(accountSid: string, authToken: string): string {
+// Exported: the account-level Basic auth header is also needed outside this module (recording
+// fetch for transcription, stale-call reconciliation) — one construction site, not N inlined copies.
+export function authHeader(accountSid: string, authToken: string): string {
   return `Basic ${btoa(`${accountSid}:${authToken}`)}`;
 }
 

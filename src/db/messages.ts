@@ -6,13 +6,24 @@ export type ConversationRow = { number: string; name: string | null; last_body: 
 
 export async function insertMessage(
   db: D1Database,
-  m: { id: string; direction: "inbound" | "outbound"; peer_number: string; body: string; status: string | null; read: number; createdAt: number }
+  m: {
+    id: string;
+    direction: "inbound" | "outbound";
+    peer_number: string;
+    // The business number this message went through (Twilio "To" on inbound, "From" on outbound).
+    // Null only when the caller genuinely doesn't know it.
+    our_number: string | null;
+    body: string;
+    status: string | null;
+    read: number;
+    createdAt: number;
+  }
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO messages (id, direction, peer_number, body, status, read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING"
+      "INSERT INTO messages (id, direction, peer_number, our_number, body, status, read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING"
     )
-    .bind(m.id, m.direction, m.peer_number, m.body, m.status, m.read, m.createdAt)
+    .bind(m.id, m.direction, m.peer_number, m.our_number, m.body, m.status, m.read, m.createdAt)
     .run();
 }
 

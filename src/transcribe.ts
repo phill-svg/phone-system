@@ -1,3 +1,5 @@
+import { authHeader } from "./twilio/conferenceClient";
+
 // Full-call transcription via Cloudflare Workers AI (Whisper). Runs off the recording-status
 // webhook in ctx.waitUntil, so it never blocks the webhook ack and a failure is non-fatal (the
 // call still has its recording; only the text is missing). Whisper-large-v3-turbo handles the
@@ -34,7 +36,7 @@ export async function transcribeCallRecording(
 ): Promise<void> {
   try {
     const mp3Url = recordingUrl.endsWith(".mp3") ? recordingUrl : recordingUrl + ".mp3";
-    const auth = "Basic " + btoa(env.TWILIO_ACCOUNT_SID + ":" + env.TWILIO_AUTH_TOKEN);
+    const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
     const res = await fetch(mp3Url, { headers: { Authorization: auth } });
     if (!res.ok) {
       console.log("TRANSCRIBE_FETCH_FAILED", callSid, res.status);

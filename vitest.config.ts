@@ -8,6 +8,9 @@ export default defineWorkersConfig(async () => {
       // machines (many unrelated tests here already run 5-9s), so the 5s default is too tight
       // for the multi-step CallSession scenarios. Give every test more headroom.
       testTimeout: 20000,
+      // The mobile app's tests are Jest tests (run via `npm test` inside mobile/); vitest's
+      // default include sweeps them up here and they fail on missing jest globals.
+      exclude: ["**/node_modules/**", "mobile/**"],
       setupFiles: ["./test/apply-migrations.ts"],
       poolOptions: {
         workers: {

@@ -26,9 +26,10 @@ export async function handleListConversations(db: D1Database): Promise<Response>
 }
 
 export async function handleGetThread(db: D1Database, peer: string, peek = false): Promise<Response> {
-  // peek: read-only preview (call detail) — don't clear the unread badge just by looking.
+  // peek: read-only preview (call detail) — don't clear the unread badge just by looking, and only
+  // return the recent tail (the panel shows 6; don't drag a whole long thread out of D1 for that).
   if (!peek) await markThreadRead(db, peer);
-  return jsonResponse(await listThread(db, peer));
+  return jsonResponse(await listThread(db, peer, peek ? 6 : undefined));
 }
 
 export async function handleSendMessage(request: Request, env: Env): Promise<Response> {
@@ -55,7 +56,7 @@ export async function handleSendMessage(request: Request, env: Env): Promise<Res
       from: fromNumber,
       body: text,
     });
-    await insertMessage(env.DB, { id: sid, direction: "outbound", peer_number: target, body: text, status: "sent", read: 1, createdAt: Date.now() });
+    await insertMessage(env.DB, { id: sid, direction: "outbound", peer_number: target, our_number: fromNumber, body: text, status: "sent", read: 1, createdAt: Date.now() });
     return jsonResponse({ ok: true, id: sid });
   } catch (e) {
     return jsonResponse({ error: "Could not send the message.", detail: String(e) }, 502);
