@@ -28,10 +28,9 @@ const NOTIFY_JS = [
   '  function ensurePerm(){ try { if (Notification.permission === "default") Notification.requestPermission(); } catch(e){} }',
   '  ensurePerm();',
   '  document.addEventListener("click", ensurePerm, { once: true });',
-  '  var LS_MSG = "tcbNotifyLastMsgTs", LS_CALL = "tcbNotifyLastCallTs";',
+  '  var LS_MSG = "tcbNotifyLastMsgTs";',
   '  var lastMsgTs = Number(localStorage.getItem(LS_MSG) || 0);',
-  '  var lastCallTs = Number(localStorage.getItem(LS_CALL) || 0);',
-  '  var primedMsg = false, primedCall = false;',
+  '  var primedMsg = false;',
   '  function fire(title, body, url, tag){',
   '    if (Notification.permission !== "granted") return;',
   '    try { var n = new Notification(title, { body: body, icon: "/logo.png", tag: tag });',
@@ -52,7 +51,7 @@ const NOTIFY_JS = [
   // NOTE: incoming-CALL notifications are fired in real time from the phone page (phone.ts
   // showIncomingBanner, off the Twilio Device event) — NOT polled here. Polling /api/calls lagged
   // up to 6s and the toast could arrive after the caller had already hung up. Messages stay polled
-  // (SMS has no sub-second requirement).',
+  // (SMS has no sub-second requirement).
   '  pollMessages();',
   '  setInterval(pollMessages, 8000);',
   '  // Exposed for the Electron shell to trigger an immediate catch-up on wake/resume.',

@@ -318,8 +318,15 @@ export class CallSession extends DurableObject<Env> {
     // (inject it right after the opening <Response> of the fall-through document).
     if (numbers.length === 0) {
       const fallthrough = await this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
-      // Function replacer: a plain string here would interpret $&, $', $` and $$ inside admin-
-      // authored greeting text as replacement patterns and corrupt the TwiML.
+      // Deliberately string-level, not command composition: the fallthrough can itself be ANY shape
+      // (redirect, hangup, gather, voicemail, or -- via a wait node -- another nested ring/enqueue).
+      // Composing at the FlowCommand level would have to thread this greeting through every one of
+      // those branches, and the nested-ring case is a proven trap: a wait node's own commands are
+      // `[holdContentPlay?, ENQUEUE]` (flowEngine.ts), and startRing skips PLAY-filtering entirely on
+      // that path (viaWait) to avoid double-playing the hold content -- so a composed-in greeting would
+      // silently vanish. Splicing the already-rendered XML has no such blind spot. Function replacer:
+      // a plain string here would interpret $&, $', $` and $$ inside admin-authored greeting text as
+      // replacement patterns and corrupt the TwiML.
       return greetingPrefix ? fallthrough.replace("<Response>", () => "<Response>" + greetingPrefix) : fallthrough;
     }
 
@@ -341,37 +348,14 @@ export class CallSession extends DurableObject<Env> {
     // actually heard it — otherwise the staff phones ring while the caller is still on the welcome
     // message (and whoever answers catches the caller mid-recording). The deferred dial runs on the
     // first hold-poll (waitUrl), which Twilio fetches right after the greeting <Play> finishes.
-    // Without a greeting, dial immediately (original behaviour).
-    //
-    // Dial each leg in its own try/catch. If any create-call throws part-way through a multi-number
-    // simultaneous batch, the earlier legs are REAL ringing Twilio calls — cancel every leg we did
-    // manage to create, then fall through to the no-answer path so the caller still gets valid TwiML.
-    const attemptSids: string[] = [];
+    // Without a greeting, dial immediately (original behaviour) via the shared dialBatch helper.
+    let attemptSids: string[] = [];
     if (!greetingPrefix) {
-      let dialFailed = false;
-      for (const number of numbersToDial) {
-        try {
-          attemptSids.push(await this.dialStaff(number, callSid, origin, ringConfig.timeoutSeconds));
-        } catch (err) {
-          // Swallowing this silently once hid a credentials outage for a full day -- always log it.
-          console.log(
-            "DIAL_STAFF_FAILED",
-            JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) })
-          );
-          dialFailed = true;
-          break;
-        }
-      }
-      if (dialFailed) {
-        for (const sid of attemptSids) {
-          try {
-            await this.cancelStaff(sid);
-          } catch {
-            /* leg may already be torn down; ignore */
-          }
-        }
+      const sids = await this.dialBatch(numbersToDial, callSid, origin, ringConfig.timeoutSeconds);
+      if (!sids) {
         return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
       }
+      attemptSids = sids;
     }
 
     const activeRing: ActiveRing = {
@@ -441,35 +425,45 @@ export class CallSession extends DurableObject<Env> {
   // the queue into the no-answer fall-through (mirrors startRing's immediate-dial failure path).
   private async performDeferredDial(activeRing: ActiveRing, callSid: string, origin: string): Promise<void> {
     const numbersToDial = activeRing.pendingDial ?? [];
-    const attemptSids: string[] = [];
-    let dialFailed = false;
-    for (const number of numbersToDial) {
-      try {
-        attemptSids.push(await this.dialStaff(number, callSid, origin, activeRing.ringConfig.timeoutSeconds));
-      } catch (err) {
-        console.log("DIAL_STAFF_FAILED", JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) }));
-        dialFailed = true;
-        break;
-      }
-    }
-    if (dialFailed) {
-      for (const sid of attemptSids) {
-        try {
-          await this.cancelStaff(sid);
-        } catch {
-          /* already torn down */
-        }
-      }
+    const sids = await this.dialBatch(numbersToDial, callSid, origin, activeRing.ringConfig.timeoutSeconds);
+    if (!sids) {
       activeRing.pendingDial = undefined;
       activeRing.attemptSids = [];
       activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
       await this.ctx.storage.put("activeRing", activeRing);
       return;
     }
-    activeRing.attemptSids = attemptSids;
+    activeRing.attemptSids = sids;
     activeRing.pendingDial = undefined;
     await this.ctx.storage.put("activeRing", activeRing);
-    await this.logEvent(callSid, "ring_started", { targets: attemptSids.length, strategy: activeRing.ringConfig.strategy });
+    await this.logEvent(callSid, "ring_started", { targets: sids.length, strategy: activeRing.ringConfig.strategy });
+  }
+
+  // Dials each number in order, in its own try/catch. If any create-call throws part-way through a
+  // multi-number simultaneous batch, the earlier legs are REAL ringing Twilio calls -- cancel every
+  // leg already created and return null so the caller can fall through to the no-answer path instead
+  // of leaving live-but-orphaned legs ringing. Shared by startRing's immediate-dial branch and
+  // performDeferredDial's greeting-first branch so the failure/rollback behavior can't drift between
+  // them.
+  private async dialBatch(numbers: string[], callSid: string, origin: string, timeoutSeconds: number): Promise<string[] | null> {
+    const attemptSids: string[] = [];
+    for (const number of numbers) {
+      try {
+        attemptSids.push(await this.dialStaff(number, callSid, origin, timeoutSeconds));
+      } catch (err) {
+        // Swallowing this silently once hid a credentials outage for a full day -- always log it.
+        console.log("DIAL_STAFF_FAILED", JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) }));
+        for (const sid of attemptSids) {
+          try {
+            await this.cancelStaff(sid);
+          } catch {
+            /* leg may already be torn down; ignore */
+          }
+        }
+        return null;
+      }
+    }
+    return attemptSids;
   }
 
   // -------------------------------------------------------------------------

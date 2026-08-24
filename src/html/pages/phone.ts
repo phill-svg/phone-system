@@ -1,4 +1,5 @@
 import { renderLayout, escapeHtml } from "../layout";
+import { CLIENT_PHONE_JS } from "../clientPhoneJs";
 
 // Embeds a value as a JSON literal inside a <script> block. Guards against a stray
 // "</script>" breaking out of the script tag early (same helper as ivrFlow.ts).
@@ -929,31 +930,8 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       var contactsByNorm = {};
       var selectedContactId = null;
 
-      // Must stay identical to normalizePhone() in src/db/contacts.ts so a call's number matches
-      // the stored phone_normalized.
-      function normalizePhoneJS(raw) {
-        if (!raw) return '';
-        var hasPlus = String(raw).trim().charAt(0) === '+';
-        var digits = String(raw).replace(/\\D/g, '');
-        if (!digits) return '';
-        if (hasPlus) return digits;
-        if (digits.charAt(0) === '0') return '61' + digits.slice(1);
-        return digits;
-      }
-      // Display AU numbers in national form: +61 / 61 -> 0, grouped like "0472 762 158".
-      function formatAu(raw) {
-        var s = String(raw == null ? '' : raw);
-        var d = s.replace(/[^\\d+]/g, '');
-        var n;
-        if (d.charAt(0) === '+') { n = d.indexOf('+61') === 0 ? '0' + d.slice(3) : d; }
-        else if (d.indexOf('61') === 0 && d.length > 9) { n = '0' + d.slice(2); }
-        else { n = d; }
-        if (/^04\\d{8}$/.test(n)) return n.slice(0, 4) + ' ' + n.slice(4, 7) + ' ' + n.slice(7);
-        if (/^0[2378]\\d{8}$/.test(n)) return n.slice(0, 2) + ' ' + n.slice(2, 6) + ' ' + n.slice(6);
-        if (/^13\\d{4}$/.test(n)) return n.slice(0, 2) + ' ' + n.slice(2);
-        if (/^1[38]00\\d{6}$/.test(n)) return n.slice(0, 4) + ' ' + n.slice(4, 7) + ' ' + n.slice(7);
-        return n || s;
-      }
+      // Shared with html/pages/messages.ts (see ../clientPhoneJs) so the two inline-JS copies can't drift.
+      ${CLIENT_PHONE_JS}
       function contactInitials(name) {
         var parts = String(name || '?').trim().split(/\\s+/);
         if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();

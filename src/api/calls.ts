@@ -18,6 +18,24 @@ export async function handleUpdateCallMeta(request: Request, db: D1Database, cal
 
 type LiveEnv = { DB: D1Database; TWILIO_ACCOUNT_SID: string; TWILIO_AUTH_TOKEN: string };
 
+const AU1_BASE = "https://api.sydney.au1.twilio.com/2010-04-01/Accounts";
+
+// The set of Call SIDs Twilio currently reports as in-progress (AU1), or null if the lookup failed.
+// Shared by getLiveCalls (fail-open on null) and reconcileStaleCalls (fail-safe on null). PageSize
+// 100 is far above any realistic concurrent-leg count for this account; add paging if ever exceeded.
+async function fetchInProgressCallSids(env: LiveEnv): Promise<Set<string | undefined> | null> {
+  try {
+    const r = await fetch(`${AU1_BASE}/${env.TWILIO_ACCOUNT_SID}/Calls.json?Status=in-progress&PageSize=100`, {
+      headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) },
+    });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { calls?: { sid?: string }[] };
+    return new Set((j.calls ?? []).map((c) => c.sid));
+  } catch {
+    return null;
+  }
+}
+
 // Genuinely-live calls: the D1 in_progress rows (last 3h) verified against Twilio — a row only
 // survives if Twilio reports that call SID as in-progress RIGHT NOW. This drops rows whose
 // "completed" status callback was ever missed (which otherwise linger as fake live calls). Our
@@ -27,21 +45,9 @@ type LiveEnv = { DB: D1Database; TWILIO_ACCOUNT_SID: string; TWILIO_AUTH_TOKEN: 
 export async function getLiveCalls(env: LiveEnv) {
   const rows = await listLiveCalls(env.DB);
   if (rows.length === 0) return rows;
-  try {
-    const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
-    const r = await fetch(
-      `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json?Status=in-progress&PageSize=50`,
-      { headers: { Authorization: auth } }
-    );
-    if (r.ok) {
-      const j = (await r.json()) as { calls?: { sid?: string }[] };
-      const liveSids = new Set((j.calls ?? []).map((c) => c.sid));
-      return rows.filter((row) => liveSids.has(row.id));
-    }
-  } catch {
-    /* fall through to the unverified D1 rows */
-  }
-  return rows;
+  const liveSids = await fetchInProgressCallSids(env);
+  if (!liveSids) return rows; // fail-open: show unverified rows rather than hiding everything
+  return rows.filter((row) => liveSids.has(row.id));
 }
 
 export async function handleLiveCalls(env: LiveEnv): Promise<Response> {
@@ -63,17 +69,11 @@ export async function reconcileStaleCalls(env: LiveEnv): Promise<number> {
   ).results;
   if (rows.length === 0) return 0;
 
+  const liveSids = await fetchInProgressCallSids(env);
+  if (!liveSids) return 0; // fail-safe: don't reconcile if we can't confirm liveness right now
+
   const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
-  const base = `https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}`;
-  let liveSids: Set<string | undefined>;
-  try {
-    const r = await fetch(`${base}/Calls.json?Status=in-progress&PageSize=100`, { headers: { Authorization: auth } });
-    if (!r.ok) return 0;
-    const j = (await r.json()) as { calls?: { sid?: string }[] };
-    liveSids = new Set((j.calls ?? []).map((c) => c.sid));
-  } catch {
-    return 0;
-  }
+  const base = `${AU1_BASE}/${env.TWILIO_ACCOUNT_SID}`;
 
   // Each stale row is independent (one Twilio GET + one guarded D1 UPDATE), so reconcile them
   // concurrently — a serial loop made ~20 stuck rows cost ~20 sequential round-trips.

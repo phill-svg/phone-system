@@ -1,25 +1,10 @@
 import type { FlowCommand } from "../ivr/flowEngine";
-import { renderFlowCommandsFragment, wrapResponse } from "./flowTwiml";
+import { renderFlowCommandsFragment, wrapResponse, escapeXml } from "./flowTwiml";
+import { RINGBACK_URL } from "./ringback";
 
-/**
- * Escapes XML special characters (5-entity convention, matching the other TwiML
- * renderers in this codebase). flowTwiml.ts has its own copy but does not export it,
- * so we keep a small local copy here.
- */
 // While a caller waits for staff to be dialed (a ring with no explicit wait node), they hear a
-// ringing tone -- Twilio's own outgoing-call ringback -- so it sounds like a normal ringing phone
-// rather than hold music. A real "wait node" with its own audio/TTS still overrides this.
-// Self-hosted (see conferenceTwiml.ts): sdk.twilio.com's copy now returns 403 to Twilio's servers.
-const RINGBACK_URL = "https://phone.tcbpestcontrolcanberra.com.au/media/system/ringback.mp3";
-
-function escapeXml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
+// ringing tone so it sounds like a normal ringing phone rather than hold music. A real "wait node"
+// with its own audio/TTS still overrides this. RINGBACK_URL is self-hosted (see ./ringback).
 
 /**
  * Renders the caller-leg <Enqueue> TwiML: parks the caller in a per-call queue while

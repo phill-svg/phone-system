@@ -1,4 +1,5 @@
 import { renderLayout } from "../layout";
+import { CLIENT_PHONE_JS } from "../clientPhoneJs";
 
 // Web/desktop SMS surface. Talks to the same /api/messages endpoints as the mobile app (cookie-authed
 // on the dashboard). Client JS avoids backticks/${} so it can't break this template literal.
@@ -84,11 +85,9 @@ export function renderMessagesPage(role: "admin" | "staff" = "admin"): string {
 const CLIENT_JS = [
   'var current = null;',
   'var contactsByNorm = {};',
-  // Must match normalizePhone() in src/db/contacts.ts (international 61x form) so a conversation number matches the stored phone_normalized.
-  'function normalizePhoneJS(raw){ if(!raw) return ""; var hasPlus=String(raw).trim().charAt(0)==="+"; var d=String(raw).replace(/\\D/g,""); if(!d) return ""; if(hasPlus) return d; if(d.charAt(0)==="0") return "61"+d.slice(1); return d; }',
+  // Shared with html/pages/phone.ts (see ../clientPhoneJs) so the two inline-JS copies can't drift.
+  CLIENT_PHONE_JS,
   'function resolveName(number){ var c=contactsByNorm[normalizePhoneJS(number)]; return c?c.name:null; }',
-  // Display AU numbers in national form: +61/61 -> 0, grouped like "0472 762 158".
-  'function formatAu(raw){ var s=String(raw==null?"":raw); var d=s.replace(/[^\\d+]/g,""); var n; if(d.charAt(0)==="+"){ n=d.indexOf("+61")===0?"0"+d.slice(3):d; } else if(d.indexOf("61")===0&&d.length>9){ n="0"+d.slice(2); } else { n=d; } if(/^04\\d{8}$/.test(n)) return n.slice(0,4)+" "+n.slice(4,7)+" "+n.slice(7); if(/^0[2378]\\d{8}$/.test(n)) return n.slice(0,2)+" "+n.slice(2,6)+" "+n.slice(6); if(/^13\\d{4}$/.test(n)) return n.slice(0,2)+" "+n.slice(2); if(/^1[38]00\\d{6}$/.test(n)) return n.slice(0,4)+" "+n.slice(4,7)+" "+n.slice(7); return n||s; }',
   'function loadContacts(){ return api("/api/contacts").then(function(list){ contactsByNorm={}; (list||[]).forEach(function(c){ if(c&&c.phone_normalized) contactsByNorm[c.phone_normalized]=c; }); }).catch(function(){}); }',
   'var smsNumbers=[];',
   'function loadNumbers(){ return api("/api/numbers").then(function(nums){ smsNumbers=(nums||[]).filter(function(n){return n.sms_enabled;}); }).catch(function(){}); }',
