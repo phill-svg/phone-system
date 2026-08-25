@@ -724,12 +724,28 @@ export class CallSession extends DurableObject<Env> {
   }
 
   private async dialStaff(number: string, callSid: string, origin: string, timeoutSeconds?: number): Promise<string> {
+    // The staff leg's `From` stays our own owned business number -- Twilio's Caller-ID-ownership
+    // rules for the `From` field are murky for calls terminating at a `client:` identity (vs a real
+    // PSTN destination), so we don't gamble on passing the raw external caller's number there. Instead
+    // the real caller's number rides along as a custom Client parameter (Twilio's own documented
+    // mechanism for this: "Sending Custom Parameters to Clients"), which the softphone reads via
+    // call.customParameters.get('CallerNumber') to show the actual caller instead of our own number.
+    const callerRow = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
+      .bind(callSid)
+      .first<{ caller_number: string }>();
+    // Bare digits (no leading "+"): whether Twilio decodes this client-URI query value zero or one
+    // times before we read it back client-side is unverified, and a "+" is ambiguous either way (it
+    // can decode to a literal space). Digits-only survives both interpretations identically, and the
+    // client-side normalizer/formatter both already handle a bare-digits "61..." number correctly.
+    const to = callerRow?.caller_number
+      ? `${number}?CallerNumber=${encodeURIComponent(callerRow.caller_number.replace(/^\+/, ""))}`
+      : number;
     const { sid } = await createOutboundCall(
       this.env.TWILIO_ACCOUNT_SID,
       this.env.TWILIO_API_KEY_SID,
       this.env.TWILIO_API_KEY_SECRET,
       {
-        to: number,
+        to,
         from: this.env.TWILIO_FROM_NUMBER,
         url: appendWebhookSecret(`${origin}/webhooks/twilio/agent-answer?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         statusCallback: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),

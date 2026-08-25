@@ -792,10 +792,16 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         var msgHead = document.createElement('div');
         msgHead.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:0.6rem';
         var msgLabel = document.createElement('p'); msgLabel.className = 'card-label'; msgLabel.style.margin = '0'; msgLabel.textContent = 'Recent messages';
+        var msgBtnGroup = document.createElement('div');
+        msgBtnGroup.style.cssText = 'display:flex;gap:0.5rem';
+        var callBackBtn = document.createElement('button'); callBackBtn.type = 'button'; callBackBtn.className = 'pill-btn pill-btn-secondary';
+        callBackBtn.innerHTML = '<span>Call</span>';
+        callBackBtn.addEventListener('click', function () { callContact(callDisplayNumber(c)); });
         var msgBtn = document.createElement('button'); msgBtn.type = 'button'; msgBtn.className = 'pill-btn pill-btn-secondary';
         msgBtn.innerHTML = '<span>Message</span>';
         msgBtn.addEventListener('click', function () { messageContact(callDisplayNumber(c), infoContact ? infoContact.name : null); });
-        msgHead.appendChild(msgLabel); msgHead.appendChild(msgBtn);
+        msgBtnGroup.appendChild(callBackBtn); msgBtnGroup.appendChild(msgBtn);
+        msgHead.appendChild(msgLabel); msgHead.appendChild(msgBtnGroup);
         var msgBody = document.createElement('div');
         msgBody.style.marginTop = '0.7rem';
         var msgStatus = document.createElement('span'); msgStatus.className = 'info-none'; msgStatus.textContent = 'Loading messages…';
@@ -1363,8 +1369,17 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         input.value = input.value.slice(0, -1);
       });
 
+      // The real external caller's number, when this leg carries it as a custom Client parameter
+      // (see CallSession.ts dialStaff) -- falls back to call.parameters.From, which for a staff leg
+      // is always OUR OWN business number, not the caller (only correct for e.g. outbound-originated
+      // calls where From legitimately IS us).
+      function incomingCallerNumber(call) {
+        var custom = call.customParameters && call.customParameters.get && call.customParameters.get('CallerNumber');
+        return custom || (call.parameters && call.parameters.From) || null;
+      }
+
       function showIncomingBanner(call) {
-        var from = (call.parameters && call.parameters.From) || 'Unknown';
+        var from = incomingCallerNumber(call) || 'Unknown';
         var contact = contactsByNorm[normalizePhoneJS(from)];
         var label = contact ? contact.name : formatAu(from);
         document.getElementById('incoming-caller').textContent = label;
@@ -1405,7 +1420,7 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       function onCallConnected(call) {
         hideIncomingBanner();
         isOnHold = false;
-        var peer = (call.parameters && (call.parameters.From || call.parameters.To)) || document.getElementById('dial-input').value || 'call';
+        var peer = incomingCallerNumber(call) || (call.parameters && call.parameters.To) || document.getElementById('dial-input').value || 'call';
         var peerContact = contactsByNorm[normalizePhoneJS(peer)];
         document.getElementById('active-call-peer').textContent = peerContact ? peerContact.name : formatAu(peer);
         document.getElementById('mute-btn').textContent = 'Mute';
@@ -1645,7 +1660,7 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           device.on('incoming', function (call) {
             activeCall = call;
             showIncomingBanner(call);
-            window.desktopBridge?.notifyIncomingCall(call.parameters && call.parameters.From);
+            window.desktopBridge?.notifyIncomingCall(incomingCallerNumber(call));
             call.on('accept', onCallConnected);
             call.on('disconnect', onCallEnded);
             call.on('cancel', onCallEnded);
