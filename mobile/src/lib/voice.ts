@@ -116,6 +116,15 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
 
   setRegStatus("registering…");
   try {
+    // iOS ONLY: the SDK does not auto-create the PKPushRegistry. Because this is a managed Expo
+    // app with no PushKit module of our own, we must call initializePushRegistry() at launch so
+    // the SDK sets up the registry and iOS begins delivering the VoIP device token. Without this,
+    // `register()` waits for a token that never arrives and fails with "Failed to initialize
+    // PushKit device token" -- permanently, not a timing race. (No-op/throws on Android, which
+    // uses FCM instead, so it's guarded to iOS.)
+    if (Platform.OS === "ios") {
+      await voice.initializePushRegistry();
+    }
     const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
     await registerWithRetry(token);
     // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
