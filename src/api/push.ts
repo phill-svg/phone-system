@@ -1,5 +1,6 @@
 import { jsonResponse } from "./respond";
 import { upsertPushToken, listPushTokens, deletePushTokens } from "../db/pushTokens";
+import { findContactByPhone } from "../db/contacts";
 import { sendExpoPush } from "../push/expoPush";
 import type { StaffUser } from "../access/requireStaffUser";
 
@@ -24,8 +25,11 @@ export async function handleRegisterPushToken(request: Request, db: D1Database, 
 export async function notifyInboundSms(db: D1Database, from: string, bodyText: string): Promise<void> {
   const tokens = await listPushTokens(db);
   if (tokens.length === 0) return;
+  // Show the saved contact name if we have one, otherwise fall back to the raw number.
+  const contact = await findContactByPhone(db, from);
+  const sender = contact?.name || from;
   const { invalidTokens } = await sendExpoPush(tokens, {
-    title: from,
+    title: `New message from ${sender}`,
     body: bodyText.slice(0, 240) || "New message",
     data: { type: "sms", from },
   });

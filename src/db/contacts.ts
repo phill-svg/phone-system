@@ -38,6 +38,18 @@ export async function listContacts(db: D1Database): Promise<Contact[]> {
   return result.results;
 }
 
+// Look up a saved contact by phone number (matches on the normalized 61x form). Returns null if
+// no contact matches. Used to show a contact name (not the raw number) in inbound-SMS notifications.
+export async function findContactByPhone(db: D1Database, phone: string): Promise<Contact | null> {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return null;
+  const row = await db
+    .prepare("SELECT * FROM contacts WHERE phone_normalized = ? LIMIT 1")
+    .bind(normalized)
+    .first<Contact>();
+  return row ?? null;
+}
+
 export async function createContact(db: D1Database, input: ContactInput): Promise<Contact> {
   const now = Date.now();
   const normalized = normalizePhone(input.phone);
