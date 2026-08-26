@@ -54,6 +54,31 @@ async function ensureMicPermission(): Promise<void> {
   if (!ok) throw new Error("Microphone permission is required for calls.");
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// On iOS, `voice.register()` needs a PushKit device token that iOS hasn't necessarily handed
+// over yet -- on a cold launch `pushRegistry:didUpdatePushCredentials:forType:` can take up to
+// ~30s to fire, but Twilio's native code only waits 3s before rejecting with "Failed to
+// initialize PushKit device token". Retry with backoff on that specific error; anything else
+// (bad access token, network) fails fast.
+const PUSHKIT_BACKOFF_MS = [0, 1000, 2000, 3000, 5000, 8000, 10000];
+async function registerWithRetry(token: string): Promise<void> {
+  for (let attempt = 0; attempt < PUSHKIT_BACKOFF_MS.length; attempt++) {
+    if (PUSHKIT_BACKOFF_MS[attempt] > 0) await sleep(PUSHKIT_BACKOFF_MS[attempt]);
+    try {
+      await voice.register(token);
+      return;
+    } catch (e) {
+      const isPushKitRace = e instanceof Error && e.message.includes("PushKit device token");
+      const isLastAttempt = attempt === PUSHKIT_BACKOFF_MS.length - 1;
+      if (!isPushKitRace || isLastAttempt) throw e;
+      setRegStatus(`registering… (retry ${attempt + 1})`);
+    }
+  }
+}
+
 // ---- Outbound ----
 // `from` optionally sets the caller-ID (validated server-side in /twiml/voice-app against the
 // business's voice-enabled numbers); omit to use the default number.
@@ -92,7 +117,7 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
   setRegStatus("registering…");
   try {
     const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
-    await voice.register(token);
+    await registerWithRetry(token);
     // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
     if (regStatus === "registering…") setRegStatus("registered ✓");
   } catch (e) {
