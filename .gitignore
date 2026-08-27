@@ -3,3 +3,7 @@ node_modules/
 .wrangler/
 .dev.vars
 desktop/release/
+
+# Apple/Google signing + API keys — never commit
+mobile/credentials/
+*.p8
