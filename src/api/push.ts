@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { upsertPushToken, listPushTokens, deletePushTokens } from "../db/pushTokens";
+import { upsertPushToken, listPushTokens, deletePushTokens, getPushTokensForType } from "../db/pushTokens";
 import { findContactByPhone } from "../db/contacts";
 import { sendExpoPush } from "../push/expoPush";
 import type { StaffUser } from "../access/requireStaffUser";
@@ -23,7 +23,7 @@ export async function handleRegisterPushToken(request: Request, db: D1Database, 
 
 // Fire-and-forget: notify all registered devices about an inbound text. Prunes dead tokens.
 export async function notifyInboundSms(db: D1Database, from: string, bodyText: string): Promise<void> {
-  const tokens = await listPushTokens(db);
+  const tokens = await getPushTokensForType(db, "notif_sms");
   if (tokens.length === 0) return;
   // Show the saved contact name if we have one, otherwise fall back to the raw number.
   const contact = await findContactByPhone(db, from);
