@@ -6,6 +6,7 @@ import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { Group, Row } from "../../components/ui/Grouped";
 import { Segmented } from "../../components/ui/Segmented";
+import { BASE_URL } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
 import { onRegStatus } from "../../lib/voice";
@@ -13,7 +14,7 @@ import { usePersistedBool } from "../../lib/prefs";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "17";
+const OTA_BUILD = "19";
 
 export default function SettingsScreen() {
   const t = useTheme();
@@ -108,8 +109,8 @@ export default function SettingsScreen() {
           <Row icon="info.circle.fill" iconColor="#8E8E93" label="Version" value="1.0.0" />
           <Row icon="arrow.triangle.2.circlepath" iconColor="#34C759" label={checking ? "Checking…" : "Check for Updates"} value={`#${OTA_BUILD}`} chevron onPress={checkForUpdates} />
           <Row icon="lifepreserver" iconColor="#0A84FF" label="Support" chevron onPress={() => Linking.openURL("mailto:phill@tcbpestcontrolcanberra.com.au")} />
-          <Row icon="hand.raised.fill" iconColor="#5E5CE6" label="Privacy Policy" chevron onPress={() => {}} />
-          <Row icon="doc.text.fill" iconColor="#8E8E93" label="Terms of Service" chevron onPress={() => {}} />
+          <Row icon="hand.raised.fill" iconColor="#5E5CE6" label="Privacy Policy" chevron onPress={() => Linking.openURL(`${BASE_URL}/privacy`)} />
+          <Row icon="doc.text.fill" iconColor="#8E8E93" label="Terms of Service" chevron onPress={() => Linking.openURL(`${BASE_URL}/terms`)} />
         </Group>
 
         <Group footer="Preview the incoming-call screen without a live call.">

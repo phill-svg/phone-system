@@ -5,6 +5,7 @@ import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleLogoAsset } from "./html/logoAsset";
+import { renderPrivacyPolicyPage, renderTermsOfServicePage } from "./html/pages/legal";
 import { handleMe } from "./api/me";
 import {
   handleLoginPage, handleLoginSubmit, handleLogout,
@@ -115,6 +116,14 @@ export default {
 
     if (url.pathname === "/logo.png") {
       return handleLogoAsset();
+    }
+
+    // Public legal pages (no auth) — linked from the mobile app Settings and the app-store listings.
+    if (url.pathname === "/privacy") {
+      return new Response(renderPrivacyPolicyPage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+    if (url.pathname === "/terms") {
+      return new Response(renderTermsOfServicePage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
     }
 
     if (url.pathname === "/login") {

@@ -16,7 +16,10 @@
     "bindings": [{ "name": "CALL_SESSION", "class_name": "CallSession" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
-  "routes": [{ "pattern": "phone.tcbpestcontrolcanberra.com.au", "custom_domain": true }],
+  "routes": [
+    { "pattern": "phone.tcbpestcontrolcanberra.com.au", "custom_domain": true },
+    { "pattern": "tcbvoip.app", "custom_domain": true }
+  ],
   "triggers": { "crons": ["*/5 * * * *"] },
   "observability": { "enabled": true },
   "r2_buckets": [{ "binding": "AUDIO_ASSETS", "bucket_name": "tcb-voip-audio" }],

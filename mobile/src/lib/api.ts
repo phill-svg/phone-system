@@ -1,6 +1,6 @@
 import { getToken, clearToken } from "./session";
 
-const BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://phone.tcbpestcontrolcanberra.com.au").replace(/\/$/, "");
+export const BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://tcbvoip.app").replace(/\/$/, "");
 
 export class ApiError extends Error {
   status: number;
