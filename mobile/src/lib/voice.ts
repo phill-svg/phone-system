@@ -1,6 +1,8 @@
 import { Platform, PermissionsAndroid, type Permission, type Rationale } from "react-native";
 import { Voice, Call, CallInvite } from "@twilio/voice-react-native-sdk";
 import { getSoftphoneToken } from "./api";
+import { chooseAudioDevice, type AudioRoutePref, type AudioDeviceLike } from "./audioRouting";
+import { getPref, getPrefBool } from "./prefs";
 
 // Single Voice instance for the app. Handles outbound dialing and, once registered, incoming
 // calls (the server's TwiML app bridges `To` out to the PSTN; incoming arrives via FCM push).
@@ -37,6 +39,49 @@ export function setActiveCall(c: Call | null): void {
 }
 export function getPendingInvite(): CallInvite | null {
   return pendingInvite;
+}
+
+// ---- Audio routing ----
+// Thin native glue over audioRouting.ts's pure `chooseAudioDevice`: maps the SDK's
+// AudioDevice[] into AudioDeviceLike[], asks the pure helper which one to pick, then
+// `.select()`s it via the SDK. Kept out of audioRouting.ts so that file stays jest-testable
+// without a native SDK import.
+function toLike(d: { uuid: string; type: string; name?: string }): AudioDeviceLike {
+  return { uuid: d.uuid, type: d.type as AudioDeviceLike["type"], name: d.name };
+}
+
+export async function listAudioDevices(): Promise<{
+  devices: AudioDeviceLike[];
+  selectedType: AudioDeviceLike["type"] | null;
+}> {
+  const { audioDevices, selectedDevice } = await voice.getAudioDevices();
+  return {
+    devices: audioDevices.map(toLike),
+    selectedType: (selectedDevice?.type as AudioDeviceLike["type"] | undefined) ?? null,
+  };
+}
+
+export async function selectAudioRoute(pref: AudioRoutePref): Promise<void> {
+  const { audioDevices } = await voice.getAudioDevices();
+  const bluetoothAllowed = await getPrefBool("pref_bluetooth", true);
+  const target = chooseAudioDevice(audioDevices.map(toLike), pref, bluetoothAllowed);
+  if (!target) return;
+  const match = audioDevices.find((d) => d.uuid === target.uuid);
+  if (match) await match.select();
+}
+
+// Reads the user's saved route preference and applies it. Call this right after a call
+// connects (fire-and-forget) so audio is routed correctly once the call is live.
+export async function applyDefaultAudioRoute(): Promise<void> {
+  const pref = (await getPref("pref_audio_route", "automatic")) as AudioRoutePref;
+  await selectAudioRoute(pref).catch(() => {});
+}
+
+export function onAudioDevicesUpdated(cb: (selectedType: AudioDeviceLike["type"] | null) => void): () => void {
+  const handler = (_devices: unknown, selected?: { type?: string }) =>
+    cb((selected?.type as AudioDeviceLike["type"] | undefined) ?? null);
+  voice.on(Voice.Event.AudioDevicesUpdated, handler);
+  return () => voice.off(Voice.Event.AudioDevicesUpdated, handler);
 }
 
 async function requestAndroid(permission: Permission, rationale?: Rationale): Promise<boolean> {
@@ -89,6 +134,7 @@ export async function placeCall(to: string, from?: string): Promise<Call> {
   if (from) params.CallerId = from;
   const call = await voice.connect(token, { params });
   activeCall = call;
+  applyDefaultAudioRoute().catch(() => {});
   return call;
 }
 
@@ -146,6 +192,7 @@ export async function acceptIncoming(): Promise<Call | null> {
   const call = await invite.accept();
   activeCall = call;
   pendingInvite = null;
+  applyDefaultAudioRoute().catch(() => {});
   return call;
 }
 

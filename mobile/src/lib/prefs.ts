@@ -18,3 +18,26 @@ export function usePersistedBool(key: string, initial: boolean): [boolean, (v: b
   };
   return [value, set];
 }
+
+// Non-hook variants for use outside React components (e.g. voice.ts, which is native glue
+// code, not a component). Same SecureStore-backed persistence as usePersistedBool above.
+export async function getPref(key: string, fallback: string): Promise<string> {
+  try {
+    return (await SecureStore.getItemAsync(key)) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function setPref(key: string, value: string): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function getPrefBool(key: string, fallback: boolean): Promise<boolean> {
+  const v = await getPref(key, fallback ? "1" : "0");
+  return v === "1";
+}
