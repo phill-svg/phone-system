@@ -10,12 +10,21 @@ import { BASE_URL, getRecordingSetting, setRecordingSetting } from "../../lib/ap
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
 import { onRegStatus } from "../../lib/voice";
-import { usePersistedBool } from "../../lib/prefs";
+import { usePersistedBool, getPref, setPref } from "../../lib/prefs";
 import { useUserSettings } from "../../lib/userSettings";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
+import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "22";
+const OTA_BUILD = "23";
+
+const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
+  automatic: "Automatic",
+  earpiece: "Earpiece",
+  speaker: "Speaker",
+  bluetooth: "Bluetooth",
+};
+const AUDIO_ROUTE_ORDER: AudioRoutePref[] = ["automatic", "earpiece", "speaker", "bluetooth"];
 
 export default function SettingsScreen() {
   const t = useTheme();
@@ -60,6 +69,18 @@ export default function SettingsScreen() {
   const [autoAnswer, setAutoAnswer] = usePersistedBool("pref_auto_answer", false);
   const [bluetooth, setBluetooth] = usePersistedBool("pref_bluetooth", true);
 
+  // Default audio route applied on the next call (audio devices are only live during a call,
+  // so this is a preference, not a live control). Persisted the same way voice.ts reads it.
+  const [audioRoute, setAudioRouteState] = useState<AudioRoutePref>("automatic");
+  useEffect(() => {
+    getPref("pref_audio_route", "automatic").then((v) => setAudioRouteState(v as AudioRoutePref)).catch(() => {});
+  }, []);
+  function cycleAudioRoute() {
+    const next = AUDIO_ROUTE_ORDER[(AUDIO_ROUTE_ORDER.indexOf(audioRoute) + 1) % AUDIO_ROUTE_ORDER.length];
+    setAudioRouteState(next); // optimistic
+    setPref("pref_audio_route", next).catch(() => {});
+  }
+
   // Call Recording is a business-wide setting stored server-side (not a device preference).
   // Admins can toggle it; staff see it read-only.
   const isAdmin = user?.role === "admin";
@@ -83,7 +104,7 @@ export default function SettingsScreen() {
           <Row icon="bell.badge" iconColor={voiceReg.startsWith("registered") ? t.colors.success : t.colors.warning} label="Incoming calls" value={voiceReg} />
         </Group>
 
-        <Group title="Calling" footer="Applies once native calling is enabled on this device. Call Recording is a business-wide setting managed by admins.">
+        <Group title="Calling" footer="Call Waiting shows a second incoming call while you're on a call. Auto-Answer automatically answers incoming calls after a moment. Call Recording is a business-wide setting managed by admins.">
           <Row icon="phone.arrow.up.right.fill" iconColor="#34C759" label="Call Waiting" toggle={callWaiting} onToggle={setCallWaiting} />
           <Row icon="arrow.turn.up.right" iconColor="#0A84FF" label="Ring My Mobile"
             value={settings.ring_my_mobile ? "On" : "Off"} chevron
@@ -96,9 +117,9 @@ export default function SettingsScreen() {
           )}
         </Group>
 
-        <Group title="Audio">
+        <Group title="Audio" footer="Allow routing call audio to Bluetooth devices. Audio Routing sets the default output applied to your next call.">
           <Row icon="headphones" iconColor="#30B0C7" label="Bluetooth" toggle={bluetooth} onToggle={setBluetooth} />
-          <Row icon="speaker.wave.2.fill" iconColor="#FF9500" label="Audio Routing" value="Automatic" onPress={() => {}} chevron />
+          <Row icon="speaker.wave.2.fill" iconColor="#FF9500" label="Audio Routing" value={AUDIO_ROUTE_LABELS[audioRoute]} onPress={cycleAudioRoute} chevron />
         </Group>
 
         <Group title="Notifications" footer="Choose which alerts this account receives.">
