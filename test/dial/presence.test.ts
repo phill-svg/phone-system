@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isStaffAvailable, HEARTBEAT_STALE_MS, type StaffPresenceRow } from "../../src/dial/presence";
+import { isOnShift, isStaffAvailable, HEARTBEAT_STALE_MS, type StaffPresenceRow } from "../../src/dial/presence";
 
 const MON_10AM = new Date("2026-08-10T00:00:00.000Z"); // Mon 10:00 Australia/Sydney (UTC+10 in Aug)
 const SCHEDULE_9_TO_5 = {
@@ -40,5 +40,37 @@ describe("isStaffAvailable", () => {
 
   it("is unavailable when there has never been a heartbeat", () => {
     expect(isStaffAvailable(staff({ lastHeartbeatAt: null }), MON_10AM)).toBe(false);
+  });
+});
+
+const OPEN_ALL_DAY = {
+  mon: { open: "00:00", close: "23:59" }, tue: { open: "00:00", close: "23:59" },
+  wed: { open: "00:00", close: "23:59" }, thu: { open: "00:00", close: "23:59" },
+  fri: { open: "00:00", close: "23:59" }, sat: { open: "00:00", close: "23:59" },
+  sun: { open: "00:00", close: "23:59" },
+};
+const base = (over: Partial<StaffPresenceRow> = {}): StaffPresenceRow => ({
+  email: "a@b.com", role: "staff", status: "available", awayReason: null,
+  schedule: OPEN_ALL_DAY, lastHeartbeatAt: Date.now(), ringPriority: 100, ...over,
+});
+
+describe("isOnShift", () => {
+  const now = new Date();
+  it("true when available + within hours, regardless of heartbeat", () => {
+    expect(isOnShift(base({ lastHeartbeatAt: null }), now)).toBe(true);
+    expect(isOnShift(base({ lastHeartbeatAt: now.getTime() - HEARTBEAT_STALE_MS - 1 }), now)).toBe(true);
+  });
+  it("false when not available", () => {
+    expect(isOnShift(base({ status: "away" }), now)).toBe(false);
+  });
+});
+
+describe("isStaffAvailable still requires a fresh heartbeat", () => {
+  const now = new Date();
+  it("false when on-shift but heartbeat is stale", () => {
+    expect(isStaffAvailable(base({ lastHeartbeatAt: now.getTime() - HEARTBEAT_STALE_MS - 1 }), now)).toBe(false);
+  });
+  it("true when on-shift with fresh heartbeat", () => {
+    expect(isStaffAvailable(base(), now)).toBe(true);
   });
 });
