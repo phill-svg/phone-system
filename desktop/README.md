@@ -1,7 +1,7 @@
 # TCB Phone — Desktop App
 
 A thin Electron wrapper around the TCB VoIP staff admin dashboard
-(https://tcb-voip.phill-abb.workers.dev/). It's just a window pointed at the
+(https://tcbvoip.app/). It's just a window pointed at the
 live site — no offline mode, no local data, no auto-updates. All feature and
 content changes ship through the worker itself and need no app update; only a
 shell-level change (e.g. bumping the Electron version) would ever require

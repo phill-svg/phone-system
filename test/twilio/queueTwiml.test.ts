@@ -72,7 +72,7 @@ describe("renderHold", () => {
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
         '<Gather input="dtmf" numDigits="1" timeout="10" actionOnEmptyResult="true" ' +
-        'action="https://x.example/hold-digit"><Play loop="0">https://phone.tcbpestcontrolcanberra.com.au/media/system/ringback.mp3</Play></Gather>' +
+        'action="https://x.example/hold-digit"><Play loop="0">https://tcbvoip.app/media/system/ringback.mp3</Play></Gather>' +
         "</Response>"
     );
   });
