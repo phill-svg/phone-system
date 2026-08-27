@@ -41,6 +41,7 @@ export default function IncomingCallScreen() {
   const actedRef = useRef(false);
 
   async function answer() {
+    if (actedRef.current) return;
     actedRef.current = true;
     haptics.success();
     try {
@@ -59,6 +60,7 @@ export default function IncomingCallScreen() {
     router.back();
   }
   function decline() {
+    if (actedRef.current) return;
     actedRef.current = true;
     haptics.medium();
     rejectIncoming().catch(() => {});

@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import { router, useLocalSearchParams } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
@@ -95,10 +96,25 @@ export default function ActiveCallScreen() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const callRef = useRef<TwilioCall | null>(null);
 
+  // Tracks whether THIS call-active screen is the one on top of the stack. When a call-waiting
+  // accept pushes a second call-active screen on top of this one, this screen gets blurred but
+  // stays mounted — if its underlying call then disconnects (because we just hung it up to take
+  // the new call), it must NOT drag the navigator back and pop the screen the user is actually on.
+  const isFocused = useIsFocused();
+  const focusedRef = useRef(isFocused);
+  useEffect(() => {
+    focusedRef.current = isFocused;
+  }, [isFocused]);
+
   function finish() {
     if (timer.current) clearInterval(timer.current);
     setState("ended");
-    setTimeout(() => router.back(), 600);
+    // Only navigate away if this screen is the one currently focused (top of stack). A blurred,
+    // stale call-active (superseded by a newer one from call waiting) should quietly clean up
+    // without moving the navigator out from under the call the user is actually on.
+    if (focusedRef.current) {
+      setTimeout(() => router.back(), 600);
+    }
   }
 
   // Drive the on-screen state from the real Twilio call — an accepted incoming call (already
