@@ -259,3 +259,12 @@ export async function getUserSettings(): Promise<UserSettings> {
 export async function updateUserSettings(partial: Partial<UserSettings>): Promise<UserSettings> {
   return apiFetch<UserSettings>("/api/settings/me", { method: "PUT", body: JSON.stringify(partial) });
 }
+
+// ---- Business-wide call recording setting (admin-editable, staff read-only) ----
+export async function getRecordingSetting(): Promise<boolean> {
+  const r = await apiFetch<{ recording_enabled: boolean }>("/api/settings/recording");
+  return r.recording_enabled;
+}
+export async function setRecordingSetting(enabled: boolean): Promise<void> {
+  await apiFetch("/api/settings/recording", { method: "PUT", body: JSON.stringify({ recording_enabled: enabled }) });
+}

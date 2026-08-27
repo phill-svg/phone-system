@@ -6,7 +6,7 @@ import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { Group, Row } from "../../components/ui/Grouped";
 import { Segmented } from "../../components/ui/Segmented";
-import { BASE_URL } from "../../lib/api";
+import { BASE_URL, getRecordingSetting, setRecordingSetting } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
 import { onRegStatus } from "../../lib/voice";
@@ -15,7 +15,7 @@ import { useUserSettings } from "../../lib/userSettings";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "21";
+const OTA_BUILD = "22";
 
 export default function SettingsScreen() {
   const t = useTheme();
@@ -58,8 +58,19 @@ export default function SettingsScreen() {
   // native calling layer reads them; theme applies immediately.
   const [callWaiting, setCallWaiting] = usePersistedBool("pref_call_waiting", true);
   const [autoAnswer, setAutoAnswer] = usePersistedBool("pref_auto_answer", false);
-  const [recording, setRecording] = usePersistedBool("pref_recording", true);
   const [bluetooth, setBluetooth] = usePersistedBool("pref_bluetooth", true);
+
+  // Call Recording is a business-wide setting stored server-side (not a device preference).
+  // Admins can toggle it; staff see it read-only.
+  const isAdmin = user?.role === "admin";
+  const [recording, setRecording] = useState(false);
+  useEffect(() => {
+    getRecordingSetting().then(setRecording).catch(() => {});
+  }, []);
+  function onToggleRecording(v: boolean) {
+    setRecording(v); // optimistic
+    setRecordingSetting(v).catch(() => {});
+  }
 
   return (
     <Screen>
@@ -72,13 +83,17 @@ export default function SettingsScreen() {
           <Row icon="bell.badge" iconColor={voiceReg.startsWith("registered") ? t.colors.success : t.colors.warning} label="Incoming calls" value={voiceReg} />
         </Group>
 
-        <Group title="Calling" footer="Applies once native calling is enabled on this device.">
+        <Group title="Calling" footer="Applies once native calling is enabled on this device. Call Recording is a business-wide setting managed by admins.">
           <Row icon="phone.arrow.up.right.fill" iconColor="#34C759" label="Call Waiting" toggle={callWaiting} onToggle={setCallWaiting} />
           <Row icon="arrow.turn.up.right" iconColor="#0A84FF" label="Ring My Mobile"
             value={settings.ring_my_mobile ? "On" : "Off"} chevron
             onPress={() => router.push("/call-forwarding")} />
           <Row icon="phone.badge.checkmark" iconColor="#5E5CE6" label="Auto-Answer" toggle={autoAnswer} onToggle={setAutoAnswer} />
-          <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" toggle={recording} onToggle={setRecording} />
+          {isAdmin ? (
+            <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" toggle={recording} onToggle={onToggleRecording} />
+          ) : (
+            <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" value={recording ? "On" : "Off"} />
+          )}
         </Group>
 
         <Group title="Audio">
