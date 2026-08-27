@@ -1,9 +1,11 @@
 import React from "react";
-import { View, Text, ScrollView, ActivityIndicator, StyleSheet } from "react-native";
+import { View, Text, ScrollView, ActivityIndicator, Pressable, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { getCallDetail, type CallEvent } from "../../lib/api";
 import { RecordingPlayer } from "../../components/recording-player";
+import { Icon } from "../../components/ui/Icon";
+import { haptics } from "../../theme/haptics";
 import { colors } from "../../lib/theme";
 
 // 🎨 COLORS FOR THIS PAGE (Call detail) — click a swatch to recolor just this screen.
@@ -31,6 +33,18 @@ export default function CallDetailScreen() {
     enabled: !!id,
   });
 
+  const peer = data ? (data.call.direction === "outbound" ? data.call.called_number : data.call.caller_number) : "";
+
+  function callBack() {
+    haptics.medium();
+    router.push({ pathname: "/call-active", params: { number: peer, name: peer } });
+  }
+
+  function message() {
+    haptics.tap();
+    router.push({ pathname: "/thread/[number]", params: { number: peer } });
+  }
+
   return (
     <View style={styles.wrap}>
       {isLoading ? (
@@ -39,6 +53,23 @@ export default function CallDetailScreen() {
         <Text style={styles.muted}>Couldn&apos;t load this call.</Text>
       ) : (
         <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
+          {peer ? (
+            <View style={styles.actionRow}>
+              <Pressable onPress={callBack} style={styles.actionBtn}>
+                <View style={[styles.actionIcon, { backgroundColor: "#1e3a24" }]}>
+                  <Icon name="phone.fill" fallback="call" size={20} color="#34C759" />
+                </View>
+                <Text style={styles.actionLabel}>Call</Text>
+              </Pressable>
+              <Pressable onPress={message} style={styles.actionBtn}>
+                <View style={[styles.actionIcon, { backgroundColor: "#1e2c3a" }]}>
+                  <Icon name="message.fill" fallback="chatbubble" size={20} color="#4FA8FF" />
+                </View>
+                <Text style={styles.actionLabel}>Message</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
           <View style={styles.card}>
             <Field label="Direction" value={data.call.direction === "outbound" ? "Outgoing" : "Incoming"} />
             <Field label="From" value={data.call.caller_number} />
@@ -96,6 +127,10 @@ function Field({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: page.bg, padding: 16 },
   muted: { color: page.mute, marginTop: 12, textAlign: "center" },
+  actionRow: { flexDirection: "row", justifyContent: "center", gap: 32, marginBottom: 16 },
+  actionBtn: { alignItems: "center", gap: 6 },
+  actionIcon: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center" },
+  actionLabel: { color: page.text, fontSize: 12, fontWeight: "600" },
   card: { backgroundColor: page.surface, borderColor: page.border, borderWidth: 1, borderRadius: 10, padding: 14, marginBottom: 12 },
   cardLabel: { color: page.dim, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
   field: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 },

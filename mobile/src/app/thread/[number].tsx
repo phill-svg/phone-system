@@ -38,7 +38,7 @@ export default function ThreadScreen() {
     const body = text.trim();
     if (!body || !to.trim() || sending) return;
     setSending(true);
-    const ok = await sendMessage(to.trim(), body, effectiveFrom);
+    const ok = await sendMessage(to.trim(), body, isMessenger ? undefined : effectiveFrom);
     setSending(false);
     if (ok) {
       haptics.success();
@@ -108,8 +108,13 @@ export default function ThreadScreen() {
           />
         )}
 
-        {/* "From" picker — a chip row when there are 2+ SMS numbers, a static line for one, hidden for none. */}
-        {smsNums.length >= 2 ? (
+        {/* "From" picker — a chip row when there are 2+ SMS numbers, a static line for one, hidden for none.
+            On Messenger threads there's no SMS number to pick — replies go out via the Facebook Page. */}
+        {isMessenger ? (
+          <View style={[styles.fromBar, { borderTopColor: t.colors.separator }]}>
+            <Text style={[type.caption, { color: t.colors.labelSecondary }]}>via Facebook Messenger</Text>
+          </View>
+        ) : smsNums.length >= 2 ? (
           <View style={[styles.fromBar, { borderTopColor: t.colors.separator }]}>
             <Text style={[type.caption, { color: t.colors.labelSecondary }]}>From</Text>
             {smsNums.map((n) => {
