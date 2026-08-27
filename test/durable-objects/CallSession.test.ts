@@ -262,7 +262,7 @@ describe("CallSession", () => {
 
     expect(xml).toContain("<Enqueue");
     expect(xml).toContain("CA-enq"); // per-call queue name
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
   });
 
   it("plays a greeting (play node) BEFORE enqueuing when a play precedes a direct ring", async () => {
@@ -317,10 +317,10 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-legs", { digits: "1" }));
 
     const row = await env.DB.prepare("SELECT * FROM softphone_call_legs WHERE call_sid = ?")
-      .bind("sid-client:phill@b.com")
+      .bind("sid-client:phill@b.com?CallerNumber=61400000000")
       .first<{ call_sid: string; staff_email: string; conference_name: string }>();
     expect(row).toMatchObject({
-      call_sid: "sid-client:phill@b.com",
+      call_sid: "sid-client:phill@b.com?CallerNumber=61400000000",
       staff_email: "phill@b.com", // "client:" prefix stripped
       conference_name: "CA-legs", // the caller's CallSid, used as the queue/conference name
     });
@@ -381,14 +381,17 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-cascade", { digits: "1" }));
 
     // Only the first number is dialed initially (cascade).
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
 
     // First leg fails → second number is now dialed.
-    await send(stub, agentStatus("CA-cascade", "sid-client:phill@b.com", "no-answer"));
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com", "client:sam@b.com"]);
+    await send(stub, agentStatus("CA-cascade", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    expect(outboundDials(fetchMock)).toEqual([
+      "client:phill@b.com?CallerNumber=61400000000",
+      "client:sam@b.com?CallerNumber=61400000000",
+    ]);
 
     // Second leg answers → bridges.
-    const answer = await send(stub, agentAnswer("CA-cascade", "sid-client:sam@b.com"));
+    const answer = await send(stub, agentAnswer("CA-cascade", "sid-client:sam@b.com?CallerNumber=61400000000"));
     expect(answer.xml).toContain("<Dial");
 
     const left = await send(stub, queueLeft("CA-cascade"));
@@ -413,11 +416,15 @@ describe("CallSession", () => {
 
     expect(xml).toContain("<Enqueue");
     expect(outboundDials(fetchMock).sort()).toEqual(
-      ["client:phill@b.com", "client:sam@b.com", "client:jo@b.com"].sort()
+      [
+        "client:phill@b.com?CallerNumber=61400000000",
+        "client:sam@b.com?CallerNumber=61400000000",
+        "client:jo@b.com?CallerNumber=61400000000",
+      ].sort()
     );
 
     // First leg answers → the other two are cancelled.
-    const answer = await send(stub, agentAnswer("CA-simul", "sid-client:phill@b.com"));
+    const answer = await send(stub, agentAnswer("CA-simul", "sid-client:phill@b.com?CallerNumber=61400000000"));
     expect(answer.xml).toContain("<Dial");
     expect(cancelHits(fetchMock).length).toBe(2);
   });
@@ -515,8 +522,8 @@ describe("CallSession", () => {
     expect(outboundDials(fetchMock).length).toBe(2);
 
     // Both legs fail individually; the second failure empties attemptSids → EXHAUSTED → DONE{no_answer}.
-    await send(stub, agentStatus("CA-simul-noans", "sid-client:phill@b.com", "no-answer"));
-    await send(stub, agentStatus("CA-simul-noans", "sid-client:sam@b.com", "busy"));
+    await send(stub, agentStatus("CA-simul-noans", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    await send(stub, agentStatus("CA-simul-noans", "sid-client:sam@b.com?CallerNumber=61400000000", "busy"));
 
     // Hold poll now sees a non-DIALING plan and tells the caller to leave the queue.
     const poll = await send(stub, {
@@ -652,7 +659,7 @@ describe("CallSession", () => {
     await seedStaff("phill@b.com");
     await seedStaff("sam@b.com");
     // First number dials OK, second throws mid-batch.
-    failCreateFor("client:sam@b.com");
+    failCreateFor("client:sam@b.com?CallerNumber=61400000000");
 
     const stub = stubFor("CA-dialfail");
     await send(stub, mainEvent("CA-dialfail"));
@@ -666,7 +673,7 @@ describe("CallSession", () => {
     // Exactly the one successfully-created leg was cancelled.
     const cancels = cancelHits(fetchMock);
     expect(cancels.length).toBe(1);
-    expect(cancels[0]).toContain("sid-client:phill@b.com");
+    expect(cancels[0]).toContain("sid-client:phill@b.com?CallerNumber=61400000000");
 
     // No activeRing was persisted (the whole batch failed), so a later hold poll just leaves.
     const poll = await send(stub, {
@@ -684,16 +691,16 @@ describe("CallSession", () => {
     await seedStaff("phill@b.com");
     await seedStaff("sam@b.com");
     // The first (cascade) number dials OK; the second (the cascade advance) throws.
-    failCreateFor("client:sam@b.com");
+    failCreateFor("client:sam@b.com?CallerNumber=61400000000");
 
     const stub = stubFor("CA-cascade-dialfail");
     await send(stub, mainEvent("CA-cascade-dialfail"));
     const enq = await send(stub, mainEvent("CA-cascade-dialfail", { digits: "1" }));
     expect(enq.xml).toContain("<Enqueue"); // first leg dialed OK → caller enqueued
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
 
     // First leg fails → attempt to dial the second throws → plan should transition to no_answer.
-    const s = await send(stub, agentStatus("CA-cascade-dialfail", "sid-client:phill@b.com", "no-answer"));
+    const s = await send(stub, agentStatus("CA-cascade-dialfail", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
     expect(s.status).toBe(200);
 
     // No stale DIALING state waiting on a phantom leg: hold poll now sees non-DIALING → <Leave/>.
@@ -821,11 +828,14 @@ describe("CallSession", () => {
     const stub = stubFor("CA-dup");
     await send(stub, mainEvent("CA-dup"));
     await send(stub, mainEvent("CA-dup", { digits: "1" }));
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
 
     // First delivery: first leg fails → second number dialed.
-    await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com", "no-answer"));
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com", "client:sam@b.com"]);
+    await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    expect(outboundDials(fetchMock)).toEqual([
+      "client:phill@b.com?CallerNumber=61400000000",
+      "client:sam@b.com?CallerNumber=61400000000",
+    ]);
 
     // Snapshot state directly from DO storage after the first (legitimate) delivery.
     const before = await runInDurableObject(stub, async (instance) =>
@@ -835,7 +845,7 @@ describe("CallSession", () => {
     const cancelsAfterFirst = cancelHits(fetchMock).length;
 
     // Duplicate delivery of the SAME terminal event for sid-client:phill@b.com (already removed).
-    const dup = await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com", "no-answer"));
+    const dup = await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
     expect(dup.status).toBe(200);
 
     // No extra dial or cancel triggered by the duplicate, and stored state is byte-identical.
