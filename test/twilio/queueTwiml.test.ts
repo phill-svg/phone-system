@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { FlowCommand } from "../../src/ivr/flowEngine";
 import {
   renderCallbackAck,
-  renderDialIntoQueue,
   renderEnqueue,
   renderHold,
   renderLeave,
@@ -83,35 +82,6 @@ describe("renderLeave", () => {
     expect(renderLeave()).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response><Leave/></Response>'
     );
-  });
-});
-
-describe("renderDialIntoQueue", () => {
-  it("renders the agent-leg <Dial><Queue> with dual recording and callbacks", () => {
-    const xml = renderDialIntoQueue({
-      queueName: "queue-CA-abc",
-      actionUrl: "https://x.example/webhooks/twilio/agent-status?callSid=CA-abc",
-      recordingStatusCallbackUrl: "https://x.example/webhooks/twilio/recording-status?callSid=CA-abc",
-    });
-    expect(xml).toBe(
-      '<?xml version="1.0" encoding="UTF-8"?><Response>' +
-        '<Dial action="https://x.example/webhooks/twilio/agent-status?callSid=CA-abc" method="POST" ' +
-        'record="record-from-answer-dual" ' +
-        'recordingStatusCallback="https://x.example/webhooks/twilio/recording-status?callSid=CA-abc" ' +
-        'recordingStatusCallbackMethod="POST">' +
-        "<Queue>queue-CA-abc</Queue>" +
-        "</Dial>" +
-        "</Response>"
-    );
-  });
-
-  it("XML-escapes the queue name", () => {
-    const xml = renderDialIntoQueue({
-      queueName: "q&<'",
-      actionUrl: "https://x.example/a",
-      recordingStatusCallbackUrl: "https://x.example/r",
-    });
-    expect(xml).toContain("<Queue>q&amp;&lt;&apos;</Queue>");
   });
 });
 

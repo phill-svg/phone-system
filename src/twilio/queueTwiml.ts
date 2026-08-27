@@ -53,23 +53,6 @@ export function renderLeave(): string {
 }
 
 /**
- * Renders the agent/staff-leg TwiML: bridges the answering staff leg into the caller's
- * queue and records the resulting conversation.
- */
-export function renderDialIntoQueue(opts: {
-  queueName: string;
-  actionUrl: string;
-  recordingStatusCallbackUrl: string;
-}): string {
-  return wrapResponse(
-    `<Dial action="${opts.actionUrl}" method="POST" record="record-from-answer-dual" ` +
-      `recordingStatusCallback="${opts.recordingStatusCallbackUrl}" recordingStatusCallbackMethod="POST">` +
-      `<Queue>${escapeXml(opts.queueName)}</Queue>` +
-      `</Dial>`
-  );
-}
-
-/**
  * Renders the "callback_requested" acknowledgement: a polite closing message + hangup.
  * Used after the caller presses star to request a callback (the D1 write is Task 9's job).
  */
