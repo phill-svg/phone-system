@@ -4,4 +4,4 @@
 // sat alone (ringing out / on hold). We serve an identical copy from our own /media route, which
 // Twilio fetches reliably. Do NOT revert to an sdk.twilio.com URL. Both the conference ringback and
 // the queue-hold ringback import this single constant.
-export const RINGBACK_URL = "https://phone.tcbpestcontrolcanberra.com.au/media/system/ringback.mp3";
+export const RINGBACK_URL = "https://tcbvoip.app/media/system/ringback.mp3";

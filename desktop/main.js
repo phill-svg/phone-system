@@ -5,7 +5,7 @@ const { app, BrowserWindow, shell, session, Tray, Menu, ipcMain, Notification, p
 
 // Single source of truth for the dashboard URL. If the worker is ever moved
 // to a custom domain, update this one line.
-const DASHBOARD_URL = "https://phone.tcbpestcontrolcanberra.com.au/admin/phone";
+const DASHBOARD_URL = "https://tcbvoip.app/admin/phone";
 
 let mainWindow = null;
 let tray = null;
