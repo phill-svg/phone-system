@@ -12,12 +12,16 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "TCB Phone needs microphone access to make and receive calls.",
-        "UIBackgroundModes": ["audio", "voip"]
+        "UIBackgroundModes": [
+          "audio",
+          "voip"
+        ]
       },
       "entitlements": {
         "aps-environment": "production"
       },
-      "bundleIdentifier": "au.com.tcbpestcontrolcanberra.tcbphone"
+      "bundleIdentifier": "au.com.tcbpestcontrolcanberra.tcbphone",
+      "buildNumber": "2"
     },
     "android": {
       "package": "au.com.tcbpestcontrolcanberra.tcbphone",
