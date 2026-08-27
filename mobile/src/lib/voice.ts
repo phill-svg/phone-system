@@ -134,6 +134,14 @@ export async function placeCall(to: string, from?: string): Promise<Call> {
   if (from) params.CallerId = from;
   const call = await voice.connect(token, { params });
   activeCall = call;
+  // Identity-guarded: if a call-waiting swap has already moved `activeCall` to a newer
+  // call by the time this call terminates, don't clobber it.
+  call.on(Call.Event.Disconnected, () => {
+    if (activeCall === call) activeCall = null;
+  });
+  call.on(Call.Event.ConnectFailure, () => {
+    if (activeCall === call) activeCall = null;
+  });
   applyDefaultAudioRoute().catch(() => {});
   return call;
 }
@@ -191,6 +199,14 @@ export async function acceptIncoming(): Promise<Call | null> {
   if (!invite) return null;
   const call = await invite.accept();
   activeCall = call;
+  // Identity-guarded: if a call-waiting swap has already moved `activeCall` to a newer
+  // call by the time this call terminates, don't clobber it.
+  call.on(Call.Event.Disconnected, () => {
+    if (activeCall === call) activeCall = null;
+  });
+  call.on(Call.Event.ConnectFailure, () => {
+    if (activeCall === call) activeCall = null;
+  });
   pendingInvite = null;
   applyDefaultAudioRoute().catch(() => {});
   return call;

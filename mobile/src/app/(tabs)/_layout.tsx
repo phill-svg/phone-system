@@ -25,7 +25,7 @@ function useIncomingCalls() {
         return;
       }
       if (action === "answer-now") {
-        // Navigate to the active-call screen in incoming mode with an auto-accept flag.
+        // Push the ringing screen with an auto-accept flag so it immediately answers.
         router.push({ pathname: "/call-incoming", params: { number: from, name: "", auto: "1" } });
         return;
       }
