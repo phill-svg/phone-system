@@ -14,7 +14,14 @@ import {
   handleApiLogin, handleApiLogout,
 } from "./api/auth";
 import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta, getLiveCalls, reconcileStaleCalls } from "./api/calls";
-import { handleGetBusinessHours, handleGetCallBlocklist, handlePutBusinessHours, handlePutCallBlocklist } from "./api/settings";
+import {
+  handleGetBusinessHours,
+  handleGetCallBlocklist,
+  handlePutBusinessHours,
+  handlePutCallBlocklist,
+  handleGetRecording as handleGetRecordingSetting,
+  handlePutRecording,
+} from "./api/settings";
 import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
@@ -623,7 +630,9 @@ export default {
       const adminOnlyRead =
         url.pathname.startsWith("/api/ivr/") ||
         (request.method === "GET" &&
-          (url.pathname === "/api/settings/business-hours" || url.pathname === "/api/settings/call-blocklist"));
+          (url.pathname === "/api/settings/business-hours" ||
+          url.pathname === "/api/settings/call-blocklist" ||
+          url.pathname === "/api/settings/recording"));
       if (adminOnlyRead && staff.role !== "admin") {
         return new Response("Forbidden", { status: 403 });
       }
@@ -675,6 +684,9 @@ export default {
       if (url.pathname === "/api/settings/call-blocklist") {
         if (request.method === "GET") return handleGetCallBlocklist(env.DB);
         if (request.method === "PUT") return handlePutCallBlocklist(request, env.DB, staff);
+      }
+      if (url.pathname === "/api/settings/recording") {
+        return request.method === "PUT" ? handlePutRecording(request, env.DB, staff) : handleGetRecordingSetting(env.DB);
       }
       if (url.pathname === "/api/settings/me") {
         return request.method === "PUT"

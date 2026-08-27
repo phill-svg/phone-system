@@ -1,5 +1,12 @@
 import { jsonResponse } from "./respond";
-import { getBusinessHours, getCallBlocklist, setBusinessHours, setCallBlocklist } from "../db/settings";
+import {
+  getBusinessHours,
+  getCallBlocklist,
+  setBusinessHours,
+  setCallBlocklist,
+  getRecordingEnabled,
+  setRecordingEnabled,
+} from "../db/settings";
 import type { BusinessHoursSchedule, DayWindow } from "../ivr/businessHours";
 import type { StaffUser } from "../access/requireStaffUser";
 
@@ -74,5 +81,25 @@ export async function handlePutCallBlocklist(request: Request, db: D1Database, s
   }
   if (!isStringArray(body)) return INVALID_BODY_RESPONSE();
   await setCallBlocklist(db, body);
+  return jsonResponse({ ok: true });
+}
+
+export async function handleGetRecording(db: D1Database): Promise<Response> {
+  return jsonResponse({ recording_enabled: await getRecordingEnabled(db) });
+}
+
+export async function handlePutRecording(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
+  const forbidden = forbiddenUnlessAdmin(staff);
+  if (forbidden) return forbidden;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return INVALID_BODY_RESPONSE();
+  }
+  if (typeof body !== "object" || body === null || typeof (body as { recording_enabled?: unknown }).recording_enabled !== "boolean") {
+    return INVALID_BODY_RESPONSE();
+  }
+  await setRecordingEnabled(db, (body as { recording_enabled: boolean }).recording_enabled);
   return jsonResponse({ ok: true });
 }

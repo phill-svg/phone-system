@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { handlePutBusinessHours, handlePutCallBlocklist } from "../../src/api/settings";
+import { handlePutBusinessHours, handlePutCallBlocklist, handleGetRecording, handlePutRecording } from "../../src/api/settings";
 import { getCallBlocklist } from "../../src/db/settings";
 
 const STAFF: import("../../src/access/requireStaffUser").StaffUser = {
@@ -63,5 +63,25 @@ describe("handlePutCallBlocklist", () => {
     );
     expect(res.status).toBe(200);
     expect(await getCallBlocklist(env.DB)).toEqual(["+61400000000"]);
+  });
+});
+
+const admin = { email: "a@b.com", role: "admin" as const };
+const staff = { email: "s@b.com", role: "staff" as const };
+function putRec(body: unknown) {
+  return new Request("https://x/api/settings/recording", { method: "PUT", body: JSON.stringify(body) });
+}
+
+describe("/api/settings/recording", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'recording_enabled'").run();
+  });
+  it("GET returns default true", async () => {
+    expect(await (await handleGetRecording(env.DB)).json()).toEqual({ recording_enabled: true });
+  });
+  it("admin PUT sets it; staff PUT is forbidden", async () => {
+    expect((await handlePutRecording(putRec({ recording_enabled: false }), env.DB, admin)).status).toBe(200);
+    expect(await (await handleGetRecording(env.DB)).json()).toEqual({ recording_enabled: false });
+    expect((await handlePutRecording(putRec({ recording_enabled: true }), env.DB, staff)).status).toBe(403);
   });
 });

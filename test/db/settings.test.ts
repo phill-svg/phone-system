@@ -1,6 +1,13 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { getBusinessHours, setBusinessHours, getCallBlocklist, setCallBlocklist } from "../../src/db/settings";
+import {
+  getBusinessHours,
+  setBusinessHours,
+  getCallBlocklist,
+  setCallBlocklist,
+  getRecordingEnabled,
+  setRecordingEnabled,
+} from "../../src/db/settings";
 
 describe("settings.businessHours", () => {
   beforeEach(async () => {
@@ -41,5 +48,20 @@ describe("call blocklist", () => {
   it("round-trips a saved list", async () => {
     await setCallBlocklist(env.DB, ["+61400000000", "+61400000001"]);
     expect(await getCallBlocklist(env.DB)).toEqual(["+61400000000", "+61400000001"]);
+  });
+});
+
+describe("recording setting", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'recording_enabled'").run();
+  });
+  it("defaults to true when unset", async () => {
+    expect(await getRecordingEnabled(env.DB)).toBe(true);
+  });
+  it("round-trips false and true", async () => {
+    await setRecordingEnabled(env.DB, false);
+    expect(await getRecordingEnabled(env.DB)).toBe(false);
+    await setRecordingEnabled(env.DB, true);
+    expect(await getRecordingEnabled(env.DB)).toBe(true);
   });
 });

@@ -42,3 +42,18 @@ export async function setCallBlocklist(db: D1Database, numbers: string[]): Promi
     .bind(CALL_BLOCKLIST_KEY, JSON.stringify(numbers))
     .run();
 }
+
+const RECORDING_ENABLED_KEY = "recording_enabled";
+
+export async function getRecordingEnabled(db: D1Database): Promise<boolean> {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(RECORDING_ENABLED_KEY).first<{ value: string }>();
+  if (!row) return true; // default ON
+  return JSON.parse(row.value) === true;
+}
+
+export async function setRecordingEnabled(db: D1Database, enabled: boolean): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(RECORDING_ENABLED_KEY, JSON.stringify(enabled))
+    .run();
+}
