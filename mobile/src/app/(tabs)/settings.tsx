@@ -11,16 +11,18 @@ import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
 import { onRegStatus } from "../../lib/voice";
 import { usePersistedBool } from "../../lib/prefs";
+import { useUserSettings } from "../../lib/userSettings";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "19";
+const OTA_BUILD = "20";
 
 export default function SettingsScreen() {
   const t = useTheme();
   const { user, signOut } = useAuth();
   const { status } = useRegistration();
   const { preference, setPreference } = useThemePreference();
+  const { settings, update } = useUserSettings();
   const [voiceReg, setVoiceReg] = useState("…");
   useEffect(() => onRegStatus(setVoiceReg), []);
   const [checking, setChecking] = useState(false);
@@ -58,9 +60,6 @@ export default function SettingsScreen() {
   const [autoAnswer, setAutoAnswer] = usePersistedBool("pref_auto_answer", false);
   const [recording, setRecording] = usePersistedBool("pref_recording", true);
   const [bluetooth, setBluetooth] = usePersistedBool("pref_bluetooth", true);
-  const [nIncoming, setNIncoming] = usePersistedBool("pref_notify_incoming", true);
-  const [nMissed, setNMissed] = usePersistedBool("pref_notify_missed", true);
-  const [nVoicemail, setNVoicemail] = usePersistedBool("pref_notify_voicemail", true);
 
   return (
     <Screen>
@@ -85,10 +84,15 @@ export default function SettingsScreen() {
           <Row icon="speaker.wave.2.fill" iconColor="#FF9500" label="Audio Routing" value="Automatic" onPress={() => {}} chevron />
         </Group>
 
-        <Group title="Notifications">
-          <Row icon="phone.fill" iconColor="#34C759" label="Incoming Calls" toggle={nIncoming} onToggle={setNIncoming} />
-          <Row icon="phone.arrow.down.left.fill" iconColor={t.colors.accent} label="Missed Calls" toggle={nMissed} onToggle={setNMissed} />
-          <Row icon="waveform" iconColor="#0A84FF" label="Voicemail" toggle={nVoicemail} onToggle={setNVoicemail} />
+        <Group title="Notifications" footer="Choose which alerts this account receives.">
+          <Row icon="phone.fill" iconColor="#34C759" label="Incoming Calls"
+            toggle={settings.notif_incoming} onToggle={(v) => update({ notif_incoming: v })} />
+          <Row icon="phone.arrow.down.left.fill" iconColor={t.colors.accent} label="Missed Calls"
+            toggle={settings.notif_missed} onToggle={(v) => update({ notif_missed: v })} />
+          <Row icon="waveform" iconColor="#0A84FF" label="Voicemail"
+            toggle={settings.notif_voicemail} onToggle={(v) => update({ notif_voicemail: v })} />
+          <Row icon="message.fill" iconColor="#30D158" label="SMS Messages"
+            toggle={settings.notif_sms} onToggle={(v) => update({ notif_sms: v })} />
         </Group>
 
         <Group title="Appearance" footer="Choose Light or Dark, or follow your device's setting.">
