@@ -82,7 +82,17 @@ type MainWebhookEvent = {
 type HoldPollEvent = { kind: "hold_poll"; callSid: string; webhookUrl: string };
 type HoldDigitEvent = { kind: "hold_digit"; callSid: string; digits: string | null; webhookUrl: string };
 type QueueLeftEvent = { kind: "queue_left"; callSid: string; queueResult: string | null; webhookUrl: string };
-type AgentAnswerEvent = { kind: "agent_answer"; callSid: string; agentCallSid: string; webhookUrl: string };
+type AgentAnswerEvent = {
+  kind: "agent_answer";
+  callSid: string;
+  agentCallSid: string;
+  webhookUrl: string;
+  // Twilio's synchronous-AMD classification of the answering leg ("human" | "machine_start" |
+  // "machine_end_beep" | "machine_end_silence" | "machine_end_other" | "fax" | "unknown"). Only
+  // present when the leg was dialed with MachineDetection enabled (the pstn mobile leg -- see
+  // dialStaff). Undefined for softphone legs, which never carry AMD.
+  answeredBy?: string;
+};
 type AgentStatusEvent = {
   kind: "agent_status";
   callSid: string;
@@ -568,6 +578,30 @@ export class CallSession extends DurableObject<Env> {
   // (the agent's) leg's own answer-webhook response to join the same Conference.
   // -------------------------------------------------------------------------
   private async handleAgentAnswer(body: AgentAnswerEvent): Promise<Response> {
+    // Synchronous AMD result (pstn mobile leg only -- see dialStaff). A machine/fax answer means a
+    // staff member's personal carrier voicemail (or a fax tone) picked up, not a human -- hang up
+    // THIS leg only, without cancelling sibling attempts (never touch CANCEL_OTHER_ATTEMPTS/bridge
+    // logic below). Ambiguous/human results ("human", "unknown", undefined for AMD-less legs) fall
+    // through to the bridge below -- never drop a real call on an ambiguous classification.
+    //
+    // We must advance the ring plan's failure bookkeeping HERE, synchronously, rather than relying
+    // on this leg's later agent-status callback: since Twilio only reports terminal CallStatus
+    // "completed" for a leg that was actually answered (AMD requires exactly that) and then ended
+    // -- never "no-answer"/"busy"/"failed"/"canceled" -- and handleAgentStatus's cascade/exhaustion
+    // advancement is gated on AGENT_FAILURE_STATUSES, which does NOT include "completed". Without
+    // this, a machine-answered leg would never be removed from attemptSids, so a cascade would
+    // never dial the next number and a simultaneous ring would never reach ALL_ATTEMPTS_EXHAUSTED
+    // -- the no-answer -> business-voicemail fallthrough would silently never fire.
+    if (body.answeredBy && (body.answeredBy.startsWith("machine") || body.answeredBy === "fax")) {
+      await this.logEvent(body.callSid, "mobile_machine_answered", { agentCallSid: body.agentCallSid });
+      const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
+      if (activeRing && activeRing.ringPlanState.name === "DIALING" && activeRing.attemptSids.includes(body.agentCallSid)) {
+        const origin = new URL(body.webhookUrl).origin;
+        await this.advanceRingPlanOnFailedAttempt(activeRing, body.agentCallSid, body.callSid, origin);
+      }
+      return this.xml(wrapResponse("<Hangup/>"));
+    }
+
     const origin = new URL(body.webhookUrl).origin;
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
 
@@ -643,7 +677,32 @@ export class CallSession extends DurableObject<Env> {
     }
 
     const origin = new URL(body.webhookUrl).origin;
-    activeRing.attemptSids = activeRing.attemptSids.filter((sid) => sid !== body.agentCallSid);
+    await this.advanceRingPlanOnFailedAttempt(activeRing, body.agentCallSid, body.callSid, origin);
+    return new Response("ok", { status: 200 });
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared failed-attempt bookkeeping: removes `agentCallSid` from the active ring plan and
+  // advances it exactly like a busy/no-answer/failed/canceled agent-status would -- cascade to the
+  // next number, or detect simultaneous exhaustion. Used by BOTH:
+  //  - handleAgentStatus, for real Twilio terminal failure statuses, and
+  //  - the machine-answer branch of handleAgentAnswer, for a leg we deliberately hang up ourselves
+  //    (whose own later Twilio status callback will report "completed", not a failure status, so
+  //    it can't rely on handleAgentStatus to do this bookkeeping -- see the comment there).
+  // Caller is responsible for checking `activeRing.ringPlanState.name === "DIALING"` and
+  // `activeRing.attemptSids.includes(agentCallSid)` (duplicate-delivery guard) before calling.
+  // -------------------------------------------------------------------------
+  private async advanceRingPlanOnFailedAttempt(
+    activeRing: ActiveRing,
+    agentCallSid: string,
+    callSid: string,
+    origin: string
+  ): Promise<void> {
+    // Callers already verify this before invoking, but TS can't carry that narrowing across the
+    // function boundary -- re-check here so `.strategy` below type-checks.
+    if (activeRing.ringPlanState.name !== "DIALING") return;
+
+    activeRing.attemptSids = activeRing.attemptSids.filter((sid) => sid !== agentCallSid);
 
     if (activeRing.ringPlanState.strategy === "cascade") {
       const { state, commands } = reduceRingPlan(activeRing.ringPlanState, { type: "ATTEMPT_FAILED" });
@@ -657,11 +716,11 @@ export class CallSession extends DurableObject<Env> {
         // new dial genuinely succeeds.
         let nextSid: string;
         try {
-          nextSid = await this.dialStaff(dialNext.number, body.callSid, origin, activeRing.ringConfig.timeoutSeconds);
+          nextSid = await this.dialStaff(dialNext.number, callSid, origin, activeRing.ringConfig.timeoutSeconds);
         } catch {
           activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
           await this.ctx.storage.put("activeRing", activeRing);
-          return new Response("ok", { status: 200 });
+          return;
         }
         activeRing.ringPlanState = state;
         activeRing.attemptSids.push(nextSid);
@@ -680,7 +739,6 @@ export class CallSession extends DurableObject<Env> {
     }
 
     await this.ctx.storage.put("activeRing", activeRing);
-    return new Response("ok", { status: 200 });
   }
 
   // ---- small helpers -----------------------------------------------------
@@ -724,22 +782,42 @@ export class CallSession extends DurableObject<Env> {
   }
 
   private async dialStaff(number: string, callSid: string, origin: string, timeoutSeconds?: number): Promise<string> {
-    // The staff leg's `From` stays our own owned business number -- Twilio's Caller-ID-ownership
-    // rules for the `From` field are murky for calls terminating at a `client:` identity (vs a real
-    // PSTN destination), so we don't gamble on passing the raw external caller's number there. Instead
-    // the real caller's number rides along as a custom Client parameter (Twilio's own documented
-    // mechanism for this: "Sending Custom Parameters to Clients"), which the softphone reads via
-    // call.customParameters.get('CallerNumber') to show the actual caller instead of our own number.
-    const callerRow = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
-      .bind(callSid)
-      .first<{ caller_number: string }>();
-    // Bare digits (no leading "+"): whether Twilio decodes this client-URI query value zero or one
-    // times before we read it back client-side is unverified, and a "+" is ambiguous either way (it
-    // can decode to a literal space). Digits-only survives both interpretations identically, and the
-    // client-side normalizer/formatter both already handle a bare-digits "61..." number correctly.
-    const to = callerRow?.caller_number
-      ? `${number}?CallerNumber=${encodeURIComponent(callerRow.caller_number.replace(/^\+/, ""))}`
-      : number;
+    // A ring target is either a softphone identity ("client:{email}") or a personal mobile
+    // ("pstn:{email}|{e164}", see resolveRingTargets). For a softphone we pass the real caller's
+    // number as a custom Client param (CallerNumber); for a PSTN mobile we dial the number directly
+    // (custom params don't reach the PSTN, and the mobile just shows our business From).
+    let to: string;
+    let ownerEmail: string;
+    // Synchronous AMD: only for the pstn mobile leg. A staff member's personal carrier voicemail
+    // must never hijack a business call, so a machine answer there gets hung up (handleAgentAnswer)
+    // instead of bridged. Client (softphone) legs get no AMD -- undefined here means "no MachineDetection
+    // param sent", and Twilio then never includes AnsweredBy on that leg's answer webhook.
+    let machineDetection: "Enable" | undefined;
+    if (number.startsWith("pstn:")) {
+      const rest = number.slice("pstn:".length);
+      const sep = rest.indexOf("|");
+      ownerEmail = rest.slice(0, sep);
+      to = rest.slice(sep + 1);
+      machineDetection = "Enable";
+    } else {
+      // The staff leg's `From` stays our own owned business number -- Twilio's Caller-ID-ownership
+      // rules for the `From` field are murky for calls terminating at a `client:` identity (vs a real
+      // PSTN destination), so we don't gamble on passing the raw external caller's number there. Instead
+      // the real caller's number rides along as a custom Client parameter (Twilio's own documented
+      // mechanism for this: "Sending Custom Parameters to Clients"), which the softphone reads via
+      // call.customParameters.get('CallerNumber') to show the actual caller instead of our own number.
+      ownerEmail = number.startsWith("client:") ? number.slice("client:".length) : number;
+      const callerRow = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
+        .bind(callSid)
+        .first<{ caller_number: string }>();
+      // Bare digits (no leading "+"): whether Twilio decodes this client-URI query value zero or one
+      // times before we read it back client-side is unverified, and a "+" is ambiguous either way (it
+      // can decode to a literal space). Digits-only survives both interpretations identically, and the
+      // client-side normalizer/formatter both already handle a bare-digits "61..." number correctly.
+      to = callerRow?.caller_number
+        ? `${number}?CallerNumber=${encodeURIComponent(callerRow.caller_number.replace(/^\+/, ""))}`
+        : number;
+    }
     const { sid } = await createOutboundCall(
       this.env.TWILIO_ACCOUNT_SID,
       this.env.TWILIO_API_KEY_SID,
@@ -753,15 +831,14 @@ export class CallSession extends DurableObject<Env> {
         // Ring for the node's configured timeout (fall back to 20s) before Twilio declares the leg
         // unanswered, so cascade/no-answer fall-through happens promptly.
         timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : 20,
+        machineDetection,
       }
     );
-    // `number` is always a `client:{email}` identity (see resolveRingTargets) -- record this leg's
-    // ownership so handlePostHold/handlePostTransfer/handlePostCompleteTransfer can later verify a
-    // client-submitted CallSid actually belongs to the AUTHENTICATED staff member, not just that
-    // it's someone's leg in the conference. `callSid` here is the caller's own CallSid, which is
-    // also the queue/conference name (see startRing's renderEnqueue call).
-    const email = number.startsWith("client:") ? number.slice("client:".length) : number;
-    await recordCallLeg(this.env.DB, sid, email, callSid);
+    // Record this leg's ownership so handlePostHold/handlePostTransfer/handlePostCompleteTransfer
+    // can later verify a client-submitted CallSid actually belongs to the AUTHENTICATED staff
+    // member, not just that it's someone's leg in the conference. `callSid` here is the caller's
+    // own CallSid, which is also the queue/conference name (see startRing's renderEnqueue call).
+    await recordCallLeg(this.env.DB, sid, ownerEmail, callSid);
     return sid;
   }
 

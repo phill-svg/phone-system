@@ -8,6 +8,11 @@ export type OutboundCallOptions = {
   // status. Without it, unanswered legs ring on the carrier default (~30s+) before the flow
   // can fall through.
   timeoutSeconds?: number;
+  // Synchronous answering-machine detection: when set, Twilio delays the answer webhook briefly
+  // to classify the leg (human/machine/fax) and includes that result as `AnsweredBy` on the POST.
+  // Used ONLY for the pstn mobile leg (see CallSession.dialStaff) so a staff member's personal
+  // carrier voicemail can't hijack a business call.
+  machineDetection?: "Enable" | "DetectMessageEnd";
 };
 
 // The business number -- and therefore every caller leg, conference, and agent leg we attach
@@ -25,6 +30,7 @@ export async function createOutboundCall(
   if (opts.statusCallback) body.set("StatusCallback", opts.statusCallback);
   if (opts.statusCallbackEvent) body.set("StatusCallbackEvent", opts.statusCallbackEvent.join(","));
   if (opts.timeoutSeconds && opts.timeoutSeconds > 0) body.set("Timeout", String(Math.round(opts.timeoutSeconds)));
+  if (opts.machineDetection) body.set("MachineDetection", opts.machineDetection);
 
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls.json`, {
     method: "POST",

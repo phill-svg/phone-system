@@ -76,3 +76,15 @@ export async function setUserSettings(
   if (stmts.length) await db.batch(stmts);
   return getUserSettings(db, lower);
 }
+
+// Normalize an AU mobile to E.164 (+61…). Accepts "04xxxxxxxx", "+61…", "61…", with spaces.
+// Returns null if it isn't a plausible AU mobile (must yield +614xxxxxxxx, 12 chars after +61 = 9 digits).
+export function normalizeMobileE164(raw: string): string | null {
+  const digits = raw.replace(/[^\d+]/g, "");
+  let e164: string | null = null;
+  if (/^\+61\d{9}$/.test(digits)) e164 = digits;
+  else if (/^61\d{9}$/.test(digits)) e164 = `+${digits}`;
+  else if (/^0\d{9}$/.test(digits)) e164 = `+61${digits.slice(1)}`;
+  if (!e164) return null;
+  return /^\+614\d{8}$/.test(e164) ? e164 : null; // AU mobiles are +614xxxxxxxx
+}

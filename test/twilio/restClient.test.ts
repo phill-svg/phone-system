@@ -197,6 +197,45 @@ describe("Twilio REST client", () => {
       expect(params.get("StatusCallbackEvent")).toBeNull();
     });
 
+    it("sets MachineDetection when provided", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
+      );
+
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
+        to: "+61412345678",
+        from: "+61234567890",
+        url: "https://example.com/twiml",
+        machineDetection: "Enable",
+      });
+
+      const call = fetchMock.mock.calls[0]!;
+      const options = call[1] as RequestInit;
+      const bodyStr = options.body as string;
+      const params = new URLSearchParams(bodyStr);
+
+      expect(params.get("MachineDetection")).toBe("Enable");
+    });
+
+    it("omits MachineDetection when not provided", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })
+      );
+
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
+        to: "+61412345678",
+        from: "+61234567890",
+        url: "https://example.com/twiml",
+      });
+
+      const call = fetchMock.mock.calls[0]!;
+      const options = call[1] as RequestInit;
+      const bodyStr = options.body as string;
+      const params = new URLSearchParams(bodyStr);
+
+      expect(params.get("MachineDetection")).toBeNull();
+    });
+
     it("returns parsed sid on success (2xx response)", async () => {
       const expectedSid = "CAcall1234567890abcdef";
       fetchMock.mockResolvedValue(

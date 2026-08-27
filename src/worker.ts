@@ -352,6 +352,9 @@ export default {
           kind: "agent_answer",
           callSid,
           agentCallSid: params.CallSid,
+          // Present only when the leg was dialed with MachineDetection enabled (the pstn mobile
+          // leg -- see CallSession.dialStaff). Absent for softphone legs and other AMD-less legs.
+          answeredBy: params.AnsweredBy,
           webhookUrl: request.url,
         }),
       });

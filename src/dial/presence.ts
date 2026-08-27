@@ -22,9 +22,17 @@ export type StaffPresenceRow = {
 // truly closed/crashed tab in a reasonable time, without punishing brief inattention.
 export const HEARTBEAT_STALE_MS = 5 * 60_000;
 
-export function isStaffAvailable(staff: StaffPresenceRow, now: Date): boolean {
+// On-shift = available and within business hours. Deliberately ignores the softphone heartbeat:
+// used to decide whether to ring a staff member's personal MOBILE, which should reach them even
+// when their softphone/app is closed (see ring-my-mobile).
+export function isOnShift(staff: StaffPresenceRow, now: Date): boolean {
   if (staff.status !== "available") return false;
-  if (staff.lastHeartbeatAt === null) return false;
-  if (now.getTime() - staff.lastHeartbeatAt > HEARTBEAT_STALE_MS) return false;
   return isWithinBusinessHours(staff.schedule, now);
+}
+
+// Reachable via SOFTPHONE right now = on-shift AND a fresh heartbeat proves the app is online.
+export function isStaffAvailable(staff: StaffPresenceRow, now: Date): boolean {
+  if (!isOnShift(staff, now)) return false;
+  if (staff.lastHeartbeatAt === null) return false;
+  return now.getTime() - staff.lastHeartbeatAt <= HEARTBEAT_STALE_MS;
 }
