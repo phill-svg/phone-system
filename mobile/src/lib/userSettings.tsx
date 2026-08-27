@@ -23,21 +23,31 @@ export function UserSettingsProvider({ children }: { children: React.ReactNode }
   const [loaded, setLoaded] = useState(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const hydratedFromServer = useRef(false);
 
   // Paint from cache immediately, then refresh from the server once signed in.
   useEffect(() => {
     SecureStore.getItemAsync(CACHE_KEY)
       .then((raw) => {
-        if (raw) setSettings({ ...DEFAULTS, ...(JSON.parse(raw) as Partial<UserSettings>) });
+        if (raw && !hydratedFromServer.current) {
+          setSettings({ ...DEFAULTS, ...(JSON.parse(raw) as Partial<UserSettings>) });
+        }
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
   }, []);
 
   useEffect(() => {
+    if (status === "anon") {
+      hydratedFromServer.current = false;
+      setSettings(DEFAULTS);
+      SecureStore.deleteItemAsync(CACHE_KEY).catch(() => {});
+      return;
+    }
     if (status !== "authed") return;
     getUserSettings()
       .then((s) => {
+        hydratedFromServer.current = true;
         setSettings(s);
         SecureStore.setItemAsync(CACHE_KEY, JSON.stringify(s)).catch(() => {});
       })

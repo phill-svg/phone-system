@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { upsertPushToken, listPushTokens, deletePushTokens, getPushTokensForType } from "../db/pushTokens";
+import { upsertPushToken, deletePushTokens, getPushTokensForType } from "../db/pushTokens";
 import { findContactByPhone } from "../db/contacts";
 import { sendExpoPush } from "../push/expoPush";
 import type { StaffUser } from "../access/requireStaffUser";
