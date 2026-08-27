@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ScrollView, View, TextInput } from "react-native";
 import { Screen } from "../components/ui/Screen";
 import { Group, Row } from "../components/ui/Grouped";
@@ -9,6 +9,10 @@ export default function CallForwardingScreen() {
   const t = useTheme();
   const { settings, update } = useUserSettings();
   const [number, setNumber] = useState(settings.mobile_number);
+
+  useEffect(() => {
+    setNumber(settings.mobile_number);
+  }, [settings.mobile_number]);
 
   return (
     <Screen>
@@ -23,7 +27,10 @@ export default function CallForwardingScreen() {
             <TextInput
               value={number}
               onChangeText={setNumber}
-              onBlur={() => update({ mobile_number: number })}
+              onBlur={() => {
+                const next = number.trim();
+                if (next !== settings.mobile_number) update({ mobile_number: next });
+              }}
               placeholder="0412 345 678"
               placeholderTextColor={t.colors.labelTertiary}
               keyboardType="phone-pad"
