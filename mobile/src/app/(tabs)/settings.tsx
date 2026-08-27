@@ -15,7 +15,7 @@ import { useUserSettings } from "../../lib/userSettings";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "20";
+const OTA_BUILD = "21";
 
 export default function SettingsScreen() {
   const t = useTheme();
@@ -74,7 +74,9 @@ export default function SettingsScreen() {
 
         <Group title="Calling" footer="Applies once native calling is enabled on this device.">
           <Row icon="phone.arrow.up.right.fill" iconColor="#34C759" label="Call Waiting" toggle={callWaiting} onToggle={setCallWaiting} />
-          <Row icon="arrow.turn.up.right" iconColor="#0A84FF" label="Call Forwarding" value="Off" onPress={() => {}} chevron />
+          <Row icon="arrow.turn.up.right" iconColor="#0A84FF" label="Ring My Mobile"
+            value={settings.ring_my_mobile ? "On" : "Off"} chevron
+            onPress={() => router.push("/call-forwarding")} />
           <Row icon="phone.badge.checkmark" iconColor="#5E5CE6" label="Auto-Answer" toggle={autoAnswer} onToggle={setAutoAnswer} />
           <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" toggle={recording} onToggle={setRecording} />
         </Group>
