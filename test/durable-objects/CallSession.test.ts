@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setBusinessHours } from "../../src/db/settings";
+import { setUserSettings } from "../../src/db/userSettings";
 import { createAudioAsset } from "../../src/db/audioAssets";
 import type { CallSession } from "../../src/durable-objects/CallSession";
 import type { RingNodeTarget } from "../../src/dial/ringQueue";
@@ -324,6 +325,35 @@ describe("CallSession", () => {
       staff_email: "phill@b.com", // "client:" prefix stripped
       conference_name: "CA-legs", // the caller's CallSid, used as the queue/conference name
     });
+  });
+
+  it("ring-my-mobile: an opted-in staff member's mobile is dialed as a PSTN leg alongside the softphone", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    // simultaneous strategy: both the softphone leg and this staff member's pstn (mobile) leg are
+    // dialed in the same DIAL_ALL batch. Under the default "cascade" strategy only numbers[0] is
+    // dialed initially (see reduceRingPlan.startPlan), so the pstn leg would never reach dialStaff
+    // in this single-staff scenario -- "alongside the softphone" requires simultaneous here.
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm", strategy: "simultaneous" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    // opt this staff member into ring-my-mobile (import setUserSettings at the top of the file)
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-rmm");
+    await send(stub, mainEvent("CA-rmm"));
+    await send(stub, mainEvent("CA-rmm", { digits: "1" }));
+
+    const dialled = outboundDials(fetchMock);
+    // softphone leg still dialed (with the CallerNumber custom param), plus the raw mobile as PSTN
+    expect(dialled).toContain("client:phill@b.com?CallerNumber=61400000000");
+    expect(dialled).toContain("+61412345678");
+    // the PSTN leg carries NO CallerNumber suffix
+    expect(dialled.some((d) => d.startsWith("+61412345678?"))).toBe(false);
+
+    // the mobile leg's ownership is recorded against the staff email (mock sid = `sid-${To}`)
+    const legs = await env.DB.prepare("SELECT staff_email FROM softphone_call_legs WHERE call_sid = ?")
+      .bind("sid-+61412345678").first<{ staff_email: string }>();
+    expect(legs?.staff_email).toBe("phill@b.com");
   });
 
   it("full bridge: enqueue → agent_answer redirects the caller leg + renders <Dial><Conference> → queue_left(bridged) completes the call", async () => {
