@@ -3,8 +3,8 @@
 **Date:** 2026-08-27
 **Status:** Draft — awaiting user review. The two prior product decisions are now resolved by the
 fact that **both business numbers (`+61866108941` voice, `+61485034869` SMS/voice) are shared by
-all staff** — so inbound call handling, forwarding, and inbound recording are business-wide, while
-device/notification/audio preferences remain per-user.
+all staff** — so inbound recording is business-wide, while device/notification/audio preferences
+**and per-user "ring my mobile" call forwarding (Aircall-style)** remain per-user.
 **Depends on:** Workstream A (tcbvoip.app migration) — done.
 **Scope:** Every row in the mobile app's Settings screen does something real. No row that only
 persists a boolean while doing nothing; no `onPress={() => {}}` stubs.
@@ -79,7 +79,7 @@ can enforce them (push gating, recording).
 mirroring the existing `settings` pattern. A single typed `UserSettings` shape + defaults live in a
 shared module so server and validation agree.
 
-**Business-wide rows** (Call Recording, Call Forwarding) do **not** use `user_settings`. They extend
+**Business-wide rows** (Call Recording only) do **not** use `user_settings`. They extend
 the **existing global `settings` table** and `src/db/settings.ts` / `src/api/settings.ts` (same place
 as business hours + blocklist), reusing that pattern. Their write handlers are **admin-gated**
 (`requireStaffUser` + `role === 'admin'`); staff receive the values read-only. So there are two
@@ -121,6 +121,7 @@ preview SDK supports it; the row is still honestly functional in MVP form.
 | Row | Behavior | Wiring | Acceptance |
 |-----|----------|--------|------------|
 | **Notifications: Incoming Calls / Missed Calls / Voicemail** | Server does not push a notification of a given type to a user who disabled that type. | Push sends become **typed**; recipient selection joins `push_tokens.staff_email` → `user_settings` and drops tokens whose owner disabled that type. New `getPushTokensForType(type)` replaces blanket `getAllPushTokens()` at notify sites. | Disable "Voicemail" on the phone → leaving a voicemail produces no push to that device; a call still does. |
+| **Call Forwarding** (Aircall-style "also ring my mobile") | Per-user: each staff member can turn on "ring my mobile" and enter their mobile number. When ON, an inbound call to the shared line rings **their mobile (PSTN leg) in addition to** the softphones — other staff's softphones still ring; **first to answer wins**. It is additive, not a redirect-away. | `resolveRingTargets` (`src/dial/ringQueue.ts`) today returns only `client:{email}` legs and deliberately skips mobiles. Extend it: for each ring candidate whose `ring_my_mobile` is ON, also emit a `number:{their_mobile}` PSTN leg into the same conference dial. **Nuance:** the mobile leg should ring when the staff member is on-shift/available even if their **softphone is offline** (that's the point — catch calls when the app is closed), so the "softphone online" condition must gate only the `client:` leg, not the mobile leg. | Staff A enables "ring my mobile" with their cell → calling the business number rings A's cell **and** other staff's softphones at once; A answering on the cell connects and stops the others. With it OFF, A's cell never rings. |
 
 Note: SMS notifications already exist but have **no** Settings row today. This spec adds an
 **"SMS Messages"** notification row for parity, gated the same way. (Small addition; keeps the group
@@ -128,17 +129,13 @@ coherent.)
 
 ### C. Server — business-wide behavior (numbers are shared by all staff)
 
-Because both numbers are shared, these two rows are **business-wide**, stored in the global
-`settings` table, editable in-app by **admins** and shown read-only to staff (so everyone can see
-the current state). They are not per-user.
+Because both numbers are shared, **Call Recording** is **business-wide**, stored in the global
+`settings` table, editable in-app by **admins** and shown read-only to staff. (Call Forwarding is
+**per-user** — see Group B — because "ring my mobile" is inherently per-person.)
 
 | Row | Behavior | Wiring | Acceptance |
 |-----|----------|--------|------------|
 | **Call Recording** | Business-wide toggle for whether calls on the shared line(s) are recorded. Governs both the inbound queue dial and outbound `/twiml/voice-app`. Default ON (matches today's inbound behavior). | `queueTwiml.ts` and `/twiml/voice-app` read the global `recording` setting and include/omit `record="record-from-answer-dual"` accordingly. | Turn recording OFF (admin) → a new inbound/outbound call produces no recording; ON → it does. |
-| **Call Forwarding** | Business-wide: when ON with a target number, the shared inbound line forwards to that external number instead of ringing the app. Admin sets the number + on/off; staff see current state. | Inbound webhook (`/webhooks/twilio`) checks the global `call_forwarding` setting before the normal queue/IVR path; when enabled, returns `<Dial>` to the target. | Enable forwarding to a mobile (admin) → calling the business number rings that mobile, not the app; disable → normal app ringing resumes. |
-
-*Per-user note:* a future per-user "also ring my personal mobile" enhancement is possible but out of
-scope here — it is additive and does not change this business-wide design.
 
 ### D. Already functional (no change, listed for completeness)
 Account/Registration/Role/Incoming-calls status rows; Appearance (theme); Version; Check for
@@ -149,14 +146,14 @@ Sign Out.
 
 ## Resolved decisions
 
-- **Call Recording** and **Call Forwarding** are **business-wide** (admin-editable, staff-read-only),
-  resolved by the shared-numbers fact. Recording default stays ON to match today's behavior.
-- **Admin gating:** these two rows are editable only by `role = 'admin'`; the `PUT /api/settings`
-  path for business settings enforces this server-side (staff PUTs are rejected). Per-user rows have
-  no admin gate.
-
-Confirm at review: that business-wide (not per-user) is what you want for these two, and that
-recording should default ON.
+- **Call Forwarding is per-user, Aircall-style "also ring my mobile"** (additive PSTN leg alongside
+  the softphones; other staff still ring; first-to-answer wins). Lives in `user_settings`
+  (`ring_my_mobile: boolean`, `mobile_number: string`). Not a business-wide forward-away.
+- **Call Recording is business-wide** (admin-editable, staff-read-only), resolved by the
+  shared-numbers fact; default ON to match today's behavior.
+- **Admin gating:** only the business-wide Call Recording write is gated to `role = 'admin'`
+  (enforced server-side; staff PUTs rejected). Per-user rows — including Call Forwarding — have no
+  admin gate; each staff member controls their own.
 
 ---
 
@@ -172,7 +169,9 @@ recording should default ON.
 5. **Call handling (Group A: Auto-Answer + Call Waiting)** — invite-handler logic.
 6. **Call Recording** — business-wide setting honored in `queueTwiml.ts` + `/twiml/voice-app`
    (admin-gated edit).
-7. **Call Forwarding** — business-wide setting honored in the inbound webhook (admin-gated edit).
+7. **Call Forwarding (per-user "ring my mobile")** — extend `resolveRingTargets` to add each
+   opted-in staff member's `number:{mobile}` PSTN leg into the ring; settings UI = toggle + mobile
+   number field. Includes the online-vs-on-shift gating nuance for the mobile leg.
 
 Each step is independently shippable via OTA and testable on the dev build.
 
@@ -187,6 +186,6 @@ Each step is independently shippable via OTA and testable on the dev build.
 
 ## Out of scope
 
-- Admin UI beyond what Call Forwarding (D2) requires.
+- Admin UI beyond the single admin-gated Call Recording toggle.
 - True multi-call hold/swap (Call Waiting MVP is end-then-answer).
 - Any change to the calling/SMS transport itself.
