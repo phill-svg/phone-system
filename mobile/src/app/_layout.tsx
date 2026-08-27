@@ -5,6 +5,7 @@ import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { AuthProvider, useAuth } from "../lib/auth";
+import { UserSettingsProvider } from "../lib/userSettings";
 import { RegistrationProvider } from "../lib/registration";
 import { useTheme, ThemeProvider } from "../theme/theme";
 
@@ -60,7 +61,9 @@ export default function RootLayout() {
         <ThemeProvider>
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
-              <RootNavigator />
+              <UserSettingsProvider>
+                <RootNavigator />
+              </UserSettingsProvider>
             </AuthProvider>
           </QueryClientProvider>
         </ThemeProvider>

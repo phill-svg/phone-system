@@ -241,3 +241,21 @@ export async function registerPushToken(token: string, platform: string): Promis
     return false;
   }
 }
+
+// ---- Per-user settings ----
+export type UserSettings = {
+  notif_incoming: boolean;
+  notif_missed: boolean;
+  notif_voicemail: boolean;
+  notif_sms: boolean;
+  ring_my_mobile: boolean;
+  mobile_number: string;
+};
+
+export async function getUserSettings(): Promise<UserSettings> {
+  return apiFetch<UserSettings>("/api/settings/me");
+}
+
+export async function updateUserSettings(partial: Partial<UserSettings>): Promise<UserSettings> {
+  return apiFetch<UserSettings>("/api/settings/me", { method: "PUT", body: JSON.stringify(partial) });
+}
