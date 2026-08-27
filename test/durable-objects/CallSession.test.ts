@@ -133,10 +133,11 @@ const queueLeft = (callSid: string, queueResult: string | null = "bridged") => (
   queueResult,
   webhookUrl: `${ORIGIN}/webhooks/twilio/queue-left`,
 });
-const agentAnswer = (callSid: string, agentCallSid: string) => ({
+const agentAnswer = (callSid: string, agentCallSid: string, answeredBy?: string) => ({
   kind: "agent_answer",
   callSid,
   agentCallSid,
+  ...(answeredBy !== undefined ? { answeredBy } : {}),
   webhookUrl: `${ORIGIN}/webhooks/twilio/agent-answer?callSid=${callSid}`,
 });
 const agentStatus = (callSid: string, agentCallSid: string, callStatus: string) => ({
@@ -354,6 +355,88 @@ describe("CallSession", () => {
     const legs = await env.DB.prepare("SELECT staff_email FROM softphone_call_legs WHERE call_sid = ?")
       .bind("sid-+61412345678").first<{ staff_email: string }>();
     expect(legs?.staff_email).toBe("phill@b.com");
+  });
+
+  it("ring-my-mobile AMD: a machine answer on the mobile leg is hung up WITHOUT bridging or canceling the sibling softphone leg", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    // simultaneous strategy so the softphone leg and the pstn (mobile) leg are both live at once.
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm", strategy: "simultaneous" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-amd-machine");
+    await send(stub, mainEvent("CA-amd-machine"));
+    await send(stub, mainEvent("CA-amd-machine", { digits: "1" }));
+
+    // mock sid = `sid-${To}` -- the pstn leg's agentCallSid is "sid-+61412345678"
+    const answer = await send(stub, agentAnswer("CA-amd-machine", "sid-+61412345678", "machine_start"));
+
+    // Hung up, NOT bridged into the conference.
+    expect(answer.xml).toContain("<Hangup/>");
+    expect(answer.xml).not.toContain("<Dial");
+    expect(answer.xml).not.toContain("<Conference");
+
+    // The sibling softphone leg was NOT canceled -- it must keep ringing so a human can still
+    // answer there, and so the normal no-answer fallthrough to business voicemail stays intact.
+    // (A machine answer doesn't run the CANCEL_OTHER_ATTEMPTS branch at all, so there should be
+    // no cancel-call REST hits whatsoever.)
+    expect(cancelHits(fetchMock).length).toBe(0);
+  });
+
+  it("ring-my-mobile AMD: a human answer on the mobile leg bridges normally", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm", strategy: "simultaneous" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-amd-human");
+    await send(stub, mainEvent("CA-amd-human"));
+    await send(stub, mainEvent("CA-amd-human", { digits: "1" }));
+
+    const answer = await send(stub, agentAnswer("CA-amd-human", "sid-+61412345678", "human"));
+
+    expect(answer.xml).toContain("<Dial");
+    expect(answer.xml).toContain("<Conference");
+    expect(answer.xml).not.toContain("<Hangup/>");
+  });
+
+  it("ring-my-mobile AMD: machine on the mobile leg + no-answer on the softphone leg still exhausts the plan and falls through to voicemail", async () => {
+    // Twilio only ever reports "completed" (never a failure status) for a leg that was answered
+    // and then explicitly hung up via TwiML -- which is exactly what happens to a machine-answered
+    // pstn leg. If the machine branch didn't advance the ring plan itself (relying instead on that
+    // later agent-status "completed" callback, which handleAgentStatus's AGENT_FAILURE_STATUSES
+    // gate ignores), the pstn leg's sid would linger in attemptSids forever and
+    // ALL_ATTEMPTS_EXHAUSTED would never fire once the softphone leg also fails -- the caller would
+    // be stuck on hold instead of falling through to business voicemail.
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm", strategy: "simultaneous" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-amd-exhaust");
+    await send(stub, mainEvent("CA-amd-exhaust"));
+    await send(stub, mainEvent("CA-amd-exhaust", { digits: "1" }));
+    expect(outboundDials(fetchMock).length).toBe(2); // softphone + pstn mobile, both live
+
+    // Mobile leg: machine answers → hung up, removed from the plan's attemptSids right away.
+    const answer = await send(stub, agentAnswer("CA-amd-exhaust", "sid-+61412345678", "machine_start"));
+    expect(answer.xml).toContain("<Hangup/>");
+
+    // Softphone leg then fails to answer too → attemptSids is now empty → ALL_ATTEMPTS_EXHAUSTED.
+    await send(stub, agentStatus("CA-amd-exhaust", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+
+    const poll = await send(stub, {
+      kind: "hold_poll",
+      callSid: "CA-amd-exhaust",
+      webhookUrl: `${ORIGIN}/webhooks/twilio/hold`,
+    });
+    expect(poll.xml).toContain("<Leave/>");
+
+    const left = await send(stub, queueLeft("CA-amd-exhaust", "leave"));
+    expect(left.xml).toContain("<Record"); // fell through to voicemail, not stuck on hold
   });
 
   it("full bridge: enqueue → agent_answer redirects the caller leg + renders <Dial><Conference> → queue_left(bridged) completes the call", async () => {
