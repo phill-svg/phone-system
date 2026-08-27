@@ -51,13 +51,10 @@ transcription, and call notifications for TCB Pest Control staff.
 
 **Sign-in required:** YES — provide a demo account.
 
-**Demo account (fill in real values before submitting):**
-- Username (email): `reviewer@tcbpestcontrolcanberra.com.au`  ← create this staff login
-- Password: `__________`  ← set a simple, working password
-
-> ACTION: create a real staff_users login for review (any email + password that logs in via
-> `/api/login`). It must be able to sign in and see the app's screens. Without a working demo
-> account, Apple cannot get past the login wall and will reject.
+**Demo account (CREATED + login-verified 2026-08-28 against tcbvoip.app):**
+- Username (email): `reviewer@tcbpestcontrolcanberra.com.au`
+- Password: `TcbReview2026!`
+- Role: staff. Verified: `POST /api/login` returns a token. Delete this account after review if desired.
 
 **Review notes (paste into "Notes"):**
 ```
