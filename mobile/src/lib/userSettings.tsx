@@ -18,7 +18,7 @@ type Ctx = { settings: UserSettings; update: (p: Partial<UserSettings>) => void;
 const UserSettingsContext = createContext<Ctx>({ settings: DEFAULTS, update: () => {}, loaded: false });
 
 export function UserSettingsProvider({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+  const { status } = useAuth();
   const [settings, setSettings] = useState<UserSettings>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
   const settingsRef = useRef(settings);
@@ -35,14 +35,14 @@ export function UserSettingsProvider({ children }: { children: React.ReactNode }
   }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (status !== "authed") return;
     getUserSettings()
       .then((s) => {
         setSettings(s);
         SecureStore.setItemAsync(CACHE_KEY, JSON.stringify(s)).catch(() => {});
       })
       .catch(() => {}); // keep cached values on network failure
-  }, [user]);
+  }, [status]);
 
   // Optimistic update: reflect locally + cache now, write through to the server, reconcile on reply.
   const update = (partial: Partial<UserSettings>) => {
