@@ -15,6 +15,7 @@ import {
 } from "./api/auth";
 import { handleCallDetail, handleListCalls, handleLiveCalls, handleUpdateCallMeta, getLiveCalls, reconcileStaleCalls } from "./api/calls";
 import { handleGetBusinessHours, handleGetCallBlocklist, handlePutBusinessHours, handlePutCallBlocklist } from "./api/settings";
+import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
@@ -671,6 +672,11 @@ export default {
       if (url.pathname === "/api/settings/call-blocklist") {
         if (request.method === "GET") return handleGetCallBlocklist(env.DB);
         if (request.method === "PUT") return handlePutCallBlocklist(request, env.DB, staff);
+      }
+      if (url.pathname === "/api/settings/me") {
+        return request.method === "PUT"
+          ? handlePutUserSettings(request, env.DB, staff)
+          : handleGetUserSettings(env.DB, staff);
       }
 
       // Literal path, disjoint from every other /api/ segment above and below (no regex here to
