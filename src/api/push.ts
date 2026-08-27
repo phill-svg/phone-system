@@ -22,12 +22,19 @@ export async function handleRegisterPushToken(request: Request, db: D1Database, 
 }
 
 // Fire-and-forget: notify all registered devices about an inbound text. Prunes dead tokens.
-export async function notifyInboundSms(db: D1Database, from: string, bodyText: string): Promise<void> {
+// `nameOverride` lets callers pass an already-resolved display name (e.g. a cached Facebook
+// Messenger sender name) that takes priority over the phone-number contact lookup below.
+export async function notifyInboundSms(
+  db: D1Database,
+  from: string,
+  bodyText: string,
+  nameOverride?: string | null
+): Promise<void> {
   const tokens = await getPushTokensForType(db, "notif_sms");
   if (tokens.length === 0) return;
   // Show the saved contact name if we have one, otherwise fall back to the raw number.
   const contact = await findContactByPhone(db, from);
-  const sender = contact?.name || from;
+  const sender = nameOverride || contact?.name || from;
   const { invalidTokens } = await sendExpoPush(tokens, {
     title: `New message from ${sender}`,
     body: bodyText.slice(0, 240) || "New message",

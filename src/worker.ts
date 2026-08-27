@@ -71,6 +71,8 @@ import { recordCallLeg } from "./db/callLegs";
 import { transcribeCallRecording } from "./transcribe";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
 import { resolveSendingNumber } from "./db/phoneNumbers";
+import { getFacebookName, upsertFacebookName } from "./db/fbContacts";
+import { resolveFacebookName } from "./facebook/graph";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -96,6 +98,8 @@ type Env = {
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
   EMAIL?: SendEmailBinding;
+  // Facebook Page access token, used to resolve Messenger senders' display names via the Graph API.
+  FB_PAGE_ACCESS_TOKEN?: string;
 };
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
@@ -614,8 +618,31 @@ export default {
           read: 0,
           createdAt: Date.now(),
         });
+
+        // Facebook Messenger senders arrive as "messenger:<psid>" with no human-readable name.
+        // Resolve it via the Graph API (once per PSID -- cached in fb_contacts after that) so the
+        // inbox and push notification show the person's name instead of the raw id.
+        let fbName: string | null = null;
+        if (params.From.startsWith("messenger:") && env.FB_PAGE_ACCESS_TOKEN) {
+          const psid = params.From.slice("messenger:".length);
+          const token = env.FB_PAGE_ACCESS_TOKEN;
+          try {
+            fbName = await getFacebookName(env.DB, psid);
+          } catch {
+            fbName = null;
+          }
+          if (fbName == null) {
+            // Fire-and-forget: don't let a slow/failed Graph API call block the webhook ack.
+            const resolveName = resolveFacebookName(psid, token)
+              .then((name) => (name ? upsertFacebookName(env.DB, psid, name) : undefined))
+              .catch(() => {});
+            if (ctx) ctx.waitUntil(resolveName);
+            else await resolveName;
+          }
+        }
+
         // Notify staff devices (don't let a push failure break the webhook ack).
-        const notify = notifyInboundSms(env.DB, params.From, params.Body ?? "").catch(() => {});
+        const notify = notifyInboundSms(env.DB, params.From, params.Body ?? "", fbName).catch(() => {});
         if (ctx) ctx.waitUntil(notify);
         else await notify;
       }
