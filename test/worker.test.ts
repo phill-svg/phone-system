@@ -785,6 +785,41 @@ describe("GET/PUT /api/settings/*", () => {
     const getResponse = await SELF.fetch("https://example.com/api/settings/call-blocklist");
     expect(await getResponse.json()).toEqual([]);
   });
+
+  it("GET /api/settings/recording is readable by staff (not admin-gated); PUT stays admin-only", async () => {
+    // The dev-mode identity (phill@tcbpestcontrolcanberra.com.au) is seeded as admin.
+    // Downgrade its role to "staff" for this test only -- vitest-pool-workers isolates
+    // D1 storage per test, so this mutation doesn't leak into other tests.
+    await env.DB.prepare("UPDATE staff_users SET role = 'staff' WHERE email = ?")
+      .bind("phill@tcbpestcontrolcanberra.com.au")
+      .run();
+
+    const getResponse = await SELF.fetch("https://example.com/api/settings/recording");
+    expect(getResponse.status).toBe(200);
+    expect(await getResponse.json()).toEqual({ recording_enabled: true });
+
+    const putAsStaff = await SELF.fetch("https://example.com/api/settings/recording", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recording_enabled: false }),
+    });
+    expect(putAsStaff.status).toBe(403);
+
+    // Restore admin and confirm the PUT (and GET) still work for the privileged role.
+    await env.DB.prepare("UPDATE staff_users SET role = 'admin' WHERE email = ?")
+      .bind("phill@tcbpestcontrolcanberra.com.au")
+      .run();
+
+    const putAsAdmin = await SELF.fetch("https://example.com/api/settings/recording", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recording_enabled: false }),
+    });
+    expect(putAsAdmin.status).toBe(200);
+
+    const getAsAdmin = await SELF.fetch("https://example.com/api/settings/recording");
+    expect(await getAsAdmin.json()).toEqual({ recording_enabled: false });
+  });
 });
 
 describe("GET /admin/calls and /admin/calls/:id", () => {

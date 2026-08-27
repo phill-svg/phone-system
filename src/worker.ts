@@ -635,8 +635,7 @@ export default {
         url.pathname.startsWith("/api/ivr/") ||
         (request.method === "GET" &&
           (url.pathname === "/api/settings/business-hours" ||
-          url.pathname === "/api/settings/call-blocklist" ||
-          url.pathname === "/api/settings/recording"));
+          url.pathname === "/api/settings/call-blocklist"));
       if (adminOnlyRead && staff.role !== "admin") {
         return new Response("Forbidden", { status: 403 });
       }
