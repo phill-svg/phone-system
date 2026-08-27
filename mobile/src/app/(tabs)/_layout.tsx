@@ -2,9 +2,11 @@ import React, { useEffect } from "react";
 import { Tabs, router } from "expo-router";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../../components/ui/Icon";
-import { registerForIncoming } from "../../lib/voice";
+import { registerForIncoming, getActiveCall, rejectIncoming } from "../../lib/voice";
 import { registerForPushNotifications } from "../../lib/push";
 import { setPresence, sendHeartbeat } from "../../lib/api";
+import { getPrefBool } from "../../lib/prefs";
+import { decideInviteAction } from "../../lib/callRouting";
 import { useTheme } from "../../theme/theme";
 
 // Register this device for incoming calls once the user is signed in (the tab group only
@@ -13,8 +15,22 @@ import { useTheme } from "../../theme/theme";
 function useIncomingCalls() {
   useEffect(() => {
     let unsub: (() => void) | undefined;
-    registerForIncoming((from) => {
-      router.push({ pathname: "/call-incoming", params: { number: from, name: "" } });
+    registerForIncoming(async (from) => {
+      const hasActiveCall = getActiveCall() !== null;
+      const autoAnswer = await getPrefBool("pref_auto_answer", false);
+      const callWaiting = await getPrefBool("pref_call_waiting", true);
+      const action = decideInviteAction({ hasActiveCall, autoAnswer, callWaiting });
+      if (action === "reject") {
+        rejectIncoming().catch(() => {});
+        return;
+      }
+      if (action === "answer-now") {
+        // Navigate to the active-call screen in incoming mode with an auto-accept flag.
+        router.push({ pathname: "/call-incoming", params: { number: from, name: "", auto: "1" } });
+        return;
+      }
+      // show-incoming and show-waiting both open the ringing screen; "waiting" adds context.
+      router.push({ pathname: "/call-incoming", params: { number: from, name: "", waiting: action === "show-waiting" ? "1" : "" } });
     })
       .then((u) => {
         unsub = u;
