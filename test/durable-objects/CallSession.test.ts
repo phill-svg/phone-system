@@ -191,6 +191,8 @@ describe("CallSession", () => {
     await env.DB.prepare("DELETE FROM ivr_audio_assets").run();
     await env.DB.prepare("DELETE FROM staff_users").run();
     await env.DB.prepare("DELETE FROM softphone_call_legs").run();
+    await env.DB.prepare("DELETE FROM push_tokens").run();
+    await env.DB.prepare("DELETE FROM user_settings").run();
     await setBusinessHours(env.DB, {
       mon: { open: "00:00", close: "23:59" },
       tue: { open: "00:00", close: "23:59" },
@@ -210,6 +212,10 @@ describe("CallSession", () => {
         const to = new URLSearchParams((init as RequestInit).body as string).get("To");
         return new Response(JSON.stringify({ sid: `sid-${to}` }), { status: 201 });
       }
+      if (u.includes("exp.host")) {
+        const messages = JSON.parse((init as RequestInit).body as string) as unknown[];
+        return new Response(JSON.stringify({ data: messages.map(() => ({ status: "ok" })) }), { status: 200 });
+      }
       return new Response("", { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -226,6 +232,16 @@ describe("CallSession", () => {
       "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at) VALUES (?, 'staff', ?, ?, ?, ?)"
     )
       .bind(email, NOW, available ? "available" : "away", STAFF_OPEN_SCHEDULE, available ? Date.now() : null)
+      .run();
+  }
+
+  // Registers an Expo push token for a staff device, so missed-call/voicemail notifications
+  // (which are gated on `getPushTokensForType`) have a recipient to send to.
+  async function seedPushToken(token: string, email: string): Promise<void> {
+    await env.DB.prepare(
+      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, ?, ?)"
+    )
+      .bind(token, email, NOW, NOW)
       .run();
   }
 
@@ -620,6 +636,26 @@ describe("CallSession", () => {
 
     const left = await send(stub, queueLeft("CA-noans", "leave"));
     expect(left.xml).toContain("<Record"); // fell through to voicemail
+  });
+
+  it("no-answer path: fires a missed-call push notification via Expo", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedPushToken("ExponentPushToken[missed-push]", "phill@b.com");
+
+    const stub = stubFor("CA-missed-push");
+    await send(stub, mainEvent("CA-missed-push"));
+    await send(stub, mainEvent("CA-missed-push", { digits: "1" }));
+    await send(stub, agentStatus("CA-missed-push", "sid-client:phill@b.com", "no-answer"));
+    await send(stub, queueLeft("CA-missed-push", "leave"));
+
+    const pushCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("exp.host"));
+    expect(pushCall).toBeTruthy();
+    const body = String((pushCall?.[1] as RequestInit)?.body ?? "");
+    expect(body).toContain("missed-push");
+    expect(body).toContain("Missed call");
   });
 
   it("simultaneous ring: both legs fail → ALL_ATTEMPTS_EXHAUSTED → queue_left falls through to voicemail", async () => {

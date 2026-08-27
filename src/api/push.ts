@@ -35,3 +35,31 @@ export async function notifyInboundSms(db: D1Database, from: string, bodyText: s
   });
   if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
 }
+
+// Fire-and-forget: notify staff of a call nobody answered. Prunes dead tokens.
+export async function notifyMissedCall(db: D1Database, callerNumber: string): Promise<void> {
+  const tokens = await getPushTokensForType(db, "notif_missed");
+  if (tokens.length === 0) return;
+  const contact = await findContactByPhone(db, callerNumber);
+  const who = contact?.name || callerNumber;
+  const { invalidTokens } = await sendExpoPush(tokens, {
+    title: `Missed call from ${who}`,
+    body: "Nobody answered this call.",
+    data: { type: "missed_call", from: callerNumber },
+  });
+  if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
+}
+
+// Fire-and-forget: notify staff that a caller left a voicemail. Prunes dead tokens.
+export async function notifyVoicemail(db: D1Database, callerNumber: string): Promise<void> {
+  const tokens = await getPushTokensForType(db, "notif_voicemail");
+  if (tokens.length === 0) return;
+  const contact = await findContactByPhone(db, callerNumber);
+  const who = contact?.name || callerNumber;
+  const { invalidTokens } = await sendExpoPush(tokens, {
+    title: `New voicemail from ${who}`,
+    body: "Tap to listen.",
+    data: { type: "voicemail", from: callerNumber },
+  });
+  if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
+}

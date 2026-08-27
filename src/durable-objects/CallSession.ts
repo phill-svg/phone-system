@@ -23,6 +23,7 @@ import { appendCallEvent } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
+import { notifyMissedCall, notifyVoicemail } from "../api/push";
 
 type Env = {
   DB: D1Database;
@@ -157,6 +158,11 @@ export class CallSession extends DurableObject<Env> {
         .bind(Date.now(), body.recordingUrl, body.recordingSid, mailboxLabel, callSid)
         .run();
       await this.logEvent(callSid, "voicemail_left", { mailboxLabel, recordingSid: body.recordingSid });
+      try {
+        await notifyVoicemail(this.env.DB, from);
+      } catch {
+        /* notifications are best-effort */
+      }
       return this.xml(wrapResponse("<Say>Thanks, goodbye.</Say><Hangup/>"));
     }
 
@@ -564,6 +570,14 @@ export class CallSession extends DurableObject<Env> {
       }
     }
     await this.logEvent(body.callSid, abandonedMidRing ? "caller_hung_up" : "no_answer");
+    try {
+      const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
+        .bind(body.callSid)
+        .first<{ caller_number: string }>();
+      if (row?.caller_number) await notifyMissedCall(this.env.DB, row.caller_number);
+    } catch {
+      /* notifications are best-effort */
+    }
     await this.ctx.storage.delete("activeRing");
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     return this.xml(
