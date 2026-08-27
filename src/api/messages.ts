@@ -11,6 +11,10 @@ type Env = {
   TWILIO_US1_API_KEY_SECRET?: string;
   TWILIO_FROM_NUMBER: string;
   TWILIO_SMS_NUMBER?: string; // SMS-capable number; falls back to the voice number if unset
+  // Facebook Messenger sender for outbound replies, e.g. "messenger:<page-id>". Inbound Messenger
+  // arrives via Twilio as From="messenger:<PSID>" (stored as peer_number); replies must go back out
+  // FROM the Page's messenger address, not a phone number.
+  TWILIO_MESSENGER_FROM?: string;
 };
 
 // Minimal AU-friendly normalization: keep +E.164 as-is, turn a local 0-prefixed number into +61.
@@ -43,13 +47,23 @@ export async function handleSendMessage(request: Request, env: Env): Promise<Res
   const text = String(body.body ?? "").trim();
   if (!to || !text) return jsonResponse({ error: "Enter a number and a message." }, 400);
 
-  const target = normalizeNumber(to);
+  // A Facebook Messenger peer ("messenger:<PSID>") replies out through the Twilio Messenger channel
+  // from the Page's messenger address; a normal SMS peer is phone-normalized and sent from a number.
+  const isMessenger = to.startsWith("messenger:");
+  const target = isMessenger ? to : normalizeNumber(to);
   if (!env.TWILIO_US1_API_KEY_SID || !env.TWILIO_US1_API_KEY_SECRET)
     return jsonResponse({ error: "SMS is not configured." }, 500);
-  // "From" number the user picked in the composer (validated against SMS-enabled numbers).
-  const requestedFrom = String(body.from ?? "").trim() || null;
-  const fromNumber =
-    (await resolveSendingNumber(env.DB, "sms", requestedFrom)) ?? env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER;
+  let fromNumber: string;
+  if (isMessenger) {
+    if (!env.TWILIO_MESSENGER_FROM)
+      return jsonResponse({ error: "Messenger sending is not configured." }, 500);
+    fromNumber = env.TWILIO_MESSENGER_FROM;
+  } else {
+    // "From" number the user picked in the composer (validated against SMS-enabled numbers).
+    const requestedFrom = String(body.from ?? "").trim() || null;
+    fromNumber =
+      (await resolveSendingNumber(env.DB, "sms", requestedFrom)) ?? env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER;
+  }
   try {
     const { sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET, {
       to: target,
