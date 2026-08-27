@@ -58,13 +58,18 @@ export default function MessagesScreen() {
           ItemSeparatorComponent={() => <View style={[styles.sep, { backgroundColor: t.colors.separator, marginLeft: 66 }]} />}
           renderItem={({ item }) => (
             <Pressable
-              onPress={() => router.push({ pathname: "/thread/[number]", params: { number: item.number } })}
+              onPress={() => router.push({ pathname: "/thread/[number]", params: { number: item.number, name: title(item) } })}
               style={({ pressed }) => [styles.row, { backgroundColor: pressed ? t.colors.cardPressed : "transparent" }]}
             >
               <Avatar name={title(item)} size={50} />
               <View style={{ flex: 1 }}>
                 <View style={styles.rowTop}>
-                  <Text style={[type.body, { color: t.colors.label, fontWeight: "600", flex: 1 }]} numberOfLines={1}>{title(item)}</Text>
+                  <View style={styles.nameRow}>
+                    <Text style={[type.body, { color: t.colors.label, fontWeight: "600", flex: 1 }]} numberOfLines={1}>{title(item)}</Text>
+                    {item.number.startsWith("messenger:") ? (
+                      <Icon name="message.fill" fallback="logo-facebook" size={14} color="#0866FF" />
+                    ) : null}
+                  </View>
                   <Text style={[type.footnote, { color: t.colors.labelSecondary }]}>{when(item.last_ts)}</Text>
                 </View>
                 <Text style={[type.subhead, { color: item.unread > 0 ? t.colors.label : t.colors.labelSecondary }]} numberOfLines={2}>
@@ -83,6 +88,7 @@ export default function MessagesScreen() {
 const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11 },
   rowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
+  nameRow: { flexDirection: "row", alignItems: "center", gap: 4, flex: 1 },
   unread: { width: 9, height: 9, borderRadius: 5 },
   sep: { height: StyleSheet.hairlineWidth },
 });

@@ -15,7 +15,7 @@ export default function ThreadScreen() {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const params = useLocalSearchParams<{ number?: string }>();
+  const params = useLocalSearchParams<{ number?: string; name?: string }>();
   const isNew = params.number === "new";
   const [to, setTo] = useState(isNew ? "" : String(params.number ?? ""));
   const [text, setText] = useState("");
@@ -31,7 +31,8 @@ export default function ThreadScreen() {
   const effectiveFrom = fromNum ?? smsNums.find((n) => n.is_default_sms)?.e164 ?? smsNums[0]?.e164;
 
   const contactName = contactForNumber(to, contacts.data ?? [])?.name;
-  const title = contactName ?? (to ? formatPhone(to) : "New Message");
+  const isMessenger = to.startsWith("messenger:");
+  const title = contactName ?? params.name ?? (isMessenger ? "Facebook user" : (to ? formatPhone(to) : "New Message"));
 
   async function send() {
     const body = text.trim();
@@ -57,7 +58,10 @@ export default function ThreadScreen() {
         <Pressable onPress={() => router.back()} hitSlop={10} style={styles.back}>
           <Icon name="chevron.left" fallback="chevron-back" size={22} color={t.colors.accent} />
         </Pressable>
-        <Text style={[type.headline, { color: t.colors.label }]} numberOfLines={1}>{title}</Text>
+        <View style={styles.titleRow}>
+          <Text style={[type.headline, { color: t.colors.label, flexShrink: 1 }]} numberOfLines={1}>{title}</Text>
+          {isMessenger ? <Icon name="message.fill" fallback="logo-facebook" size={14} color="#0866FF" /> : null}
+        </View>
         <View style={{ width: 40 }} />
       </View>
 
@@ -156,6 +160,7 @@ export default function ThreadScreen() {
 
 const styles = StyleSheet.create({
   bar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 1 },
   back: { width: 40, height: 32, alignItems: "flex-start", justifyContent: "center" },
   toRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
   bubbleRow: { flexDirection: "row" },
