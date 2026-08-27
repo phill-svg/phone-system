@@ -84,11 +84,11 @@ export async function handlePutCallBlocklist(request: Request, db: D1Database, s
   return jsonResponse({ ok: true });
 }
 
-export async function handleGetRecording(db: D1Database): Promise<Response> {
+export async function handleGetRecordingSetting(db: D1Database): Promise<Response> {
   return jsonResponse({ recording_enabled: await getRecordingEnabled(db) });
 }
 
-export async function handlePutRecording(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
+export async function handlePutRecordingSetting(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
   const forbidden = forbiddenUnlessAdmin(staff);
   if (forbidden) return forbidden;
   let body: unknown;

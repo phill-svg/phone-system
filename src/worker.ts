@@ -19,8 +19,8 @@ import {
   handleGetCallBlocklist,
   handlePutBusinessHours,
   handlePutCallBlocklist,
-  handleGetRecording as handleGetRecordingSetting,
-  handlePutRecording,
+  handleGetRecordingSetting,
+  handlePutRecordingSetting,
 } from "./api/settings";
 import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
@@ -686,7 +686,7 @@ export default {
         if (request.method === "PUT") return handlePutCallBlocklist(request, env.DB, staff);
       }
       if (url.pathname === "/api/settings/recording") {
-        return request.method === "PUT" ? handlePutRecording(request, env.DB, staff) : handleGetRecordingSetting(env.DB);
+        return request.method === "PUT" ? handlePutRecordingSetting(request, env.DB, staff) : handleGetRecordingSetting(env.DB);
       }
       if (url.pathname === "/api/settings/me") {
         return request.method === "PUT"
