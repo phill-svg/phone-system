@@ -24,7 +24,17 @@
       "channel": "test"
     },
     "production": {
-      "channel": "production"
+      "channel": "production",
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascApiKeyPath": "./credentials/AuthKey_U93QSZVV4W.p8",
+        "ascApiKeyId": "U93QSZVV4W",
+        "ascApiKeyIssuerId": "f5266cfa-b509-4c08-85ea-145c251cdc35"
+      }
     }
   }
 }
