@@ -26,11 +26,15 @@ export function renderDialAgentIntoConference(opts: {
   conferenceName: string;
   actionUrl: string;
   recordingStatusCallbackUrl: string;
+  record?: boolean;
 }): string {
+  const rec =
+    opts.record === false
+      ? ""
+      : ` record="record-from-start" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
   return wrapResponse(
     `<Dial action="${escapeXml(opts.actionUrl)}" method="POST">` +
-      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}" record="record-from-start" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" ` +
-      `recordingStatusCallbackMethod="POST">${escapeXml(opts.conferenceName)}</Conference>` +
+      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}"${rec}>${escapeXml(opts.conferenceName)}</Conference>` +
       `</Dial>`
   );
 }

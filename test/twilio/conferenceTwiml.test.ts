@@ -26,4 +26,14 @@ describe("renderDialAgentIntoConference", () => {
     expect(xml).toContain('<Conference region="au1"');
     expect(xml).toContain(">CAcaller</Conference>");
   });
+
+  it("omits recording attributes when record is false", () => {
+    const xml = renderDialAgentIntoConference({ conferenceName: "CAx", actionUrl: "https://x/a", recordingStatusCallbackUrl: "https://x/r", record: false });
+    expect(xml).not.toContain("record=");
+    expect(xml).not.toContain("recordingStatusCallback");
+  });
+  it("records by default (record omitted) and when record is true", () => {
+    const def = renderDialAgentIntoConference({ conferenceName: "CAx", actionUrl: "https://x/a", recordingStatusCallbackUrl: "https://x/r" });
+    expect(def).toContain('record="record-from-start"');
+  });
 });

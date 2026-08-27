@@ -17,7 +17,7 @@ import { createOutboundCall, cancelCall, redirectCall } from "../twilio/restClie
 import { cleanupLoneConference } from "../twilio/conferenceClient";
 import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/conferenceTwiml";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
-import { getBusinessHours } from "../db/settings";
+import { getBusinessHours, getRecordingEnabled } from "../db/settings";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { appendCallEvent } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
@@ -624,11 +624,13 @@ export class CallSession extends DurableObject<Env> {
       appendWebhookSecret(`${origin}/webhooks/twilio/join-conference?conf=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET)
     );
 
+    const record = await getRecordingEnabled(this.env.DB);
     return this.xml(
       renderDialAgentIntoConference({
         conferenceName: body.callSid,
         actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+        record,
       })
     );
   }

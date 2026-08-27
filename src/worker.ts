@@ -62,7 +62,7 @@ import { renderMessagesPage } from "./html/pages/messages";
 import { getCallDetail, listCalls, appendCallEvent, getCallStats } from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
-import { getBusinessHours, getCallBlocklist } from "./db/settings";
+import { getBusinessHours, getCallBlocklist, getRecordingEnabled } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster, listStaffAccess } from "./db/staff";
@@ -410,11 +410,13 @@ export default {
       if (!conferenceName) {
         return new Response("missing conf", { status: 400 });
       }
+      const record = await getRecordingEnabled(env.DB);
       return new Response(
         renderDialAgentIntoConference({
           conferenceName,
           actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
           recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          record,
         }),
         { headers: { "Content-Type": "text/xml" } }
       );
@@ -489,11 +491,13 @@ export default {
       // instead of leaving the callee's phone ringing. Recorded on the call row we just inserted.
       await env.DB.prepare("UPDATE calls SET outbound_target_sid = ? WHERE id = ?").bind(targetSid, conferenceName).run();
 
+      const record = await getRecordingEnabled(env.DB);
       return new Response(
         renderDialAgentIntoConference({
           conferenceName,
           actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
           recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          record,
         }),
         { headers: { "Content-Type": "text/xml" } }
       );
