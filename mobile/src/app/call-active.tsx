@@ -9,7 +9,9 @@ import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
 import { DialPad } from "../components/keypad/DialPad";
 import { formatPhone } from "../lib/phone";
-import { placeCall, getActiveCall } from "../lib/voice";
+import { placeCall, getActiveCall, listAudioDevices, selectAudioRoute, onAudioDevicesUpdated } from "../lib/voice";
+import { setPref } from "../lib/prefs";
+import type { AudioDeviceLike, AudioRoutePref } from "../lib/audioRouting";
 import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
@@ -81,7 +83,10 @@ export default function ActiveCallScreen() {
   const [state, setState] = useState<CallState>("calling");
   const [seconds, setSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
-  const [speaker, setSpeaker] = useState(false);
+  // Reflects the actually-selected native audio device (not just what was requested) —
+  // kept in sync via onAudioDevicesUpdated below so the UI never lies about the real route.
+  const [audioRoute, setAudioRoute] = useState<AudioDeviceLike["type"] | null>(null);
+  const [hasBluetooth, setHasBluetooth] = useState(false);
   const [held, setHeld] = useState(false);
   const [recording, setRecording] = useState(false);
   const [showKeypad, setShowKeypad] = useState(false);
@@ -132,6 +137,31 @@ export default function ActiveCallScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Track the real selected audio device (and whether a bluetooth device is available) so the
+  // speaker/bluetooth controls always reflect reality, even when the route changes for reasons
+  // outside this screen (e.g. a bluetooth headset connecting/disconnecting mid-call).
+  useEffect(() => {
+    let mounted = true;
+    const refreshDevices = () =>
+      listAudioDevices()
+        .then(({ devices, selectedType }) => {
+          if (!mounted) return;
+          setAudioRoute(selectedType);
+          setHasBluetooth(devices.some((d) => d.type === "bluetooth"));
+        })
+        .catch(() => {});
+    refreshDevices();
+    const unsubscribe = onAudioDevicesUpdated((type) => {
+      if (!mounted) return;
+      setAudioRoute(type);
+      refreshDevices();
+    });
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
+
   useEffect(() => {
     if (state === "connected" && !held) {
       timer.current = setInterval(() => setSeconds((s) => s + 1), 1000);
@@ -151,6 +181,13 @@ export default function ActiveCallScreen() {
     const next = !muted;
     callRef.current?.mute(next);
     setMuted(next);
+  }
+
+  // Control already fires haptics on press; this just drives the actual route + persists the choice.
+  function selectRoute(pref: AudioRoutePref) {
+    setAudioRoute(pref === "automatic" ? audioRoute : pref); // optimistic; onAudioDevicesUpdated confirms/corrects
+    selectAudioRoute(pref).catch(() => {});
+    setPref("pref_audio_route", pref).catch(() => {});
   }
 
   const statusLine =
@@ -192,13 +229,29 @@ export default function ActiveCallScreen() {
           <View style={styles.grid}>
             <Control icon="mic.slash.fill" fallback="mic-off" label="mute" active={muted} onPress={toggleMute} />
             <Control icon="circle.grid.3x3.fill" fallback="keypad" label="keypad" disabled={state !== "connected"} onPress={() => setShowKeypad(true)} />
-            <Control icon="speaker.wave.2.fill" fallback="volume-high" label="speaker" active={speaker} onPress={() => setSpeaker((s) => !s)} />
+            <Control
+              icon="speaker.wave.2.fill"
+              fallback="volume-high"
+              label="speaker"
+              active={audioRoute === "speaker"}
+              onPress={() => selectRoute(audioRoute === "speaker" ? "earpiece" : "speaker")}
+            />
             <Control icon="plus" fallback="add" label="add call" disabled={state !== "connected"} onPress={() => router.push("/contacts")} />
             <Control icon="pause.fill" fallback="pause" label="hold" active={held} disabled={state !== "connected"} onPress={() => setHeld((h) => !h)} />
             <Control icon="arrow.uturn.right" fallback="arrow-redo" label="transfer" disabled={state !== "connected"} onPress={() => router.push({ pathname: "/transfer", params: { number, name } })} />
             <Control icon="record.circle" fallback="radio-button-on" label="record" active={recording} disabled={state !== "connected"} onPress={() => setRecording((r) => !r)} />
             <Control icon="person.crop.circle.fill" fallback="person" label="contacts" onPress={() => router.push("/contacts")} />
-            <View style={styles.controlCell} />
+            {hasBluetooth ? (
+              <Control
+                icon="headphones"
+                fallback="bluetooth"
+                label="bluetooth"
+                active={audioRoute === "bluetooth"}
+                onPress={() => selectRoute(audioRoute === "bluetooth" ? "earpiece" : "bluetooth")}
+              />
+            ) : (
+              <View style={styles.controlCell} />
+            )}
           </View>
         )}
 
