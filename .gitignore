@@ -7,3 +7,6 @@ desktop/release/
 # Apple/Google signing + API keys — never commit
 mobile/credentials/
 *.p8
+play-service-account*.json
+*.keystore
+*.jks
