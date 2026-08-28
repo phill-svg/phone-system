@@ -1,0 +1,11 @@
+-- Transcription backfill bookkeeping.
+--
+-- Transcription is normally kicked off from the recording-status webhook. Anything that misses
+-- that window -- a recording made before Whisper transcription shipped, a dropped webhook, a
+-- transient Workers AI error -- has nothing that ever retries it, so the transcript stays blank
+-- forever. The cron sweep in transcribe.ts fills those in.
+--
+-- The counter is what stops the sweep looping: a genuinely silent voicemail transcribes to an
+-- empty string and writes no transcript, so without a record of the attempt it would be re-fetched
+-- and re-transcribed on every tick, forever.
+ALTER TABLE calls ADD COLUMN transcribe_attempts INTEGER NOT NULL DEFAULT 0;

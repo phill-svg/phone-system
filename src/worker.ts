@@ -68,7 +68,7 @@ import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listOpenCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
-import { transcribeCallRecording } from "./transcribe";
+import { transcribeCallRecording, backfillTranscripts } from "./transcribe";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
 import { resolveSendingNumber } from "./db/phoneNumbers";
 import { getFacebookName, upsertFacebookName } from "./db/fbContacts";
@@ -984,5 +984,9 @@ export default {
   // on every status webhook landing. See reconcileStaleCalls.
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(reconcileStaleCalls(env).catch(() => {}));
+    // Catch recordings the recording-status webhook never transcribed (made before Whisper
+    // shipped, or a dropped webhook). Bounded per tick; rows are attempt-capped so this drains
+    // and then does nothing.
+    ctx.waitUntil(backfillTranscripts(env).catch(() => {}));
   },
 };
