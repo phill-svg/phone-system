@@ -119,6 +119,20 @@ export async function getCallDetail(id: string): Promise<{ call: Call; events: C
   return apiFetch<{ call: Call; events: CallEvent[] }>(`/api/calls/${encodeURIComponent(id)}`);
 }
 
+// The outcomes the web softphone offers, in the same order. "" means "no outcome set" — the API
+// stores an empty string as NULL, so clearing the outcome works by sending "".
+export const CALL_DISPOSITIONS = ["", "New booking", "Existing job", "Emergency", "Callback", "Spam", "Other"] as const;
+export type CallDisposition = (typeof CALL_DISPOSITIONS)[number];
+
+// Saves the staff-entered outcome + notes for a call. Both fields are always sent together
+// because the API writes both columns on every PUT — sending one alone would blank the other.
+export async function updateCallMeta(
+  id: string,
+  input: { disposition: string; notes: string }
+): Promise<void> {
+  await apiFetch(`/api/calls/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) });
+}
+
 // Absolute URL of a call's recording, streamed through the authed proxy. The Bearer token must be
 // supplied by the caller (audio source headers) — the raw Twilio URL would demand Twilio creds.
 export function recordingUri(callId: string): string {
