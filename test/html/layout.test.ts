@@ -35,3 +35,28 @@ describe("renderLayout", () => {
     expect(html).not.toContain('href="/admin/settings"');
   });
 });
+
+describe("desktop notification script", () => {
+  const html = renderLayout("Call History", "calls", "");
+
+  // Injected on every page as inline <script> text, so a typo here breaks notifications silently.
+  function notifyJs(): string {
+    const at = html.indexOf('var LS_MSG = "tcbNotifyLastMsgTs";');
+    expect(at).toBeGreaterThan(-1);
+    const open = html.lastIndexOf("<script>", at);
+    const close = html.indexOf("</script>", at);
+    return html.slice(open + "<script>".length, close);
+  }
+
+  it("parses as JavaScript", () => {
+    expect(() => new Function(notifyJs())).not.toThrow();
+  });
+
+  it("says which channel a message arrived on", () => {
+    const js = notifyJs();
+    expect(js).toContain('var fbm = String(c.number || "").indexOf("messenger:") === 0;');
+    expect(js).toContain('fire(fbm ? "New Facebook message" : "New SMS"');
+    // A Messenger peer has no phone number worth showing — never put a raw PSID in the toast.
+    expect(js).toContain('(c.name || (fbm ? "Facebook user" : c.number))');
+  });
+});
