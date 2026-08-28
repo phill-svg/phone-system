@@ -54,7 +54,8 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "test": "jest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "ota": "node scripts/ota.mjs"
   },
   "private": true,
   "jest": {
