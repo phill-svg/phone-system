@@ -96,6 +96,13 @@ export default function CallDetailScreen() {
             </View>
           ) : null}
 
+          {data.call.call_transcript ? (
+            <View style={styles.card}>
+              <Text style={styles.cardLabel}>Call transcript</Text>
+              <Text style={styles.transcript}>{data.call.call_transcript}</Text>
+            </View>
+          ) : null}
+
           <View style={styles.card}>
             <Text style={styles.cardLabel}>Timeline</Text>
             {data.events.length === 0 ? (

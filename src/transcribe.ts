@@ -75,3 +75,50 @@ export async function transcribeCallRecording(
     console.log("TRANSCRIBE_FAILED", callSid, e instanceof Error ? e.message : String(e));
   }
 }
+
+// A recording only gets transcribed if the recording-status webhook fires while the Whisper code
+// is live. Recordings made before it shipped, or whose webhook was lost, have nothing that ever
+// retries them -- they sit with a playable recording and a blank transcript forever. This sweep
+// (run from the cron) picks those up.
+//
+// Voicemail (`mailbox_label` set) lands in `transcription` so it keeps the "Voicemail transcript"
+// label; everything else lands in `call_transcript`, matching the webhook's own choice of column.
+export const MAX_TRANSCRIBE_ATTEMPTS = 3;
+
+type BackfillRow = { id: string; recording_url: string; is_voicemail: number };
+
+export async function backfillTranscripts(env: TranscribeEnv, limit = 3): Promise<number> {
+  const rows = (
+    await env.DB.prepare(
+      `SELECT id, recording_url, (mailbox_label IS NOT NULL AND mailbox_label <> '') AS is_voicemail
+         FROM calls
+        WHERE recording_url IS NOT NULL AND recording_url <> ''
+          AND transcribe_attempts < ?
+          AND CASE WHEN mailbox_label IS NOT NULL AND mailbox_label <> ''
+                   THEN transcription IS NULL OR transcription = ''
+                   ELSE call_transcript IS NULL OR call_transcript = ''
+              END
+        ORDER BY started_at DESC
+        LIMIT ?`
+    )
+      .bind(MAX_TRANSCRIBE_ATTEMPTS, limit)
+      .all<BackfillRow>()
+  ).results;
+  if (rows.length === 0) return 0;
+
+  // Count the attempt BEFORE transcribing. A silent recording transcribes to "" and writes no
+  // transcript, so without this the same rows would be re-fetched and re-transcribed every tick.
+  // It also caps the damage from a recording that always fails (deleted at Twilio, bad audio).
+  await env.DB.batch(
+    rows.map((r) =>
+      env.DB.prepare("UPDATE calls SET transcribe_attempts = transcribe_attempts + 1 WHERE id = ?").bind(r.id)
+    )
+  );
+
+  // Serial, not Promise.all: each row is a Twilio fetch plus a Workers AI inference, and the
+  // sweep shares the cron invocation's budget with reconcileStaleCalls. `limit` keeps it small.
+  for (const row of rows) {
+    await transcribeCallRecording(env, row.id, row.recording_url, row.is_voicemail ? "transcription" : "call_transcript");
+  }
+  return rows.length;
+}

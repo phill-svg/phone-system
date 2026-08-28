@@ -156,6 +156,18 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
   if (Platform.OS === "android" && Number(Platform.Version) >= 33) {
     await requestAndroid(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
   }
+  // Android 12+ puts Bluetooth devices behind a runtime grant. The Twilio SDK declares
+  // BLUETOOTH_CONNECT in its own manifest, but a manifest entry alone isn't enough: without the
+  // runtime grant the SDK can't enumerate a headset, so `getAudioDevices()` never reports a
+  // bluetooth device and both the Audio Routing setting and the in-call Bluetooth button
+  // silently do nothing. Best-effort -- declining just leaves earpiece/speaker.
+  if (Platform.OS === "android" && Number(Platform.Version) >= 31) {
+    await requestAndroid(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT, {
+      title: "Bluetooth access",
+      message: "TCB Phone needs Bluetooth access to play call audio through your headset.",
+      buttonPositive: "Allow",
+    }).catch(() => {});
+  }
   await ensureMicPermission().catch(() => {});
 
   const handler = (invite: CallInvite) => {
