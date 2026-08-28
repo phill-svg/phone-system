@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, TextInput, Pressable, FlatList, Alert, StyleSheet, Platform } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -6,7 +6,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
 import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { getThread, getContacts, sendMessage, getNumbers, type Message } from "../../lib/api";
+import { getThread, getContacts, sendMessage, getNumbers, type Conversation, type Message } from "../../lib/api";
+import { markConversationRead } from "../../lib/conversations";
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
@@ -24,6 +25,16 @@ export default function ThreadScreen() {
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
   const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2 });
   const numbers = useQuery({ queryKey: ["numbers"], queryFn: getNumbers, staleTime: 300_000 });
+
+  // Loading a thread marks its inbound messages read server-side (GET /api/messages/:number), so
+  // the unread dot the conversation list is still showing for it is stale. Clear it in the cached
+  // list as soon as the thread loads — the list refetches when it regains focus, but it must not
+  // keep showing a dot for a thread the user is looking at.
+  const loadedAt = thread.isSuccess ? thread.dataUpdatedAt : 0;
+  useEffect(() => {
+    if (!loadedAt) return;
+    qc.setQueryData<Conversation[]>(["conversations"], (prev) => markConversationRead(prev, to));
+  }, [loadedAt, to, qc]);
 
   const smsNums = (numbers.data ?? []).filter((n) => n.sms_enabled);
   const [fromNum, setFromNum] = useState<string | null>(null);
