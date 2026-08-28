@@ -1,7 +1,7 @@
-import React from "react";
+import React, { useCallback, useRef } from "react";
 import { View, Text, Pressable, FlatList, ActivityIndicator, StyleSheet } from "react-native";
-import { useQuery } from "@tanstack/react-query";
-import { router } from "expo-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { router, useFocusEffect } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { StatusPill } from "../../components/ui/StatusPill";
@@ -21,8 +21,25 @@ function when(ms: number): string {
 
 export default function MessagesScreen() {
   const t = useTheme();
+  const qc = useQueryClient();
   const convos = useQuery({ queryKey: ["conversations"], queryFn: getConversations });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
+
+  // This screen stays mounted while a thread is open, so React Query never refetches it on its own
+  // and the list keeps its stale unread dots after a thread has been read (opening a thread clears
+  // them server-side). Refetch whenever the tab regains focus; that also picks up messages that
+  // arrived while the user was on another tab. The first focus is the initial mount, which the
+  // query already fetches for — refetching there would just duplicate that request.
+  const focusedBefore = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!focusedBefore.current) {
+        focusedBefore.current = true;
+        return;
+      }
+      qc.refetchQueries({ queryKey: ["conversations"] });
+    }, [qc])
+  );
 
   const header = (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
