@@ -673,6 +673,62 @@ describe("GET /api/me and /api/calls*", () => {
     const response = await SELF.fetch("https://example.com/api/calls/CA-nope");
     expect(response.status).toBe(404);
   });
+
+  // The mobile app's "Outcome & notes" card writes through this route, same as the web softphone.
+  // It must stay reachable by ordinary STAFF -- an admin-only gate here would silently break the
+  // phone (which is exactly what happened once to the recording-setting row).
+  it("PUT /api/calls/:id saves disposition and notes for a staff user", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+    )
+      .bind("CA-api-meta", "+61400000000", "+61200000000", 1000)
+      .run();
+
+    const response = await SELF.fetch("https://example.com/api/calls/CA-api-meta", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disposition: "New booking", notes: "Wants a quote for the roof." }),
+    });
+    expect(response.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT disposition, notes FROM calls WHERE id = ?")
+      .bind("CA-api-meta")
+      .first<{ disposition: string | null; notes: string | null }>();
+    expect(row?.disposition).toBe("New booking");
+    expect(row?.notes).toBe("Wants a quote for the roof.");
+  });
+
+  // An empty outcome clears the column rather than storing "" -- the mobile pills toggle back to
+  // "no outcome set" this way, matching the web <select>'s blank option.
+  it("PUT /api/calls/:id clears the outcome when disposition is empty", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, disposition) VALUES (?, ?, ?, ?, ?)"
+    )
+      .bind("CA-api-meta-clear", "+61400000000", "+61200000000", 1000, "Spam")
+      .run();
+
+    const response = await SELF.fetch("https://example.com/api/calls/CA-api-meta-clear", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disposition: "", notes: "kept" }),
+    });
+    expect(response.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT disposition, notes FROM calls WHERE id = ?")
+      .bind("CA-api-meta-clear")
+      .first<{ disposition: string | null; notes: string | null }>();
+    expect(row?.disposition).toBeNull();
+    expect(row?.notes).toBe("kept");
+  });
+
+  it("PUT /api/calls/:id returns 404 for a missing call", async () => {
+    const response = await SELF.fetch("https://example.com/api/calls/CA-nope", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disposition: "", notes: "" }),
+    });
+    expect(response.status).toBe(404);
+  });
 });
 
 describe("GET/PUT /api/settings/*", () => {

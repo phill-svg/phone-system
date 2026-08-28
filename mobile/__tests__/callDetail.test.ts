@@ -2,7 +2,7 @@
 
 jest.mock("../src/lib/session");
 import * as session from "../src/lib/session";
-import { getCallDetail, type Call } from "../src/lib/api";
+import { getCallDetail, updateCallMeta, CALL_DISPOSITIONS, type Call } from "../src/lib/api";
 
 const okJson = (body: unknown) =>
   Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve("") } as Response);
@@ -72,5 +72,52 @@ describe("getCallDetail transcripts", () => {
       call_transcript: null,
     };
     expect(call).toEqual({ transcription: null, call_transcript: null });
+  });
+});
+
+// The "Outcome & notes" card on the call detail screen, matching the web softphone's editor.
+describe("updateCallMeta", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (session.getToken as jest.Mock).mockResolvedValue("tok");
+  });
+
+  const okEmpty = () =>
+    Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }), text: () => Promise.resolve("") } as Response);
+
+  it("PUTs both fields to the call's endpoint", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okEmpty());
+    (global as any).fetch = fetchMock;
+
+    await updateCallMeta("CA1", { disposition: "New booking", notes: "Wants a quote for the roof." });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain("/api/calls/CA1");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body)).toEqual({ disposition: "New booking", notes: "Wants a quote for the roof." });
+  });
+
+  // The API writes both columns on every PUT, so the client must always send both -- sending only
+  // the changed one would silently blank the other.
+  it("always sends both fields, even when one is empty", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okEmpty());
+    (global as any).fetch = fetchMock;
+
+    await updateCallMeta("CA1", { disposition: "", notes: "just a note" });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ disposition: "", notes: "just a note" });
+  });
+
+  it("url-encodes the call id", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okEmpty());
+    (global as any).fetch = fetchMock;
+
+    await updateCallMeta("CA/1 2", { disposition: "", notes: "" });
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/calls/CA%2F1%202");
+  });
+
+  it("offers the same outcomes as the web softphone, blank first", () => {
+    expect([...CALL_DISPOSITIONS]).toEqual(["", "New booking", "Existing job", "Emergency", "Callback", "Spam", "Other"]);
   });
 });
