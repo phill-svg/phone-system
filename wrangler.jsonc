@@ -17,7 +17,6 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallSession"] }],
   "routes": [
-    { "pattern": "phone.tcbpestcontrolcanberra.com.au", "custom_domain": true },
     { "pattern": "tcbvoip.app", "custom_domain": true }
   ],
   "triggers": { "crons": ["*/5 * * * *"] },
