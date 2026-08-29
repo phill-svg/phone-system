@@ -21,6 +21,11 @@ export function renderMessagesPage(role: "admin" | "staff" = "admin"): string {
     .conv-bottom { display: flex; align-items: center; gap: 0.4rem; min-width: 0; margin-top: 0.1rem; }
     .conv-last { flex: 1; color: var(--admin-dim); font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .conv-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--admin-brand); align-self: center; flex-shrink: 0; }
+    /* Shown only while some Facebook sender is still nameless — the Graph API lookup runs once per
+       inbound message, so a spell of failed lookups leaves those threads as "Facebook user". */
+    .fb-names { display: none; align-items: center; gap: 0.5rem; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--admin-border); font-size: 0.76rem; color: var(--admin-dim); }
+    .fb-names button { font-size: 0.74rem; padding: 0.25rem 0.55rem; white-space: nowrap; }
+    .fb-names-msg { flex: 1; min-width: 0; }
     .msg-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
     .msg-pane-head { padding: 0.8rem 1.1rem; border-bottom: 1px solid var(--admin-border); display: flex; align-items: center; gap: 0.6rem; min-height: 24px; }
     .msg-pane-head input { flex: 1; max-width: 260px; }
@@ -60,6 +65,10 @@ export function renderMessagesPage(role: "admin" | "staff" = "admin"): string {
     '<div class="msg-wrap">' +
       '<div class="msg-list">' +
         '<div class="msg-list-head"><h2>Messages</h2><button id="newBtn" title="New message">New</button></div>' +
+        '<div id="fbNames" class="fb-names">' +
+          '<span class="fb-names-msg" id="fbNamesMsg">Some Facebook senders have no name yet.</span>' +
+          '<button id="fbNamesBtn" title="Ask Facebook for their names">Get names</button>' +
+        '</div>' +
         '<div id="convList"></div>' +
       '</div>' +
       '<div class="msg-pane">' +
@@ -113,7 +122,11 @@ const CLIENT_JS = [
   // A Messenger peer has no phone number to format or match against contacts: it is either the name
   // Facebook gave us or nothing, so never run a PSID through the phone helpers.
   'function label(c){ if(isMessenger(c.number)) return c.name||"Facebook user"; return c.name||resolveName(c.number)||formatAu(c.number); }',
-  'function loadConversations(){return api("/api/messages").then(function(list){renderConversations(list||[]);}).catch(function(){});}',
+  'function loadConversations(){return api("/api/messages").then(function(list){list=list||[];renderConversations(list);renderFbNamesBar(list);}).catch(function(){});}',
+  'function renderFbNamesBar(list){ var bar=document.getElementById("fbNames"); if(!bar) return; var missing=0; for(var i=0;i<list.length;i++){ if(isMessenger(list[i].number)&&!list[i].name) missing++; } bar.style.display=missing?"flex":"none"; if(missing) document.getElementById("fbNamesMsg").textContent=missing===1?"1 Facebook sender has no name yet.":missing+" Facebook senders have no name yet."; }',
+  // Retries the Graph API lookup for those senders. Says what Facebook objected to when it fails
+  // -- an expired Page token is the usual reason names stop appearing, and it is invisible otherwise.
+  'function fetchFbNames(){ var btn=document.getElementById("fbNamesBtn"); var msg=document.getElementById("fbNamesMsg"); btn.disabled=true; msg.textContent="Asking Facebook..."; api("/api/facebook/resolve-names",{method:"POST"}).then(function(r){ r=r||{}; var got=(r.resolved||[]).length; var bad=(r.failed||[]); if(got) { loadContacts().then(loadConversations); } if(bad.length){ msg.textContent="Facebook could not name "+bad.length+" sender"+(bad.length===1?"":"s")+": "+bad[0].error; } else if(!got){ msg.textContent="No names to fetch."; } }).catch(function(){ msg.textContent="The name lookup failed. Check that FB_PAGE_ACCESS_TOKEN is set."; }).then(function(){ btn.disabled=false; }); }',
   'function renderConversations(list){var el=document.getElementById("convList");if(list.length===0){el.innerHTML="<div class=\\"msg-empty\\" style=\\"padding:2rem 1rem\\">No conversations yet.</div>";return;}var html="";for(var i=0;i<list.length;i++){var c=list[i];var active=c.number===current?" active":"";html+="<div class=\\"conv"+active+"\\" data-num=\\""+esc(c.number)+"\\">"+"<div class=\\"conv-avatar\\">"+esc(avatarText(c))+"</div>"+"<div class=\\"conv-main\\">"+"<div class=\\"conv-top\\"><span class=\\"conv-name\\">"+esc(label(c))+"</span><span class=\\"conv-time\\">"+esc(when(c.last_ts))+"</span></div>"+"<div class=\\"conv-bottom\\">"+chanChip(c.number)+"<span class=\\"conv-last\\">"+esc(c.last_body)+"</span></div>"+"</div>"+(c.unread>0?"<span class=\\"conv-dot\\"></span>":"")+"</div>";}el.innerHTML=html;var nodes=el.querySelectorAll(".conv");for(var j=0;j<nodes.length;j++){nodes[j].addEventListener("click",function(){openThread(this.getAttribute("data-num"),this.querySelector(".conv-name").textContent);});}}',
   'function openThread(number,name){current=number;document.getElementById("composer").style.display="flex";renderSmsFromRow();var ta=document.getElementById("text");if(ta)ta.placeholder=isMessenger(number)?"Reply on Messenger":"Text message";var head=document.getElementById("paneHead");var c=isMessenger(number)?null:contactsByNorm[normalizePhoneJS(number)];var disp=name||(isMessenger(number)?"Facebook user":(resolveName(number)||formatAu(number)));if(c){head.innerHTML="<span class=\\"pane-head-name\\" id=\\"paneHeadName\\" title=\\"View contact\\"><strong>"+esc(disp)+"</strong></span>"+chanChip(number);var el=document.getElementById("paneHeadName");if(el)el.addEventListener("click",function(){showContactPreview(c,number);});}else{head.innerHTML="<strong>"+esc(disp)+"</strong>"+chanChip(number);}loadThread();loadConversations();}',
   'function showContactPreview(c,number){document.getElementById("cmAvatar").textContent=initials(c.name||c.phone||number);document.getElementById("cmName").textContent=c.name||formatAu(c.phone||number);var comp=document.getElementById("cmCompany");comp.textContent=c.company||"";comp.style.display=c.company?"block":"none";document.getElementById("cmNumber").textContent=formatAu(c.phone||number);document.getElementById("cmCall").onclick=function(){location.href="/admin/phone?dial="+encodeURIComponent(c.phone||number);};document.getElementById("contactModal").style.display="flex";}',
@@ -127,6 +140,7 @@ const CLIENT_JS = [
   'document.addEventListener("keydown",function(e){ if(e.key==="Escape") hideContactPreview(); });',
   'document.getElementById("sendBtn").addEventListener("click",send);',
   'document.getElementById("newBtn").addEventListener("click",newMessage);',
+  'document.getElementById("fbNamesBtn").addEventListener("click",fetchFbNames);',
   'document.getElementById("text").addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}});',
   'loadContacts().then(loadConversations);',
   'loadNumbers();',

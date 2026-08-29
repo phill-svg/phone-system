@@ -45,3 +45,20 @@ describe("SMS vs Messenger are told apart", () => {
     expect(js).toContain("var c=isMessenger(number)?null:contactsByNorm[normalizePhoneJS(number)];");
   });
 });
+
+describe("Messenger senders with no name", () => {
+  it("offers to fetch names, and only while some sender is missing one", () => {
+    const js = clientJs();
+    expect(js).toContain("if(isMessenger(list[i].number)&&!list[i].name) missing++;");
+    expect(js).toContain('bar.style.display=missing?"flex":"none"');
+    expect(js).toContain('api("/api/facebook/resolve-names",{method:"POST"})');
+    expect(html).toContain('id="fbNamesBtn"');
+  });
+
+  it("repeats Facebook's own objection rather than a generic failure", () => {
+    const js = clientJs();
+    expect(js).toContain('"Facebook could not name "');
+    expect(js).toContain("bad[0].error");
+    expect(js).toContain("FB_PAGE_ACCESS_TOKEN");
+  });
+});
