@@ -77,11 +77,24 @@ npm run typecheck   # type-check with tsc
 
 ## Deploy
 
+Every push to `master` deploys automatically (`.github/workflows/deploy.yml`): it typechecks, runs
+the tests, applies any pending D1 migrations, then publishes the worker. The same workflow can be
+started by hand from the repo's **Actions** tab via **Run workflow** — which is how to deploy from
+a phone, with no terminal involved.
+
+It needs one repository secret, `CLOUDFLARE_API_TOKEN` (Settings → Secrets and variables →
+Actions), created from the "Edit Cloudflare Workers" template plus D1 edit. Add
+`CLOUDFLARE_ACCOUNT_ID` as well only if that token can see more than one Cloudflare account.
+
+To publish from your own machine instead:
+
 ```bash
 npm run deploy
 ```
 
-This runs `wrangler deploy`, publishing the worker to your Cloudflare account.
+This runs `wrangler deploy`, publishing the worker to your Cloudflare account. Note that it does
+not apply D1 migrations — run `npx wrangler d1 migrations apply tcb-voip-db --remote` first if the
+release adds one.
 
 ## Authentication
 
