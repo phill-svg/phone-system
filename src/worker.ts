@@ -42,6 +42,7 @@ import {
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage } from "./db/messages";
 import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
+import { handleResolveFacebookNames } from "./api/facebook";
 import type { SendEmailBinding } from "./email/sendgrid";
 import {
   handleListContacts,
@@ -854,6 +855,11 @@ export default {
       // A staff device registers its Expo push token so it can be notified of inbound SMS.
       if (url.pathname === "/api/push/register" && request.method === "POST") {
         return handleRegisterPushToken(request, env.DB, staff);
+      }
+
+      // Retry the Graph API name lookup for Messenger senders still showing as "Facebook user".
+      if (url.pathname === "/api/facebook/resolve-names" && request.method === "POST") {
+        return handleResolveFacebookNames(env.DB, env.FB_PAGE_ACCESS_TOKEN);
       }
 
       // SMS messaging. /api/messages: GET conversations, POST send. /api/messages/:number: thread.
