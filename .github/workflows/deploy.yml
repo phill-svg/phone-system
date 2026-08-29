@@ -1,0 +1,57 @@
+# Deploys the worker to Cloudflare on every push to master, and on demand from the Actions tab
+# ("Run workflow") — which is how you deploy from a phone, with no terminal involved.
+#
+# One-time setup: add a repository secret named CLOUDFLARE_API_TOKEN (Settings → Secrets and
+# variables → Actions). The token needs the "Edit Cloudflare Workers" template plus D1 edit, so it
+# can both apply migrations and publish. CLOUDFLARE_ACCOUNT_ID is only needed if that token can see
+# more than one Cloudflare account; wrangler works it out on its own otherwise.
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Never let two deploys of the same branch overwrite each other; the newer push wins.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # The worker's tests run in the Cloudflare workers pool, which needs the API token: some
+      # bindings (the AI one) are proxied to the real Cloudflare edge even for local test runs.
+      - name: Test
+        run: npm test
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # `wrangler deploy` does NOT apply D1 migrations, so any release carrying a new migration
+      # would ship code that queries a column the database doesn't have yet. Applying first keeps
+      # the two in step; already-applied migrations are skipped.
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply tcb-voip-db --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
