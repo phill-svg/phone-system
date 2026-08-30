@@ -75,6 +75,7 @@ import { resolveSendingNumber } from "./db/phoneNumbers";
 import { getFacebookName, upsertFacebookName, noteTwilioMessengerFields } from "./db/fbContacts";
 import { resolveFacebookName } from "./facebook/graph";
 import { backfillFacebookNames } from "./facebook/backfill";
+import { fetchPageInboxNames } from "./facebook/pageInbox";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -102,6 +103,8 @@ type Env = {
   EMAIL?: SendEmailBinding;
   // Facebook Page access token, used to resolve Messenger senders' display names via the Graph API.
   FB_PAGE_ACCESS_TOKEN?: string;
+  // "messenger:<page-id>" -- the Page we send from, and whose inbox we read sender names out of.
+  TWILIO_MESSENGER_FROM?: string;
 };
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
@@ -651,8 +654,14 @@ export default {
             else await note;
             if (env.FB_PAGE_ACCESS_TOKEN) {
               const token = env.FB_PAGE_ACCESS_TOKEN;
+              const pageId = (env.TWILIO_MESSENGER_FROM ?? "").replace(/^messenger:/, "");
               // Fire-and-forget: don't let a slow/failed Graph API call block the webhook ack.
-              const resolveName = resolveFacebookName(psid, token)
+              // The Page inbox is tried first because it is the only route that names an ordinary
+              // customer -- the per-psid profile lookup is refused (code 100) for anyone without a
+              // role on the Page. The profile call stays as the fallback.
+              const resolveName = fetchPageInboxNames(pageId, token)
+                .then((inbox) => ("names" in inbox ? inbox.names.get(psid) ?? null : null))
+                .then((name) => name ?? resolveFacebookName(psid, token))
                 .then((name) => (name ? upsertFacebookName(env.DB, psid, name) : undefined))
                 .catch(() => {});
               if (ctx) ctx.waitUntil(resolveName);

@@ -1,4 +1,5 @@
 import { lookupFacebookName } from "./graph";
+import { fetchPageInboxNames } from "./pageInbox";
 import { upsertFacebookName } from "../db/fbContacts";
 
 // Cron sweep that fills in Messenger sender names the one-shot lookup on their first message
@@ -10,7 +11,7 @@ import { upsertFacebookName } from "../db/fbContacts";
 export const MAX_NAME_ATTEMPTS = 12;
 export const RETRY_AFTER_MS = 30 * 60 * 1000;
 
-type Env = { DB: D1Database; FB_PAGE_ACCESS_TOKEN?: string };
+type Env = { DB: D1Database; FB_PAGE_ACCESS_TOKEN?: string; TWILIO_MESSENGER_FROM?: string };
 
 export async function backfillFacebookNames(env: Env, limit = 5, now = Date.now()): Promise<number> {
   const token = env.FB_PAGE_ACCESS_TOKEN;
@@ -35,8 +36,27 @@ export async function backfillFacebookNames(env: Env, limit = 5, now = Date.now(
   ).results;
   if (rows.length === 0) return 0;
 
+  // The Page inbox names every open thread in one call, and it is the only route that works for
+  // ordinary customers: the per-psid profile lookup below is refused (code 100) for anyone without
+  // a role on the Page. Try it first, and only fall back to the per-psid call for whoever is left
+  // (someone whose thread has aged out of the inbox listing).
+  const pageId = (env.TWILIO_MESSENGER_FROM ?? "").replace(/^messenger:/, "");
+  const wanted = new Set(rows.map((r) => r.psid));
   let resolved = 0;
-  for (const { psid } of rows) {
+  const inbox = await fetchPageInboxNames(pageId, token);
+  if ("names" in inbox) {
+    for (const [psid, name] of inbox.names) {
+      if (!wanted.has(psid)) continue; // never overwrite a name already cached or typed by hand
+      await upsertFacebookName(env.DB, psid, name);
+      await env.DB.prepare("DELETE FROM fb_name_attempts WHERE psid = ?").bind(psid).run();
+      wanted.delete(psid);
+      resolved++;
+    }
+  } else {
+    console.warn(`Facebook Page inbox lookup failed: ${inbox.error}`);
+  }
+
+  for (const psid of wanted) {
     const result = await lookupFacebookName(psid, token);
     if ("name" in result) {
       await upsertFacebookName(env.DB, psid, result.name);
