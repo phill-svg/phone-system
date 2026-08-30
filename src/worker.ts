@@ -72,8 +72,9 @@ import { recordCallLeg } from "./db/callLegs";
 import { transcribeCallRecording, backfillTranscripts } from "./transcribe";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
 import { resolveSendingNumber } from "./db/phoneNumbers";
-import { getFacebookName, upsertFacebookName } from "./db/fbContacts";
+import { getFacebookName, upsertFacebookName, noteTwilioMessengerFields } from "./db/fbContacts";
 import { resolveFacebookName } from "./facebook/graph";
+import { backfillFacebookNames } from "./facebook/backfill";
 export { CallSession } from "./durable-objects/CallSession";
 
 type Env = {
@@ -624,21 +625,39 @@ export default {
         // Resolve it via the Graph API (once per PSID -- cached in fb_contacts after that) so the
         // inbox and push notification show the person's name instead of the raw id.
         let fbName: string | null = null;
-        if (params.From.startsWith("messenger:") && env.FB_PAGE_ACCESS_TOKEN) {
+        if (params.From.startsWith("messenger:")) {
           const psid = params.From.slice("messenger:".length);
-          const token = env.FB_PAGE_ACCESS_TOKEN;
           try {
             fbName = await getFacebookName(env.DB, psid);
           } catch {
             fbName = null;
           }
-          if (fbName == null) {
-            // Fire-and-forget: don't let a slow/failed Graph API call block the webhook ack.
-            const resolveName = resolveFacebookName(psid, token)
-              .then((name) => (name ? upsertFacebookName(env.DB, psid, name) : undefined))
-              .catch(() => {});
-            if (ctx) ctx.waitUntil(resolveName);
-            else await resolveName;
+          // Twilio itself sometimes hands us the sender's profile name (it does on WhatsApp). When
+          // it does, that IS the name: no Graph API, no Page token, nothing that can expire. This
+          // is the preferred source precisely because the Messenger connection is Twilio's, so the
+          // psid is scoped to Twilio's Facebook app rather than to our own Page token.
+          const fromTwilio = String(params.ProfileName ?? params.SenderName ?? "").trim().slice(0, 100);
+          if (fbName == null && fromTwilio) {
+            fbName = fromTwilio;
+            const save = upsertFacebookName(env.DB, psid, fromTwilio).catch(() => {});
+            if (ctx) ctx.waitUntil(save);
+            else await save;
+          } else if (fbName == null) {
+            // Nothing from Twilio: fall back to the Graph API, and leave a note of what the webhook
+            // actually carried so a permanently nameless sender can be explained rather than
+            // guessed at.
+            const note = noteTwilioMessengerFields(env.DB, psid, Object.keys(params)).catch(() => {});
+            if (ctx) ctx.waitUntil(note);
+            else await note;
+            if (env.FB_PAGE_ACCESS_TOKEN) {
+              const token = env.FB_PAGE_ACCESS_TOKEN;
+              // Fire-and-forget: don't let a slow/failed Graph API call block the webhook ack.
+              const resolveName = resolveFacebookName(psid, token)
+                .then((name) => (name ? upsertFacebookName(env.DB, psid, name) : undefined))
+                .catch(() => {});
+              if (ctx) ctx.waitUntil(resolveName);
+              else await resolveName;
+            }
           }
         }
 
@@ -999,5 +1018,8 @@ export default {
     // shipped, or a dropped webhook). Bounded per tick; rows are attempt-capped so this drains
     // and then does nothing.
     ctx.waitUntil(backfillTranscripts(env).catch(() => {}));
+    // Messenger senders whose name lookup failed on their first message: retry them here, so the
+    // inbox fills the name in by itself once the Graph API is answering again. Attempt-capped.
+    ctx.waitUntil(backfillFacebookNames(env).catch(() => {}));
   },
 };

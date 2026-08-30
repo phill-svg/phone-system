@@ -1386,3 +1386,88 @@ describe("PUT /api/facebook/name", () => {
     expect(response.status).toBe(400);
   });
 });
+
+// The Messenger connection runs through Twilio, so the psid is scoped to Twilio's Facebook app,
+// not to our Page token — which is why the Graph lookup can fail forever. When Twilio hands us the
+// sender's name itself, that is the source to trust.
+describe("inbound Messenger sender names", () => {
+  // Same signing Twilio uses: the full URL plus the sorted POST params. (Copied per describe, as
+  // the other webhook suites in this file do.)
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(authToken), { name: "HMAC", hash: "SHA-1" }, false, [
+      "sign",
+    ]);
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  }
+
+  async function postInbound(params: Record<string, string>): Promise<Response> {
+    const url = "https://example.com/webhooks/twilio/sms";
+    return SELF.fetch(url, {
+      method: "POST",
+      headers: {
+        "X-Twilio-Signature": await sign(url, params, env.TWILIO_AUTH_TOKEN as string),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  async function nameFor(psid: string): Promise<string | null | undefined> {
+    const list = (await (await SELF.fetch("https://example.com/api/messages")).json()) as {
+      number: string;
+      name: string | null;
+    }[];
+    return list.find((c) => c.number === `messenger:${psid}`)?.name;
+  }
+
+  it("takes the name straight from Twilio's ProfileName, without calling the Graph API", async () => {
+    const graphCalls: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("graph.facebook.com")) {
+        graphCalls.push(String(input));
+        return Promise.resolve(new Response(JSON.stringify({ name: "SHOULD NOT BE USED" }), { status: 200 }));
+      }
+      return realFetch(input as RequestInfo, init);
+    });
+
+    const psid = `wt-profile-${Math.floor(Math.random() * 1e9)}`;
+    const response = await postInbound({
+      From: `messenger:${psid}`,
+      To: "messenger:page-1",
+      Body: "hello there",
+      MessageSid: `SM-wt-${Math.floor(Math.random() * 1e9)}`,
+      ProfileName: "Gabby Nguyen",
+    });
+    expect(response.status).toBe(200);
+    expect(await nameFor(psid)).toBe("Gabby Nguyen");
+    expect(graphCalls).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves a note of what the webhook carried when Twilio sends no name", async () => {
+    const psid = `wt-noname-${Math.floor(Math.random() * 1e9)}`;
+    const response = await postInbound({
+      From: `messenger:${psid}`,
+      To: "messenger:page-1",
+      Body: "do you do termite inspections?",
+      MessageSid: `SM-wt-${Math.floor(Math.random() * 1e9)}`,
+    });
+    expect(response.status).toBe(200);
+    expect(await nameFor(psid)).toBeNull();
+
+    const note = await env.DB.prepare("SELECT last_error FROM fb_name_attempts WHERE psid = ?")
+      .bind(psid)
+      .first<{ last_error: string }>();
+    // The field NAMES Twilio sent, so a permanently nameless sender can be explained.
+    expect(note?.last_error).toContain("no name field from Twilio");
+    expect(note?.last_error).toContain("MessageSid");
+  });
+});
