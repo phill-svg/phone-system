@@ -46,3 +46,39 @@ export async function handleSetFacebookName(request: Request, db: D1Database): P
   await upsertFacebookName(db, psid, name);
   return jsonResponse({ ok: true, psid, name });
 }
+
+// Diagnostic: what CAN this Page token see?
+//
+// The User Profile API (GET /<psid>?fields=name) returns code 100 "cannot be loaded due to missing
+// permissions" for anyone without a role on the Page, because the app's pages_messaging is still
+// "ready for testing" (Standard Access). This probe checks a different route to the same names:
+// the Page's own conversation list, which is the Page owner's data rather than a stranger's
+// profile, and returns participant names inline. If that works, names resolve with no App Review.
+export async function handleFacebookProbe(env: {
+  FB_PAGE_ACCESS_TOKEN?: string;
+  TWILIO_MESSENGER_FROM?: string;
+}): Promise<Response> {
+  const token = env.FB_PAGE_ACCESS_TOKEN;
+  if (!token) return jsonResponse({ error: "FB_PAGE_ACCESS_TOKEN is not set" }, 400);
+  const pageId = (env.TWILIO_MESSENGER_FROM ?? "").replace(/^messenger:/, "");
+
+  async function probe(label: string, path: string) {
+    try {
+      const res = await fetch(`https://graph.facebook.com/v21.0/${path}${path.includes("?") ? "&" : "?"}access_token=${encodeURIComponent(token!)}`);
+      const text = await res.text();
+      return { label, status: res.status, body: text.slice(0, 1500) };
+    } catch (e) {
+      return { label, status: 0, body: String(e) };
+    }
+  }
+
+  return jsonResponse({
+    pageId,
+    probes: [
+      // Who does this token actually belong to?
+      await probe("token identity", "me?fields=id,name"),
+      // The Page inbox, with participant names -- the route that may not need App Review.
+      await probe("page conversations", `${pageId}/conversations?platform=messenger&fields=participants,updated_time&limit=10`),
+    ],
+  });
+}

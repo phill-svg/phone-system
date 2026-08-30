@@ -42,7 +42,7 @@ import {
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage } from "./db/messages";
 import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
-import { handleResolveFacebookNames, handleSetFacebookName } from "./api/facebook";
+import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
 import type { SendEmailBinding } from "./email/sendgrid";
 import {
   handleListContacts,
@@ -879,6 +879,12 @@ export default {
       // Retry the Graph API name lookup for Messenger senders still showing as "Facebook user".
       if (url.pathname === "/api/facebook/resolve-names" && request.method === "POST") {
         return handleResolveFacebookNames(env.DB, env.FB_PAGE_ACCESS_TOKEN);
+      }
+
+      // Diagnostic: what this Page token can actually read from Facebook. Admin-only.
+      if (url.pathname === "/api/facebook/probe" && request.method === "GET") {
+        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
+        return handleFacebookProbe(env);
       }
 
       // Name a Messenger sender by hand, for when the Graph API can't tell us who they are.
