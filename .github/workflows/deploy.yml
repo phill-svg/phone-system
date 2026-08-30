@@ -1,10 +1,13 @@
 # Deploys the worker to Cloudflare on every push to master, and on demand from the Actions tab
 # ("Run workflow") — which is how you deploy from a phone, with no terminal involved.
 #
-# One-time setup: add a repository secret named CLOUDFLARE_API_TOKEN (Settings → Secrets and
-# variables → Actions). The token needs the "Edit Cloudflare Workers" template plus D1 edit, so it
-# can both apply migrations and publish. CLOUDFLARE_ACCOUNT_ID is only needed if that token can see
-# more than one Cloudflare account; wrangler works it out on its own otherwise.
+# One-time setup: add two repository secrets (Settings → Secrets and variables → Actions).
+#   CLOUDFLARE_API_TOKEN  — "Edit Cloudflare Workers" template plus D1 edit, so this can both apply
+#                           migrations and publish.
+#   CLOUDFLARE_ACCOUNT_ID — the hex id in your Cloudflare dashboard URL. Required, not optional:
+#                           without it wrangler tries to discover the account via the /memberships
+#                           API, which a scoped API token is not allowed to call, and every step
+#                           fails with "A request to the Cloudflare API (/memberships) failed."
 name: Deploy
 
 on:
@@ -27,6 +30,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # Without the token every later step dies deep inside wrangler ("You must be logged in…"),
+      # which reads like a code failure rather than a missing secret. Say so plainly, up front.
+      - name: Check the Cloudflare secrets are set
+        run: |
+          missing=""
+          [ -z "$CLOUDFLARE_API_TOKEN" ] && missing="CLOUDFLARE_API_TOKEN"
+          [ -z "$CLOUDFLARE_ACCOUNT_ID" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing. Add them under Settings → Secrets and variables → Actions → Secrets tab → Repository secrets (not Variables, not Environment secrets, and not the Cloudflare dashboard), then re-run this workflow. The account id is the hex string in your Cloudflare dashboard URL."
+            exit 1
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - run: npm ci
 

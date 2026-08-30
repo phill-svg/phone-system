@@ -82,9 +82,13 @@ the tests, applies any pending D1 migrations, then publishes the worker. The sam
 started by hand from the repo's **Actions** tab via **Run workflow** — which is how to deploy from
 a phone, with no terminal involved.
 
-It needs one repository secret, `CLOUDFLARE_API_TOKEN` (Settings → Secrets and variables →
-Actions), created from the "Edit Cloudflare Workers" template plus D1 edit. Add
-`CLOUDFLARE_ACCOUNT_ID` as well only if that token can see more than one Cloudflare account.
+It needs two repository secrets (Settings → Secrets and variables → Actions — the GitHub repo's
+settings, not the Cloudflare dashboard):
+
+- `CLOUDFLARE_API_TOKEN` — created from the "Edit Cloudflare Workers" template plus D1 edit.
+- `CLOUDFLARE_ACCOUNT_ID` — the hex id in your Cloudflare dashboard URL. Required: without it
+  wrangler tries to discover the account through the `/memberships` API, which a scoped API token
+  cannot call, and the run fails with "A request to the Cloudflare API (/memberships) failed."
 
 To publish from your own machine instead:
 
