@@ -42,7 +42,7 @@ import {
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage } from "./db/messages";
 import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
-import { handleResolveFacebookNames } from "./api/facebook";
+import { handleResolveFacebookNames, handleSetFacebookName } from "./api/facebook";
 import type { SendEmailBinding } from "./email/sendgrid";
 import {
   handleListContacts,
@@ -860,6 +860,11 @@ export default {
       // Retry the Graph API name lookup for Messenger senders still showing as "Facebook user".
       if (url.pathname === "/api/facebook/resolve-names" && request.method === "POST") {
         return handleResolveFacebookNames(env.DB, env.FB_PAGE_ACCESS_TOKEN);
+      }
+
+      // Name a Messenger sender by hand, for when the Graph API can't tell us who they are.
+      if (url.pathname === "/api/facebook/name" && request.method === "PUT") {
+        return handleSetFacebookName(request, env.DB);
       }
 
       // SMS messaging. /api/messages: GET conversations, POST send. /api/messages/:number: thread.

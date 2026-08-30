@@ -62,3 +62,21 @@ describe("Messenger senders with no name", () => {
     expect(js).toContain("FB_PAGE_ACCESS_TOKEN");
   });
 });
+
+describe("naming a Messenger sender by hand", () => {
+  it("offers the button on Messenger threads only, labelled for the state it is in", () => {
+    const js = clientJs();
+    expect(js).toContain('if(isMessenger(number))addFbNameButton(number,disp!=="Facebook user")');
+    expect(js).toContain('b.textContent=named?"Rename":"Add name"');
+  });
+
+  it("saves through the API and refreshes what the page shows", () => {
+    const js = clientJs();
+    expect(js).toContain('api("/api/facebook/name",{method:"PUT",body:JSON.stringify({psid:number,name:name})})');
+    expect(js).toContain("loadConversations(); openThread(number,name);");
+  });
+
+  it("does not prefill the placeholder as if it were their name", () => {
+    expect(clientJs()).toContain('if(cur==="Facebook user") cur="";');
+  });
+});
