@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
 import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { getThread, getContacts, sendMessage, getNumbers, type Conversation, type Message } from "../../lib/api";
+import { getThread, getContacts, sendMessage, getNumbers, getConversations, type Conversation, type Message } from "../../lib/api";
 import { markConversationRead } from "../../lib/conversations";
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
@@ -43,7 +43,15 @@ export default function ThreadScreen() {
 
   const contactName = contactForNumber(to, contacts.data ?? [])?.name;
   const isMessenger = to.startsWith("messenger:");
-  const title = contactName ?? params.name ?? (isMessenger ? "Facebook user" : (to ? formatPhone(to) : "New Message"));
+  // Server-resolved name (a Messenger sender's, from fb_contacts). Read it from the conversation
+  // list rather than relying on the `name` route param: the param is only set when you arrive from
+  // the Messages list, so every other way in here -- a call detail, a deep link -- fell through to
+  // the "Facebook user" placeholder even though the API had the real name. Shares the list's query
+  // cache, so this is the value already on screen, not an extra round trip.
+  const conversations = useQuery({ queryKey: ["conversations"], queryFn: getConversations, staleTime: 30_000 });
+  const serverName = conversations.data?.find((c) => c.number === to)?.name ?? null;
+  const title =
+    contactName ?? serverName ?? params.name ?? (isMessenger ? "Facebook user" : to ? formatPhone(to) : "New Message");
 
   async function send() {
     const body = text.trim();

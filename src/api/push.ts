@@ -32,9 +32,11 @@ export async function notifyInboundSms(
 ): Promise<void> {
   const tokens = await getPushTokensForType(db, "notif_sms");
   if (tokens.length === 0) return;
-  // Show the saved contact name if we have one, otherwise fall back to the raw number.
+  // Show the saved contact name if we have one, otherwise fall back to the raw number -- except
+  // for a Messenger sender we have no name for, where the raw value is "messenger:<psid>". That is
+  // meaningless in a notification, so use the same "Facebook user" placeholder the inbox shows.
   const contact = await findContactByPhone(db, from);
-  const sender = nameOverride || contact?.name || from;
+  const sender = nameOverride || contact?.name || (from.startsWith("messenger:") ? "Facebook user" : from);
   const { invalidTokens } = await sendExpoPush(tokens, {
     title: `New message from ${sender}`,
     body: bodyText.slice(0, 240) || "New message",
