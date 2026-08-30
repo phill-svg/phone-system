@@ -2,6 +2,7 @@ import { env, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
 import { setCallBlocklist } from "../src/db/settings";
+import { insertMessage } from "../src/db/messages";
 
 describe("worker health check", () => {
   it("responds 200 ok on GET /health", async () => {
@@ -1342,5 +1343,46 @@ describe("Task 13 callback-requests routes", () => {
     );
     expect(adminResponse.status).toBe(302);
     expect(adminResponse.headers.get("Location")).toBe("/login");
+  });
+});
+
+// The Graph API name lookup is best-effort: an expired Page token leaves Messenger senders showing
+// as "Facebook user" forever. This is the manual way out, so it has to reach the conversation list.
+describe("PUT /api/facebook/name", () => {
+  it("saves a typed-in name and the conversation list serves it", async () => {
+    const psid = "wt-psid-12345";
+    await insertMessage(env.DB, {
+      id: `wt-fbname-${Math.random()}`,
+      direction: "inbound",
+      peer_number: `messenger:${psid}`,
+      our_number: null,
+      body: "hello there",
+      status: "received",
+      read: 0,
+      createdAt: Date.now(),
+    });
+
+    // The UI holds the peer id, not the bare psid — the endpoint accepts either.
+    const put = await SELF.fetch("https://example.com/api/facebook/name", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ psid: `messenger:${psid}`, name: "Gabby Nguyen" }),
+    });
+    expect(put.status).toBe(200);
+
+    const list = (await (await SELF.fetch("https://example.com/api/messages")).json()) as {
+      number: string;
+      name: string | null;
+    }[];
+    expect(list.find((c) => c.number === `messenger:${psid}`)?.name).toBe("Gabby Nguyen");
+  });
+
+  it("rejects an empty name rather than storing a blank one", async () => {
+    const response = await SELF.fetch("https://example.com/api/facebook/name", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ psid: "wt-psid-blank", name: "   " }),
+    });
+    expect(response.status).toBe(400);
   });
 });

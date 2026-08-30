@@ -25,3 +25,24 @@ export async function handleResolveFacebookNames(db: D1Database, token?: string)
   }
   return jsonResponse({ checked: psids.length, resolved, failed });
 }
+
+// Save a name for one Messenger sender by hand. The Graph API lookup is best-effort and can fail
+// for good (an expired Page token, a PSID this token cannot read) — when it does, staff still need
+// to know who they are talking to, so let them type the name once. It is stored in exactly the
+// place the Graph lookup would have written it, so the inbox, the thread and the push notification
+// all pick it up, and a later successful lookup simply overwrites it.
+export async function handleSetFacebookName(request: Request, db: D1Database): Promise<Response> {
+  let body: { psid?: unknown; name?: unknown };
+  try {
+    body = (await request.json()) as { psid?: unknown; name?: unknown };
+  } catch {
+    return new Response("invalid request body", { status: 400 });
+  }
+  // Accept either the raw psid or the "messenger:<psid>" peer id the UI already holds.
+  const psid = String(body.psid ?? "").trim().replace(/^messenger:/, "");
+  const name = String(body.name ?? "").trim().slice(0, 100);
+  if (!psid) return jsonResponse({ error: "Which Facebook sender?" }, 400);
+  if (!name) return jsonResponse({ error: "Enter a name." }, 400);
+  await upsertFacebookName(db, psid, name);
+  return jsonResponse({ ok: true, psid, name });
+}
