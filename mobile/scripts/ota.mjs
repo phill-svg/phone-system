@@ -58,10 +58,15 @@ if (!previewOnly) {
 
 for (const branch of branches) {
   console.log(`\n=== eas update --branch ${branch} ===`);
-  execFileSync("npx", ["eas", "update", "--branch", branch, "--message", message], {
+  // Windows needs a shell to run npx.cmd, but a shell re-splits arguments on whitespace -- so
+  // the multi-word message has to arrive quoted or eas sees each word as its own argument and
+  // rejects the command ("Unexpected arguments: Messenger, name, shows, ...").
+  const useShell = process.platform === "win32";
+  const messageArg = useShell ? JSON.stringify(message) : message;
+  execFileSync("npx", ["eas", "update", "--branch", branch, "--message", messageArg], {
     stdio: "inherit",
     cwd: join(here, ".."),
-    shell: process.platform === "win32", // npx.cmd on Windows
+    shell: useShell, // npx.cmd on Windows
   });
 }
 
