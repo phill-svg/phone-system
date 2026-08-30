@@ -31,3 +31,16 @@ export async function listUnnamedFacebookPsids(db: D1Database): Promise<string[]
     .all<{ psid: string }>();
   return rows.results.map((r) => r.psid);
 }
+
+// Diagnostics for a Messenger sender we still can't name. Records WHICH fields Twilio's webhook
+// carried (names only, never values) without touching the retry budget, so it is possible to tell
+// "Twilio never sends us a name, the Graph API is the only route" apart from "we never looked".
+export async function noteTwilioMessengerFields(db: D1Database, psid: string, fields: string[]): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO fb_name_attempts (psid, attempts, last_attempt_at, last_error) VALUES (?, 0, 0, ?)
+       ON CONFLICT(psid) DO UPDATE SET last_error = excluded.last_error`
+    )
+    .bind(psid, `no name field from Twilio; webhook sent: ${fields.slice().sort().join(",")}`)
+    .run();
+}
