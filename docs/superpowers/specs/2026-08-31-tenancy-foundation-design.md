@@ -89,10 +89,13 @@ Three entry points, three constructors. There is no fourth way to obtain a scope
    type, so every authenticated request carries tenant identity from its first line.
 
 2. **Twilio webhooks** (voice, SMS, status callbacks, Messenger)
-   These arrive unauthenticated with `To` set to a business number. Order of operations:
+   These arrive unauthenticated with `To` set to a business number, or to the Page's Messenger
+   address. A dedicated `tenant_channels(address, tenant_id, kind)` table does the routing:
+   `phone_numbers` holds only E.164 numbers and not the Messenger address, and routing wants a
+   different lifecycle from the user-facing number-management table. Order of operations:
 
    ```
-   look up phone_numbers by E.164  →  tenant
+   look up tenant_channels by address  →  tenant
    fetch that tenant's Twilio credentials
    validate the Twilio signature
    act
@@ -123,7 +126,7 @@ wrong **silently**.
 export type TenantScope = { readonly db: D1Database; readonly tenantId: string };
 ```
 
-Produced only by `scopeForStaff()`, `scopeForNumber()` and `scopeForTenantId()`, each of which
+Produced only by `scopeForStaff()`, `scopeForAddress()` and `scopeForTenantId()`, each of which
 throws on an empty tenant id. Every `src/db/*` function takes a `TenantScope` in place of a bare
 `D1Database`. The data layer becomes unreachable without first proving which tenant is being acted
 for, and the compiler enforces it.
