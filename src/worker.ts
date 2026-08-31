@@ -5,6 +5,7 @@ import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleLogoAsset } from "./html/logoAsset";
+import { handleDesktopUpdateAsset } from "./api/desktopUpdates";
 import { renderPrivacyPolicyPage, renderTermsOfServicePage } from "./html/pages/legal";
 import { handleMe } from "./api/me";
 import {
@@ -133,6 +134,13 @@ export default {
 
     if (url.pathname === "/logo.png") {
       return handleLogoAsset();
+    }
+
+    // Desktop auto-update feed (electron-updater). Public by necessity -- the updater cannot hold
+    // a session -- and read-only over a validated filename under R2's desktop/ prefix.
+    const desktopUpdateMatch = url.pathname.match(/^\/desktop\/([^/]+)$/);
+    if (desktopUpdateMatch && (request.method === "GET" || request.method === "HEAD")) {
+      return handleDesktopUpdateAsset(env.AUDIO_ASSETS, decodeURIComponent(desktopUpdateMatch[1]));
     }
 
     // Public legal pages (no auth) — linked from the mobile app Settings and the app-store listings.

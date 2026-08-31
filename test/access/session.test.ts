@@ -39,6 +39,23 @@ describe("sessions", () => {
     expect(header).toContain("SameSite=Lax");
   });
 
+  // Staff must not be signed out mid-shift by a clock. Only logout, a password reset, or removing
+  // the account ends a session -- see the comment on SESSION_TTL_MS.
+  it("does not time a signed-in user out", async () => {
+    const token = await createSession(env.DB, EMAIL);
+    const tokenHash = await sha256Hex(token);
+    const row = await env.DB.prepare("SELECT created_at, expires_at FROM sessions WHERE token_hash = ?")
+      .bind(tokenHash)
+      .first<{ created_at: number; expires_at: number }>();
+
+    const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+    expect(row!.expires_at - row!.created_at).toBeGreaterThan(ONE_YEAR_MS);
+
+    // The cookie must outlast the browser session too, or the desktop/web app signs out on restart.
+    const maxAge = Number(/Max-Age=(\d+)/.exec(sessionCookieHeader(token))![1]);
+    expect(maxAge * 1000).toBeGreaterThan(ONE_YEAR_MS);
+  });
+
   it("rejects a session whose expires_at is in the past", async () => {
     const token = "expired-token-raw";
     const tokenHash = await sha256Hex(token);

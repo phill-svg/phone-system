@@ -1,7 +1,15 @@
 import { randomToken, sha256Hex } from "./crypto";
 
 export const SESSION_COOKIE = "tcb_session";
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+// Staff stay signed in until they actively log out. This is a phone the team leaves running all
+// day on a tablet, a desktop tray app and their own mobiles; a timed expiry just meant being
+// silently logged out mid-shift and missing calls. Sessions still end immediately on logout, and
+// destroySessionsForEmail() still revokes every session on a password reset or when an account is
+// removed -- so the deliberate ways out are unchanged, only the clock is gone.
+//
+// The row still carries an expires_at because the column is NOT NULL and the sweep below reads it;
+// ten years is "never" for this purpose without needing a schema change.
+const SESSION_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 
 export async function createSession(db: D1Database, email: string): Promise<string> {
   const token = randomToken();
