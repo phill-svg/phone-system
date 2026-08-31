@@ -2,6 +2,7 @@
 
 const path = require("path");
 const { app, BrowserWindow, shell, session, Tray, Menu, ipcMain, Notification, powerMonitor } = require("electron");
+const { autoUpdater } = require("electron-updater");
 
 // Single source of truth for the dashboard URL. If the worker is ever moved
 // to a custom domain, update this one line.
@@ -29,6 +30,35 @@ app.on("second-instance", () => {
     mainWindow.focus();
   }
 });
+
+// The app auto-starts at Windows login, which routinely beats the network being up. A single
+// loadURL() that fails then leaves a blank white window forever -- Electron does not retry -- and
+// the user sees "the app won't load". Retry with a short backoff until the dashboard actually loads.
+let reloadTimer = null;
+let reloadAttempt = 0;
+const RELOAD_DELAYS_MS = [1000, 2000, 5000, 10000, 15000, 30000];
+
+function loadDashboard() {
+  if (reloadTimer) {
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
+  }
+  mainWindow?.loadURL(DASHBOARD_URL).catch(() => {
+    // loadURL rejects on failure too; did-fail-load also fires, and scheduleReload is
+    // idempotent, so whichever arrives first wins and the other is a no-op.
+    scheduleReload();
+  });
+}
+
+function scheduleReload() {
+  if (reloadTimer || !mainWindow || mainWindow.isDestroyed()) return;
+  const delay = RELOAD_DELAYS_MS[Math.min(reloadAttempt, RELOAD_DELAYS_MS.length - 1)];
+  reloadAttempt++;
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null;
+    loadDashboard();
+  }, delay);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -80,20 +110,57 @@ function createWindow() {
     }
   });
 
-  mainWindow.loadURL(DASHBOARD_URL);
+  // ERR_ABORTED (-3) is the normal signature of a redirect superseding a load (the dashboard
+  // bounces to /login when the session has expired), not a failure worth retrying.
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return;
+    console.warn(`dashboard load failed (${errorCode} ${errorDescription}) for ${validatedURL}; retrying`);
+    scheduleReload();
+  });
+
+  // A successful load means the network is back -- reset the backoff so a later failure starts
+  // retrying quickly again rather than waiting the maximum delay.
+  mainWindow.webContents.on("did-finish-load", () => {
+    reloadAttempt = 0;
+  });
+
+  // A crashed or killed renderer leaves the same blank window as a failed load.
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.warn(`renderer gone (${details.reason}); reloading`);
+    scheduleReload();
+  });
+
+  loadDashboard();
 
   return mainWindow;
+}
+
+function rebuildTrayMenu() {
+  if (!tray) return;
+  const items = [
+    { label: "Show", click: () => mainWindow?.show() },
+    {
+      label: "Reload",
+      click: () => {
+        reloadAttempt = 0;
+        loadDashboard();
+      },
+    },
+  ];
+  if (updateReadyVersion) {
+    items.push({ type: "separator" });
+    items.push({ label: `Restart to update to ${updateReadyVersion}`, click: () => restartToUpdate() });
+  }
+  items.push({ type: "separator" });
+  items.push({ label: `Version ${app.getVersion()}`, enabled: false });
+  items.push({ label: "Quit", click: () => app.quit() });
+  tray.setContextMenu(Menu.buildFromTemplate(items));
 }
 
 function createTray() {
   tray = new Tray(path.join(__dirname, "tcb-logo.png"));
   tray.setToolTip("TCB Phone");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Show", click: () => mainWindow?.show() },
-      { label: "Quit", click: () => app.quit() },
-    ])
-  );
+  rebuildTrayMenu();
   tray.on("click", () => mainWindow?.show());
 }
 
@@ -140,6 +207,49 @@ function pollNow() {
   }
 }
 
+// Auto-update from GitHub Releases (the repo is public, so no token is needed). The app lives in
+// the tray and is almost never quit deliberately, so waiting for a quit to apply an update would
+// mean it effectively never updates: check on launch, then every six hours, and tell the user when
+// a new version is ready so they can restart on their own terms.
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let updateReadyVersion = null;
+
+function setUpAutoUpdate() {
+  // In dev there is no packaged app to replace, and electron-updater throws rather than no-ops.
+  if (!app.isPackaged) return;
+
+  autoUpdater.autoDownload = true;
+  // Applied on quit; the tray notification below offers to restart immediately instead.
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("update-downloaded", (info) => {
+    updateReadyVersion = info?.version ?? null;
+    rebuildTrayMenu();
+    const notification = new Notification({
+      title: "TCB Phone update ready",
+      body: updateReadyVersion
+        ? `Version ${updateReadyVersion} will install when you restart. Click to restart now.`
+        : "An update will install when you restart. Click to restart now.",
+    });
+    notification.on("click", () => restartToUpdate());
+    notification.show();
+  });
+
+  // Never let an update problem take the phone down -- log and carry on.
+  autoUpdater.on("error", (err) => {
+    console.warn(`auto-update failed: ${err?.message ?? err}`);
+  });
+
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+}
+
+function restartToUpdate() {
+  app.isQuitting = true;
+  autoUpdater.quitAndInstall();
+}
+
 app.whenReady().then(() => {
   // Windows groups taskbar buttons and attributes notifications by this ID.
   // Set it to the packaged appId so the app shows as "TCB Phone" with its own
@@ -162,6 +272,7 @@ app.whenReady().then(() => {
 
   createWindow();
   createTray();
+  setUpAutoUpdate();
 
   app.on("activate", () => {
     // macOS-only pattern (re-create a window when the dock icon is clicked

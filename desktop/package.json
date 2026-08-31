@@ -1,13 +1,14 @@
 {
   "name": "tcb-phone-desktop",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Desktop shell for the TCB staff admin dashboard",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win --x64",
-    "build:dir": "electron-builder --win --dir --x64"
+    "build:dir": "electron-builder --win --dir --x64",
+    "release": "electron-builder --win --x64 --publish always"
   },
   "devDependencies": {
     "concurrently": "^10.0.5",
@@ -23,6 +24,7 @@
       "main.js",
       "preload.js",
       "icon.png",
+      "tcb-logo.png",
       "package.json"
     ],
     "directories": {
@@ -45,6 +47,16 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "artifactName": "TCB-Phone-Setup-${version}.exe"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "phill-svg",
+        "repo": "phone-system"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }
