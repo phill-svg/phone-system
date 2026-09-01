@@ -41,7 +41,7 @@ import {
   handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
 } from "./api/staff";
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
-import { insertMessage } from "./db/messages";
+import { insertMessage, updateMessageStatus } from "./db/messages";
 import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
 import type { SendEmailBinding } from "./email/sendgrid";
@@ -684,6 +684,21 @@ export default {
         else await notify;
       }
       return new Response('<?xml version="1.0" encoding="UTF-8"?><Response/>', { headers: { "Content-Type": "text/xml" } });
+    }
+
+    // Outbound SMS/Messenger delivery status. Twilio's initial send response only means "accepted" --
+    // this is how a later async rejection (e.g. Facebook Messenger sent outside the 24-hour window)
+    // ever reaches the stored message row. See handleSendMessage, which sets this as the StatusCallback.
+    if (url.pathname === "/webhooks/twilio/sms-status" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) params[key] = String(value);
+      const valid = await authorizeTwilioWebhook(request, params, env);
+      if (!valid) return new Response("invalid signature", { status: 401 });
+      if (params.MessageSid && params.MessageStatus) {
+        await updateMessageStatus(env.DB, params.MessageSid, params.MessageStatus);
+      }
+      return new Response("ok");
     }
 
     if (url.pathname.startsWith("/api/")) {
