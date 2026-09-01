@@ -3,20 +3,10 @@
 A thin Electron wrapper around the TCB VoIP staff admin dashboard
 (https://tcbvoip.app/). It's just a window pointed at the live site — no offline mode, no local
 data. All feature and content changes ship through the worker itself and need no app update; only a
-shell-level change (e.g. bumping the Electron version, or the shortcut prompt below) needs a new
-installer.
+shell-level change (e.g. bumping the Electron version) needs a new installer.
 
 Those shell-level changes do reach staff on their own: the app auto-updates via electron-updater,
 checking on launch and every six hours. See *Shipping an update* below.
-
-## Desktop shortcut
-
-The installer always creates a Start menu entry, and **asks** before creating a desktop icon
-("Add a TCB Phone shortcut to your desktop?"). That prompt lives in `build/installer.nsh`;
-`nsis.createDesktopShortcut` is false so electron-builder doesn't plant one unconditionally.
-
-Auto-update runs the installer silently (`/S`), and the prompt is skipped in silent mode — an
-update never re-asks, and never disturbs a choice already made. Uninstalling removes the shortcut.
 
 ## Building the installer
 
