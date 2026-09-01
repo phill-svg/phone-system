@@ -50,6 +50,42 @@ the variant pattern to do that from an env var. That also means a new `ascAppId`
 
 ---
 
+## How this interacts with the multi-tenant roadmap
+
+`../specs/2026-08-31-tenancy-foundation-design.md` lists sub-project **7 — App Store submission
+under the public story**, gated on sub-projects 2–5 (sign-up, provisioning, billing, ServiceM8).
+That is the point at which a *public* App Store listing becomes legitimate: once anyone can
+register and pay, the app is a general-audience product rather than one company's staff tool, and
+the Guideline 3.2 objection disappears on its own.
+
+That matters here because **the custom-app choice is one-way on a given app record**. Setting
+`au.com.tcbpestcontrolcanberra.tcbphone` to Private means that record can never be flipped to
+public for the tenanted launch.
+
+So decide this before starting step 0:
+
+- **If the public product will be a new, differently-branded app** (likely — the roadmap describes
+  "the ServiceM8-native phone system for Australian trades", which is not "TCB Phone", and the
+  bundle ID is TCB's own reverse domain), then the two never collide. Take TCB Phone private as a
+  custom app and let the public product get its own record and identifier when sub-projects 2–5
+  land. **This is the expected path.**
+- **If "TCB Phone" on this bundle ID is meant to become the public product**, do *not* set it to
+  Private. Bridge staff on internal TestFlight instead and keep the record clean for the public
+  submission, because a custom app cannot be converted back.
+
+## Getting the app onto staff phones *right now*
+
+Independent of the above, and available today: **internal TestFlight testers skip Beta App Review
+entirely**. App Store Connect → *Users and Access* → add each staff member as a user, then add them
+to an **Internal Testing** group in TestFlight. Builds reach them within minutes of processing, with
+no review and no ABM.
+
+The catch is that TestFlight builds expire **90 days** after upload, so this needs a re-upload each
+quarter. It is a bridge, not a destination — but it is the right bridge while ABM enrolment is being
+verified, or while sub-projects 2–5 are in flight.
+
+---
+
 ## 0. One-time: enrol TCB in Apple Business Manager
 
 Free, but Apple verifies the organisation by phone, so start this first — it is the long pole
