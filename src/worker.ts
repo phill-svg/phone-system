@@ -42,6 +42,7 @@ import {
 } from "./api/staff";
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
+import { logCallToServiceM8 } from "./servicem8/callLogging";
 import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
 import type { SendEmailBinding } from "./email/sendgrid";
@@ -106,6 +107,9 @@ type Env = {
   FB_PAGE_ACCESS_TOKEN?: string;
   // "messenger:<page-id>" -- the Page we send from, and whose inbox we read sender names out of.
   TWILIO_MESSENGER_FROM?: string;
+  // Optional: when set, a completed call is auto-logged as a diary note on the matching ServiceM8
+  // job (see src/servicem8/). Unset means the feature is simply off -- no error, no missing data.
+  SERVICEM8_API_KEY?: string;
 };
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
@@ -243,6 +247,29 @@ export default {
             await appendCallEvent(env.DB, params.CallSid, "call_ended", { status: normalized });
           } catch {
             /* timeline logging is best-effort; never fail the webhook over it */
+          }
+          if (env.SERVICEM8_API_KEY) {
+            const logToSm8 = env.DB.prepare(
+              "SELECT direction, caller_number, called_number, started_at FROM calls WHERE id = ?"
+            )
+              .bind(params.CallSid)
+              .first<{ direction: "inbound" | "outbound"; caller_number: string; called_number: string; started_at: number }>()
+              .then((call) => {
+                if (!call) return;
+                return logCallToServiceM8(env.SERVICEM8_API_KEY as string, {
+                  direction: call.direction,
+                  callerNumber: call.caller_number,
+                  calledNumber: call.called_number,
+                  startedAt: call.started_at,
+                  endedAt: Date.now(),
+                  status: normalized,
+                });
+              })
+              .catch(() => {
+                /* ServiceM8 logging is best-effort; never fail the webhook over it */
+              });
+            if (ctx) ctx.waitUntil(logToSm8);
+            else await logToSm8;
           }
         }
         // The caller's leg ending may strand the agent alone in the conference (named by
