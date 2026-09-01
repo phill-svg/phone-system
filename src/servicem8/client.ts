@@ -45,6 +45,26 @@ export async function findMostRecentJobByPhone(apiKey: string, e164: string): Pr
   return { uuid: top.uuid, jobNumber: String(top.data?.generated_job_id ?? "") };
 }
 
+type Sm8JobContact = { first?: string; last?: string; mobile?: string; phone?: string };
+
+// Looks up a customer's name from ServiceM8's job-contact records, the way the "make contact"
+// Make.com scenario did (there, to push the name into Aircall's own contact list). `jobcontact.json`
+// is a plain OData-filterable list endpoint -- confirmed by that scenario's `getJobContact` module,
+// which filtered on `mobile eq '<local-AU-number>'`. Widened here to also check `phone`, since a
+// landline-style number could be stored there instead. Returns null if nobody's name is on file.
+export async function findJobContactByPhone(apiKey: string, e164: string): Promise<{ firstName: string; lastName: string } | null> {
+  const q = localAuNumber(e164);
+  const filter = `mobile eq '${q}' or phone eq '${q}'`;
+  const res = await fetch(`${SM8_BASE}/jobcontact.json?$filter=${encodeURIComponent(filter)}&limit=5`, {
+    headers: sm8Headers(apiKey),
+  });
+  if (!res.ok) throw new Error(`ServiceM8 jobcontact lookup failed: ${res.status} ${await res.text()}`);
+  const contacts = await res.json<Sm8JobContact[]>();
+  const match = (contacts ?? []).find((c) => c.first?.trim());
+  if (!match?.first) return null;
+  return { firstName: match.first.trim(), lastName: (match.last ?? "").trim() };
+}
+
 // Adds a staff diary note to a job. `active`/`action_required` string values ("1"/"0") match what
 // ServiceM8's API expects -- confirmed by the working Make.com scenario, which sends the same shape.
 export async function addJobNote(apiKey: string, jobUuid: string, note: string): Promise<void> {
