@@ -12,7 +12,8 @@ the decisions and the hard-won gotchas. Do not rediscover them.
 
 - **`specs/`** — approved designs. Read the relevant one *before* implementing.
   - `2026-08-31-tenancy-foundation-design.md` — multi-tenancy, and the 7 sub-project roadmap to
-    selling this to other businesses. The current big arc.
+    selling this to other businesses. **Shelved — not being pursued.** Kept for reference only; do
+    not resume without Phill explicitly asking for it again.
   - `2026-08-27-tcbvoip-migration-design.md`, `2026-08-15-tcb-email-password-auth-design.md`,
     `2026-08-19-ios-softphone-phase1-design.md`, `2026-08-16-mobile-app-design.md` (+ phase2),
     `2026-08-27-settings-functional-design.md`
@@ -72,4 +73,7 @@ is normal, not broken.
   public App Store submission — so do not set this bundle ID to Private if it is meant to become
   the public product.
 - **Android:** ships to the Play **internal** track via `eas submit`.
-- **Backend:** tenancy foundation (sub-project 1 of 7) is the active work.
+- **Backend:** single-tenant, TCB-only. The multi-tenancy plan is shelved (see `specs/` note above)
+  — this stays a TCB-specific tool for now. Recent work: ServiceM8 call logging (auto-notes a job's
+  diary on call end, matching the customer's number — see `src/servicem8/`), mobile reconnect-loop
+  fix, and Facebook Messenger delivery-status tracking.
