@@ -7,6 +7,17 @@ content changes ship through the worker itself and need no app update; only a
 shell-level change (e.g. bumping the Electron version) would ever require
 staff to re-download.
 
+## Desktop shortcut
+
+The installer creates a Start menu entry but **not** a desktop icon. The app asks on its first
+visible launch ("Add a TCB Phone shortcut to your desktop?") and remembers the answer in
+`shell-prefs.json` under the app's userData folder, so a "no" is never asked again. It stays quiet
+when the app auto-starts hidden at login, and skips the question entirely if a shortcut is already
+there from an older installer.
+
+Because the app writes that shortcut rather than the installer, uninstalling won't remove it — the
+`.lnk` has to be deleted by hand.
+
 ## Building the installer
 
 ```bash
