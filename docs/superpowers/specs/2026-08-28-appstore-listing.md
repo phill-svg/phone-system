@@ -117,10 +117,11 @@ Required size: 1290×2796 (6.7"). 3–10 screenshots.
       the App Store readiness memory)
 
 ## Known review risks (be ready)
-1. **Guideline 4.2 / "why public if staff-only":** the review note frames it as an internal business
-   tool; the demo account lets them see it works. If Apple pushes back, the alternative is
-   **unlisted app distribution** (App Store Connect → Pricing → unlisted) or Apple Business Manager
-   custom app — same build, not publicly discoverable.
+1. **Guideline 2.2 / "why public if staff-only" — this one landed.** The TestFlight external-testing
+   submission was rejected: TestFlight is for beta-testing apps bound for public distribution, and
+   Apple pointed at Apple Business Manager instead. The resolution is a **custom app** restricted to
+   TCB's ABM Organization ID — same build, same listing content below, not publicly discoverable.
+   See `../runbooks/ios-abm-custom-app.md`.
 2. **VoIP / CallKit:** apps using the `voip` background mode are expected to present incoming calls
    via CallKit. Confirm the incoming-call path does so (Twilio Voice RN SDK CallKit integration).
 3. **Demo account must actually work** — the #1 avoidable rejection.
