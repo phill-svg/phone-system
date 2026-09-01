@@ -64,6 +64,12 @@ export async function login(email: string, password: string): Promise<{ token: s
   return apiFetch("/api/login", { method: "POST", body: JSON.stringify({ email, password }) });
 }
 
+// Who the stored session token belongs to. Sign-in returns the user inline, but a relaunch only
+// restores the token, so this is how we learn the email and role again.
+export async function getMe(): Promise<StaffUser> {
+  return apiFetch<StaffUser>("/api/me");
+}
+
 export async function logout(): Promise<void> {
   try {
     await apiFetch("/api/logout", { method: "POST" });
