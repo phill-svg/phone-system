@@ -56,11 +56,17 @@ transcription, and call notifications for TCB Pest Control staff.
 - Password: `TcbReview2026!`
 - Role: staff. Verified: `POST /api/login` returns a token. Delete this account after review if desired.
 
-**Review notes (paste into "Notes"):**
+**Review notes (paste into "Notes").** Frame these around the product, not around TCB. The
+earlier draft opened with "private, staff-only ... no public sign-up by design", which hands the
+reviewer Guideline 3.2 (Business) in writing. Describe what the app does and how accounts are
+issued; do not claim a customer base that does not exist yet. The durable fix for 3.2 is shipping
+open sign-up (tenancy sub-project 2).
+
 ```
-TCB Phone is a private, staff-only business phone app for TCB Pest Control Canberra. There is no
-public sign-up by design — accounts are provisioned by the business. Please use the demo account
-provided above to sign in.
+TCB Phone is a business phone app for small service businesses. It turns a company's business
+number into a softphone: staff make and take calls on the business line, send and receive SMS, and
+handle Facebook Messenger enquiries from one inbox. Accounts are provisioned by the subscribing
+business rather than created in the app, so please sign in with the demo account above.
 
 Calling: the app is a softphone for the business's telephone number (via Twilio). Incoming calls
 are delivered as VoIP pushes and presented through the system call UI; outbound calls and SMS are
