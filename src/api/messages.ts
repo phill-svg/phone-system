@@ -2,6 +2,7 @@ import { jsonResponse } from "./respond";
 import { listConversations, listThread, markThreadRead, insertMessage } from "../db/messages";
 import { resolveSendingNumber } from "../db/phoneNumbers";
 import { sendSms } from "../twilio/smsClient";
+import { appendWebhookSecret } from "../twilio/webhookAuth";
 
 type Env = {
   DB: D1Database;
@@ -15,6 +16,7 @@ type Env = {
   // arrives via Twilio as From="messenger:<PSID>" (stored as peer_number); replies must go back out
   // FROM the Page's messenger address, not a phone number.
   TWILIO_MESSENGER_FROM?: string;
+  TWILIO_WEBHOOK_SECRET?: string;
 };
 
 // Minimal AU-friendly normalization: keep +E.164 as-is, turn a local 0-prefixed number into +61.
@@ -65,10 +67,19 @@ export async function handleSendMessage(request: Request, env: Env): Promise<Res
       (await resolveSendingNumber(env.DB, "sms", requestedFrom)) ?? env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER;
   }
   try {
+    // Twilio's 201 on this call only means "accepted" -- for Messenger sends in particular, Meta
+    // can still reject the message asynchronously (most commonly for replying outside the 24-hour
+    // window). Point Twilio at our status callback so that outcome ever reaches `messages.status`
+    // instead of the app permanently showing "sent" for a message that never actually delivered.
+    const statusCallback = appendWebhookSecret(
+      `${new URL(request.url).origin}/webhooks/twilio/sms-status`,
+      env.TWILIO_WEBHOOK_SECRET
+    );
     const { sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET, {
       to: target,
       from: fromNumber,
       body: text,
+      statusCallback,
     });
     await insertMessage(env.DB, { id: sid, direction: "outbound", peer_number: target, our_number: fromNumber, body: text, status: "sent", read: 1, createdAt: Date.now() });
     return jsonResponse({ ok: true, id: sid });

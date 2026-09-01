@@ -74,3 +74,12 @@ export async function listThread(db: D1Database, peer: string, limit?: number): 
 export async function markThreadRead(db: D1Database, peer: string): Promise<void> {
   await db.prepare("UPDATE messages SET read = 1 WHERE peer_number = ? AND direction = 'inbound'").bind(peer).run();
 }
+
+// Applies a Twilio status-callback update (e.g. queued -> delivered/failed/undelivered) to an
+// already-inserted outbound message. Twilio's initial 201 on send only means "accepted", not
+// "delivered" -- for Facebook Messenger sends in particular, Meta can reject the message
+// asynchronously (e.g. outside the 24-hour window), and this callback is the only way that ever
+// reaches the stored message status. A stray callback for an unknown id is a no-op.
+export async function updateMessageStatus(db: D1Database, id: string, status: string): Promise<void> {
+  await db.prepare("UPDATE messages SET status = ? WHERE id = ?").bind(status, id).run();
+}
