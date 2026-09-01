@@ -42,7 +42,7 @@ import {
 } from "./api/staff";
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
-import { logCallToServiceM8 } from "./servicem8/callLogging";
+import { logCallToServiceM8, syncContactFromServiceM8 } from "./servicem8/callLogging";
 import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
 import type { SendEmailBinding } from "./email/sendgrid";
@@ -249,27 +249,32 @@ export default {
             /* timeline logging is best-effort; never fail the webhook over it */
           }
           if (env.SERVICEM8_API_KEY) {
-            const logToSm8 = env.DB.prepare(
+            const apiKey = env.SERVICEM8_API_KEY;
+            const sm8Work = env.DB.prepare(
               "SELECT direction, caller_number, called_number, started_at FROM calls WHERE id = ?"
             )
               .bind(params.CallSid)
               .first<{ direction: "inbound" | "outbound"; caller_number: string; called_number: string; started_at: number }>()
               .then((call) => {
                 if (!call) return;
-                return logCallToServiceM8(env.SERVICEM8_API_KEY as string, {
+                const loggable = {
                   direction: call.direction,
                   callerNumber: call.caller_number,
                   calledNumber: call.called_number,
                   startedAt: call.started_at,
                   endedAt: Date.now(),
                   status: normalized,
-                });
+                };
+                return Promise.all([
+                  logCallToServiceM8(apiKey, loggable),
+                  syncContactFromServiceM8(env.DB, apiKey, loggable),
+                ]);
               })
               .catch(() => {
                 /* ServiceM8 logging is best-effort; never fail the webhook over it */
               });
-            if (ctx) ctx.waitUntil(logToSm8);
-            else await logToSm8;
+            if (ctx) ctx.waitUntil(sm8Work);
+            else await sm8Work;
           }
         }
         // The caller's leg ending may strand the agent alone in the conference (named by
