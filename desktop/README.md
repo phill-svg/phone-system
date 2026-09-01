@@ -1,12 +1,11 @@
 # TCB Phone — Desktop App
 
 A thin Electron wrapper around the TCB VoIP staff admin dashboard
-(https://tcbvoip.app/). It's just a window pointed at the live site — no offline mode, no local
-data. All feature and content changes ship through the worker itself and need no app update; only a
-shell-level change (e.g. bumping the Electron version) needs a new installer.
-
-Those shell-level changes do reach staff on their own: the app auto-updates via electron-updater,
-checking on launch and every six hours. See *Shipping an update* below.
+(https://tcbvoip.app/). It's just a window pointed at the
+live site — no offline mode, no local data, no auto-updates. All feature and
+content changes ship through the worker itself and need no app update; only a
+shell-level change (e.g. bumping the Electron version) would ever require
+staff to re-download.
 
 ## Building the installer
 
@@ -18,24 +17,15 @@ npm run build
 
 This produces `desktop/release/TCB-Phone-Setup-<version>.exe`.
 
-## Shipping an update
+## Distributing to staff
 
-Bump `version` in `desktop/package.json` first — electron-updater compares versions, so an
-unbumped build is invisible to everyone already running the app. Then:
+1. Build the installer locally (above).
+2. Upload the `.exe` to a new [GitHub Release](https://github.com/phill-svg/phone-system/releases) on this repo.
+3. Share the release download link with staff.
 
-```bash
-cd desktop
-npm run build            # release/TCB-Phone-Setup-<version>.exe + .blockmap + latest.yml
-npm run release:upload   # puts all three in R2 under desktop/, manifest last
-```
-
-`release:upload` needs `wrangler` to be logged in to the Cloudflare account. Running copies pick
-the update up within six hours, or immediately on their next launch; staff get a notification
-offering to restart, and it applies on quit either way.
-
-**First install for someone new** still needs the `.exe` handed over directly — share
-`release/TCB-Phone-Setup-<version>.exe`, or the `https://tcbvoip.app/desktop/` URL it was uploaded
-to.
+There is no auto-update. Re-distribute a new installer (and ask staff to
+re-run it) only when the desktop shell itself changes — not for normal
+dashboard updates, which are live immediately for everyone.
 
 ## Heads-up for whoever shares the download link
 
