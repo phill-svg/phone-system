@@ -1,18 +1,12 @@
 "use strict";
 
-const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, dialog, shell, session, Tray, Menu, ipcMain, Notification, powerMonitor } = require("electron");
+const { app, BrowserWindow, shell, session, Tray, Menu, ipcMain, Notification, powerMonitor } = require("electron");
 const { autoUpdater } = require("electron-updater");
 
 // Single source of truth for the dashboard URL. If the worker is ever moved
 // to a custom domain, update this one line.
 const DASHBOARD_URL = "https://tcbvoip.app/admin/phone";
-
-// Windows identity for the app: groups the taskbar button, attributes notifications, and must be
-// stamped on any shortcut we create ourselves (see offerDesktopShortcut) or Windows treats a window
-// launched from that shortcut as a different app.
-const APP_USER_MODEL_ID = "au.com.tcbpestcontrolcanberra.tcbphone";
 
 let mainWindow = null;
 let tray = null;
@@ -178,94 +172,6 @@ ipcMain.on("incoming-call", (_event, fromLabel) => {
   notification.show();
 });
 
-// The installer deliberately does NOT create a desktop shortcut (nsis.createDesktopShortcut is
-// false); the app asks instead, so staff who only ever use the tray icon don't get an icon they
-// didn't want. Asked exactly once -- a "no" is remembered forever rather than re-prompted on every
-// launch -- via a small JSON file in userData, which is cheaper than a settings dependency for one
-// boolean.
-function prefsPath() {
-  return path.join(app.getPath("userData"), "shell-prefs.json");
-}
-
-function readPrefs() {
-  try {
-    return JSON.parse(fs.readFileSync(prefsPath(), "utf8"));
-  } catch (e) {
-    // Missing on first run, and unreadable/corrupt is the same situation: nothing decided yet.
-    return {};
-  }
-}
-
-function writePrefs(prefs) {
-  try {
-    fs.writeFileSync(prefsPath(), JSON.stringify(prefs, null, 2));
-  } catch (e) {
-    // Non-fatal: worst case we ask again next launch, which beats failing to start.
-    console.warn(`could not save shell prefs: ${e?.message ?? e}`);
-  }
-}
-
-function desktopShortcutPath() {
-  return path.join(app.getPath("desktop"), "TCB Phone.lnk");
-}
-
-async function offerDesktopShortcut() {
-  // writeShortcutLink is Windows-only and a .lnk means nothing elsewhere; the installer only
-  // targets Windows anyway.
-  if (process.platform !== "win32") return;
-  // In dev, process.execPath is the Electron binary under node_modules -- a shortcut to it would
-  // launch a bare Electron rather than the app. Same reasoning as configureAutoLaunch().
-  if (!app.isPackaged) return;
-  // Auto-started at login we come up silently into the tray on purpose; a modal dialog at boot is
-  // exactly the "window in the user's face" that startHidden exists to avoid. Ask on the next
-  // launch the user actually initiates.
-  if (startHidden) return;
-
-  const prefs = readPrefs();
-  if (prefs.desktopShortcutAsked) return;
-
-  // A shortcut already on the desktop (installers before this change created one unconditionally)
-  // leaves nothing to offer -- record it as settled so the question never comes up.
-  if (fs.existsSync(desktopShortcutPath())) {
-    writePrefs({ ...prefs, desktopShortcutAsked: true });
-    return;
-  }
-
-  const { response } = await dialog.showMessageBox(mainWindow, {
-    type: "question",
-    buttons: ["Add shortcut", "No thanks"],
-    defaultId: 0,
-    cancelId: 1,
-    title: "TCB Phone",
-    message: "Add a TCB Phone shortcut to your desktop?",
-    detail:
-      "TCB Phone starts automatically when you log in and sits in the notification area by the clock. " +
-      "A desktop shortcut is only needed if you also want to open it yourself.",
-  });
-
-  // Record the answer either way -- the point of asking once is that "no" sticks.
-  writePrefs({ ...prefs, desktopShortcutAsked: true });
-
-  if (response !== 0) return;
-
-  try {
-    shell.writeShortcutLink(desktopShortcutPath(), "create", {
-      target: process.execPath,
-      cwd: path.dirname(process.execPath),
-      description: "TCB Phone -- staff calls and message inbox",
-      // The packaged .exe carries the app icon at index 0, so point at the binary rather than
-      // shipping a separate .ico for the shortcut to reference.
-      icon: process.execPath,
-      iconIndex: 0,
-      appUserModelId: APP_USER_MODEL_ID,
-    });
-  } catch (e) {
-    // Non-fatal: a locked-down or redirected (OneDrive) desktop folder may refuse the write. The
-    // app is already running; the user simply doesn't get the icon.
-    console.warn(`could not create desktop shortcut: ${e?.message ?? e}`);
-  }
-}
-
 // Make the phone app behave like a real desk phone: launch automatically when
 // the user logs in, and come up hidden in the tray. Only in the packaged build
 // -- during `npm start` dev we don't want to register a login item pointing at
@@ -348,7 +254,7 @@ app.whenReady().then(() => {
   // Windows groups taskbar buttons and attributes notifications by this ID.
   // Set it to the packaged appId so the app shows as "TCB Phone" with its own
   // icon rather than being grouped under the generic Electron identity.
-  app.setAppUserModelId(APP_USER_MODEL_ID);
+  app.setAppUserModelId("au.com.tcbpestcontrolcanberra.tcbphone");
 
   configureAutoLaunch();
   powerMonitor.on("resume", pollNow);
@@ -367,15 +273,6 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   setUpAutoUpdate();
-
-  // Ask about the shortcut only once the dashboard is actually up: at login the load retries with
-  // backoff, and a dialog stacked on a blank window would be asking about an app the user cannot
-  // yet see working. `once` means the first successful load wins, not every later reload.
-  mainWindow?.webContents.once("did-finish-load", () => {
-    offerDesktopShortcut().catch((e) => {
-      console.warn(`desktop shortcut prompt failed: ${e?.message ?? e}`);
-    });
-  });
 
   app.on("activate", () => {
     // macOS-only pattern (re-create a window when the dock icon is clicked
