@@ -100,7 +100,7 @@ export default function SettingsScreen() {
         <Group title="Account" footer="Signed in to the TCB phone system.">
           <Row icon="person.fill" iconColor={t.colors.accent} label="Account" value={user?.email ?? "—"} />
           <Row icon="antenna.radiowaves.left.and.right" iconColor={REG_META[status].tone === "success" ? t.colors.success : t.colors.warning} label="Registration" value={REG_META[status].label} />
-          <Row icon="number" iconColor="#8E8E93" label="Role" value={user?.role === "admin" ? "Administrator" : "Staff"} />
+          <Row icon="number" iconColor="#8E8E93" label="Role" value={user ? (user.role === "admin" ? "Administrator" : "Staff") : "—"} />
           <Row icon="bell.badge" iconColor={voiceReg.startsWith("registered") ? t.colors.success : t.colors.warning} label="Incoming calls" value={voiceReg} />
         </Group>
 

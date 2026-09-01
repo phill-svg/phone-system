@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { getToken, setToken, clearToken } from "./session";
-import { login as apiLogin, logout as apiLogout, setUnauthorizedHandler, type StaffUser } from "./api";
+import { login as apiLogin, logout as apiLogout, getMe, setUnauthorizedHandler, type StaffUser } from "./api";
 
 type Status = "loading" | "authed" | "anon";
 type AuthValue = {
@@ -21,7 +21,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUnauthorizedHandler(() => { setUser(null); setStatus("anon"); });
     (async () => {
       const token = await getToken();
-      setStatus(token ? "authed" : "anon");
+      if (!token) { setStatus("anon"); return; }
+      setStatus("authed");
+      // Sign-in is the only other place `user` is set, so a relaunch restored the token but left
+      // us with no idea who it belonged to -- Settings showed an empty Account row and everyone
+      // looked like Staff. Ask the server. A 401 here drops us to anon via the handler above.
+      try {
+        setUser(await getMe());
+      } catch {
+        // Offline or a hiccup: stay signed in on the token we have and try again on next launch.
+      }
     })();
     return () => setUnauthorizedHandler(null);
   }, []);
