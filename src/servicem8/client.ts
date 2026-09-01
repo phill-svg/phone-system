@@ -10,7 +10,7 @@ type Sm8SearchResult = {
   title: string;
   // The full underlying record (job/company/...) is embedded here for a "job" result, including
   // edit_date -- used below to pick the MOST RECENT matching job rather than just the top search hit.
-  data?: { edit_date?: string; generated_job_id?: string; [key: string]: unknown };
+  data?: { edit_date?: string; generated_job_id?: string; status?: string; [key: string]: unknown };
 };
 
 function sm8Headers(apiKey: string): HeadersInit {
@@ -38,7 +38,10 @@ export async function findMostRecentJobByPhone(apiKey: string, e164: string): Pr
   const jobs = (body.results ?? []).filter((r) => r.type === "job");
   if (jobs.length === 0) return null;
   jobs.sort((a, b) => String(b.data?.edit_date ?? "").localeCompare(String(a.data?.edit_date ?? "")));
-  const top = jobs[0];
+  // An "Unsuccessful" job (quote declined, job fell through, etc.) shouldn't soak up call notes --
+  // prefer the most recent job that's still live. Only fall back to an Unsuccessful one when it's
+  // the customer's ONLY matching job, since a note somewhere is better than none.
+  const top = jobs.find((j) => j.data?.status !== "Unsuccessful") ?? jobs[0];
   return { uuid: top.uuid, jobNumber: String(top.data?.generated_job_id ?? "") };
 }
 
