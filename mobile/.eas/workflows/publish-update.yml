@@ -1,0 +1,41 @@
+# Publishes the JS/UI layer over-the-air via EAS Update, so a mobile fix reaches
+# handsets without a store build. Native changes still need `eas build`.
+#
+# Deliberately manual: there is no `on:` trigger, because a push to master already
+# deploys the worker and a device publish should stay a decision someone makes.
+# Run it from the EAS dashboard, or with:
+#
+#   cd mobile && npx eas workflow:run .eas/workflows/publish-update.yml
+#
+# Bump OTA_BUILD in src/app/(tabs)/settings.tsx first -- that constant is how you
+# confirm on-device (Settings -> Check for Updates) that the update actually landed.
+name: Publish OTA update
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        type: choice
+        options:
+          - production
+          - preview
+          - test
+          - development
+        required: false
+        description: Build channel to publish to. Must match the channel of the installed build.
+      message:
+        type: string
+        required: false
+        description: Shown against the update in the EAS dashboard.
+
+jobs:
+  publish_update:
+    name: Publish update
+    type: update
+    # Matches the production build profile, so env vars resolve the same way here
+    # as they did when the installed binary was built.
+    environment: production
+    params:
+      channel: ${{ inputs.channel || 'production' }}
+      message: ${{ inputs.message || 'Manual publish' }}
+      platform: all
