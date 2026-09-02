@@ -8,11 +8,17 @@ export type OutboundCallOptions = {
   // status. Without it, unanswered legs ring on the carrier default (~30s+) before the flow
   // can fall through.
   timeoutSeconds?: number;
-  // Synchronous answering-machine detection: when set, Twilio delays the answer webhook briefly
-  // to classify the leg (human/machine/fax) and includes that result as `AnsweredBy` on the POST.
-  // Used ONLY for the pstn mobile leg (see CallSession.dialStaff) so a staff member's personal
-  // carrier voicemail can't hijack a business call.
+  // Answering-machine detection: classify the answering party as human/machine/fax. Used ONLY for
+  // the pstn mobile leg (see CallSession.dialStaff) so a staff member's personal carrier voicemail
+  // can't hijack a business call.
   machineDetection?: "Enable" | "DetectMessageEnd";
+  // Run that detection in the BACKGROUND. Twilio's default (AsyncAmd=false) blocks the call until
+  // detection finishes -- the answering party is connected but the caller keeps hearing ringback
+  // for the 2-4s the classifier takes, which is exactly the "I answered but they kept ringing"
+  // symptom. With AsyncAmd the legs bridge immediately and the verdict arrives later at
+  // asyncAmdStatusCallback instead of as `AnsweredBy` on the answer webhook.
+  asyncAmd?: boolean;
+  asyncAmdStatusCallback?: string;
 };
 
 // The business number -- and therefore every caller leg, conference, and agent leg we attach
@@ -31,6 +37,8 @@ export async function createOutboundCall(
   if (opts.statusCallbackEvent) body.set("StatusCallbackEvent", opts.statusCallbackEvent.join(","));
   if (opts.timeoutSeconds && opts.timeoutSeconds > 0) body.set("Timeout", String(Math.round(opts.timeoutSeconds)));
   if (opts.machineDetection) body.set("MachineDetection", opts.machineDetection);
+  if (opts.asyncAmd) body.set("AsyncAmd", "true");
+  if (opts.asyncAmdStatusCallback) body.set("AsyncAmdStatusCallback", opts.asyncAmdStatusCallback);
 
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls.json`, {
     method: "POST",
@@ -60,6 +68,21 @@ export async function cancelCall(
     body: new URLSearchParams({ Status: "canceled" }),
   });
   if (!res.ok) throw new Error(`Twilio cancel-call failed: ${res.status}`);
+}
+
+// End a leg that has already been ANSWERED. cancelCall's Status=canceled only works while a leg
+// is still ringing, so a machine-answered mobile (which by definition answered) has to be completed
+// instead. Uses the account auth token, matching redirectCall.
+export async function hangupCall(accountSid: string, authToken: string, callSid: string): Promise<void> {
+  const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ Status: "completed" }),
+  });
+  if (!res.ok) throw new Error(`Twilio hangup-call failed: ${res.status}`);
 }
 
 export async function redirectCall(accountSid: string, authToken: string, callSid: string, url: string): Promise<void> {
