@@ -8,7 +8,8 @@ export function renderWebhooksPage(origin: string, whsec: string, role: "admin" 
   const rows: { field: string; url: string }[] = [
     { field: 'Phone number → Voice · "A call comes in" (HTTP POST)', url: `${origin}/webhooks/twilio${q}` },
     { field: "Phone number → Voice · Call status changes (POST, optional but recommended)", url: `${origin}/webhooks/twilio/status${q}` },
-    { field: "SMS number / Messaging Service → inbound message webhook (POST)", url: `${origin}/webhooks/twilio/sms${q}` },
+    { field: "SMS number / Messaging Service / Facebook Messenger sender → inbound message webhook (POST)", url: `${origin}/webhooks/twilio/sms${q}` },
+    { field: "Facebook Messenger sender → Status callback URL (delivery status, POST)", url: `${origin}/webhooks/twilio/sms-status${q}` },
     { field: "TwiML App (outbound softphone) → Voice Request URL (POST)", url: `${origin}/twiml/voice-app${q}` },
   ];
 
