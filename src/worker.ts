@@ -43,7 +43,8 @@ import {
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
 import { logCallToServiceM8, syncContactFromServiceM8 } from "./servicem8/callLogging";
-import { handleRegisterPushToken, notifyInboundSms } from "./api/push";
+import { describeChannelError } from "./twilio/channelErrors";
+import { handleRegisterPushToken, notifyInboundSms, notifyMessageFailed } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
 import type { SendEmailBinding } from "./email/sendgrid";
 import {
@@ -77,6 +78,7 @@ import { resolveSendingNumber } from "./db/phoneNumbers";
 import { getFacebookName, upsertFacebookName, noteTwilioMessengerFields } from "./db/fbContacts";
 import { resolveFacebookName } from "./facebook/graph";
 import { backfillFacebookNames } from "./facebook/backfill";
+import { checkMessengerChannelHealth } from "./facebook/channelHealth";
 import { fetchPageInboxNames } from "./facebook/pageInbox";
 export { CallSession } from "./durable-objects/CallSession";
 
@@ -728,7 +730,20 @@ export default {
       const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) return new Response("invalid signature", { status: 401 });
       if (params.MessageSid && params.MessageStatus) {
-        await updateMessageStatus(env.DB, params.MessageSid, params.MessageStatus);
+        const errorCode = params.ErrorCode || null;
+        const errorMessage = params.ErrorMessage || describeChannelError(errorCode) || null;
+        await updateMessageStatus(env.DB, params.MessageSid, params.MessageStatus, { code: errorCode, message: errorMessage });
+        if (params.MessageStatus === "failed" || params.MessageStatus === "undelivered") {
+          const notify = env.DB.prepare("SELECT peer_number FROM messages WHERE id = ?")
+            .bind(params.MessageSid)
+            .first<{ peer_number: string }>()
+            .then((row) => (row ? notifyMessageFailed(env.DB, row.peer_number, errorMessage) : undefined))
+            .catch(() => {
+              /* push is best-effort; never fail the webhook over it */
+            });
+          if (ctx) ctx.waitUntil(notify);
+          else await notify;
+        }
       }
       return new Response("ok");
     }
@@ -1091,5 +1106,8 @@ export default {
     // Messenger senders whose name lookup failed on their first message: retry them here, so the
     // inbox fills the name in by itself once the Graph API is answering again. Attempt-capped.
     ctx.waitUntil(backfillFacebookNames(env).catch(() => {}));
+    // Watches real Messenger send outcomes for a channel-wide break (e.g. error 63001, the Twilio
+    // <-> Facebook Page connection itself) and pages staff once, deduped, instead of per message.
+    ctx.waitUntil(checkMessengerChannelHealth(env).catch(() => {}));
   },
 };

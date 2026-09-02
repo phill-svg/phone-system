@@ -3,7 +3,15 @@
 // phone numbers client-side, so `name` is null for those; Messenger peers get their cached
 // Graph API name (see ../facebook/graph.ts + ./fbContacts.ts) joined in here instead.
 
-export type MessageRow = { id: string; direction: "inbound" | "outbound"; body: string; ts: number; status: string | null };
+export type MessageRow = {
+  id: string;
+  direction: "inbound" | "outbound";
+  body: string;
+  ts: number;
+  status: string | null;
+  error_code: string | null;
+  error_message: string | null;
+};
 export type ConversationRow = { number: string; name: string | null; last_body: string; last_ts: number; unread: number };
 
 export async function insertMessage(
@@ -58,14 +66,16 @@ export async function listThread(db: D1Database, peer: string, limit?: number): 
   if (limit != null) {
     const rows = await db
       .prepare(
-        "SELECT * FROM (SELECT id, direction, body, created_at AS ts, status FROM messages WHERE peer_number = ? ORDER BY created_at DESC LIMIT ?) ORDER BY ts ASC"
+        "SELECT * FROM (SELECT id, direction, body, created_at AS ts, status, error_code, error_message FROM messages WHERE peer_number = ? ORDER BY created_at DESC LIMIT ?) ORDER BY ts ASC"
       )
       .bind(peer, limit)
       .all<MessageRow>();
     return rows.results;
   }
   const rows = await db
-    .prepare("SELECT id, direction, body, created_at AS ts, status FROM messages WHERE peer_number = ? ORDER BY created_at ASC")
+    .prepare(
+      "SELECT id, direction, body, created_at AS ts, status, error_code, error_message FROM messages WHERE peer_number = ? ORDER BY created_at ASC"
+    )
     .bind(peer)
     .all<MessageRow>();
   return rows.results;
@@ -78,8 +88,17 @@ export async function markThreadRead(db: D1Database, peer: string): Promise<void
 // Applies a Twilio status-callback update (e.g. queued -> delivered/failed/undelivered) to an
 // already-inserted outbound message. Twilio's initial 201 on send only means "accepted", not
 // "delivered" -- for Facebook Messenger sends in particular, Meta can reject the message
-// asynchronously (e.g. outside the 24-hour window), and this callback is the only way that ever
-// reaches the stored message status. A stray callback for an unknown id is a no-op.
-export async function updateMessageStatus(db: D1Database, id: string, status: string): Promise<void> {
-  await db.prepare("UPDATE messages SET status = ? WHERE id = ?").bind(status, id).run();
+// asynchronously (e.g. outside the 24-hour window, or a broken Page connection -- error 63001), and
+// this callback is the only way that ever reaches the stored message status. A stray callback for
+// an unknown id is a no-op. `error` captures Twilio's ErrorCode/ErrorMessage so a failure says why.
+export async function updateMessageStatus(
+  db: D1Database,
+  id: string,
+  status: string,
+  error?: { code: string | null; message: string | null }
+): Promise<void> {
+  await db
+    .prepare("UPDATE messages SET status = ?, error_code = ?, error_message = ? WHERE id = ?")
+    .bind(status, error?.code ?? null, error?.message ?? null, id)
+    .run();
 }

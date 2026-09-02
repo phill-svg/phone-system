@@ -57,3 +57,19 @@ export async function setRecordingEnabled(db: D1Database, enabled: boolean): Pro
     .bind(RECORDING_ENABLED_KEY, JSON.stringify(enabled))
     .run();
 }
+
+// Dedupe timestamp for the Messenger-channel-health cron alert (see checkMessengerChannelHealth) --
+// without this, a sustained outage would re-page staff every 5 minutes.
+const FB_CHANNEL_ALERT_KEY = "fb_channel_alert_last_sent";
+
+export async function getFbChannelAlertLastSent(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(FB_CHANNEL_ALERT_KEY).first<{ value: string }>();
+  return row ? (JSON.parse(row.value) as number) : 0;
+}
+
+export async function setFbChannelAlertLastSent(db: D1Database, ts: number): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(FB_CHANNEL_ALERT_KEY, JSON.stringify(ts))
+    .run();
+}

@@ -59,6 +59,26 @@ export async function notifyMissedCall(db: D1Database, callerNumber: string): Pr
   if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
 }
 
+// Fire-and-forget: notify staff that an outbound message (SMS or Messenger) failed to deliver --
+// Twilio's initial "sent" only means accepted, so this is the only alert staff get for a send that
+// actually bounced (e.g. a broken Facebook channel connection, error 63001). Prunes dead tokens.
+export async function notifyMessageFailed(
+  db: D1Database,
+  peer: string,
+  detail: string | null
+): Promise<void> {
+  const tokens = await getPushTokensForType(db, "notif_sms");
+  if (tokens.length === 0) return;
+  const contact = await findContactByPhone(db, peer);
+  const who = contact?.name || (peer.startsWith("messenger:") ? "a Facebook contact" : peer);
+  const { invalidTokens } = await sendExpoPush(tokens, {
+    title: "Message not delivered",
+    body: detail ? `To ${who}: ${detail}` : `A message to ${who} failed to send.`,
+    data: { type: "message_failed", from: peer },
+  });
+  if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
+}
+
 // Fire-and-forget: notify staff that a caller left a voicemail. Prunes dead tokens.
 export async function notifyVoicemail(db: D1Database, callerNumber: string): Promise<void> {
   const tokens = await getPushTokensForType(db, "notif_voicemail");
