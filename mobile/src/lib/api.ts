@@ -199,6 +199,8 @@ export type Message = {
   body: string;
   ts: number;
   status?: string;
+  error_code?: string | null;
+  error_message?: string | null;
 };
 
 export type Conversation = {

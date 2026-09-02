@@ -121,6 +121,7 @@ export default function ThreadScreen() {
               // broken Page connection, or outside the 24-hour window). Surface that instead of
               // showing it as sent forever, same as the web admin dashboard does.
               const failed = out && (item.status === "failed" || item.status === "undelivered");
+              const failDetail = item.error_message || (item.error_code ? `Error ${item.error_code}` : null);
               return (
                 <View>
                   <View style={[styles.bubbleRow, { justifyContent: out ? "flex-end" : "flex-start" }]}>
@@ -130,7 +131,9 @@ export default function ThreadScreen() {
                   </View>
                   {failed ? (
                     <View style={[styles.bubbleRow, { justifyContent: "flex-end" }]}>
-                      <Text style={[type.caption, { color: "#FF3B30", paddingHorizontal: 4 }]}>Not delivered</Text>
+                      <Text style={[type.caption, { color: "#FF3B30", paddingHorizontal: 4, maxWidth: "78%", textAlign: "right" }]}>
+                        Not delivered{failDetail ? ` -- ${failDetail}` : ""}
+                      </Text>
                     </View>
                   ) : null}
                 </View>
