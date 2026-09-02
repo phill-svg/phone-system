@@ -54,8 +54,10 @@ export default function IncomingCallScreen() {
         router.replace({ pathname: "/call-active", params: { number, name, direction: "incoming" } });
         return;
       }
-    } catch {
-      /* accept failed — fall through to dismiss */
+    } catch (e) {
+      // Was a bare `catch {}`. The SDK throws InvalidStateError here when the invite was already
+      // accepted natively, which used to dismiss the screen silently and strand a live call.
+      console.warn("[call-incoming] accept failed", e);
     }
     router.back();
   }

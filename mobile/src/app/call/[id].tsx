@@ -81,7 +81,7 @@ export default function CallDetailScreen() {
           <View style={styles.card}>
             <Text style={styles.cardLabel}>Recording</Text>
             {data.call.recording_sid ? (
-              <RecordingPlayer callId={String(id)} />
+              <RecordingPlayer callId={String(id)} duration={data.call.recording_duration} />
             ) : (
               <Text style={styles.muted}>No recording for this call.</Text>
             )}

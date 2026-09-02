@@ -610,11 +610,13 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         if (d.toDateString() === yest.toDateString()) return 'Yesterday';
         return d.toLocaleDateString('en-AU', { month: 'short', day: 'numeric' });
       }
+      function fmtSecs(secs) {
+        var m = Math.floor(secs / 60), s = Math.floor(secs % 60);
+        return m + ':' + pad2(s);
+      }
       function fmtDuration(c) {
         if (!c.ended_at || !c.started_at) return null;
-        var secs = Math.max(0, Math.round((c.ended_at - c.started_at) / 1000));
-        var m = Math.floor(secs / 60), s = secs % 60;
-        return m + ':' + pad2(s);
+        return fmtSecs(Math.max(0, Math.round((c.ended_at - c.started_at) / 1000)));
       }
 
       function clearSelectedRow() {
@@ -777,6 +779,16 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           audio.src = '/api/calls/' + encodeURIComponent(c.id) + '/recording';
           audio.style.width = '100%';
           recWrap.appendChild(audio);
+          // Twilio streams the mp3 without a usable length, so the native control often shows
+          // 0:00 even while playing. Show the duration Twilio reported on the recording-status
+          // callback when we have it.
+          if (typeof c.recording_duration === 'number' && c.recording_duration > 0) {
+            var recLen = document.createElement('div');
+            recLen.className = 'info-none';
+            recLen.style.marginTop = '.35rem';
+            recLen.textContent = 'Length ' + fmtSecs(c.recording_duration);
+            recWrap.appendChild(recLen);
+          }
         } else {
           var none = document.createElement('span');
           none.className = 'info-none';

@@ -19,7 +19,7 @@ import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/c
 import { appendWebhookSecret } from "../twilio/webhookAuth";
 import { getBusinessHours, getRecordingEnabled } from "../db/settings";
 import { createCallbackRequest } from "../db/callbackRequests";
-import { appendCallEvent } from "../db/calls";
+import { appendCallEvent, parseRecordingDuration } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
@@ -153,9 +153,16 @@ export class CallSession extends DurableObject<Env> {
         mailboxLabel = (config.mailboxLabel as string | undefined) ?? null;
       }
       await this.env.DB.prepare(
-        "UPDATE calls SET status = 'completed', ended_at = ?, recording_url = ?, recording_sid = ?, mailbox_label = ? WHERE id = ?"
+        "UPDATE calls SET status = 'completed', ended_at = ?, recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration), mailbox_label = ? WHERE id = ?"
       )
-        .bind(Date.now(), body.recordingUrl, body.recordingSid, mailboxLabel, callSid)
+        .bind(
+          Date.now(),
+          body.recordingUrl,
+          body.recordingSid,
+          parseRecordingDuration(body.recordingDuration),
+          mailboxLabel,
+          callSid
+        )
         .run();
       await this.logEvent(callSid, "voicemail_left", { mailboxLabel, recordingSid: body.recordingSid });
       try {

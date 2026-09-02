@@ -9,6 +9,7 @@ export type CallSummary = {
   status: string;
   recording_url: string | null;
   recording_sid: string | null;
+  recording_duration: number | null;
   direction: "inbound" | "outbound";
   mailbox_label: string | null;
   transcription: string | null;
@@ -16,6 +17,16 @@ export type CallSummary = {
   disposition: string | null;
   notes: string | null;
 };
+
+// Twilio sends RecordingDuration as a string of whole seconds on the recording-status callback.
+// Returns null for absent, non-numeric, or nonsensical values so a bad payload leaves the stored
+// duration untouched (callers pair this with COALESCE) rather than writing a wrong length.
+export function parseRecordingDuration(raw: string | null | undefined): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return null;
+  return n;
+}
 
 export type CallStats = {
   total: number;

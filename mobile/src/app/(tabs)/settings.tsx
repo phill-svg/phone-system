@@ -16,7 +16,7 @@ import { useTheme, useThemePreference, type ThemePreference } from "../../theme/
 import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "32";
+const OTA_BUILD = "33";
 
 const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
   automatic: "Automatic",
@@ -104,10 +104,10 @@ export default function SettingsScreen() {
           <Row icon="bell.badge" iconColor={voiceReg.startsWith("registered") ? t.colors.success : t.colors.warning} label="Incoming calls" value={voiceReg} />
         </Group>
 
-        <Group title="Calling" footer="Call Waiting shows a second incoming call while you're on a call. Auto-Answer automatically answers incoming calls after a moment. Call Recording is a business-wide setting managed by admins.">
+        <Group title="Calling" footer="Call Waiting shows a second incoming call while you're on a call. Ring My Mobile sends calls to your mobile instead of this app. Auto-Answer automatically answers incoming calls after a moment. Call Recording is a business-wide setting managed by admins.">
           <Row icon="phone.arrow.up.right.fill" iconColor="#34C759" label="Call Waiting" toggle={callWaiting} onToggle={setCallWaiting} />
           <Row icon="arrow.turn.up.right" iconColor="#0A84FF" label="Ring My Mobile"
-            value={settings.ring_my_mobile ? "On" : "Off"} chevron
+            value={settings.ring_my_mobile ? "Diverting" : "Off"} chevron
             onPress={() => router.push("/call-forwarding")} />
           <Row icon="phone.badge.checkmark" iconColor="#5E5CE6" label="Auto-Answer" toggle={autoAnswer} onToggle={setAutoAnswer} />
           {isAdmin ? (
