@@ -2,6 +2,14 @@ import { escapeHtml, renderLayout } from "../layout";
 import { formatAuNumber } from "../formatPhone";
 import type { CallEventRow, CallSummary } from "../../db/calls";
 
+// Recording length in m:ss. Twilio's streamed mp3 gives the native <audio> control no usable
+// duration, so we render the seconds it reported on the recording-status callback instead.
+function fmtSecs(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function formatEvent(event: CallEventRow): string {
   try {
     const detail = event.detail ? JSON.parse(event.detail) : null;
@@ -29,7 +37,9 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[], 
     <table><tbody>${eventRows || "<tr><td>No events.</td></tr>"}</tbody></table>
     ${
       call.recording_sid
-        ? `<p><strong>Recording:</strong></p>
+        ? `<p><strong>Recording:</strong>${
+            call.recording_duration ? ` <span>(${fmtSecs(call.recording_duration)})</span>` : ""
+          }</p>
     <audio controls preload="none" src="/api/calls/${encodeURIComponent(call.id)}/recording" style="width:100%;max-width:420px"></audio>
     <p><a href="/api/calls/${encodeURIComponent(call.id)}/recording" download="recording-${encodeURIComponent(call.id)}.mp3">Download recording</a></p>`
         : ""

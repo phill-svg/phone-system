@@ -63,7 +63,7 @@ import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
 import { renderMessagesPage } from "./html/pages/messages";
-import { getCallDetail, listCalls, appendCallEvent, getCallStats } from "./db/calls";
+import { getCallDetail, listCalls, appendCallEvent, getCallStats, parseRecordingDuration } from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist, getRecordingEnabled } from "./db/settings";
@@ -615,8 +615,17 @@ export default {
         return new Response("missing callSid", { status: 400 });
       }
 
-      await env.DB.prepare("UPDATE calls SET recording_url = ?, recording_sid = ? WHERE id = ?")
-        .bind(params.RecordingUrl ?? null, params.RecordingSid ?? null, callSid)
+      // COALESCE so a later callback without RecordingDuration can never blank a length we already
+      // stored. parseRecordingDuration returns null for absent/garbage values.
+      await env.DB.prepare(
+        "UPDATE calls SET recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration) WHERE id = ?"
+      )
+        .bind(
+          params.RecordingUrl ?? null,
+          params.RecordingSid ?? null,
+          parseRecordingDuration(params.RecordingDuration),
+          callSid
+        )
         .run();
 
       // Kick off transcription (Whisper) in the background — never block the webhook ack. A voicemail

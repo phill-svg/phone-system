@@ -65,6 +65,49 @@ describe("handleGetRecording", () => {
     expect(res.headers.get("Content-Range")).toBe("bytes 0-3/8");
   });
 
+  // Twilio's .mp3 endpoint transcodes on the fly and can answer without a Content-Length. Passing
+  // that straight through leaves <audio> with a non-finite duration (renders 0:00) and, on iOS,
+  // often refuses to play at all -- so the proxy must always supply one.
+  it("always sets Content-Length, even when Twilio omits it", async () => {
+    await insertCall("CA_nolen", "RE_nolen");
+    const fakeFetch = (async () =>
+      new Response("MP3BYTES", { status: 200, headers: { "Content-Type": "audio/mpeg" } })) as unknown as typeof fetch;
+
+    const res = await handleGetRecording(
+      testEnv,
+      env.DB,
+      "CA_nolen",
+      new Request("https://x/api/calls/CA_nolen/recording"),
+      fakeFetch
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Length")).toBe("8");
+    expect(await res.text()).toBe("MP3BYTES");
+  });
+
+  // We advertise Accept-Ranges: bytes unconditionally, so we have to honour a Range even when the
+  // upstream ignores it and hands back the whole object -- otherwise the client is told it got a
+  // partial response and gets the full body, which breaks seeking and playback.
+  it("satisfies a Range itself when Twilio ignores it and returns 200", async () => {
+    await insertCall("CA_ignored", "RE_ignored");
+    const fakeFetch = (async () =>
+      new Response("MP3BYTES", { status: 200, headers: { "Content-Type": "audio/mpeg" } })) as unknown as typeof fetch;
+
+    const res = await handleGetRecording(
+      testEnv,
+      env.DB,
+      "CA_ignored",
+      new Request("https://x/api/calls/CA_ignored/recording", { headers: { Range: "bytes=0-3" } }),
+      fakeFetch
+    );
+
+    expect(res.status).toBe(206);
+    expect(res.headers.get("Content-Range")).toBe("bytes 0-3/8");
+    expect(res.headers.get("Content-Length")).toBe("4");
+    expect(await res.text()).toBe("MP3B");
+  });
+
   it("404s when the call has no recording", async () => {
     await insertCall("CA_norec", null);
     const res = await handleGetRecording(

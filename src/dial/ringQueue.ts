@@ -4,26 +4,33 @@ import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 
 export type RingNodeTarget = "all" | string[];
 
-// Resolves the ordered list of legs to ring for a ring node. Softphone legs (`client:{email}`) are
-// emitted for staff whose app is online (isStaffAvailable). Personal-mobile legs
-// (`pstn:{email}|{e164}`) are additionally emitted for staff who enabled ring-my-mobile and are
-// on-shift (available + within hours) — even if their softphone is offline, so the call reaches
-// their cell when the app is closed. Client legs first (by ring priority), then pstn legs.
+// Resolves the ordered list of legs to ring for a ring node, in ascending ring-priority order.
+//
+// Each on-shift staff member contributes exactly ONE leg. Ring-my-mobile is a DIVERT, not an
+// "also ring": when it is on and the number is dialable, the call goes to their personal mobile
+// (`pstn:{email}|{e164}`) and their softphone is deliberately NOT rung. Otherwise they get their
+// softphone leg (`client:{email}`), provided a fresh heartbeat proves the app is online.
+//
+// An unusable mobile number falls back to the softphone rather than dropping the person silently,
+// so a typo can never route a caller straight to voicemail. The mobile leg ignores the softphone
+// heartbeat by design (isOnShift, not isStaffAvailable) — the whole point is to reach their cell
+// when the app is closed.
+//
+// One leg per person is also what keeps `ring_priority` meaningful: returning the legs grouped by
+// type would reorder people, which cascade (dials numbers[0] first) turns into the wrong person
+// ringing first.
 export async function resolveRingTargets(db: D1Database, target: RingNodeTarget, now: Date): Promise<string[]> {
   const roster = await getStaffRoster(db);
   const candidates = target === "all" ? roster : roster.filter((s) => target.includes(s.email));
   const onShift = candidates.filter((s) => isOnShift(s, now));
   onShift.sort((a, b) => a.ringPriority - b.ringPriority || a.email.localeCompare(b.email));
 
-  const clientLegs: string[] = [];
-  const pstnLegs: string[] = [];
+  const legs: string[] = [];
   for (const s of onShift) {
-    if (isStaffAvailable(s, now)) clientLegs.push(`client:${s.email}`);
     const prefs = await getUserSettings(db, s.email);
-    if (prefs.ring_my_mobile) {
-      const e164 = normalizeMobileE164(prefs.mobile_number);
-      if (e164) pstnLegs.push(`pstn:${s.email}|${e164}`);
-    }
+    const e164 = prefs.ring_my_mobile ? normalizeMobileE164(prefs.mobile_number) : null;
+    if (e164) legs.push(`pstn:${s.email}|${e164}`);
+    else if (isStaffAvailable(s, now)) legs.push(`client:${s.email}`);
   }
-  return [...clientLegs, ...pstnLegs];
+  return legs;
 }

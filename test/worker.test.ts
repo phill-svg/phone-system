@@ -386,6 +386,50 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(row?.recording_url).toBe("https://api.twilio.com/rec.mp3");
       expect(row?.recording_sid).toBe("RE123");
     });
+
+    it("stores RecordingDuration so clients can show a real length", async () => {
+      await env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+      )
+        .bind("CA-rec-dur", "+61400000000", "+61200000000", Date.now())
+        .run();
+
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-dur",
+        { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE-dur", RecordingDuration: "23" }
+      );
+      expect(response.status).toBe(200);
+
+      const row = await env.DB.prepare("SELECT recording_duration FROM calls WHERE id = ?")
+        .bind("CA-rec-dur")
+        .first<{ recording_duration: number | null }>();
+      expect(row?.recording_duration).toBe(23);
+    });
+
+    // A duration we already stored must survive a later callback that omits it -- otherwise the
+    // player would flip back to showing 0:00 after a second status POST.
+    it("does not blank an already-stored duration when a later callback omits it", async () => {
+      await env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+      )
+        .bind("CA-rec-keep", "+61400000000", "+61200000000", Date.now())
+        .run();
+
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-keep", {
+        RecordingUrl: "https://api.twilio.com/rec.mp3",
+        RecordingSid: "RE-keep",
+        RecordingDuration: "42",
+      });
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-keep", {
+        RecordingUrl: "https://api.twilio.com/rec.mp3",
+        RecordingSid: "RE-keep",
+      });
+
+      const row = await env.DB.prepare("SELECT recording_duration FROM calls WHERE id = ?")
+        .bind("CA-rec-keep")
+        .first<{ recording_duration: number | null }>();
+      expect(row?.recording_duration).toBe(42);
+    });
   });
 
   // ---- Route 7: /webhooks/twilio/join-conference (caller-leg redirect target, Task 4) ----

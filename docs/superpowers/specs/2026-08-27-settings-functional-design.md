@@ -146,11 +146,24 @@ Sign Out.
 
 ## Resolved decisions
 
-- **Call Forwarding is per-user, Aircall-style "also ring my mobile"** (additive PSTN leg alongside
-  the softphones; other staff still ring; first-to-answer wins). Lives in `user_settings`
-  (`ring_my_mobile: boolean`, `mobile_number: string`). Not a business-wide forward-away.
+- **Call Forwarding is per-user, and is a DIVERT to the mobile.** Lives in `user_settings`
+  (`ring_my_mobile: boolean`, `mobile_number: string`). When it is on and the number is dialable,
+  that staff member's leg becomes their personal mobile and **their softphone is not rung at all**.
+  Other staff are unaffected and still ring on their own legs; first-to-answer wins. Still not a
+  business-wide forward-away.
   **Ring gating confirmed:** the mobile leg follows opening hours + the staff member's availability
-  toggle (ignoring only softphone-online).
+  toggle (ignoring only softphone-online). An unusable number falls back to the softphone, so a
+  typo cannot route a caller straight to voicemail.
+
+  > **Superseded 2026-09-02.** This originally specified an *additive*, Aircall-style "also ring my
+  > mobile" — the PSTN leg alongside the softphone. It was implemented that way and did not work in
+  > practice: `resolveRingTargets` returned `[...clientLegs, ...pstnLegs]`, and because the ring node
+  > runs `strategy: "cascade"` (which dials `numbers[0]` and steps one at a time), the mobile leg sat
+  > at the end of the queue behind every softphone and was never reached while the app was online.
+  > Phill's decision on the live failure was to make it a true divert rather than fix the ordering:
+  > with the toggle on, the call should go to the mobile and the app should stay silent.
+  > Each on-shift staff member now contributes exactly one leg, which also keeps `ring_priority`
+  > ordering intact (the old type-grouped list reordered people).
 - **Call Recording is business-wide** (admin-editable, staff-read-only), resolved by the
   shared-numbers fact; default ON to match today's behavior.
 - **Admin gating:** only the business-wide Call Recording write is gated to `role = 'admin'`

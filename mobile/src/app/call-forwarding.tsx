@@ -18,11 +18,12 @@ export default function CallForwardingScreen() {
     <Screen>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         <Group title="Ring my mobile"
-          footer="When on, incoming business calls ring your mobile as well as the app during your available hours — whoever answers first takes the call.">
+          footer="When on, incoming business calls go to your mobile during your available hours and this app will NOT ring. Turn it off to take calls in the app again.">
           <Row icon="iphone" iconColor="#34C759" label="Ring my mobile"
             toggle={settings.ring_my_mobile} onToggle={(v) => update({ ring_my_mobile: v })} />
         </Group>
-        <Group title="Mobile number" footer="Australian mobile, e.g. 0412 345 678.">
+        <Group title="Mobile number"
+          footer="Australian mobile, e.g. 0412 345 678. If this isn't a valid mobile number, calls fall back to ringing the app.">
           <View style={{ paddingHorizontal: 14, paddingVertical: 10 }}>
             <TextInput
               value={number}

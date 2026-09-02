@@ -15,7 +15,7 @@ function fmtTime(seconds: number): string {
 // Streams the recording from the authenticated proxy (/api/calls/:id/recording) by attaching the
 // session Bearer token to the audio source's HTTP headers — expo-audio supports header-bearing
 // remote sources, so no token ever lands in a URL.
-function Player({ uri, token }: { uri: string; token: string }) {
+function Player({ uri, token, fallbackDuration }: { uri: string; token: string; fallbackDuration?: number | null }) {
   const player = useAudioPlayer({ uri, headers: { Authorization: `Bearer ${token}` } });
   const status = useAudioPlayerStatus(player);
 
@@ -29,6 +29,16 @@ function Player({ uri, token }: { uri: string; token: string }) {
   }
 
   const playing = status.playing;
+  // Twilio streams the .mp3 without a length the player can use, so status.duration is routinely 0
+  // or non-finite and would render as "0:00". Prefer the duration Twilio reported on the
+  // recording-status callback; fall back to a dash rather than a number we know is wrong.
+  const streamDuration = status.duration;
+  const totalLabel =
+    isFinite(streamDuration) && streamDuration > 0
+      ? fmtTime(streamDuration)
+      : typeof fallbackDuration === "number" && fallbackDuration > 0
+        ? fmtTime(fallbackDuration)
+        : "--:--";
   return (
     <View style={styles.row}>
       <Pressable
@@ -41,13 +51,13 @@ function Player({ uri, token }: { uri: string; token: string }) {
         <Text style={styles.btnText}>{playing ? "❚❚ Pause" : "▶ Play"}</Text>
       </Pressable>
       <Text style={styles.time}>
-        {fmtTime(status.currentTime)} / {fmtTime(status.duration)}
+        {fmtTime(status.currentTime)} / {totalLabel}
       </Text>
     </View>
   );
 }
 
-export function RecordingPlayer({ callId }: { callId: string }) {
+export function RecordingPlayer({ callId, duration }: { callId: string; duration?: number | null }) {
   const [token, setToken] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
@@ -57,7 +67,7 @@ export function RecordingPlayer({ callId }: { callId: string }) {
 
   if (token === undefined) return <ActivityIndicator color={colors.brand} />;
   if (!token) return <Text style={styles.muted}>Sign in again to play.</Text>;
-  return <Player uri={recordingUri(callId)} token={token} />;
+  return <Player uri={recordingUri(callId)} token={token} fallbackDuration={duration} />;
 }
 
 const styles = StyleSheet.create({

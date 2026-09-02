@@ -344,13 +344,12 @@ describe("CallSession", () => {
     });
   });
 
-  it("ring-my-mobile: an opted-in staff member's mobile is dialed as a PSTN leg alongside the softphone", async () => {
+  it("ring-my-mobile: an opted-in staff member's call is diverted to their mobile, and their softphone is NOT rung", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
-    // simultaneous strategy: both the softphone leg and this staff member's pstn (mobile) leg are
-    // dialed in the same DIAL_ALL batch. Under the default "cascade" strategy only numbers[0] is
-    // dialed initially (see reduceRingPlan.startPlan), so the pstn leg would never reach dialStaff
-    // in this single-staff scenario -- "alongside the softphone" requires simultaneous here.
-    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm", strategy: "simultaneous" });
+    // Default "cascade" strategy, as production uses. Ring-my-mobile is a divert, so this staff
+    // member contributes exactly ONE leg -- there is no sibling softphone leg to race, and cascade
+    // dialing numbers[0] is enough to reach the mobile.
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
     await seedVoicemail("main_vm", "default");
     await seedStaff("phill@b.com");
     // opt this staff member into ring-my-mobile (import setUserSettings at the top of the file)
@@ -361,11 +360,10 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-rmm", { digits: "1" }));
 
     const dialled = outboundDials(fetchMock);
-    // softphone leg still dialed (with the CallerNumber custom param), plus the raw mobile as PSTN
-    expect(dialled).toContain("client:phill@b.com?CallerNumber=61400000000");
-    expect(dialled).toContain("+61412345678");
-    // the PSTN leg carries NO CallerNumber suffix
-    expect(dialled.some((d) => d.startsWith("+61412345678?"))).toBe(false);
+    // ONLY the mobile is dialed -- the softphone must stay silent, which is the whole point of the
+    // divert. The PSTN leg carries no CallerNumber suffix (custom params don't reach the PSTN).
+    expect(dialled).toEqual(["+61412345678"]);
+    expect(dialled.some((d) => d.startsWith("client:"))).toBe(false);
 
     // the mobile leg's ownership is recorded against the staff email (mock sid = `sid-${To}`)
     const legs = await env.DB.prepare("SELECT staff_email FROM softphone_call_legs WHERE call_sid = ?")
@@ -429,20 +427,24 @@ describe("CallSession", () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm", strategy: "simultaneous" });
     await seedVoicemail("main_vm", "default");
+    // Two staff: phill is diverted to his mobile (pstn leg), sam takes calls in the app (client
+    // leg). Since ring-my-mobile is a divert, one staff member can no longer produce both leg
+    // types -- a second person is what makes this a genuine two-leg exhaustion scenario.
     await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
     await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
 
     const stub = stubFor("CA-amd-exhaust");
     await send(stub, mainEvent("CA-amd-exhaust"));
     await send(stub, mainEvent("CA-amd-exhaust", { digits: "1" }));
-    expect(outboundDials(fetchMock).length).toBe(2); // softphone + pstn mobile, both live
+    expect(outboundDials(fetchMock).length).toBe(2); // phill's pstn mobile + sam's softphone, both live
 
     // Mobile leg: machine answers → hung up, removed from the plan's attemptSids right away.
     const answer = await send(stub, agentAnswer("CA-amd-exhaust", "sid-+61412345678", "machine_start"));
     expect(answer.xml).toContain("<Hangup/>");
 
-    // Softphone leg then fails to answer too → attemptSids is now empty → ALL_ATTEMPTS_EXHAUSTED.
-    await send(stub, agentStatus("CA-amd-exhaust", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    // Sam's softphone leg then fails to answer too → attemptSids is empty → ALL_ATTEMPTS_EXHAUSTED.
+    await send(stub, agentStatus("CA-amd-exhaust", "sid-client:sam@b.com?CallerNumber=61400000000", "no-answer"));
 
     const poll = await send(stub, {
       kind: "hold_poll",

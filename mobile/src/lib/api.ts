@@ -100,6 +100,7 @@ export type Call = {
   direction: "inbound" | "outbound";
   recording_sid: string | null;
   recording_url: string | null;
+  recording_duration: number | null;
   // Two separate transcripts, never merged: `transcription` is the voicemail one, written when a
   // caller leaves a message; `call_transcript` is the full recording of an answered call. The API
   // returns both (SELECT * over `calls`) and the web app renders each under its own heading.

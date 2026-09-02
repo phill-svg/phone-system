@@ -59,34 +59,54 @@ async function seedStaff(email: string, opts: { online?: boolean; priority?: num
   ).bind(email, OPEN, online ? Date.now() : null, opts.priority ?? 100).run();
 }
 
-describe("resolveRingTargets ring-my-mobile", () => {
+describe("resolveRingTargets ring-my-mobile (divert)", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM user_settings").run();
     await env.DB.prepare("DELETE FROM staff_users").run();
   });
 
-  it("adds a pstn leg for an on-shift staff member who enabled ring_my_mobile", async () => {
+  it("diverts to the mobile INSTEAD of the softphone - the app must not ring", async () => {
     await seedStaff("phill@b.com");
     await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
     const targets = await resolveRingTargets(env.DB, "all", new Date());
-    expect(targets).toContain("client:phill@b.com");
-    expect(targets).toContain("pstn:phill@b.com|+61412345678");
+    expect(targets).toEqual(["pstn:phill@b.com|+61412345678"]);
   });
 
   it("rings the mobile even when the softphone is OFFLINE (stale heartbeat), if on-shift", async () => {
     await seedStaff("phill@b.com", { online: false });
     await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
-    const targets = await resolveRingTargets(env.DB, "all", new Date());
-    expect(targets).not.toContain("client:phill@b.com"); // softphone offline → no client leg
-    expect(targets).toContain("pstn:phill@b.com|+61412345678"); // but the mobile still rings
+    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["pstn:phill@b.com|+61412345678"]);
   });
 
-  it("no mobile leg when ring_my_mobile is off or the number is invalid", async () => {
+  it("rings the softphone when ring_my_mobile is off", async () => {
     await seedStaff("a@b.com");
-    await seedStaff("c@b.com");
     await setUserSettings(env.DB, "a@b.com", { ring_my_mobile: false, mobile_number: "0412345678" });
+    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["client:a@b.com"]);
+  });
+
+  // An unusable number must never silently drop the person from the ring list -- falling back to
+  // the softphone keeps them reachable instead of sending the caller straight to voicemail.
+  it("falls back to the softphone when ring_my_mobile is on but the number is invalid", async () => {
+    await seedStaff("c@b.com");
     await setUserSettings(env.DB, "c@b.com", { ring_my_mobile: true, mobile_number: "nope" });
-    const targets = await resolveRingTargets(env.DB, "all", new Date());
-    expect(targets.filter((t) => t.startsWith("pstn:"))).toEqual([]);
+    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["client:c@b.com"]);
+  });
+
+  it("drops a staff member entirely when their number is invalid AND their softphone is offline", async () => {
+    await seedStaff("c@b.com", { online: false });
+    await setUserSettings(env.DB, "c@b.com", { ring_my_mobile: true, mobile_number: "nope" });
+    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual([]);
+  });
+
+  // The old implementation returned [...clientLegs, ...pstnLegs], which reordered people by leg
+  // type and broke cascade's priority contract. One leg per person keeps ring_priority intact.
+  it("keeps ring_priority order across mixed mobile and softphone legs", async () => {
+    await seedStaff("senior@b.com", { priority: 10 });
+    await seedStaff("general@b.com", { priority: 100 });
+    await setUserSettings(env.DB, "senior@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual([
+      "pstn:senior@b.com|+61412345678",
+      "client:general@b.com",
+    ]);
   });
 });

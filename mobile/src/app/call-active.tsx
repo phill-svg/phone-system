@@ -125,6 +125,10 @@ export default function ActiveCallScreen() {
       try {
         const call = isIncoming ? getActiveCall() : await placeCall(number, fromNumber);
         if (!call) {
+          // The call was answered but no Call object reached JS. Popping the screen here is what
+          // leaves a live call running with no hang-up button anywhere, so make it visible.
+          if (isIncoming) console.warn("[call-active] incoming call has no active Call object");
+          setErrorText("Lost track of this call - it may still be connected.");
           finish();
           return;
         }
@@ -189,8 +193,20 @@ export default function ActiveCallScreen() {
 
   function endCall() {
     haptics.heavy();
-    if (callRef.current) callRef.current.disconnect();
-    else finish();
+    const call = callRef.current;
+    if (!call) {
+      // No Call object attached to this screen: leaving would strand a live call with no UI, so
+      // say so instead of silently navigating away.
+      console.warn("[call-active] end pressed with no active call object");
+      setErrorText("Can't end this call from here - use the other device.");
+      return;
+    }
+    // disconnect() is async and CAN reject; unawaited it fails silently and the button looks dead.
+    // The screen still closes on the Disconnected event, not here.
+    Promise.resolve(call.disconnect()).catch((e: unknown) => {
+      console.warn("[call-active] disconnect failed", e);
+      setErrorText((e as { message?: string })?.message ?? "Couldn't end the call");
+    });
   }
 
   function toggleMute() {

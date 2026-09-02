@@ -7,6 +7,7 @@ import {
   updateCallMeta,
   getCallStats,
   appendCallEvent,
+  parseRecordingDuration,
 } from "../../src/db/calls";
 
 async function seedCall(id: string, overrides: Partial<{ startedAt: number; status: string }> = {}) {
@@ -114,5 +115,20 @@ describe("db/calls", () => {
     expect(stats.voicemail).toBe(1);
     expect(stats.missed).toBe(1);
     expect(stats.avgTalkSeconds).toBeGreaterThan(0);
+  });
+});
+
+describe("parseRecordingDuration", () => {
+  it("parses Twilio's whole-second string", () => {
+    expect(parseRecordingDuration("23")).toBe(23);
+    expect(parseRecordingDuration("0")).toBe(0);
+  });
+
+  // Anything unusable must be null, so the COALESCE in the UPDATE leaves the stored value alone
+  // instead of overwriting a good duration with a wrong one.
+  it("returns null for absent or nonsensical values", () => {
+    for (const bad of [null, undefined, "", "abc", "-5", "1.5", "NaN"]) {
+      expect(parseRecordingDuration(bad as string | null | undefined)).toBeNull();
+    }
   });
 });
