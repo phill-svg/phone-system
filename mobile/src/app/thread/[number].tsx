@@ -116,11 +116,23 @@ export default function ThreadScreen() {
             contentContainerStyle={{ padding: 16, gap: 8 }}
             renderItem={({ item }: { item: Message }) => {
               const out = item.direction === "outbound";
+              // A Twilio status callback can flip an outbound message to failed/undelivered well
+              // after it looked "sent" -- most commonly a Messenger reply Facebook rejected (a
+              // broken Page connection, or outside the 24-hour window). Surface that instead of
+              // showing it as sent forever, same as the web admin dashboard does.
+              const failed = out && (item.status === "failed" || item.status === "undelivered");
               return (
-                <View style={[styles.bubbleRow, { justifyContent: out ? "flex-end" : "flex-start" }]}>
-                  <View style={[styles.bubble, out ? { backgroundColor: t.colors.accent } : { backgroundColor: t.colors.fill }]}>
-                    <Text style={[type.body, { color: out ? "#FFFFFF" : t.colors.label }]}>{item.body}</Text>
+                <View>
+                  <View style={[styles.bubbleRow, { justifyContent: out ? "flex-end" : "flex-start" }]}>
+                    <View style={[styles.bubble, out ? { backgroundColor: t.colors.accent } : { backgroundColor: t.colors.fill }]}>
+                      <Text style={[type.body, { color: out ? "#FFFFFF" : t.colors.label }]}>{item.body}</Text>
+                    </View>
                   </View>
+                  {failed ? (
+                    <View style={[styles.bubbleRow, { justifyContent: "flex-end" }]}>
+                      <Text style={[type.caption, { color: "#FF3B30", paddingHorizontal: 4 }]}>Not delivered</Text>
+                    </View>
+                  ) : null}
                 </View>
               );
             }}
