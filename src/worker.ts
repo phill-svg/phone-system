@@ -596,6 +596,75 @@ export default {
       });
     }
 
+    // Async AMD verdict for a pstn (mobile) staff leg. Fires out-of-band, typically a few seconds
+    // AFTER the legs bridged, carrying AnsweredBy. Caller's CallSid from the query -- params.CallSid
+    // is the staff leg. Body is ignored by Twilio, so a plain 200 is correct here.
+    if (url.pathname === "/webhooks/twilio/amd-status" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const valid = await authorizeTwilioWebhook(request, params, env);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = url.searchParams.get("callSid");
+      if (!callSid) {
+        return new Response("missing callSid", { status: 400 });
+      }
+
+      const id = env.CALL_SESSION.idFromName(callSid);
+      const stub = env.CALL_SESSION.get(id);
+      const doResponse = await stub.fetch("https://internal/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "amd_status",
+          callSid,
+          agentCallSid: params.CallSid,
+          answeredBy: params.AnsweredBy ?? null,
+          webhookUrl: request.url,
+        }),
+      });
+      await doResponse.text();
+      return new Response("ok", { status: 200 });
+    }
+
+    // The caller leg, REST-redirected here after async AMD caught a staff member's personal
+    // voicemail answering. Renders the ring node's no-answer branch (business voicemail).
+    if (url.pathname === "/webhooks/twilio/amd-fallthrough" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+
+      const valid = await authorizeTwilioWebhook(request, params, env);
+      if (!valid) {
+        return new Response("invalid signature", { status: 401 });
+      }
+
+      const callSid = url.searchParams.get("callSid");
+      if (!callSid) {
+        return new Response("missing callSid", { status: 400 });
+      }
+
+      const id = env.CALL_SESSION.idFromName(callSid);
+      const stub = env.CALL_SESSION.get(id);
+      const doResponse = await stub.fetch("https://internal/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "amd_fallthrough", callSid, webhookUrl: request.url }),
+      });
+      return new Response(await doResponse.text(), {
+        status: doResponse.status,
+        headers: { "Content-Type": "text/xml" },
+      });
+    }
+
     // Recording status callback: flat, direct D1 write (does NOT go through the DO), matching the style of
     // /webhooks/twilio/status. Caller's CallSid from the query — params.CallSid is the wrong (staff) leg.
     if (url.pathname === "/webhooks/twilio/recording-status" && request.method === "POST") {

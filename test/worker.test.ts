@@ -341,6 +341,62 @@ describe("Task 8 queue/ring webhook routes", () => {
     });
   });
 
+  // ---- Async AMD verdict + the caller-rescue fallthrough (both signature-gated) ----
+  describe("POST /webhooks/twilio/amd-status", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch("https://example.com/webhooks/twilio/amd-status?callSid=CA-amd", {
+        method: "POST",
+        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ CallSid: "CAagent", AnsweredBy: "machine_start" }).toString(),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 400 when the callSid query param is missing", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/amd-status", {
+        CallSid: "CAagent",
+        AnsweredBy: "human",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("missing callSid");
+    });
+
+    it("forwards a validly-signed verdict to CallSession and acks with a plain 200", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/amd-status?callSid=CA-amd", {
+        CallSid: "CAagent",
+        AnsweredBy: "human",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("ok");
+    });
+  });
+
+  describe("POST /webhooks/twilio/amd-fallthrough", () => {
+    it("rejects an invalid signature with 401", async () => {
+      const response = await SELF.fetch("https://example.com/webhooks/twilio/amd-fallthrough?callSid=CA-amd", {
+        method: "POST",
+        headers: { "X-Twilio-Signature": "bad", "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ CallSid: "CA-amd" }).toString(),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("returns 400 when the callSid query param is missing", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/amd-fallthrough", { CallSid: "CA-amd" });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("missing callSid");
+    });
+
+    it("returns TwiML to the caller leg", async () => {
+      const response = await postSigned("https://example.com/webhooks/twilio/amd-fallthrough?callSid=CA-amd-ft", {
+        CallSid: "CA-amd-ft",
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain("text/xml");
+      expect(await response.text()).toContain("<Response");
+    });
+  });
+
   // ---- Route 6: /webhooks/twilio/recording-status (direct D1 write, callSid from query) ----
   describe("POST /webhooks/twilio/recording-status", () => {
     it("rejects an invalid signature with 401", async () => {

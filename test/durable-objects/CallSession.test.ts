@@ -140,6 +140,18 @@ const agentAnswer = (callSid: string, agentCallSid: string, answeredBy?: string)
   ...(answeredBy !== undefined ? { answeredBy } : {}),
   webhookUrl: `${ORIGIN}/webhooks/twilio/agent-answer?callSid=${callSid}`,
 });
+const amdStatus = (callSid: string, agentCallSid: string, answeredBy: string | null) => ({
+  kind: "amd_status",
+  callSid,
+  agentCallSid,
+  answeredBy,
+  webhookUrl: `${ORIGIN}/webhooks/twilio/amd-status?callSid=${callSid}`,
+});
+const amdFallthrough = (callSid: string) => ({
+  kind: "amd_fallthrough",
+  callSid,
+  webhookUrl: `${ORIGIN}/webhooks/twilio/amd-fallthrough?callSid=${callSid}`,
+});
 const agentStatus = (callSid: string, agentCallSid: string, callStatus: string) => ({
   kind: "agent_status",
   callSid,
@@ -178,6 +190,29 @@ function cancelHits(fetchMock: ReturnType<typeof vi.fn>): string[] {
     .filter((c) => /\/Calls\/[^/]+\.json$/.test(String(c[0])))
     .filter((c) => new URLSearchParams((c[1] as RequestInit).body as string).get("Status") === "canceled")
     .map((c) => String(c[0]));
+}
+
+// The POST body of each outbound create-call, so AMD parameters can be asserted.
+function outboundDialBodies(fetchMock: ReturnType<typeof vi.fn>): URLSearchParams[] {
+  return fetchMock.mock.calls
+    .filter((c) => String(c[0]).includes("/Calls.json"))
+    .map((c) => new URLSearchParams((c[1] as RequestInit).body as string));
+}
+// Index into fetchMock.mock.calls of the hangup (Status=completed) for a given leg, or -1.
+function hangupIndex(fetchMock: ReturnType<typeof vi.fn>, sid: string): number {
+  return fetchMock.mock.calls.findIndex(
+    (c) =>
+      String(c[0]).endsWith(`/Calls/${sid}.json`) &&
+      new URLSearchParams((c[1] as RequestInit).body as string).get("Status") === "completed"
+  );
+}
+// Index of the REST redirect that re-points a leg at `urlPart`, or -1.
+function redirectIndex(fetchMock: ReturnType<typeof vi.fn>, sid: string, urlPart: string): number {
+  return fetchMock.mock.calls.findIndex(
+    (c) =>
+      String(c[0]).endsWith(`/Calls/${sid}.json`) &&
+      (new URLSearchParams((c[1] as RequestInit).body as string).get("Url") ?? "").includes(urlPart)
+  );
 }
 
 describe("CallSession", () => {
@@ -371,6 +406,96 @@ describe("CallSession", () => {
     expect(legs?.staff_email).toBe("phill@b.com");
   });
 
+  // The caller must not be left listening to ringback while AMD makes up its mind. Twilio's default
+  // synchronous AMD blocks the call until the verdict, which showed up in production as "I answered
+  // on my mobile but the caller kept ringing for 3-4 seconds".
+  it("ring-my-mobile: the mobile leg is dialed with ASYNC AMD and a verdict callback", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-async-amd");
+    await send(stub, mainEvent("CA-async-amd"));
+    await send(stub, mainEvent("CA-async-amd", { digits: "1" }));
+
+    const body = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678");
+    expect(body).toBeTruthy();
+    expect(body!.get("MachineDetection")).toBe("Enable");
+    expect(body!.get("AsyncAmd")).toBe("true");
+    expect(body!.get("AsyncAmdStatusCallback")).toContain("/webhooks/twilio/amd-status?callSid=CA-async-amd");
+  });
+
+  it("async AMD: a human verdict after bridging changes nothing", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-amd-human-async");
+    await send(stub, mainEvent("CA-amd-human-async"));
+    await send(stub, mainEvent("CA-amd-human-async", { digits: "1" }));
+    // Async AMD means the answer webhook carries NO AnsweredBy -- the legs bridge immediately.
+    await send(stub, agentAnswer("CA-amd-human-async", "sid-+61412345678"));
+
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-human-async", "sid-+61412345678", "human"));
+
+    expect(hangupIndex(fetchMock, "sid-+61412345678")).toBe(-1);
+    expect(redirectIndex(fetchMock, "CA-amd-human-async", "amd-fallthrough")).toBe(-1);
+  });
+
+  // The rescue's ordering is load-bearing: hanging up the voicemail leg first fires its
+  // agent-status, whose cleanupLoneConference ends any conference with <=1 participant -- which at
+  // that instant is the caller. Redirect the caller OUT first, then hang up.
+  it("async AMD: a machine verdict after bridging pulls the caller out BEFORE hanging up the voicemail leg", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-amd-rescue");
+    await send(stub, mainEvent("CA-amd-rescue"));
+    await send(stub, mainEvent("CA-amd-rescue", { digits: "1" }));
+    await send(stub, agentAnswer("CA-amd-rescue", "sid-+61412345678"));
+
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-rescue", "sid-+61412345678", "machine_start"));
+
+    const redirectAt = redirectIndex(fetchMock, "CA-amd-rescue", "amd-fallthrough");
+    const hangupAt = hangupIndex(fetchMock, "sid-+61412345678");
+    expect(redirectAt).toBeGreaterThanOrEqual(0);
+    expect(hangupAt).toBeGreaterThanOrEqual(0);
+    expect(redirectAt).toBeLessThan(hangupAt);
+
+    const events = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ?")
+      .bind("CA-amd-rescue")
+      .all<{ event_type: string }>();
+    expect(events.results.map((r) => r.event_type)).toContain("mobile_machine_answered");
+  });
+
+  it("async AMD: the rescued caller falls through to BUSINESS voicemail, not the staff member's", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-amd-vm");
+    await send(stub, mainEvent("CA-amd-vm"));
+    await send(stub, mainEvent("CA-amd-vm", { digits: "1" }));
+    await send(stub, agentAnswer("CA-amd-vm", "sid-+61412345678"));
+    await send(stub, amdStatus("CA-amd-vm", "sid-+61412345678", "machine_start"));
+
+    const fallthrough = await send(stub, amdFallthrough("CA-amd-vm"));
+    expect(fallthrough.xml).toContain("<Record");
+  });
+
+  // Covers the RETAINED synchronous-AMD path: production now uses AsyncAmd, so AnsweredBy no longer
+  // rides on the answer webhook, but the branch stays as a defensive fallback and is still correct.
   it("ring-my-mobile AMD: a machine answer on the mobile leg is hung up WITHOUT bridging or canceling the sibling softphone leg", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     // simultaneous strategy so the softphone leg and the pstn (mobile) leg are both live at once.

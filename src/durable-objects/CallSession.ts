@@ -13,7 +13,7 @@ import {
   type RingPlanState,
   type RingStrategy,
 } from "../dial/ringPlan";
-import { createOutboundCall, cancelCall, redirectCall } from "../twilio/restClient";
+import { createOutboundCall, cancelCall, redirectCall, hangupCall } from "../twilio/restClient";
 import { cleanupLoneConference } from "../twilio/conferenceClient";
 import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/conferenceTwiml";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
@@ -102,13 +102,26 @@ type AgentStatusEvent = {
   webhookUrl: string;
 };
 
+// Async AMD verdict for a pstn mobile leg, delivered out-of-band well after the legs bridged.
+type AmdStatusEvent = {
+  kind: "amd_status";
+  callSid: string;
+  agentCallSid: string;
+  answeredBy: string | null;
+  webhookUrl: string;
+};
+// The caller leg, re-pointed here after we pulled it out of a conference a machine had answered.
+type AmdFallthroughEvent = { kind: "amd_fallthrough"; callSid: string; webhookUrl: string };
+
 type AnyEvent =
   | MainWebhookEvent
   | HoldPollEvent
   | HoldDigitEvent
   | QueueLeftEvent
   | AgentAnswerEvent
-  | AgentStatusEvent;
+  | AgentStatusEvent
+  | AmdStatusEvent
+  | AmdFallthroughEvent;
 
 const HOLD_TIMEOUT_SECONDS = 20;
 const AGENT_FAILURE_STATUSES = new Set(["busy", "no-answer", "failed", "canceled"]);
@@ -122,6 +135,8 @@ export class CallSession extends DurableObject<Env> {
       if (body.kind === "queue_left") return await this.handleQueueLeft(body);
       if (body.kind === "agent_answer") return await this.handleAgentAnswer(body);
       if (body.kind === "agent_status") return await this.handleAgentStatus(body);
+      if (body.kind === "amd_status") return await this.handleAmdStatus(body);
+      if (body.kind === "amd_fallthrough") return await this.handleAmdFallthrough(body);
       return await this.handleMainWebhook(body);
     } catch (err) {
       // A misconfigured flow (e.g. a node pointing at an id that doesn't exist -- allowed by
@@ -131,7 +146,7 @@ export class CallSession extends DurableObject<Env> {
       // agent_status expects a plain 200 with no TwiML body; every other kind renders TwiML to
       // a live caller/agent leg, so give them a real spoken message and a clean hangup.
       console.log("CALLSESSION_ERROR", JSON.stringify({ kind: body.kind ?? "main_webhook", error: err instanceof Error ? err.message : String(err) }));
-      if (body.kind === "agent_status") return new Response("ok", { status: 200 });
+      if (body.kind === "agent_status" || body.kind === "amd_status") return new Response("ok", { status: 200 });
       return this.xml(wrapResponse("<Say>Sorry, we're experiencing a technical issue. Please try again shortly.</Say><Hangup/>"));
     }
   }
@@ -657,6 +672,83 @@ export class CallSession extends DurableObject<Env> {
   }
 
   // -------------------------------------------------------------------------
+  // Async AMD verdict for a pstn mobile leg. Because detection runs in the background (so the
+  // caller isn't left listening to ringback while it decides), this lands 2-4s AFTER the legs
+  // already bridged -- so a "machine" verdict means the caller is currently listening to a staff
+  // member's personal carrier voicemail greeting, and we have to undo the bridge.
+  // -------------------------------------------------------------------------
+  private async handleAmdStatus(body: AmdStatusEvent): Promise<Response> {
+    const answeredBy = body.answeredBy ?? "";
+    // Only a confirmed machine/fax tears anything down. "human" and "unknown" leave the call
+    // exactly as it is -- never drop a real conversation on an ambiguous classification.
+    if (!(answeredBy.startsWith("machine") || answeredBy === "fax")) {
+      return new Response("ok", { status: 200 });
+    }
+    await this.logEvent(body.callSid, "mobile_machine_answered", { agentCallSid: body.agentCallSid, answeredBy });
+
+    const origin = new URL(body.webhookUrl).origin;
+    const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
+
+    // Verdict beat the bridge (still DIALING): the simple pre-bridge path -- drop this leg and let
+    // the ring plan carry on to the next number, or to no-answer exhaustion.
+    if (activeRing && activeRing.ringPlanState.name === "DIALING" && activeRing.attemptSids.includes(body.agentCallSid)) {
+      await this.advanceRingPlanOnFailedAttempt(activeRing, body.agentCallSid, body.callSid, origin);
+      try {
+        await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.agentCallSid);
+      } catch {
+        /* leg already gone */
+      }
+      return new Response("ok", { status: 200 });
+    }
+
+    // Normal path: already bridged. ORDER MATTERS -- pull the CALLER out of the conference first,
+    // then hang up the voicemail leg. Doing it the other way round fires the voicemail leg's
+    // agent-status, whose cleanupLoneConference ends any conference with <=1 participant left --
+    // which at that moment is the caller, so the rescue would hang up the very person we're saving.
+    try {
+      await redirectCall(
+        this.env.TWILIO_ACCOUNT_SID,
+        this.env.TWILIO_AUTH_TOKEN,
+        body.callSid,
+        appendWebhookSecret(`${origin}/webhooks/twilio/amd-fallthrough?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET)
+      );
+    } catch {
+      /* caller already hung up -- nothing left to rescue */
+    }
+    try {
+      await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.agentCallSid);
+    } catch {
+      /* voicemail leg already ended */
+    }
+    return new Response("ok", { status: 200 });
+  }
+
+  // The caller leg, re-pointed here after being rescued out of a machine-answered conference.
+  // Continues the flow from the ring node's no-answer branch, exactly as an unanswered ring would,
+  // so the caller reaches BUSINESS voicemail instead of a staff member's personal one.
+  // -------------------------------------------------------------------------
+  private async handleAmdFallthrough(body: AmdFallthroughEvent): Promise<Response> {
+    const origin = new URL(body.webhookUrl).origin;
+    const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
+    await this.ctx.storage.delete("activeRing");
+    if (!activeRing) return this.xml(wrapResponse("<Hangup/>"));
+
+    await this.logEvent(body.callSid, "no_answer", { reason: "mobile_voicemail_answered" });
+    try {
+      const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
+        .bind(body.callSid)
+        .first<{ caller_number: string }>();
+      if (row?.caller_number) await notifyMissedCall(this.env.DB, row.caller_number);
+    } catch {
+      /* notifications are best-effort */
+    }
+    const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
+    return this.xml(
+      await this.renderNoAnswerFallthrough(body.callSid, activeRing.ringConfig.noAnswerNextNodeId, isAfterHours, origin)
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Staff-leg status callback: a leg ended without bridging. Drive the ring plan
   // forward (cascade to next number, or detect simultaneous exhaustion).
   // -------------------------------------------------------------------------
@@ -811,17 +903,25 @@ export class CallSession extends DurableObject<Env> {
     // (custom params don't reach the PSTN, and the mobile just shows our business From).
     let to: string;
     let ownerEmail: string;
-    // Synchronous AMD: only for the pstn mobile leg. A staff member's personal carrier voicemail
-    // must never hijack a business call, so a machine answer there gets hung up (handleAgentAnswer)
-    // instead of bridged. Client (softphone) legs get no AMD -- undefined here means "no MachineDetection
-    // param sent", and Twilio then never includes AnsweredBy on that leg's answer webhook.
+    // ASYNCHRONOUS AMD: only for the pstn mobile leg. A staff member's personal carrier voicemail
+    // must never hijack a business call, so a machine answer there gets torn down (handleAmdStatus).
+    // It must be async: Twilio's default synchronous AMD BLOCKS the call until the classifier
+    // decides, so the staff member is connected but the caller keeps hearing ringback for another
+    // 2-4s -- reported as "I answered on my mobile but the caller kept ringing". Async bridges
+    // immediately and delivers the verdict later to asyncAmdStatusCallback.
+    // Client (softphone) legs get no AMD -- undefined here means "no MachineDetection param sent".
     let machineDetection: "Enable" | undefined;
+    let asyncAmdStatusCallback: string | undefined;
     if (number.startsWith("pstn:")) {
       const rest = number.slice("pstn:".length);
       const sep = rest.indexOf("|");
       ownerEmail = rest.slice(0, sep);
       to = rest.slice(sep + 1);
       machineDetection = "Enable";
+      asyncAmdStatusCallback = appendWebhookSecret(
+        `${origin}/webhooks/twilio/amd-status?callSid=${callSid}`,
+        this.env.TWILIO_WEBHOOK_SECRET
+      );
     } else {
       // The staff leg's `From` stays our own owned business number -- Twilio's Caller-ID-ownership
       // rules for the `From` field are murky for calls terminating at a `client:` identity (vs a real
@@ -855,6 +955,8 @@ export class CallSession extends DurableObject<Env> {
         // unanswered, so cascade/no-answer fall-through happens promptly.
         timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : 20,
         machineDetection,
+        asyncAmd: machineDetection ? true : undefined,
+        asyncAmdStatusCallback,
       }
     );
     // Record this leg's ownership so handlePostHold/handlePostTransfer/handlePostCompleteTransfer
