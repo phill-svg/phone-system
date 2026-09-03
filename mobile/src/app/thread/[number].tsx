@@ -45,7 +45,8 @@ export default function ThreadScreen() {
   // Effective sending number: the picked one, else the default SMS number, else the first available.
   const effectiveFrom = resolveSendingNumber(smsNums, fromNum, (n) => !!n.is_default_sms);
 
-  const contactName = contactForNumber(to, contacts.data ?? [])?.name;
+  const contact = contactForNumber(to, contacts.data ?? []);
+  const contactName = contact?.name;
   const isMessenger = to.startsWith("messenger:");
   // Server-resolved name (a Messenger sender's, from fb_contacts). Read it from the conversation
   // list rather than relying on the `name` route param: the param is only set when you arrive from
@@ -86,10 +87,25 @@ export default function ThreadScreen() {
         <Pressable onPress={() => router.back()} hitSlop={10} style={styles.back}>
           <Icon name="chevron.left" fallback="chevron-back" size={22} color={t.colors.accent} />
         </Pressable>
-        <View style={styles.titleRow}>
+        {/* Tapping the name opens the contact card -- the same move as Messages on iOS. Only when
+            the number actually resolves to a saved contact; otherwise it stays plain text and the
+            "save contact" button to the right is the thing to press. */}
+        <Pressable
+          style={styles.titleRow}
+          disabled={!contact}
+          onPress={() => {
+            if (!contact) return;
+            haptics.tap();
+            router.push({ pathname: "/contact/[id]", params: { id: String(contact.id) } });
+          }}
+          accessibilityRole={contact ? "button" : undefined}
+          accessibilityLabel={contact ? "Open " + contact.name + "'s contact card" : undefined}
+          hitSlop={8}
+        >
           <Text style={[type.headline, { color: t.colors.label, flexShrink: 1 }]} numberOfLines={1}>{title}</Text>
+          {contact ? <Icon name="chevron.right" fallback="chevron-forward" size={13} color={t.colors.labelTertiary} /> : null}
           {isMessenger ? <Icon name="message.fill" fallback="logo-facebook" size={14} color="#0866FF" /> : null}
-        </View>
+        </Pressable>
         {canSaveContact ? (
           <Pressable
             accessibilityRole="button"
