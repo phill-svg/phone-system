@@ -7,7 +7,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { getThread, getContacts, sendMessage, getNumbers, getConversations, type Conversation, type Message } from "../../lib/api";
-import { markConversationRead } from "../../lib/conversations";
+import { markConversationRead, canSaveContactFromThread } from "../../lib/conversations";
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
@@ -56,6 +56,11 @@ export default function ThreadScreen() {
   const serverName = conversations.data?.find((c) => c.number === to)?.name ?? null;
   const title =
     contactName ?? serverName ?? params.name ?? (isMessenger ? "Facebook user" : to ? formatPhone(to) : "New Message");
+  // Offer "save contact" only where it means something: a real SMS number we don't already have a
+  // name for. Messenger peers have no phone number to save, and a half-typed new thread has nothing
+  // worth saving yet. contact-edit prefills from the phone param and invalidates the contacts
+  // query on save, so the title above resolves to the new name on its own when we come back.
+  const canSaveContact = canSaveContactFromThread({ to, isNew, isMessenger, knownName: contactName });
 
   async function send() {
     const body = text.trim();
@@ -85,7 +90,22 @@ export default function ThreadScreen() {
           <Text style={[type.headline, { color: t.colors.label, flexShrink: 1 }]} numberOfLines={1}>{title}</Text>
           {isMessenger ? <Icon name="message.fill" fallback="logo-facebook" size={14} color="#0866FF" /> : null}
         </View>
-        <View style={{ width: 40 }} />
+        {canSaveContact ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Save contact"
+            onPress={() => {
+              haptics.tap();
+              router.push({ pathname: "/contact-edit", params: { phone: to } });
+            }}
+            hitSlop={10}
+            style={styles.headerAction}
+          >
+            <Icon name="person.crop.circle.badge.plus" fallback="person-add" size={22} color={t.colors.accent} />
+          </Pressable>
+        ) : (
+          <View style={{ width: 40 }} />
+        )}
       </View>
 
       {isNew ? (
@@ -190,6 +210,7 @@ export default function ThreadScreen() {
 const styles = StyleSheet.create({
   bar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
   titleRow: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 1 },
+  headerAction: { width: 40, alignItems: "flex-end" },
   back: { width: 40, height: 32, alignItems: "flex-start", justifyContent: "center" },
   toRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
   bubbleRow: { flexDirection: "row" },
