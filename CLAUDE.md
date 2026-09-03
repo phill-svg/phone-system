@@ -75,12 +75,24 @@ is normal, not broken.
 - **Android:** ships to the Play **internal** track via `eas submit`.
 - **Backend:** single-tenant, TCB-only. The multi-tenancy plan is shelved (see `specs/` note above)
   — this stays a TCB-specific tool for now.
-- **Numbers:** `+61866108941` (au1, main line, default caller ID) and `+61485034869` (us1, SMS +
-  voice). The Canberra landline **`+61261059771` ("6105 9771") was being ported in on 2026-09-03**.
-  Two separate steps: the Twilio console webhooks (from `/admin/webhooks` — the `?whsec=` IS the
-  auth) and a `phone_numbers` row on `/admin/settings`. The app never touches Twilio's
-  number-provisioning API, so adding the row configures nothing on Twilio's side, and inbound
-  routing never reads that table.
+- **Numbers:** `+61866108941` (au1, main line) and `+61485034869` (us1, SMS + voice). The Canberra
+  landline **`+61261059771` ("6105 9771") ported in on 2026-09-03** and is now the default caller
+  ID. Setting one up is two separate steps: the Twilio console webhooks (from `/admin/webhooks` —
+  the `?whsec=` IS the auth) and a `phone_numbers` row on `/admin/settings`. The app never touches
+  Twilio's number-provisioning API, so adding the row configures nothing on Twilio's side, and
+  inbound routing never reads that table.
+- **A voice number must be homed in au1.** A Twilio number is global but its config is per-region,
+  and inbound calls are processed in whichever region its Inbound Processing Region (`voice_region`)
+  names — where, if no voice handler is set, Twilio rejects the call at the network edge: no call
+  log, no webhook, and the caller hears a carrier "not connected" intercept. That is exactly how the
+  ported landline lost a day: it arrived on **us1**. It has to be au1 specifically, because
+  softphone clients register in au1 and Twilio only connects an SDK client to calls processed in its
+  own region — and `src/twilio/restClient.ts` hardcodes `api.sydney.au1.twilio.com` besides. Fix it
+  in the console (the number's **Regional** tab) or via
+  `POST routes.twilio.com/v2/PhoneNumbers/<e164>` with `VoiceRegion=au1`; a 404 on the GET means no
+  explicit config, which defaults to us1. `/admin/settings` records the region per number and warns
+  when a voice number is not au1. **Unchecked:** `+61485034869` is `us1` with `voice_enabled=1` and
+  has never taken an inbound call.
 - **Ring-my-mobile is a DIVERT**, decided 2026-09-02: when a staff member enables it, their leg
   becomes their mobile and their softphone is **not** rung. Per-person — other staff still ring.
   This deliberately supersedes the "additive / also ring" wording in
@@ -94,8 +106,11 @@ is normal, not broken.
 - **Recent work (2026-09-02/03):** the divert above (#26), async AMD (#27), recording playback —
   `calls.recording_duration` persisted from Twilio plus a proxy that always sends `Content-Length`
   and honours Range (#26) — and a sending-number dropdown in the mobile app (#28, OTA 34).
-  Before that: ServiceM8 call logging (`src/servicem8/`), mobile reconnect-loop fix, and Facebook
-  Messenger delivery-status tracking.
+  Then in-page message composing and contact saving on web (#31) and mobile (#33), the Android
+  compose-field fix plus a manual-dispatch **Publish OTA** workflow (#34), and #35: a region field
+  on `/admin/settings` numbers, contact search in the web composer's To field, and a tappable
+  contact name in mobile threads (OTA 37). Before that: ServiceM8 call logging (`src/servicem8/`),
+  mobile reconnect-loop fix, and Facebook Messenger delivery-status tracking.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring
