@@ -9,8 +9,10 @@ export default defineWorkersConfig(async () => {
       // for the multi-step CallSession scenarios. Give every test more headroom.
       testTimeout: 20000,
       // The mobile app's tests are Jest tests (run via `npm test` inside mobile/); vitest's
-      // default include sweeps them up here and they fail on missing jest globals.
-      exclude: ["**/node_modules/**", "mobile/**"],
+      // default include sweeps them up here and they fail on missing jest globals. `.claude/` holds
+      // agent worktrees -- whole stale copies of this repo -- whose test files would otherwise run
+      // as well, reporting dozens of phantom failures against code that is not this checkout.
+      exclude: ["**/node_modules/**", "mobile/**", ".claude/**"],
       setupFiles: ["./test/apply-migrations.ts"],
       poolOptions: {
         workers: {
