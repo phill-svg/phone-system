@@ -74,6 +74,29 @@ is normal, not broken.
   the public product.
 - **Android:** ships to the Play **internal** track via `eas submit`.
 - **Backend:** single-tenant, TCB-only. The multi-tenancy plan is shelved (see `specs/` note above)
-  — this stays a TCB-specific tool for now. Recent work: ServiceM8 call logging (auto-notes a job's
-  diary on call end, matching the customer's number — see `src/servicem8/`), mobile reconnect-loop
-  fix, and Facebook Messenger delivery-status tracking.
+  — this stays a TCB-specific tool for now.
+- **Numbers:** `+61866108941` (au1, main line, default caller ID) and `+61485034869` (us1, SMS +
+  voice). The Canberra landline **`+61261059771` ("6105 9771") was being ported in on 2026-09-03**.
+  Two separate steps: the Twilio console webhooks (from `/admin/webhooks` — the `?whsec=` IS the
+  auth) and a `phone_numbers` row on `/admin/settings`. The app never touches Twilio's
+  number-provisioning API, so adding the row configures nothing on Twilio's side, and inbound
+  routing never reads that table.
+- **Ring-my-mobile is a DIVERT**, decided 2026-09-02: when a staff member enables it, their leg
+  becomes their mobile and their softphone is **not** rung. Per-person — other staff still ring.
+  This deliberately supersedes the "additive / also ring" wording in
+  `specs/2026-08-27-settings-functional-design.md`; read the Superseded note there before "fixing"
+  it back. Each on-shift person contributes exactly one leg, which is also what keeps
+  `ring_priority` ordering meaningful under the cascade strategy.
+- **AMD must stay async.** The pstn mobile leg dials with `AsyncAmd=true`; Twilio's default is
+  synchronous and *blocks the call*, so the caller keeps hearing ringback for 2-4s after staff
+  answer. The verdict therefore lands after bridging, and the machine case undoes a live bridge —
+  redirect the caller out FIRST, then hang up the voicemail leg (a test asserts that order).
+- **Recent work (2026-09-02/03):** the divert above (#26), async AMD (#27), recording playback —
+  `calls.recording_duration` persisted from Twilio plus a proxy that always sends `Content-Length`
+  and honours Range (#26) — and a sending-number dropdown in the mobile app (#28, OTA 34).
+  Before that: ServiceM8 call logging (`src/servicem8/`), mobile reconnect-loop fix, and Facebook
+  Messenger delivery-status tracking.
+- **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
+  UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
+  a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring
+  roster marked `available` — only a stale heartbeat keeps it from ringing.
