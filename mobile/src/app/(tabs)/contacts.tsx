@@ -9,7 +9,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { Avatar } from "../../components/ui/Avatar";
 import { Icon } from "../../components/ui/Icon";
 import { getContacts, type Contact } from "../../lib/api";
-import { normalizePhone } from "../../lib/phone";
+import { searchContacts } from "../../lib/phone";
 import { useTheme, type } from "../../theme/theme";
 
 export default function ContactsScreen() {
@@ -18,17 +18,7 @@ export default function ContactsScreen() {
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts });
 
   const sections = useMemo(() => {
-    const list = contacts.data ?? [];
-    const needle = q.trim().toLowerCase();
-    const digits = normalizePhone(q);
-    const filtered = needle
-      ? list.filter(
-          (c) =>
-            c.name.toLowerCase().includes(needle) ||
-            (c.company ?? "").toLowerCase().includes(needle) ||
-            (digits.length >= 2 && c.phone_normalized.includes(digits))
-        )
-      : list;
+    const filtered = searchContacts(q, contacts.data ?? []);
     const byLetter = new Map<string, Contact[]>();
     for (const c of filtered) {
       const letter = (c.name[0] ?? "#").toUpperCase();
