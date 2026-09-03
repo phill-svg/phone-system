@@ -13,6 +13,9 @@ import { DialPad } from "../../components/keypad/DialPad";
 import { getContacts, getNumbers, type Contact } from "../../lib/api";
 import { formatPhone, matchContacts } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
+import { NumberPicker } from "../../components/ui/NumberPicker";
+import { usePersistedString } from "../../lib/prefs";
+import { resolveSendingNumber } from "../../lib/sendingNumber";
 import { useTheme, type } from "../../theme/theme";
 
 export default function KeypadScreen() {
@@ -23,9 +26,11 @@ export default function KeypadScreen() {
   const { data: numbers } = useQuery({ queryKey: ["numbers"], queryFn: getNumbers, staleTime: 300_000 });
 
   const voiceNums = (numbers ?? []).filter((n) => n.voice_enabled);
-  const [fromNum, setFromNum] = useState<string | null>(null);
+  // Remembered on the device, but only honoured while that number is still voice-enabled -- a
+  // number that gets deleted or loses voice must not keep being used as caller ID.
+  const [fromNum, setFromNum] = usePersistedString("pref_from_voice", (v) => voiceNums.some((n) => n.e164 === v));
   // Effective caller-ID: the picked one, else the default voice number, else the first available.
-  const effectiveFrom = fromNum ?? voiceNums.find((n) => n.is_default_voice)?.e164 ?? voiceNums[0]?.e164;
+  const effectiveFrom = resolveSendingNumber(voiceNums, fromNum, (n) => !!n.is_default_voice);
 
   const suggestions = useMemo(() => matchContacts(number, contacts ?? []), [number, contacts]);
   const display = number ? formatPhone(number) : "";
@@ -50,20 +55,7 @@ export default function KeypadScreen() {
     <Screen>
       <BrandBar right={<StatusPill />} />
 
-      {/* Caller-ID picker — only when there are 2+ voice numbers to choose from. */}
-      {voiceNums.length >= 2 ? (
-        <View style={styles.fromBar}>
-          <Text style={[type.caption, { color: t.colors.labelSecondary }]}>Call from</Text>
-          {voiceNums.map((n) => {
-            const active = effectiveFrom === n.e164;
-            return (
-              <Pressable key={n.id} onPress={() => { haptics.tap(); setFromNum(n.e164); }} style={[styles.fromChip, { backgroundColor: active ? t.colors.accent : t.colors.fill }]}>
-                <Text style={[type.caption, { color: active ? "#FFFFFF" : t.colors.label }]}>{n.label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      ) : null}
+      <NumberPicker title="Call from" options={voiceNums} value={effectiveFrom} onChange={setFromNum} />
 
       {/* Number display */}
       <View style={styles.displayWrap}>
@@ -152,8 +144,6 @@ export default function KeypadScreen() {
 
 const styles = StyleSheet.create({
   top: { alignItems: "center", paddingBottom: 4 },
-  fromBar: { flexDirection: "row", alignItems: "center", justifyContent: "center", flexWrap: "wrap", gap: 8, paddingHorizontal: 24, paddingBottom: 4 },
-  fromChip: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999 },
   displayWrap: { alignItems: "center", paddingHorizontal: 24, minHeight: 76, justifyContent: "center", gap: 4 },
   display: { fontSize: 40, fontWeight: "300", letterSpacing: 1 },
   addContact: { flexDirection: "row", alignItems: "center", gap: 5 },
