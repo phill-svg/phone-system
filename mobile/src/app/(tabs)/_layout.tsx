@@ -46,7 +46,11 @@ function useIncomingCalls() {
     return () => {
       unsub?.();
       clearInterval(hb);
-      setPresence("offline").catch(() => {});
+      // Deliberately does NOT set presence to "offline" here. Closing the app is not going off
+      // shift: incoming calls reach a closed app by VoIP push, so a staff member with the app shut
+      // is still reachable. Writing "offline" on unmount removed them from the ring roster the
+      // moment they left the app, which is most of the working day. Presence is now a deliberate
+      // state -- their schedule decides when they are on shift, and away/offline is a choice.
     };
   }, []);
 }
