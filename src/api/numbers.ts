@@ -12,6 +12,17 @@ export async function handleListNumbers(db: D1Database): Promise<Response> {
   return jsonResponse(await listPhoneNumbers(db));
 }
 
+// The only two Twilio regions this account uses. A region is stored to answer one question --
+// "which region processes this number's inbound calls" -- so a typo'd value is worse than a blank
+// one: it would read as an answer. Anything unrecognised becomes null.
+const REGIONS = new Set(["au1", "us1"]);
+
+function normalizeRegion(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const region = raw.trim().toLowerCase();
+  return REGIONS.has(region) ? region : null;
+}
+
 function parseInput(body: Record<string, unknown> | null): PhoneNumberInput | null {
   if (!body) return null;
   const e164 = String(body.e164 ?? "").trim();
@@ -24,7 +35,7 @@ function parseInput(body: Record<string, unknown> | null): PhoneNumberInput | nu
     sms_enabled: !!body.sms_enabled,
     is_default_voice: !!body.is_default_voice,
     is_default_sms: !!body.is_default_sms,
-    region: typeof body.region === "string" && body.region.trim() ? body.region.trim() : null,
+    region: normalizeRegion(body.region),
   };
 }
 

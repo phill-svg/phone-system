@@ -160,6 +160,8 @@ export function renderSettingsPage(
       .num-row input[type=text] { min-width: 160px; }
       .num-row label { font-size: 0.82rem; color: var(--admin-dim); display: inline-flex; align-items: center; gap: 0.25rem; }
       .num-row button { padding: 0.3rem 0.7rem; font-size: 0.82rem; }
+      .num-row select, .num-add-grid select { padding: 0.25rem 0.4rem; font-size: 0.82rem; }
+      .num-warn { font-size: 0.78rem; color: var(--admin-brand); flex-basis: 100%; }
       .num-add-grid { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
       .num-add-grid label { font-size: 0.82rem; color: var(--admin-dim); display: inline-flex; align-items: center; gap: 0.25rem; }
       .num-add-grid button { background: var(--admin-brand); border-color: var(--admin-brand); color: #fff; font-weight: 600; }
@@ -184,7 +186,7 @@ export function renderSettingsPage(
       currentRole === "admin"
         ? `<section class="settings-form" id="numbers-section">
       <h3>Phone Numbers</h3>
-      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">The <strong>label</strong> is the name staff see in the "Call from" / "From" pickers. Tick <em>Voice</em>/<em>SMS</em> for what a number can do, and mark the defaults. (A number must already be set up in Twilio to actually send/receive.)</p>
+      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">The <strong>label</strong> is the name staff see in the "Call from" / "From" pickers. Tick <em>Voice</em>/<em>SMS</em> for what a number can do, and mark the defaults. (A number must already be set up in Twilio to actually send/receive.) <strong>Region</strong> is the Twilio Inbound Processing Region that handles the number’s incoming calls — it must be <code>au1</code> for voice, because the softphone only registers in au1.</p>
       <div id="numbers-list">Loading…</div>
       <div style="margin-top:1rem;border-top:1px solid var(--admin-border);padding-top:1rem">
         <h4 style="margin:0 0 0.6rem">Add a number</h4>
@@ -193,6 +195,7 @@ export function renderSettingsPage(
           <input type="text" id="num-add-label" placeholder="Label staff see">
           <label><input type="checkbox" id="num-add-voice"> Voice</label>
           <label><input type="checkbox" id="num-add-sms"> SMS</label>
+          <select id="num-add-region"><option value="au1">au1 (Australia)</option><option value="us1">us1 (United States)</option></select>
           <button type="button" id="num-add-btn">Add</button>
           <span id="num-add-status" style="font-size:0.8rem;color:var(--admin-dim)"></span>
         </div>
@@ -345,12 +348,30 @@ export function renderSettingsPage(
           var sms = chk(n.sms_enabled, 'SMS');
           var dv = chk(n.is_default_voice, 'Default call');
           var ds = chk(n.is_default_sms, 'Default text');
+          var region = document.createElement('select');
+          [['', '— region —'], ['au1', 'au1 (Australia)'], ['us1', 'us1 (United States)']].forEach(function (o) {
+            var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; region.appendChild(op);
+          });
+          region.value = n.region || '';
+          // Inbound calls are processed in the number's Twilio region and the softphone only ever
+          // registers in au1, so a Voice number pointed anywhere else can never ring the app -- it
+          // dies at Twilio's edge with no call log at all. Say so on the row instead of letting it
+          // sit there silently (which is exactly how the ported landline lost a day).
+          var warn = document.createElement('span'); warn.className = 'num-warn';
+          function syncWarn() {
+            warn.textContent = voice._input.checked && region.value && region.value !== 'au1'
+              ? "⚠ Voice on " + region.value + ": inbound calls won't ring the app. Set this number's Inbound Processing Region to au1 in Twilio."
+              : '';
+          }
+          syncWarn();
+          region.addEventListener('change', syncWarn);
+          voice._input.addEventListener('change', syncWarn);
           var save = document.createElement('button'); save.type = 'button'; save.textContent = 'Save';
           var del = document.createElement('button'); del.type = 'button'; del.textContent = 'Delete';
           var st = document.createElement('span'); st.style.cssText = 'font-size:0.8rem;color:var(--admin-dim)';
           save.addEventListener('click', function () {
             st.textContent = 'Saving…';
-            fetch('/api/numbers/' + n.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: n.e164, label: label.value, voice_enabled: voice._input.checked, sms_enabled: sms._input.checked, is_default_voice: dv._input.checked, is_default_sms: ds._input.checked, region: n.region }) })
+            fetch('/api/numbers/' + n.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: n.e164, label: label.value, voice_enabled: voice._input.checked, sms_enabled: sms._input.checked, is_default_voice: dv._input.checked, is_default_sms: ds._input.checked, region: region.value || null }) })
               .then(function (r) { st.textContent = r.ok ? 'Saved.' : 'Failed.'; if (r.ok) loadNumbers(); })
               .catch(function () { st.textContent = 'Failed.'; });
           });
@@ -358,7 +379,7 @@ export function renderSettingsPage(
             if (!window.confirm('Delete ' + n.label + ' (' + n.e164 + ')?')) return;
             fetch('/api/numbers/' + n.id, { method: 'DELETE' }).then(function (r) { if (r.ok) loadNumbers(); });
           });
-          [e, label, voice, sms, dv, ds, save, del, st].forEach(function (x) { row.appendChild(x); });
+          [e, label, region, voice, sms, dv, ds, save, del, st, warn].forEach(function (x) { row.appendChild(x); });
           list.appendChild(row);
         });
       }
@@ -371,7 +392,7 @@ export function renderSettingsPage(
           var label = document.getElementById('num-add-label').value.trim();
           if (!e164 || !label) { status.textContent = 'Enter a number and a label.'; return; }
           status.textContent = 'Adding…';
-          fetch('/api/numbers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: e164, label: label, voice_enabled: document.getElementById('num-add-voice').checked, sms_enabled: document.getElementById('num-add-sms').checked }) })
+          fetch('/api/numbers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: e164, label: label, voice_enabled: document.getElementById('num-add-voice').checked, sms_enabled: document.getElementById('num-add-sms').checked, region: document.getElementById('num-add-region').value }) })
             .then(function (r) { if (r.ok) { status.textContent = 'Added.'; document.getElementById('num-add-e164').value = ''; document.getElementById('num-add-label').value = ''; loadNumbers(); } else { status.textContent = 'Could not add (already exists?).'; } })
             .catch(function () { status.textContent = 'Could not add.'; });
         });

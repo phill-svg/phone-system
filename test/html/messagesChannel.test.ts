@@ -96,13 +96,27 @@ describe("no native browser dialogs for input", () => {
   it("starts a new message with an inline To field", () => {
     const js = clientJs();
     expect(js).toContain('input.id="toInput"');
-    expect(js).toContain('input.setAttribute("list","contactNumbers")');
     expect(js).toContain('lbl.textContent="To"');
+    // The field takes a name as readily as a number, so say so.
+    expect(js).toContain('input.placeholder="Name or phone number"');
   });
 
-  it("exposes a contacts datalist for the To field to autocomplete against", () => {
-    expect(html).toContain('<datalist id="contactNumbers"></datalist>');
-    expect(clientJs()).toContain("function fillContactDatalist()");
+  it("searches contacts for the To field by name, company or digits", () => {
+    const js = clientJs();
+    expect(html).toContain('<div class="to-suggest" id="toSuggest"');
+    expect(js).toContain("function searchContacts(q)");
+    // A <datalist> could only ever match the option's value (the number), which is why typing a
+    // name found nothing. Matching happens over all three fields now.
+    expect(js).toContain('(c.name||"").toLowerCase().indexOf(s)>=0');
+    expect(js).toContain('(c.company||"").toLowerCase().indexOf(s)>=0');
+    expect(js).toContain('(c.phone_normalized||"").indexOf(digits)>=0');
+    expect(html).not.toContain("<datalist");
+  });
+
+  it("picking a suggestion fills the number and moves on to the message", () => {
+    const js = clientJs();
+    expect(js).toContain("function pickContact(c)");
+    expect(js).toContain("input.value=c.phone;hideToSuggest()");
   });
 
   it("sends to the typed number when no thread is open yet", () => {
