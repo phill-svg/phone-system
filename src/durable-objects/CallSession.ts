@@ -280,6 +280,17 @@ export class CallSession extends DurableObject<Env> {
       return this.startRing(callSid, walkResult, hasEnqueue, isAfterHours, origin);
     }
 
+    // Callback node: take the caller's number as a callback task instead of recording them.
+    // Any PLAY that walked into this node is the acknowledgement ("we'll call you back"); when the
+    // node configures none, recordCallbackRequest speaks the default line.
+    if (walkResult.commands.some((c) => c.type === "CALLBACK_HANDOFF")) {
+      await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?")
+        .bind(walkResult.nextNodeId, callSid)
+        .run();
+      const resolvedAck = await this.resolveAudioCommands(walkResult.commands);
+      return this.recordCallbackRequest(callSid, renderFlowCommandsFragment(resolvedAck, { baseUrl: origin }));
+    }
+
     if (walkResult.commands.some((c) => c.type === "VOICEMAIL_HANDOFF")) {
       const voicemailNodeId = walkResult.nextNodeId;
       await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?")
@@ -445,6 +456,34 @@ export class CallSession extends DurableObject<Env> {
   }
 
   // -------------------------------------------------------------------------
+  // Logs a callback request for this call and returns the caller-leg TwiML that acknowledges it and
+  // hangs up. THE single implementation behind both routes into the feature -- pressing * while held
+  // (handleQueueLeft's callback_requested outcome) and reaching a `callback` flow node -- so the two
+  // can never drift apart on what gets written or what the caller hears.
+  //
+  // `ackFragment` is already-rendered prompt TwiML from the node's own audio/TTS; empty means the
+  // node configured none (or we came from the * route), so speak the default line.
+  // -------------------------------------------------------------------------
+  private async recordCallbackRequest(callSid: string, ackFragment: string): Promise<string> {
+    const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
+      .bind(callSid)
+      .first<{ caller_number: string }>();
+    await createCallbackRequest(this.env.DB, {
+      callId: callSid,
+      callerNumber: row?.caller_number ?? "",
+    });
+    await this.env.DB.prepare("UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ?")
+      .bind(Date.now(), callSid)
+      .run();
+    await this.logEvent(callSid, "callback_requested", { callerNumber: row?.caller_number ?? null });
+    // Harmless when there is no active ring (the flow-node route); required on the * route.
+    await this.ctx.storage.delete("activeRing");
+    return ackFragment
+      ? wrapResponse(ackFragment + "<Hangup/>")
+      : renderCallbackAck("Thanks, we'll call you back soon.");
+  }
+
+  // -------------------------------------------------------------------------
   // Caller-leg hold poll (waitUrl loop): keep holding while dialing, else leave.
   // -------------------------------------------------------------------------
   private async handleHoldPoll(body: HoldPollEvent): Promise<Response> {
@@ -572,19 +611,8 @@ export class CallSession extends DurableObject<Env> {
     }
 
     if (outcome === "callback_requested") {
-      const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
-        .bind(body.callSid)
-        .first<{ caller_number: string }>();
-      await createCallbackRequest(this.env.DB, {
-        callId: body.callSid,
-        callerNumber: row?.caller_number ?? "",
-      });
-      await this.env.DB.prepare("UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ?")
-        .bind(Date.now(), body.callSid)
-        .run();
-      await this.logEvent(body.callSid, "callback_requested", { callerNumber: row?.caller_number ?? null });
-      await this.ctx.storage.delete("activeRing");
-      return this.xml(renderCallbackAck("Thanks, we'll call you back soon."));
+      // The caller pressed * while held. Same feature, same bookkeeping as a `callback` flow node.
+      return this.xml(await this.recordCallbackRequest(body.callSid, ""));
     }
 
     // no_answer, OR the caller hung up mid-ring (plan still DIALING with outstanding legs).

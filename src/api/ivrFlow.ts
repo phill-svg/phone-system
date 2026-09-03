@@ -2,7 +2,7 @@ import { jsonResponse } from "./respond";
 import { listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes, updateNodePosition } from "../db/ivrNodes";
 import type { StaffUser } from "../access/requireStaffUser";
 
-const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail", "date_rule", "input", "redirect"] as const;
+const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail", "date_rule", "input", "redirect", "callback"] as const;
 type NodeType = (typeof NODE_TYPES)[number];
 
 type PutNode = { id: string; type: NodeType; config: Record<string, unknown>; positionX: number | null; positionY: number | null };
@@ -84,6 +84,12 @@ function isVoicemailConfig(c: Record<string, unknown>): boolean {
   return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText) && isNonEmptyString(c.mailboxLabel);
 }
 
+// A callback node is a terminal step (log the number, hang up), so it has no nextNodeId -- only the
+// optional acknowledgement prompt, exactly like a voicemail's minus the mailbox label.
+function isCallbackConfig(c: Record<string, unknown>): boolean {
+  return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText);
+}
+
 function isDateRuleConfig(c: Record<string, unknown>): boolean {
   return isStringArray(c.closedDates) && isString(c.openNextNodeId) && isString(c.closedNextNodeId);
 }
@@ -122,6 +128,8 @@ function isValidConfigForType(type: NodeType, config: unknown): config is Record
       return isInputConfig(config);
     case "redirect":
       return isRedirectConfig(config);
+    case "callback":
+      return isCallbackConfig(config);
   }
 }
 

@@ -15,6 +15,7 @@ export type FlowCommand =
   | { type: "ENQUEUE" /* wait node */ }
   | { type: "DIAL_HANDOFF" /* ring node: hand off to Part B */ }
   | { type: "VOICEMAIL_HANDOFF" /* voicemail node: hand off to Part B */ }
+  | { type: "CALLBACK_HANDOFF" /* callback node: log a callback request, then hang up */ }
   | { type: "HANGUP" };
 
 export type FlowEvent = { type: "ENTER" } | { type: "DIGIT"; digit: string } | { type: "TIMEOUT_OR_INVALID" };
@@ -119,6 +120,13 @@ function stopCommandsFor(node: NodeRow, config: Record<string, any>): FlowComman
       const play = playCommandFor(config);
       return [...(play ? [play] : []), { type: "VOICEMAIL_HANDOFF" }];
     }
+    // Takes the caller's number as a callback request instead of recording them. The prompt is the
+    // acknowledgement ("we'll call you back"); it is optional, and CallSession speaks a default
+    // line when the node has neither audio nor TTS configured.
+    case "callback": {
+      const play = playCommandFor(config);
+      return [...(play ? [play] : []), { type: "CALLBACK_HANDOFF" }];
+    }
     case "wait": {
       const play = playCommandFor(config);
       return [...(play ? [play] : []), { type: "ENQUEUE" }];
@@ -193,6 +201,7 @@ async function walkFrom(db: D1Database, startNodeId: string, isAfterHours: boole
       node.type === "ring" ||
       node.type === "wait" ||
       node.type === "voicemail" ||
+      node.type === "callback" ||
       node.type === "redirect"
     ) {
       return { node, config, commands };

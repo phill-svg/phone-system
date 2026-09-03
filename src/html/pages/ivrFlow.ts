@@ -91,7 +91,8 @@ export function renderIvrFlowPage(
       var TYPES = [
         ["play","Play message"], ["gather","Menu (press a key)"], ["ring","Ring staff"],
         ["voicemail","Voicemail"], ["wait","Hold / queue"], ["redirect","Forward to number"],
-        ["input","Collect digits"], ["business_hours","Open / closed hours"], ["date_rule","Holiday / date rule"]
+        ["input","Collect digits"], ["business_hours","Open / closed hours"], ["date_rule","Holiday / date rule"],
+        ["callback","Request a callback"]
       ];
       function typeLabel(t){ for(var i=0;i<TYPES.length;i++){ if(TYPES[i][0]===t) return TYPES[i][1]; } return t; }
       function h(s){ var d=document.createElement("div"); d.textContent=(s==null?"":String(s)); return d.innerHTML; }
@@ -108,6 +109,7 @@ export function renderIvrFlowPage(
         if(type==="input") return {audioAssetId:null, ttsText:null, numDigits:4, nextNodeId:""};
         if(type==="business_hours") return {openNextNodeId:"", closedNextNodeId:""};
         if(type==="date_rule") return {closedDates:[], openNextNodeId:"", closedNextNodeId:""};
+        if(type==="callback") return {audioAssetId:null, ttsText:null};
         return {};
       }
       // Outputs (branches) for a node: each has a key, a label, and either a plain config field or an option index.
@@ -127,6 +129,7 @@ export function renderIvrFlowPage(
         var c=n.config||{};
         if(n.type==="redirect") return c.number||"(no number)";
         if(n.type==="voicemail") return c.mailboxLabel||"Voicemail";
+        if(n.type==="callback" && !c.ttsText && !c.audioAssetId) return "Callback request";
         if(c.ttsText){ var t=String(c.ttsText); return t.length>34?t.slice(0,34)+"…":t; }
         if(c.audioAssetId){ for(var i=0;i<audio.length;i++){ if(audio[i].id===c.audioAssetId) return "▶ "+audio[i].label; } return "▶ recording"; }
         return "";
@@ -208,6 +211,8 @@ export function renderIvrFlowPage(
           out+='<label class="pf">Ring style<select data-fld="strategy"><option value="simultaneous"'+(c.strategy!=="cascade"?" selected":"")+'>Everyone at once</option><option value="cascade"'+(c.strategy==="cascade"?" selected":"")+'>One at a time (cascade)</option></select></label>';
           out+='<label class="pf">Ring for (seconds)<input type="number" min="5" max="120" data-fld="timeoutSeconds" data-num="1" value="'+h(c.timeoutSeconds||20)+'"></label>';
         } else if(n.type==="voicemail"){ out+=promptPanel(n,c); out+='<label class="pf">Mailbox name<input type="text" data-fld="mailboxLabel" value="'+h(c.mailboxLabel||"")+'"></label>';
+        } else if(n.type==="callback"){ out+=promptPanel(n,c);
+          out+='<div class="pf" style="font-weight:400;opacity:0.75">Logs the caller&#39;s number as an open task on the Callbacks page, then hangs up. Nothing is recorded &mdash; use Voicemail if you want a message. Leave the prompt empty to use the default spoken line.</div>';
         } else if(n.type==="redirect"){ out+='<label class="pf">Forward to number<input type="text" data-fld="number" value="'+h(c.number||"")+'" placeholder="+61400000000"></label>';
         } else if(n.type==="business_hours"){ out+='<div class="pf">Drag the “Open” and “Closed” handles to the next steps.</div>';
         } else if(n.type==="date_rule"){ var dates=Array.isArray(c.closedDates)?c.closedDates.join(", "):""; out+='<label class="pf">Closed dates (comma separated, e.g. 2026-12-25)<input type="text" data-fld="closedDates" data-list="1" value="'+h(dates)+'"></label>'; }
