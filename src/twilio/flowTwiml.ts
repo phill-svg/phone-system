@@ -88,6 +88,11 @@ function renderCommand(command: FlowCommand, opts: FlowTwimlOptions): string {
       // Handled by Part B's own TwiML rendering logic
       return "";
 
+    case "CALLBACK_HANDOFF":
+      // Handled by CallSession, which logs the callback request and appends its own <Hangup/>.
+      // Any PLAY sibling in the same command list still renders here as the acknowledgement.
+      return "";
+
     case "HANGUP":
       // Handled by Part C's own TwiML rendering logic (not rendered here per brief scoping)
       return "";

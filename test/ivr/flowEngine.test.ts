@@ -456,3 +456,61 @@ describe("advanceFlow — business_hours node (not present in current seed data,
     expect(closedResult.nextNodeId).toBe("bh_branch_closed_vm");
   });
 });
+
+describe("callback node", () => {
+  it("a gather option pointing at a callback node stops there and emits its prompt + CALLBACK_HANDOFF", async () => {
+    await insertNode({
+      id: "cb_menu",
+      flow: "cbflow",
+      isEntry: true,
+      type: "gather",
+      config: {
+        audioAssetId: null,
+        ttsText: "Press 1 for a callback, press 2 to hold.",
+        options: [
+          { digit: "1", nextNodeId: "cb_request" },
+          { digit: "2", nextNodeId: "cb_hold" },
+        ],
+        defaultNextNodeId: "cb_hold",
+        retryLimit: 0,
+      },
+    });
+    await insertNode({
+      id: "cb_request",
+      flow: "cbflow",
+      type: "callback",
+      config: { audioAssetId: null, ttsText: "Thanks, we'll call you back soon." },
+    });
+    await insertNode({
+      id: "cb_hold",
+      flow: "cbflow",
+      type: "ring",
+      config: { target: "all", strategy: "simultaneous", timeoutSeconds: 20, noAnswerNextNodeId: "cb_request" },
+    });
+
+    const result = await advanceFlow(env.DB, "cbflow", "cb_menu", { type: "DIGIT", digit: "1" }, false, 0);
+
+    expect(result.nextNodeId).toBe("cb_request");
+    expect(result.commands).toEqual([
+      { type: "PLAY", audioAssetId: null, ttsText: "Thanks, we'll call you back soon." },
+      { type: "CALLBACK_HANDOFF" },
+    ]);
+  });
+
+  // The acknowledgement is optional: with neither audio nor TTS configured the node still has to
+  // hand off, so CallSession can log the request and speak its own default line.
+  it("a callback node with no prompt configured still emits CALLBACK_HANDOFF alone", async () => {
+    await insertNode({
+      id: "cb_bare",
+      flow: "cbbare",
+      isEntry: true,
+      type: "callback",
+      config: { audioAssetId: null, ttsText: null },
+    });
+
+    const result = await advanceFlow(env.DB, "cbbare", null, { type: "ENTER" }, false, 0);
+
+    expect(result.nextNodeId).toBe("cb_bare");
+    expect(result.commands).toEqual([{ type: "CALLBACK_HANDOFF" }]);
+  });
+});

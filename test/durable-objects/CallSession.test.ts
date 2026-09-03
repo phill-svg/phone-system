@@ -1136,4 +1136,68 @@ describe("CallSession", () => {
     const answer = await send(stub, agentAnswer("CA-dup", "sid-+61422222222"));
     expect(answer.xml).toContain("<Dial");
   });
+
+  // ---- callback node -----------------------------------------------------
+  //
+  // Until this node type existed the callback feature was only reachable by pressing * while held
+  // in a wait node, which the live flow never uses -- so it was dead code in practice. These cover
+  // the menu route: press a key, get logged as a callback task, hang up.
+
+  it("a gather option pointing at a callback node logs the callback request and hangs up", async () => {
+    await seedEntryGather({ option1: "main_callback", defaultNextNodeId: "main_vm" });
+    await seedNode({ id: "main_callback", type: "callback", config: { audioAssetId: null, ttsText: null } });
+    await seedVoicemail("main_vm", "voicemail");
+
+    const stub = stubFor("CA-cb");
+    await send(stub, mainEvent("CA-cb", { from: "+61455512345" }));
+    const res = await send(stub, mainEvent("CA-cb", { digits: "1" }));
+
+    // Caller hears the default acknowledgement, then the call ends -- no <Record>, no <Enqueue>.
+    expect(res.xml).toContain("Thanks, we&apos;ll call you back soon.");
+    expect(res.xml).toContain("<Hangup/>");
+    expect(res.xml).not.toContain("<Record");
+    expect(res.xml).not.toContain("<Enqueue");
+
+    // The number is captured as an open task for /admin/callbacks.
+    const cb = await env.DB.prepare("SELECT call_id, caller_number, status FROM callback_requests").all();
+    expect(cb.results).toEqual([
+      { call_id: "CA-cb", caller_number: "+61455512345", status: "open" },
+    ]);
+
+    // And the call itself is closed out and attributed to the callback node.
+    const call = await env.DB.prepare("SELECT status, ivr_path FROM calls WHERE id = ?")
+      .bind("CA-cb")
+      .first<{ status: string; ivr_path: string }>();
+    expect(call?.status).toBe("completed");
+    expect(call?.ivr_path).toBe("main_callback");
+
+    const events = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ?")
+      .bind("CA-cb")
+      .all<{ event_type: string }>();
+    expect(events.results.map((e) => e.event_type)).toContain("callback_requested");
+  });
+
+  it("a callback node with its own recording plays that instead of the default spoken line", async () => {
+    await createAudioAsset(env.DB, {
+      id: "cb-asset",
+      label: "callback ack",
+      r2Key: "ivr-audio/cb-asset",
+      contentType: "audio/mpeg",
+    });
+    await seedEntryGather({ option1: "main_callback", defaultNextNodeId: "main_vm" });
+    await seedNode({ id: "main_callback", type: "callback", config: { audioAssetId: "cb-asset", ttsText: null } });
+    await seedVoicemail("main_vm", "voicemail");
+
+    const stub = stubFor("CA-cb2");
+    await send(stub, mainEvent("CA-cb2", { from: "+61455512345" }));
+    const res = await send(stub, mainEvent("CA-cb2", { digits: "1" }));
+
+    // The asset id must be resolved to its R2 key, not used raw -- a raw id 404s at Twilio.
+    expect(res.xml).toContain("<Play>https://tcb-voip.example.workers.dev/media/ivr-audio/cb-asset</Play>");
+    expect(res.xml).toContain("<Hangup/>");
+    expect(res.xml).not.toContain("Thanks, we&apos;ll call you back soon.");
+
+    const cb = await env.DB.prepare("SELECT caller_number FROM callback_requests").all();
+    expect(cb.results.length).toBe(1);
+  });
 });
