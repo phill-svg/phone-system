@@ -103,6 +103,14 @@ is normal, not broken.
   synchronous and *blocks the call*, so the caller keeps hearing ringback for 2-4s after staff
   answer. The verdict therefore lands after bridging, and the machine case undoes a live bridge —
   redirect the caller out FIRST, then hang up the voicemail leg (a test asserts that order).
+- **The queue hold document is a POLL, not just audio.** A caller in the ring queue can only be
+  released (`<Leave/>` -> no-answer branch) when the hold document ENDS and Twilio re-fetches the
+  waitUrl / fires its `<Gather>` action. So a `<Play loop="0">` in there (TwiML for "repeat until
+  hangup") makes the release unreachable: the ring plan correctly goes `DONE{no_answer}` and the
+  caller still hears ringback until they give up. That shipped in `9dabdd8` and stranded live
+  callers on 2026-09-04; fixed in #45 with a finite `HOLD_RINGBACK_LOOPS` plus a regression test.
+  The conference ringback is a different case — there the caller is released by the conference
+  join, not by a poll — so its unbounded loop is correct. Never make the hold document infinite.
 - **Recent work (2026-09-02/03):** the divert above (#26), async AMD (#27), recording playback —
   `calls.recording_duration` persisted from Twilio plus a proxy that always sends `Content-Length`
   and honours Range (#26) — and a sending-number dropdown in the mobile app (#28, OTA 34).

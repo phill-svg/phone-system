@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FlowCommand } from "../../src/ivr/flowEngine";
 import {
+  HOLD_RINGBACK_LOOPS,
   renderCallbackAck,
   renderEnqueue,
   renderHold,
@@ -61,7 +62,7 @@ describe("renderHold", () => {
     expect(xml).toContain('timeout="15"');
   });
 
-  it("falls back to a looping ringback tone (not music/silence) when play is null", () => {
+  it("falls back to a ringback tone (not music/silence) when play is null", () => {
     const xml = renderHold({
       play: null,
       baseUrl: "https://x.example",
@@ -71,9 +72,30 @@ describe("renderHold", () => {
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
         '<Gather input="dtmf" numDigits="1" timeout="10" actionOnEmptyResult="true" ' +
-        'action="https://x.example/hold-digit"><Play loop="0">https://tcbvoip.app/media/system/ringback.mp3</Play></Gather>' +
+        `action="https://x.example/hold-digit"><Play loop="${HOLD_RINGBACK_LOOPS}">` +
+        "https://tcbvoip.app/media/system/ringback.mp3</Play></Gather>" +
         "</Response>"
     );
+  });
+
+  // Regression guard for the "caller rings forever and never reaches the menu" bug.
+  //
+  // The hold document doubles as the queue's poll: Twilio re-fetches waitUrl / fires the <Gather>
+  // action only once the document ENDS, and that action is the ONLY way CallSession can hand the
+  // caller a <Leave/> and move them on to the no-answer branch. A <Play loop="0"> repeats until
+  // hangup, so it makes the document infinite and strands the caller on ringback no matter what the
+  // ring plan decided. Shipping that is what broke the live line, so assert it can never come back.
+  it("never emits an unbounded ringback loop -- the hold document must terminate so the queue re-polls", () => {
+    const xml = renderHold({
+      play: null,
+      baseUrl: "https://x.example",
+      gatherAction: "https://x.example/hold-digit",
+      timeoutSeconds: 10,
+    });
+    expect(xml).not.toContain('loop="0"');
+    expect(HOLD_RINGBACK_LOOPS).toBeGreaterThan(0);
+    expect(Number.isInteger(HOLD_RINGBACK_LOOPS)).toBe(true);
+    expect(xml).toContain(`<Play loop="${HOLD_RINGBACK_LOOPS}">`);
   });
 });
 

@@ -125,7 +125,17 @@ type AnyEvent =
   | AmdStatusEvent
   | AmdFallthroughEvent;
 
-const HOLD_TIMEOUT_SECONDS = 20;
+// Trailing <Gather> timeout on a hold document that carries a WAIT NODE'S OWN audio/TTS. This is
+// silence appended after that content, so it also sets how often the announcement repeats -- keep
+// it long enough not to nag the caller.
+const HOLD_CONTENT_TIMEOUT_SECONDS = 20;
+
+// Trailing <Gather> timeout on a default-ringback hold document. Together with HOLD_RINGBACK_LOOPS
+// this is the poll period: the caller cannot leave the queue until the document ends, so it bounds
+// how long they keep hearing ringback after the ring plan has already given up (~2 x 1.8s of tone
+// + this, so ~5s). Kept short deliberately -- a caller who has already waited out a 20s ring should
+// reach the menu promptly, and a * callback press is still caught during the tone itself.
+const HOLD_RINGBACK_TIMEOUT_SECONDS = 1;
 const AGENT_FAILURE_STATUSES = new Set(["busy", "no-answer", "failed", "canceled"]);
 
 export class CallSession extends DurableObject<Env> {
@@ -865,7 +875,10 @@ export class CallSession extends DurableObject<Env> {
       play: activeRing.play,
       baseUrl: origin,
       gatherAction: appendWebhookSecret(`${origin}/webhooks/twilio/hold-digit`, this.env.TWILIO_WEBHOOK_SECRET),
-      timeoutSeconds: HOLD_TIMEOUT_SECONDS,
+      // A wait node's own content is finite and self-terminating, so it only needs a comfortable
+      // gap before repeating. The default ringback is a looping tone whose document length IS the
+      // poll interval, so it gets the short tail instead.
+      timeoutSeconds: activeRing.play ? HOLD_CONTENT_TIMEOUT_SECONDS : HOLD_RINGBACK_TIMEOUT_SECONDS,
     });
   }
 
