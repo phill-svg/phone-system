@@ -27,6 +27,29 @@ describe("resolveRingTargets", () => {
     expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:a@b.com"]);
   });
 
+  // Signing in flips a staff row to `available`, and the simultaneous strategy rings everyone
+  // available at once -- ring_priority protects nobody there. Without this exclusion an App Review
+  // demo login becomes a live destination and can answer a real customer's call.
+  it("never rings an excluded (demo) account, even when it is available and asked for by name", async () => {
+    await insertStaff("real@b.com", "available", NOW.getTime());
+    await insertStaff("reviewer@b.com", "available", NOW.getTime());
+
+    expect(await resolveRingTargets(env.DB, "all", NOW, ["reviewer@b.com"])).toEqual(["client:real@b.com"]);
+    // Also when a ring node names them explicitly, and regardless of address casing.
+    expect(await resolveRingTargets(env.DB, ["reviewer@b.com"], NOW, ["REVIEWER@b.com"])).toEqual([]);
+  });
+
+  it("excludes a demo account from ring-my-mobile too, not just the softphone leg", async () => {
+    await insertStaff("reviewer@b.com", "available", NOW.getTime());
+    await setUserSettings(env.DB, "reviewer@b.com", { ring_my_mobile: true, mobile_number: "0491570006" } as any);
+    expect(await resolveRingTargets(env.DB, "all", NOW, ["reviewer@b.com"])).toEqual([]);
+  });
+
+  it("rings everyone when no exclusions are configured", async () => {
+    await insertStaff("real@b.com", "available", NOW.getTime());
+    expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual(["client:real@b.com"]);
+  });
+
   it("a specific staff list only considers those staff, filtered by availability", async () => {
     await insertStaff("a@b.com", "available", NOW.getTime());
     await insertStaff("b@b.com", "available", NOW.getTime());

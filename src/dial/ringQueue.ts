@@ -19,8 +19,18 @@ export type RingNodeTarget = "all" | string[];
 // One leg per person is also what keeps `ring_priority` meaningful: returning the legs grouped by
 // type would reorder people, which cascade (dials numbers[0] first) turns into the wrong person
 // ringing first.
-export async function resolveRingTargets(db: D1Database, target: RingNodeTarget, now: Date): Promise<string[]> {
-  const roster = await getStaffRoster(db);
+// `excludeEmails` keeps the App Review demo account out of the roster. Signing in flips a staff
+// row to `available`, and the simultaneous ring strategy rings everyone available at once --
+// `ring_priority` protects nobody there -- so without this an Apple reviewer would become a live
+// destination and could answer a real customer's call.
+export async function resolveRingTargets(
+  db: D1Database,
+  target: RingNodeTarget,
+  now: Date,
+  excludeEmails: string[] = []
+): Promise<string[]> {
+  const excluded = new Set(excludeEmails.map((e) => e.trim().toLowerCase()));
+  const roster = (await getStaffRoster(db)).filter((s) => !excluded.has(s.email.toLowerCase()));
   const candidates = target === "all" ? roster : roster.filter((s) => target.includes(s.email));
   const onShift = candidates.filter((s) => isOnShift(s, now));
   onShift.sort((a, b) => a.ringPriority - b.ringPriority || a.email.localeCompare(b.email));

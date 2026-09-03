@@ -8,6 +8,7 @@ import {
   renderCallbackAck,
 } from "../twilio/queueTwiml";
 import { resolveRingTargets, type RingNodeTarget } from "../dial/ringQueue";
+import { demoEmails } from "../demo";
 import {
   reduceRingPlan,
   type RingPlanState,
@@ -33,6 +34,7 @@ type Env = {
   TWILIO_API_KEY_SECRET: string;
   TWILIO_WEBHOOK_SECRET?: string;
   TWILIO_FROM_NUMBER: string;
+  DEMO_ACCOUNT_EMAILS?: string;
 };
 
 // Config shape stored on a `ring` node.
@@ -349,7 +351,7 @@ export class CallSession extends DurableObject<Env> {
     }
 
     const now = new Date();
-    const numbers = await resolveRingTargets(this.env.DB, ringConfig.target, now);
+    const numbers = await resolveRingTargets(this.env.DB, ringConfig.target, now, demoEmails(this.env));
 
     // Zero on-call numbers: skip the ring/enqueue dance and continue the flow from the ring node's
     // noAnswerNextNodeId (e.g. nobody on call → voicemail/menu) -- but still play the greeting first
