@@ -19,6 +19,29 @@ export function usePersistedBool(key: string, initial: boolean): [boolean, (v: b
   return [value, set];
 }
 
+// A string preference that persists across app launches. `valid` guards against a stored value
+// that no longer makes sense -- e.g. a remembered caller-ID number that has since been deleted or
+// had its voice capability turned off -- in which case the fallback is used instead of silently
+// sending from a number the business no longer owns.
+export function usePersistedString(
+  key: string,
+  valid: (v: string) => boolean
+): [string | null, (v: string) => void] {
+  const [value, setValue] = useState<string | null>(null);
+  useEffect(() => {
+    SecureStore.getItemAsync(key)
+      .then((v) => {
+        if (v) setValue(v);
+      })
+      .catch(() => {});
+  }, [key]);
+  const set = (v: string) => {
+    setValue(v);
+    SecureStore.setItemAsync(key, v).catch(() => {});
+  };
+  return [value !== null && valid(value) ? value : null, set];
+}
+
 // Non-hook variants for use outside React components (e.g. voice.ts, which is native glue
 // code, not a component). Same SecureStore-backed persistence as usePersistedBool above.
 export async function getPref(key: string, fallback: string): Promise<string> {

@@ -11,6 +11,9 @@ import { markConversationRead } from "../../lib/conversations";
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
+import { NumberPicker } from "../../components/ui/NumberPicker";
+import { usePersistedString } from "../../lib/prefs";
+import { resolveSendingNumber } from "../../lib/sendingNumber";
 
 export default function ThreadScreen() {
   const t = useTheme();
@@ -37,9 +40,10 @@ export default function ThreadScreen() {
   }, [loadedAt, to, qc]);
 
   const smsNums = (numbers.data ?? []).filter((n) => n.sms_enabled);
-  const [fromNum, setFromNum] = useState<string | null>(null);
+  // Remembered on the device, but only while that number is still SMS-enabled (see the dialer).
+  const [fromNum, setFromNum] = usePersistedString("pref_from_sms", (v) => smsNums.some((n) => n.e164 === v));
   // Effective sending number: the picked one, else the default SMS number, else the first available.
-  const effectiveFrom = fromNum ?? smsNums.find((n) => n.is_default_sms)?.e164 ?? smsNums[0]?.e164;
+  const effectiveFrom = resolveSendingNumber(smsNums, fromNum, (n) => !!n.is_default_sms);
 
   const contactName = contactForNumber(to, contacts.data ?? [])?.name;
   const isMessenger = to.startsWith("messenger:");
@@ -142,29 +146,15 @@ export default function ThreadScreen() {
           />
         )}
 
-        {/* "From" picker — a chip row when there are 2+ SMS numbers, a static line for one, hidden for none.
-            On Messenger threads there's no SMS number to pick — replies go out via the Facebook Page. */}
+        {/* "From" picker. On Messenger threads there's no SMS number to pick -- replies go out via
+            the Facebook Page. */}
         {isMessenger ? (
           <View style={[styles.fromBar, { borderTopColor: t.colors.separator }]}>
             <Text style={[type.caption, { color: t.colors.labelSecondary }]}>via Facebook Messenger</Text>
           </View>
-        ) : smsNums.length >= 2 ? (
-          <View style={[styles.fromBar, { borderTopColor: t.colors.separator }]}>
-            <Text style={[type.caption, { color: t.colors.labelSecondary }]}>From</Text>
-            {smsNums.map((n) => {
-              const active = effectiveFrom === n.e164;
-              return (
-                <Pressable key={n.id} onPress={() => setFromNum(n.e164)} style={[styles.fromChip, { backgroundColor: active ? t.colors.accent : t.colors.fill }]}>
-                  <Text style={[type.caption, { color: active ? "#FFFFFF" : t.colors.label }]}>{n.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : smsNums.length === 1 ? (
-          <View style={[styles.fromBar, { borderTopColor: t.colors.separator }]}>
-            <Text style={[type.caption, { color: t.colors.labelSecondary }]}>From {smsNums[0].label} · {formatPhone(smsNums[0].e164)}</Text>
-          </View>
-        ) : null}
+        ) : (
+          <NumberPicker title="From" options={smsNums} value={effectiveFrom} onChange={setFromNum} />
+        )}
 
         {/* Compose */}
         <View style={[styles.compose, { borderTopColor: t.colors.separator, paddingBottom: insets.bottom + 8 }]}>
@@ -205,7 +195,6 @@ const styles = StyleSheet.create({
   bubbleRow: { flexDirection: "row" },
   bubble: { maxWidth: "78%", paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20 },
   fromBar: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingHorizontal: 14, paddingVertical: 7, borderTopWidth: StyleSheet.hairlineWidth },
-  fromChip: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999 },
   compose: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingHorizontal: 12, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth },
   inputWrap: { flex: 1, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, minHeight: 38, justifyContent: "center" },
   sendBtn: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },
