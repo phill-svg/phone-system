@@ -28,7 +28,7 @@ export default function LoginScreen() {
     setBusy(true);
     try {
       await signIn(email.trim().toLowerCase(), password);
-    } catch (e) {
+    } catch {
       setError("Invalid email or password.");
     } finally {
       setBusy(false);

@@ -45,7 +45,8 @@ function Player({ uri, token, fallbackDuration }: { uri: string; token: string; 
         style={styles.btn}
         onPress={() => {
           if (status.didJustFinish) player.seekTo(0);
-          playing ? player.pause() : player.play();
+          if (playing) player.pause();
+          else player.play();
         }}
       >
         <Text style={styles.btnText}>{playing ? "❚❚ Pause" : "▶ Play"}</Text>
