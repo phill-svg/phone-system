@@ -1,4 +1,5 @@
 import { authorizeTwilioWebhook, appendWebhookSecret } from "./twilio/webhookAuth";
+import { isDemoUser, handleDemoRequest } from "./demo";
 import { renderJoinConference, renderDialAgentIntoConference, renderListenConference } from "./twilio/conferenceTwiml";
 import { createOutboundCall } from "./twilio/restClient";
 import { cleanupLoneConference } from "./twilio/conferenceClient";
@@ -104,6 +105,9 @@ type Env = {
   TWILIO_PUSH_CREDENTIAL_SID_ANDROID?: string;
   AUTH_MODE?: string;
   DEV_STAFF_EMAIL?: string;
+  // Comma-separated logins served invented data instead of the real business inbox (see
+  // src/demo/). Empty or unset means every account sees real data, which is the default.
+  DEMO_ACCOUNT_EMAILS?: string;
   EMAIL?: SendEmailBinding;
   // Facebook Page access token, used to resolve Messenger senders' display names via the Graph API.
   FB_PAGE_ACCESS_TOKEN?: string;
@@ -830,6 +834,15 @@ export default {
       const staffOrResponse = await requireStaffUser(request, env, { isApi: true });
       if (staffOrResponse instanceof Response) return staffOrResponse;
       const staff = staffOrResponse;
+
+      // The App Review demo account never touches the real inbox: conversations, calls and
+      // contacts are business-wide here, so any login would otherwise show a reviewer real
+      // customers by name and number. Reads are substituted and writes are swallowed; outbound
+      // calling is left alone so the app's core feature stays testable. See src/demo/.
+      if (isDemoUser(staff.email, env)) {
+        const demo = handleDemoRequest(url, request);
+        if (demo) return demo;
+      }
 
       // Admin-only read endpoints (the settings + IVR surfaces). Mutations under these paths
       // already role-check inside their handlers; this closes the matching GET reads so a staff
