@@ -30,6 +30,7 @@
     "TWILIO_TWIML_APP_SID": "AP37a6e4263508806aa37efaf19285d2ed",
     "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CRa514b67c428755dd962c50503041de9a",
     "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au",
-    "TWILIO_MESSENGER_FROM": "messenger:626021143926639"
+    "TWILIO_MESSENGER_FROM": "messenger:626021143926639",
+    "DEMO_ACCOUNT_EMAILS": "reviewer@tcbpestcontrolcanberra.com.au"
   }
 }
