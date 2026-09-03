@@ -6,6 +6,24 @@ import { RINGBACK_URL } from "./ringback";
 // ringing tone so it sounds like a normal ringing phone rather than hold music. A real "wait node"
 // with its own audio/TTS still overrides this. RINGBACK_URL is self-hosted (see ./ringback).
 
+// How many times the ringback tone repeats per hold document. MUST stay finite.
+//
+// The hold document is a POLL, not a soundtrack: Twilio only re-fetches the queue's waitUrl (and
+// only fires the <Gather> `action` that CallSession.handleHoldDigit uses to decide "keep holding"
+// vs <Leave/>) once this document ENDS. A <Play loop="0"> means "repeat until the caller hangs up",
+// so nesting one in the <Gather> makes the document never end -- the caller is then stuck listening
+// to ringback forever, and the no-answer fall-through to the menu/voicemail can never be delivered
+// no matter what the ring plan decided. That regression shipped once (9dabdd8) and stranded real
+// callers: staff legs timed out on schedule at 20s, the ring plan went DONE{no_answer}, and the
+// caller still heard 31 more seconds of ringing before giving up and hanging up.
+//
+// The ringback asset is ~1.8s, so this is roughly a 3.6s tone burst per cycle; combined with the
+// short trailing <Gather> timeout (see HOLD_RINGBACK_TIMEOUT_SECONDS in CallSession) it bounds how
+// long a caller keeps hearing ring after the last staff leg gives up.
+// Do NOT set this to 0. The conference ringback is a different case -- there the caller is released
+// by the conference join, not by a poll -- so its unbounded loop is fine and lives elsewhere.
+export const HOLD_RINGBACK_LOOPS = 2;
+
 /**
  * Renders the caller-leg <Enqueue> TwiML: parks the caller in a per-call queue while
  * staff are dialed via outbound REST. Complete TwiML document by itself.
@@ -37,7 +55,7 @@ export function renderHold(opts: {
   // hears something rather than dead air between hold polls.
   const content = opts.play
     ? renderFlowCommandsFragment([opts.play], { baseUrl: opts.baseUrl })
-    : `<Play loop="0">${RINGBACK_URL}</Play>`;
+    : `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play>`;
   return wrapResponse(
     `<Gather input="dtmf" numDigits="1" timeout="${opts.timeoutSeconds}" ` +
       `actionOnEmptyResult="true" action="${opts.gatherAction}">${content}</Gather>`
