@@ -69,6 +69,8 @@ import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist, getRecordingEnabled } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
+import { resetAvailabilityForNewDay } from "./db/staff";
+import { localDateKey } from "./ivr/businessHours";
 import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listOpenCallbackRequests } from "./db/callbackRequests";
@@ -862,7 +864,7 @@ export default {
       }
 
       if (url.pathname === "/api/me") {
-        return handleMe(staff);
+        return handleMe(env.DB, staff);
       }
       if (url.pathname === "/api/calls/live") {
         return handleLiveCalls(env);
@@ -1204,5 +1206,15 @@ export default {
     // Watches real Messenger send outcomes for a channel-wide break (e.g. error 63001, the Twilio
     // <-> Facebook Page connection itself) and pages staff once, deduped, instead of per message.
     ctx.waitUntil(checkMessengerChannelHealth(env).catch(() => {}));
+    // Availability is a one-day override: anyone still marked away/offline from an earlier day is
+    // put back to available, so one sick day cannot quietly remove someone from the ring roster
+    // for a week. Cheap single UPDATE; a no-op on most ticks.
+    ctx.waitUntil(
+      resetAvailabilityForNewDay(env.DB, localDateKey(new Date()))
+        .then((n) => {
+          if (n > 0) console.log("AVAILABILITY_RESET", { staff: n });
+        })
+        .catch(() => {})
+    );
   },
 };

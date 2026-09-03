@@ -4,7 +4,7 @@ import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../../components/ui/Icon";
 import { registerForIncoming, getActiveCall, rejectIncoming } from "../../lib/voice";
 import { registerForPushNotifications } from "../../lib/push";
-import { setPresence, sendHeartbeat } from "../../lib/api";
+import { sendHeartbeat } from "../../lib/api";
 import { getPrefBool } from "../../lib/prefs";
 import { decideInviteAction } from "../../lib/callRouting";
 import { useTheme } from "../../theme/theme";
@@ -39,7 +39,10 @@ function useIncomingCalls() {
 
     registerForPushNotifications().catch(() => {});
 
-    setPresence("available").catch(() => {});
+    // Presence is NOT set here any more. Opening the app is not the same as choosing to be
+    // available, and writing "available" on every launch would silently undo someone who marked
+    // themselves off sick this morning. Availability is now theirs to set in Settings, and the
+    // server resets it each local morning. The heartbeat still runs -- it is diagnostics.
     sendHeartbeat().catch(() => {});
     const hb = setInterval(() => sendHeartbeat().catch(() => {}), 60_000);
 

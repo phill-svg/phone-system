@@ -33,16 +33,35 @@ export async function getStaffByEmail(db: D1Database, email: string): Promise<St
   return row ? toPresenceRow(row) : null;
 }
 
+// `setOn` is the Canberra calendar date the person made this choice, so resetAvailabilityForNewDay
+// can tell today's override from a forgotten one. Setting yourself back to available clears it --
+// there is nothing to expire.
 export async function setStaffStatus(
   db: D1Database,
   email: string,
   status: StaffStatus,
-  awayReason: string | null
+  awayReason: string | null,
+  setOn: string | null = null
 ): Promise<void> {
   await db
-    .prepare("UPDATE staff_users SET status = ?, away_reason = ? WHERE email = ?")
-    .bind(status, awayReason, email)
+    .prepare("UPDATE staff_users SET status = ?, away_reason = ?, status_set_on = ? WHERE email = ?")
+    .bind(status, awayReason, status === "available" ? null : setOn, email)
     .run();
+}
+
+// Availability is a one-day override. Anyone still marked away/offline from an earlier day -- or
+// who never set it themselves at all -- goes back to available, so a single sick day cannot drop
+// someone off the ring roster indefinitely. Runs on the 5-minute cron, so the reset lands within
+// minutes of local midnight.
+export async function resetAvailabilityForNewDay(db: D1Database, today: string): Promise<number> {
+  const result = await db
+    .prepare(
+      "UPDATE staff_users SET status = 'available', away_reason = NULL, status_set_on = NULL " +
+        "WHERE status <> 'available' AND (status_set_on IS NULL OR status_set_on <> ?)"
+    )
+    .bind(today)
+    .run();
+  return result.meta.changes ?? 0;
 }
 
 // Sets a staff member's cascade ring priority (lower rings earlier).

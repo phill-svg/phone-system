@@ -11,6 +11,7 @@ import {
   removeParticipant as realRemoveParticipant,
 } from "../twilio/conferenceClient";
 import { createOutboundCall as realCreateOutboundCall } from "../twilio/restClient";
+import { localDateKey } from "../ivr/businessHours";
 
 type Env = {
   TWILIO_ACCOUNT_SID: string;
@@ -54,7 +55,15 @@ export async function handlePutPresence(request: Request, db: D1Database, staff:
   if (awayReason !== undefined && typeof awayReason !== "string" && awayReason !== null) {
     return new Response("invalid request body", { status: 400 });
   }
-  await setStaffStatus(db, staff.email, status, (awayReason as string | null | undefined) ?? null);
+  // Stamped with today's Canberra date: the override lasts for the rest of this local day and
+  // the cron puts them back to available afterwards (see resetAvailabilityForNewDay).
+  await setStaffStatus(
+    db,
+    staff.email,
+    status,
+    (awayReason as string | null | undefined) ?? null,
+    localDateKey(new Date())
+  );
   return jsonResponse({ ok: true });
 }
 

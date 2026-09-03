@@ -29,6 +29,20 @@ function localParts(at: Date): { dayKey: keyof BusinessHoursSchedule; minutesSin
   return { dayKey, minutesSinceMidnight: hour * 60 + minute };
 }
 
+// The Canberra calendar date (YYYY-MM-DD) at a given instant. Availability overrides are scoped
+// to a local day, so "is this override still today's?" must be asked in the business's timezone,
+// not the Worker's UTC.
+export function localDateKey(at: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((p) => p.type === type)!.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;

@@ -711,12 +711,16 @@ describe("GET /api/me and /api/calls*", () => {
     await env.DB.prepare("DELETE FROM calls").run();
   });
 
-  it("GET /api/me returns the dev-mode staff identity", async () => {
+  it("GET /api/me returns the dev-mode staff identity and their availability", async () => {
     const response = await SELF.fetch("https://example.com/api/me");
     expect(response.status).toBe(200);
+    // Availability rides along so Settings can show and change it without a second round trip.
+    // "offline" here because the dev-mode identity has no staff_users row in this suite.
     expect(await response.json()).toEqual({
       email: "phill@tcbpestcontrolcanberra.com.au",
       role: "admin",
+      status: "offline",
+      awayReason: null,
     });
   });
 

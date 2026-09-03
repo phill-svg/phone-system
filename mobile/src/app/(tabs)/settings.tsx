@@ -6,7 +6,7 @@ import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { Group, Row } from "../../components/ui/Grouped";
 import { Segmented } from "../../components/ui/Segmented";
-import { BASE_URL, getRecordingSetting, setRecordingSetting } from "../../lib/api";
+import { BASE_URL, getRecordingSetting, setRecordingSetting, getMe, setPresence } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
 import { onRegStatus } from "../../lib/voice";
@@ -16,7 +16,7 @@ import { useTheme, useThemePreference, type ThemePreference } from "../../theme/
 import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "38";
+const OTA_BUILD = "39";
 
 const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
   automatic: "Automatic",
@@ -34,6 +34,23 @@ export default function SettingsScreen() {
   const { settings, update } = useUserSettings();
   const [voiceReg, setVoiceReg] = useState("…");
   useEffect(() => onRegStatus(setVoiceReg), []);
+
+  // Availability: whether business calls ring this person at all. Read from the server rather than
+  // the cached session, so a change made on another device or by an admin shows up here.
+  const [available, setAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    getMe()
+      .then((me) => setAvailable(me.status === "available"))
+      .catch(() => {});
+  }, []);
+  function toggleAvailable(next: boolean) {
+    const previous = available;
+    setAvailable(next); // optimistic -- this is a toggle people flick while walking to the van
+    setPresence(next ? "available" : "away").catch(() => {
+      setAvailable(previous);
+      Alert.alert("Couldn't save", "Your availability didn't change. Check your connection and try again.");
+    });
+  }
   const [checking, setChecking] = useState(false);
 
   // Pull the latest over-the-air (EAS) update on demand, then restart into it. In Expo Go / dev the
@@ -97,8 +114,22 @@ export default function SettingsScreen() {
     <Screen>
       <LargeHeader title="Settings" />
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
-        <Group title="Account" footer="Signed in to the TCB phone system.">
+        <Group
+          title="Account"
+          footer={
+            available === false
+              ? "You won't be rung for business calls. This resets to available tomorrow morning, so mark yourself unavailable again if you're still away."
+              : "Signed in to the TCB phone system. Turn off Available for Calls if you're off sick or otherwise can't take calls today."
+          }
+        >
           <Row icon="person.fill" iconColor={t.colors.accent} label="Account" value={user?.email ?? "—"} />
+          <Row
+            icon="checkmark.circle.fill"
+            iconColor={available === false ? t.colors.labelTertiary : "#34C759"}
+            label="Available for Calls"
+            toggle={available ?? true}
+            onToggle={toggleAvailable}
+          />
           <Row icon="antenna.radiowaves.left.and.right" iconColor={REG_META[status].tone === "success" ? t.colors.success : t.colors.warning} label="Registration" value={REG_META[status].label} />
           <Row icon="number" iconColor="#8E8E93" label="Role" value={user ? (user.role === "admin" ? "Administrator" : "Staff") : "—"} />
           <Row icon="bell.badge" iconColor={voiceReg.startsWith("registered") ? t.colors.success : t.colors.warning} label="Incoming calls" value={voiceReg} />
