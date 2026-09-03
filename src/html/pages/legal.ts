@@ -129,3 +129,44 @@ export function renderTermsOfServicePage(): string {
       revised terms.</p>`
   );
 }
+
+// Linked as the App Store / Play Store "Support URL". It must be reachable WITHOUT a login: the
+// site root redirects to /admin/live, which bounces a logged-out visitor to /login, and a reviewer
+// meeting a login wall where support information should be is an avoidable rejection.
+export function renderSupportPage(): string {
+  return legalShell(
+    "Support",
+    LAST_UPDATED,
+    `<p>TCB Phone is the internal phone and messaging app for staff of TCB Pest Control Canberra. This
+      page is for help with the app itself.</p>
+
+    <h2>Contact us</h2>
+    <ul>
+      <li>Email: <a href="mailto:phill@tcbpestcontrolcanberra.com.au">phill@tcbpestcontrolcanberra.com.au</a></li>
+      <li>Phone: <a href="tel:+61261059771">(02) 6105 9771</a></li>
+      <li>Hours: Monday to Friday, 8am - 5pm (Australian Eastern Time). We aim to reply within one business day.</li>
+    </ul>
+
+    <h2>Getting an account</h2>
+    <p>Accounts are created and managed by TCB Pest Control Canberra; there is no public sign-up. If you are a
+      staff member without access, contact us at the address above and we will send you an invitation.</p>
+
+    <h2>Signing in</h2>
+    <p>Sign in with your work email address and the password you set from your invitation link. If you have
+      forgotten it, use "Forgot password" on the sign-in screen and a reset link will be emailed to you.</p>
+
+    <h2>Common questions</h2>
+    <ul>
+      <li><strong>Calls are not ringing.</strong> Check that Settings shows "Incoming calls: registered" and that
+        notifications are allowed for TCB Phone in your device settings. If "Ring My Mobile" is on, calls go to
+        your mobile number instead of the app, by design.</li>
+      <li><strong>No microphone during a call.</strong> Allow microphone access for TCB Phone in your device
+        settings; the app cannot place or take calls without it.</li>
+      <li><strong>Messages are missing.</strong> Pull down on the Messages list to refresh. SMS and Facebook
+        Messenger conversations both appear there.</li>
+    </ul>
+
+    <h2>Privacy and terms</h2>
+    <p>See our <a href="/privacy">Privacy Policy</a> and <a href="/terms">Terms of Service</a>.</p>`
+  );
+}
