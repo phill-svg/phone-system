@@ -7,7 +7,7 @@ import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleLogoAsset } from "./html/logoAsset";
 import { handleDesktopUpdateAsset } from "./api/desktopUpdates";
-import { renderPrivacyPolicyPage, renderTermsOfServicePage } from "./html/pages/legal";
+import { renderPrivacyPolicyPage, renderTermsOfServicePage, renderSupportPage } from "./html/pages/legal";
 import { handleMe } from "./api/me";
 import {
   handleLoginPage, handleLoginSubmit, handleLogout,
@@ -159,6 +159,10 @@ export default {
     }
     if (url.pathname === "/terms") {
       return new Response(renderTermsOfServicePage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+    // The store listings' Support URL. Public by necessity -- see renderSupportPage.
+    if (url.pathname === "/support") {
+      return new Response(renderSupportPage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
     }
 
     if (url.pathname === "/login") {
