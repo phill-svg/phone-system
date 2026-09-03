@@ -39,3 +39,18 @@ export function contactForNumber(number: string, contacts: Contact[]): Contact |
   if (!digits) return undefined;
   return contacts.find((c) => c.phone_normalized === digits) ?? contacts.find((c) => c.phone_normalized.endsWith(digits) || digits.endsWith(c.phone_normalized));
 }
+
+// Contact search for a "who am I messaging/calling" picker -- matches on name, company OR digits,
+// unlike matchContacts above (digits only, for the keypad's live-dial suggestions). An empty query
+// returns everything, so a picker can show the full list on focus before the person types anything.
+export function searchContacts(query: string, contacts: Contact[]): Contact[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return contacts;
+  const digits = normalizePhone(query);
+  return contacts.filter(
+    (c) =>
+      c.name.toLowerCase().includes(needle) ||
+      (c.company ?? "").toLowerCase().includes(needle) ||
+      (digits.length >= 2 && c.phone_normalized.includes(digits))
+  );
+}

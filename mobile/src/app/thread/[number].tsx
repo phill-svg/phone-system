@@ -1,14 +1,15 @@
-import React, { useEffect, useState } from "react";
-import { View, Text, TextInput, Pressable, FlatList, Alert, StyleSheet } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { View, Text, TextInput, Pressable, FlatList, ScrollView, Alert, StyleSheet } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
 import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Avatar } from "../../components/ui/Avatar";
 import { getThread, getContacts, sendMessage, getNumbers, getConversations, type Conversation, type Message } from "../../lib/api";
 import { markConversationRead, canSaveContactFromThread } from "../../lib/conversations";
-import { formatPhone, contactForNumber } from "../../lib/phone";
+import { formatPhone, contactForNumber, searchContacts } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
 import { NumberPicker } from "../../components/ui/NumberPicker";
@@ -24,6 +25,10 @@ export default function ThreadScreen() {
   const [to, setTo] = useState(isNew ? "" : String(params.number ?? ""));
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  // Once a suggestion is tapped (or we already know it's a saved contact) there is nothing left to
+  // suggest -- showing "Marion Kelly" as a 1-row dropdown under her own name is just noise.
+  const [toPicked, setToPicked] = useState(false);
+  const textInputRef = useRef<TextInput>(null);
 
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
   const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2 });
@@ -48,6 +53,20 @@ export default function ThreadScreen() {
   const contact = contactForNumber(to, contacts.data ?? []);
   const contactName = contact?.name;
   const isMessenger = to.startsWith("messenger:");
+
+  // Suggestions for the To field on a brand-new message: search by name, company or digits, not
+  // just digits -- a plain phone-number field meant typing "Marion" found nothing. Hidden once a
+  // contact has been picked (or `to` already resolves to one, e.g. coming back from Save Contact).
+  const toSuggestions = useMemo(
+    () => (isNew && !toPicked && !contact ? searchContacts(to, contacts.data ?? []).slice(0, 8) : []),
+    [isNew, toPicked, contact, to, contacts.data]
+  );
+  function pickToSuggestion(picked: { phone: string }) {
+    haptics.tap();
+    setTo(picked.phone);
+    setToPicked(true);
+    textInputRef.current?.focus();
+  }
   // Server-resolved name (a Messenger sender's, from fb_contacts). Read it from the conversation
   // list rather than relying on the `name` route param: the param is only set when you arrive from
   // the Messages list, so every other way in here -- a call detail, a deep link -- fell through to
@@ -125,18 +144,45 @@ export default function ThreadScreen() {
       </View>
 
       {isNew ? (
-        <View style={[styles.toRow, { borderBottomColor: t.colors.separator }]}>
-          <Text style={[type.subhead, { color: t.colors.labelSecondary }]}>To:</Text>
-          <TextInput
-            value={to}
-            onChangeText={setTo}
-            placeholder="Phone number"
-            placeholderTextColor={t.colors.labelTertiary}
-            keyboardType="phone-pad"
-            autoFocus
-            style={{ fontSize: 17, fontWeight: "400", color: t.colors.label, flex: 1 }}
-          />
-        </View>
+        <>
+          <View style={[styles.toRow, { borderBottomColor: t.colors.separator }]}>
+            <Text style={[type.subhead, { color: t.colors.labelSecondary }]}>To:</Text>
+            <TextInput
+              value={to}
+              onChangeText={(v) => {
+                setTo(v);
+                setToPicked(false);
+              }}
+              placeholder="Name or phone number"
+              placeholderTextColor={t.colors.labelTertiary}
+              // NOT phone-pad: that keyboard has no letter keys, which made searching by name
+              // impossible to even type. The default keyboard still has digits along its top row.
+              keyboardType="default"
+              autoCapitalize="words"
+              autoFocus
+              style={{ fontSize: 17, fontWeight: "400", color: t.colors.label, flex: 1 }}
+            />
+          </View>
+          {toSuggestions.length > 0 ? (
+            <ScrollView keyboardShouldPersistTaps="handled" style={[styles.toSuggestions, { borderBottomColor: t.colors.separator }]}>
+              {toSuggestions.map((c) => (
+                <Pressable
+                  key={c.id}
+                  onPress={() => pickToSuggestion(c)}
+                  style={({ pressed }) => [styles.toSuggestionRow, { backgroundColor: pressed ? t.colors.cardPressed : "transparent" }]}
+                >
+                  <Avatar name={c.name} size={34} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[type.callout, { color: t.colors.label, fontWeight: "600" }]} numberOfLines={1}>{c.name}</Text>
+                    <Text style={[type.footnote, { color: t.colors.labelSecondary }]} numberOfLines={1}>
+                      {c.company ? `${c.company} · ` : ""}{formatPhone(c.phone)}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
+        </>
       ) : null}
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
@@ -196,6 +242,7 @@ export default function ThreadScreen() {
         <View style={[styles.compose, { borderTopColor: t.colors.separator, paddingBottom: insets.bottom + 8 }]}>
           <View style={[styles.inputWrap, { backgroundColor: t.colors.fill }]}>
             <TextInput
+              ref={textInputRef}
               value={text}
               onChangeText={setText}
               placeholder="Text Message"
@@ -235,6 +282,8 @@ const styles = StyleSheet.create({
   headerAction: { width: 40, alignItems: "flex-end" },
   back: { width: 40, height: 32, alignItems: "flex-start", justifyContent: "center" },
   toRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  toSuggestions: { maxHeight: 280, borderBottomWidth: StyleSheet.hairlineWidth },
+  toSuggestionRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8, paddingHorizontal: 16 },
   bubbleRow: { flexDirection: "row" },
   bubble: { maxWidth: "78%", paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20 },
   fromBar: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingHorizontal: 14, paddingVertical: 7, borderTopWidth: StyleSheet.hairlineWidth },
