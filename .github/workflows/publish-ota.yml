@@ -1,0 +1,130 @@
+# Publishes the mobile app's JS/UI layer over-the-air via EAS Update, from the Actions tab
+# ("Run workflow") — which is how you ship a mobile fix from a phone, with no terminal involved.
+# Native changes (new permissions, SDK bumps, anything in app.json) still need `eas build`.
+#
+# Deliberately manual: there is no `push:` trigger. A publish lands on staff handsets within
+# minutes, so it stays a decision someone makes, not a side effect of merging.
+#
+# One-time setup: add one repository secret (Settings → Secrets and variables → Actions).
+#   EXPO_TOKEN — an Expo access token for the `skiptoolow` account. Prefer a robot user scoped
+#                to this project over a personal token, so a leak can publish updates and
+#                nothing else. eas-cli reads this variable directly; there is no login step.
+#
+# Pick the branch to publish from in the "Run workflow" dropdown. The bundle is built from
+# whatever that branch has, so you can ship a fix from its PR branch before merging.
+name: Publish OTA update
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: >-
+          Which devices to reach. Android test handsets are on `preview`; iOS (the TestFlight
+          store build) is on `production`. Defaults to preview — the safe choice.
+        type: choice
+        options:
+          - preview
+          - production
+          - both
+        default: preview
+        required: true
+      message:
+        description: Shown against the update in the EAS dashboard. The #<OTA_BUILD> is added for you.
+        type: string
+        required: true
+
+# One publish at a time. Two overlapping updates on the same channel race to be the one a
+# handset picks up, and the loser is invisible — there is no error, just the wrong build.
+concurrency:
+  group: publish-ota
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      # Without the token eas-cli dies with a generic "Not logged in" deep in the publish step,
+      # which reads like a code failure rather than a missing secret. Say so plainly, up front.
+      - name: Check the Expo secret is set
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Missing repository secret EXPO_TOKEN. Add it under Settings → Secrets and variables → Actions → Secrets tab → Repository secrets (not Variables, not Environment secrets), then re-run this workflow. Create the token at expo.dev under Account settings → Access tokens, ideally as a project-scoped robot user."
+            exit 1
+          fi
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      # ⚠️ The `production` channel serves the iOS store build. If that build is in ACTIVE App
+      # Store review, OTA'ing it violates Apple's guidelines and can sink the submission. This
+      # cannot be checked from here, so it is a loud warning rather than a gate.
+      - name: Warn when publishing to production
+        if: inputs.channel == 'production' || inputs.channel == 'both'
+        run: |
+          echo "::warning::Publishing to \`production\`, which serves the iOS store build. If that build is in ACTIVE App Store review, cancel this run now and re-run against \`preview\` only."
+
+      - run: npm ci
+
+      # A bad OTA reaches real handsets with no review step in front of it, so the same checks a
+      # contributor runs locally gate the publish. They cost seconds; a broken build costs a
+      # re-publish and a restart on every device.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Install eas-cli
+        run: npm i -g eas-cli
+
+      # OTA_BUILD is what Settings → Check for Updates shows on-device, and it is the only way to
+      # confirm an update actually landed. Reading it here (rather than retyping it) keeps the
+      # number in the EAS dashboard identical to the one on the handset.
+      - name: Read OTA_BUILD
+        id: ota
+        run: |
+          build=$(grep -oP 'OTA_BUILD\s*=\s*"\K\d+' "src/app/(tabs)/settings.tsx")
+          if [ -z "$build" ]; then
+            echo "::error::Could not find OTA_BUILD in mobile/src/app/(tabs)/settings.tsx. Bump it before publishing."
+            exit 1
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "Publishing as #$build"
+
+      - name: Publish update
+        run: |
+          case "${{ inputs.channel }}" in
+            both) branches="preview production" ;;
+            *)    branches="${{ inputs.channel }}" ;;
+          esac
+          for branch in $branches; do
+            echo "=== eas update --branch $branch ==="
+            eas update --branch "$branch" \
+              --message "#${{ steps.ota.outputs.build }} ${{ inputs.message }}" \
+              --platform all \
+              --non-interactive
+          done
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published OTA #${{ steps.ota.outputs.build }}"
+            echo ""
+            echo "- **Channel:** \`${{ inputs.channel }}\`"
+            echo "- **From branch:** \`${{ github.ref_name }}\`"
+            echo "- **Message:** ${{ inputs.message }}"
+            echo ""
+            echo "On each device: Settings → Check for Updates, confirm it reads **#${{ steps.ota.outputs.build }}**, then fully restart the app."
+          } >> "$GITHUB_STEP_SUMMARY"
