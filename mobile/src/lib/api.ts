@@ -60,14 +60,19 @@ export async function sendHeartbeat(): Promise<void> {
 
 export type StaffUser = { email: string; role: "admin" | "staff" };
 
+// /api/me additionally reports the caller's own availability, which Settings shows and lets
+// them change. Availability is a one-day override: the server resets it to available each
+// local morning so one sick day cannot drop someone off the ring roster all week.
+export type Me = StaffUser & { status: "available" | "away" | "offline"; awayReason: string | null };
+
 export async function login(email: string, password: string): Promise<{ token: string; user: StaffUser }> {
   return apiFetch("/api/login", { method: "POST", body: JSON.stringify({ email, password }) });
 }
 
 // Who the stored session token belongs to. Sign-in returns the user inline, but a relaunch only
 // restores the token, so this is how we learn the email and role again.
-export async function getMe(): Promise<StaffUser> {
-  return apiFetch<StaffUser>("/api/me");
+export async function getMe(): Promise<Me> {
+  return apiFetch<Me>("/api/me");
 }
 
 export async function logout(): Promise<void> {
