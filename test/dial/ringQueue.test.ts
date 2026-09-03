@@ -75,11 +75,16 @@ const OPEN = JSON.stringify({
   sun: { open: "00:00", close: "23:59" },
 });
 
-async function seedStaff(email: string, opts: { online?: boolean; priority?: number } = {}) {
+async function seedStaff(
+  email: string,
+  opts: { online?: boolean; priority?: number; status?: string } = {}
+) {
   const online = opts.online ?? true;
   await env.DB.prepare(
-    "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', 1, 'available', ?, ?, ?)"
-  ).bind(email, OPEN, online ? Date.now() : null, opts.priority ?? 100).run();
+    "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', 1, ?, ?, ?, ?)"
+  )
+    .bind(email, opts.status ?? "available", OPEN, online ? Date.now() : null, opts.priority ?? 100)
+    .run();
 }
 
 describe("resolveRingTargets ring-my-mobile (divert)", () => {
@@ -115,9 +120,20 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
     expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["client:c@b.com"]);
   });
 
-  it("drops a staff member entirely when their number is invalid AND their softphone is offline", async () => {
+  // Previously an unusable mobile plus a stale heartbeat dropped the person from the roster
+  // entirely. A stale heartbeat only ever meant "the app is not in the foreground", and incoming
+  // calls wake a closed app by VoIP push -- so they still get their softphone leg. Someone on
+  // shift is never silently dropped now.
+  it("still rings the softphone when the number is invalid and the app is closed", async () => {
     await seedStaff("c@b.com", { online: false });
     await setUserSettings(env.DB, "c@b.com", { ring_my_mobile: true, mobile_number: "nope" });
+    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["client:c@b.com"]);
+  });
+
+  // What DOES still exclude someone: their own presence, and their schedule.
+  it("drops a staff member who is marked away or offline, however fresh their heartbeat", async () => {
+    await seedStaff("away@b.com", { status: "away" });
+    await seedStaff("off@b.com", { status: "offline" });
     expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual([]);
   });
 
