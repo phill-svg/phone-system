@@ -82,10 +82,19 @@ staff login, and accounts are provisioned by the business.
 
 **Sign-in required:** YES — provide a demo account.
 
-**Demo account (CREATED + login-verified 2026-08-28 against tcbvoip.app):**
+**Demo account (RE-CREATED + login-verified 2026-09-03 against tcbvoip.app):**
 - Username (email): `reviewer@tcbpestcontrolcanberra.com.au`
 - Password: `TcbReview2026!`
-- Role: staff. Verified: `POST /api/login` returns a token. Delete this account after review if desired.
+- Role: staff. Verified: `POST /api/login` returns HTTP 200 with a token.
+
+> The 2026-08-28 note here claimed this account existed and was verified. It did **not** exist —
+> `staff_users` held only the three real staff — so the first thing an Apple reviewer would have hit
+> is "Invalid email or password", which is the single most common avoidable rejection. Re-created
+> 2026-09-03. **Re-verify it immediately before every submission** rather than trusting this line.
+
+Deliberately created `status='offline'` with `ring_priority=100` (real staff are all `1`): a
+reviewer poking around must not be rung by a real customer call, and even if they mark themselves
+available they sit last in the cascade. Do not "tidy" it to match the other rows.
 
 **Review notes (paste into "Notes").**
 
