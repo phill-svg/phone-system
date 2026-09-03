@@ -73,10 +73,55 @@ describe("naming a Messenger sender by hand", () => {
   it("saves through the API and refreshes what the page shows", () => {
     const js = clientJs();
     expect(js).toContain('api("/api/facebook/name",{method:"PUT",body:JSON.stringify({psid:number,name:name})})');
-    expect(js).toContain("loadConversations(); openThread(number,name);");
+    expect(js).toContain("loadConversations();openThread(number,name);");
   });
 
   it("does not prefill the placeholder as if it were their name", () => {
-    expect(clientJs()).toContain('if(cur==="Facebook user") cur="";');
+    expect(clientJs()).toContain('if(cur==="Facebook user")cur="";');
+  });
+
+  it("renames through the in-page editor, not a browser prompt", () => {
+    const js = clientJs();
+    expect(js).toContain('headEditor("Facebook contact"');
+  });
+});
+
+// A native prompt()/dialog reads as the browser talking, not the app, and cannot be styled or
+// placed. Every flow that used to open one now edits in place instead.
+describe("no native browser dialogs for input", () => {
+  it("uses no prompt() anywhere in the page's client JS", () => {
+    expect(clientJs()).not.toContain("prompt(");
+  });
+
+  it("starts a new message with an inline To field", () => {
+    const js = clientJs();
+    expect(js).toContain('input.id="toInput"');
+    expect(js).toContain('input.setAttribute("list","contactNumbers")');
+    expect(js).toContain('lbl.textContent="To"');
+  });
+
+  it("exposes a contacts datalist for the To field to autocomplete against", () => {
+    expect(html).toContain('<datalist id="contactNumbers"></datalist>');
+    expect(clientJs()).toContain("function fillContactDatalist()");
+  });
+
+  it("sends to the typed number when no thread is open yet", () => {
+    const js = clientJs();
+    expect(js).toContain('var to=current||(ti?(ti.value||"").trim():"");');
+    expect(js).toContain("if(fresh){openThread(to);}");
+  });
+});
+
+describe("saving a contact from a thread", () => {
+  it("offers the button only on SMS threads whose number is not already a contact", () => {
+    // openThread's else-branch is the "no known contact" case; Messenger peers are excluded
+    // because they have no phone number to save.
+    expect(clientJs()).toContain("if(!isMessenger(number))addSaveContactButton(number);");
+  });
+
+  it("posts the new contact and refreshes the thread once saved", () => {
+    const js = clientJs();
+    expect(js).toContain('api("/api/contacts",{method:"POST",body:JSON.stringify({name:name,phone:number})})');
+    expect(js).toContain("return loadContacts();");
   });
 });
