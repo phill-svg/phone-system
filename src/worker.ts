@@ -1,5 +1,5 @@
 import { authorizeTwilioWebhook, appendWebhookSecret } from "./twilio/webhookAuth";
-import { isDemoUser, handleDemoRequest } from "./demo";
+import { isDemoUser, handleDemoRequest, demoEmails } from "./demo";
 import { renderJoinConference, renderDialAgentIntoConference, renderListenConference } from "./twilio/conferenceTwiml";
 import { createOutboundCall } from "./twilio/restClient";
 import { cleanupLoneConference } from "./twilio/conferenceClient";
@@ -980,7 +980,7 @@ export default {
         return handlePostCompleteTransfer(request, env, staff, env.DB);
       }
       if (url.pathname === "/api/staff") {
-        if (request.method === "GET") return handleGetStaffRoster(env.DB);
+        if (request.method === "GET") return handleGetStaffRoster(env.DB, demoEmails(env));
         if (request.method === "POST") return handleInviteStaff(request, env, staff, url.origin);
       }
       const staffScheduleMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/schedule$/);

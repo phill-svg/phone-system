@@ -21,8 +21,11 @@ function isSchedule(value: unknown): boolean {
   return DAY_KEYS.length === Object.keys(s).length && DAY_KEYS.every((d) => Object.prototype.hasOwnProperty.call(s, d) && isDayWindow(s[d]));
 }
 
-export async function handleGetStaffRoster(db: D1Database): Promise<Response> {
-  const roster = await getStaffRoster(db);
+// `excludeEmails` drops the App Review demo account: it is not a colleague, so it should not
+// appear in the softphone's transfer picker where someone could hand it a real customer's call.
+export async function handleGetStaffRoster(db: D1Database, excludeEmails: string[] = []): Promise<Response> {
+  const excluded = new Set(excludeEmails.map((e) => e.trim().toLowerCase()));
+  const roster = (await getStaffRoster(db)).filter((s) => !excluded.has(s.email.toLowerCase()));
   return jsonResponse(roster.map((s) => ({ email: s.email, role: s.role, status: s.status })));
 }
 

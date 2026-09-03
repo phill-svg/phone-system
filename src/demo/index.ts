@@ -12,12 +12,16 @@ import { demoCall, demoCalls, demoContacts, demoConversations, demoThread } from
 
 type DemoEnv = { DEMO_ACCOUNT_EMAILS?: string };
 
-export function isDemoUser(email: string, env: DemoEnv): boolean {
-  const configured = (env.DEMO_ACCOUNT_EMAILS ?? "")
+export function demoEmails(env: DemoEnv): string[] {
+  return (env.DEMO_ACCOUNT_EMAILS ?? "")
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
-  return configured.includes(email.trim().toLowerCase());
+}
+
+export function isDemoUser(email: string, env: DemoEnv): boolean {
+  const address = email.trim().toLowerCase();
+  return address.length > 0 && demoEmails(env).includes(address);
 }
 
 // Returns a Response for any request the demo account must not see real data through, or null to
