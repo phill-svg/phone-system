@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, TextInput, Pressable, FlatList, Alert, StyleSheet, Platform } from "react-native";
+import { View, Text, TextInput, Pressable, FlatList, Alert, StyleSheet } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -185,16 +185,22 @@ export default function ThreadScreen() {
               placeholder="Text Message"
               placeholderTextColor={t.colors.labelTertiary}
               selectionColor={t.colors.accent}
-              // Samsung One UI renders the keyboard's *composing* text (the underlined word before you
-              // press space) in WHITE on multiline fields, ignoring `color` — so typing looked invisible
-              // on the S25 FE. Just disabling autocorrect wasn't enough. keyboardType="visible-password"
-              // on Android forces a no-composing keyboard, so every character commits immediately in the
-              // real text colour. iOS keeps the normal keyboard.
-              keyboardType={Platform.OS === "android" ? "visible-password" : "default"}
-              autoCorrect={false}
-              autoComplete="off"
-              spellCheck={false}
-              style={{ fontSize: 17, fontWeight: "400", color: t.colors.label, flex: 1, maxHeight: 100, textAlignVertical: "top" }}
+              // Do NOT give this `flex: 1`. The wrapper's height is content-driven (the compose row is
+              // `alignItems: "flex-end"`), so a flex child resolves its basis against an indefinite
+              // height — on Android the field collapses to the padding box and the text renders past
+              // the clip bounds, so you type blind and only see it once the message is sent.
+              // Size it from minHeight/maxHeight instead, and zero the EditText's own padding so one
+              // line still fits the 38px pill.
+              style={{
+                fontSize: 17,
+                fontWeight: "400",
+                color: t.colors.label,
+                minHeight: 22,
+                maxHeight: 100,
+                paddingTop: 0,
+                paddingBottom: 0,
+                textAlignVertical: "top",
+              }}
               multiline
             />
           </View>
@@ -217,6 +223,7 @@ const styles = StyleSheet.create({
   bubble: { maxWidth: "78%", paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20 },
   fromBar: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingHorizontal: 14, paddingVertical: 7, borderTopWidth: StyleSheet.hairlineWidth },
   compose: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingHorizontal: 12, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth },
-  inputWrap: { flex: 1, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, minHeight: 38, justifyContent: "center" },
+  // No `justifyContent: "center"` here — it fights the input's top-aligned multiline text.
+  inputWrap: { flex: 1, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, minHeight: 38 },
   sendBtn: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },
 });
