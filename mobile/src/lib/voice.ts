@@ -272,16 +272,38 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
   };
 }
 
+// The currently-live call, or null. Guards every "the call is already up, hand it back" path: a
+// disconnected leftover must never be presented as an active call, or the in-call screen drives a
+// dead object.
+function liveCall(): Call | null {
+  const call = activeCall;
+  if (!call) return null;
+  try {
+    return call.getState() === Call.State.Disconnected ? null : call;
+  } catch {
+    return null;
+  }
+}
+
 export async function acceptIncoming(): Promise<Call | null> {
   const invite = pendingInvite;
-  if (!invite) return null;
+  // No pending invite. Either CallKit already answered it -- the Accepted handler adopts the Call
+  // and clears `pendingInvite`, so the call is LIVE and we hand it back -- or the invite is gone,
+  // and `activeCall` is null, which correctly reads as "nothing to show". Returning a bare null
+  // here is what produced a black screen in front of a connected call.
+  if (!invite) return liveCall();
   // Guard the accept on the invite still being pending. The SDK also accepts invites natively via
   // CallKit, so by the time this runs the invite may already be accepted, rejected or cancelled --
   // and calling accept() again aborts the process rather than throwing something catchable.
   // Returning null lets the caller dismiss the ringing screen cleanly.
   if (invite.getState() !== CallInvite.State.Pending) {
     pendingInvite = null;
-    return null;
+    // Already ACCEPTED means CallKit answered it and the call is LIVE -- hand back the Call we
+    // adopted from the Accepted event so the caller lands on the in-call screen. Returning null
+    // here instead is what put a black screen in front of a connected call: the ringing screen
+    // read it as "answer failed" and popped itself off an otherwise empty stack.
+    // Cancelled/rejected leaves activeCall null, which correctly reads as "nothing to show".
+    return liveCall();
   }
   const call = await invite.accept();
   activeCall = call;
