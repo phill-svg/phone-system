@@ -907,6 +907,7 @@ export class CallSession extends DurableObject<Env> {
       // gap before repeating. The default ringback is a looping tone whose document length IS the
       // poll interval, so it gets the short tail instead.
       timeoutSeconds: activeRing.play ? HOLD_CONTENT_TIMEOUT_SECONDS : HOLD_RINGBACK_TIMEOUT_SECONDS,
+      allowStar: activeRing.allowCallbackStar,
     });
   }
 

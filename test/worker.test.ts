@@ -520,7 +520,7 @@ describe("Task 8 queue/ring webhook routes", () => {
       const xml = await response.text();
       // Ringback (not silence) plays while the first participant waits; no join beep.
       expect(xml).toContain(
-        '<Conference region="au1" beep="false" waitUrl="https://tcbvoip.app/media/system/ringback.mp3">CAcaller</Conference>'
+        '<Conference region="au1" beep="false" waitUrl="https://tcbvoip.app/media/system/ringback-au.wav">CAcaller</Conference>'
       );
     });
   });
