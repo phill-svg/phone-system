@@ -6,23 +6,20 @@ import { RINGBACK_URL } from "./ringback";
 // ringing tone so it sounds like a normal ringing phone rather than hold music. A real "wait node"
 // with its own audio/TTS still overrides this. RINGBACK_URL is self-hosted (see ./ringback).
 
-// How many times the ringback tone repeats per hold document. MUST stay finite.
+// How many times the ringback tone repeats per hold document. MUST stay finite, and should stay 1.
 //
-// The hold document is a POLL, not a soundtrack: Twilio only re-fetches the queue's waitUrl (and
-// only fires the <Gather> `action` that CallSession.handleHoldDigit uses to decide "keep holding"
-// vs <Leave/>) once this document ENDS. A <Play loop="0"> means "repeat until the caller hangs up",
-// so nesting one in the <Gather> makes the document never end -- the caller is then stuck listening
-// to ringback forever, and the no-answer fall-through to the menu/voicemail can never be delivered
-// no matter what the ring plan decided. That regression shipped once (9dabdd8) and stranded real
+// The hold document is a POLL, not a soundtrack: Twilio only re-fetches the queue's waitUrl once
+// this document ENDS, and that is the only way CallSession can hand the caller a <Leave/> and move
+// them to the no-answer branch. A <Play loop="0"> means "repeat until the caller hangs up", so
+// nesting one here makes the document never end -- the caller is stuck on ringback forever no
+// matter what the ring plan decided. That regression shipped once (9dabdd8) and stranded real
 // callers: staff legs timed out on schedule at 20s, the ring plan went DONE{no_answer}, and the
-// caller still heard 31 more seconds of ringing before giving up and hanging up.
+// caller still heard 31 more seconds of ringing before giving up.
 //
-// The ringback asset is ~1.8s, so this is roughly a 3.6s tone burst per cycle; combined with the
-// short trailing <Gather> timeout (see HOLD_RINGBACK_TIMEOUT_SECONDS in CallSession) it bounds how
-// long a caller keeps hearing ring after the last staff leg gives up.
-// Do NOT set this to 0. The conference ringback is a different case -- there the caller is released
-// by the conference join, not by a poll -- so its unbounded loop is fine and lives elsewhere.
-export const HOLD_RINGBACK_LOOPS = 2;
+// 1 because the asset is exactly one 3.0s Australian ring cycle (see ./ringback), so one loop is
+// one ring. Raising it does not give "more rings" -- it delays the caller's release by 3s per extra
+// loop for no audible benefit, since the file already contains its own inter-ring silence.
+export const HOLD_RINGBACK_LOOPS = 1;
 
 /**
  * Renders the caller-leg <Enqueue> TwiML: parks the caller in a per-call queue while
@@ -50,12 +47,29 @@ export function renderHold(opts: {
   baseUrl: string;
   gatherAction: string;
   timeoutSeconds: number;
+  // Whether a caller may press * here for a callback. Only a wait node sets it; a direct ring never
+  // does, which is why the plain-ringback path can drop the <Gather> entirely.
+  allowStar?: boolean;
 }): string {
   // With custom wait content, play it; otherwise fall back to default hold music so the caller
   // hears something rather than dead air between hold polls.
   const content = opts.play
     ? renderFlowCommandsFragment([opts.play], { baseUrl: opts.baseUrl })
     : `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play>`;
+
+  // Plain ringback with no * to catch: emit the tone ALONE, with no wrapping <Gather>.
+  //
+  // The <Gather>'s only job on this path is capturing a callback star press, and its `timeout` is
+  // silence appended AFTER the tone finishes -- which lands inside the ring cadence and stretches
+  // the gap between rings. That is what made the hold tone "not sound like a normal ring": the
+  // caller heard ring, short gap, ring, long gap. Without the <Gather> the document is exactly one
+  // ring cycle, and Twilio re-fetches the waitUrl the moment it ends, so the cadence stays true.
+  //
+  // This still terminates, which is the property the queue depends on to re-poll and release the
+  // caller -- it just returns to the waitUrl handler (handleHoldPoll) instead of the <Gather>
+  // action (handleHoldDigit). Both already decide "keep holding vs <Leave/>" the same way.
+  if (!opts.play && !opts.allowStar) return wrapResponse(content);
+
   return wrapResponse(
     `<Gather input="dtmf" numDigits="1" timeout="${opts.timeoutSeconds}" ` +
       `actionOnEmptyResult="true" action="${opts.gatherAction}">${content}</Gather>`

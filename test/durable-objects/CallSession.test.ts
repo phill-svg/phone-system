@@ -1046,7 +1046,11 @@ describe("CallSession", () => {
 
     const poll = await send(stub, { kind: "hold_poll", callSid: "CA-music", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
     expect(poll.xml).toContain("<Play");
-    expect(poll.xml).toContain("tcbvoip.app/media/system/ringback.mp3");
+    expect(poll.xml).toContain("tcbvoip.app/media/system/ringback-au.wav");
+    // The tone must be emitted bare: a <Gather>'s trailing timeout is silence appended after the
+    // tone, which lands inside the ring cadence and stops it sounding like a phone ringing. This
+    // ring allows no * press, so nothing needs the Gather here.
+    expect(poll.xml).not.toContain("<Gather");
   });
 
   it("caller hanging up mid-ring cancels the outstanding staff legs (no phones left ringing)", async () => {
