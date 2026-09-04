@@ -37,6 +37,25 @@ export function getActiveCall(): Call | null {
 export function setActiveCall(c: Call | null): void {
   activeCall = c;
 }
+// Fires when a ringing invite is withdrawn (caller hung up, or another device answered), so the
+// ringing screen can dismiss itself instead of leaving a dead Answer button on screen.
+let inviteCancelledListeners: (() => void)[] = [];
+export function onInviteCancelled(fn: () => void): () => void {
+  inviteCancelledListeners.push(fn);
+  return () => {
+    inviteCancelledListeners = inviteCancelledListeners.filter((l) => l !== fn);
+  };
+}
+function notifyInviteCancelled(): void {
+  inviteCancelledListeners.forEach((l) => {
+    try {
+      l();
+    } catch {
+      /* a listener must never break invite teardown */
+    }
+  });
+}
+
 export function getPendingInvite(): CallInvite | null {
   return pendingInvite;
 }
@@ -172,6 +191,16 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
 
   const handler = (invite: CallInvite) => {
     pendingInvite = invite;
+    // A withdrawn invite MUST drop out of `pendingInvite`. Accepting one that is no longer pending
+    // throws deep in TwilioVoice's native CallKit path, as an Objective-C exception that no JS
+    // try/catch can reach -- it aborts the whole app. That is the 09:14 crash: the caller hung up
+    // at :34 and the process died at :35 inside -[CXProvider performAction:] -> TVOAcceptOptions.
+    // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
+    // live the whole time the screen is up.
+    invite.on(CallInvite.Event.Cancelled, () => {
+      if (pendingInvite === invite) pendingInvite = null;
+      notifyInviteCancelled();
+    });
     onInvite(invite.getFrom());
   };
   voice.on(Voice.Event.CallInvite, handler);
@@ -209,6 +238,14 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
 export async function acceptIncoming(): Promise<Call | null> {
   const invite = pendingInvite;
   if (!invite) return null;
+  // Guard the accept on the invite still being pending. The SDK also accepts invites natively via
+  // CallKit, so by the time this runs the invite may already be accepted, rejected or cancelled --
+  // and calling accept() again aborts the process rather than throwing something catchable.
+  // Returning null lets the caller dismiss the ringing screen cleanly.
+  if (invite.getState() !== CallInvite.State.Pending) {
+    pendingInvite = null;
+    return null;
+  }
   const call = await invite.accept();
   activeCall = call;
   // Identity-guarded: if a call-waiting swap has already moved `activeCall` to a newer
@@ -227,7 +264,8 @@ export async function acceptIncoming(): Promise<Call | null> {
 export async function rejectIncoming(): Promise<void> {
   const invite = pendingInvite;
   pendingInvite = null;
-  if (invite) await invite.reject();
+  // Same guard as accept: rejecting an already-settled invite is not a no-op in the native layer.
+  if (invite && invite.getState() === CallInvite.State.Pending) await invite.reject();
 }
 
 export { Call };

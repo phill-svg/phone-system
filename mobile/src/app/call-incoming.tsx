@@ -8,7 +8,7 @@ import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
 import { formatPhone } from "../lib/phone";
-import { acceptIncoming, rejectIncoming, getActiveCall } from "../lib/voice";
+import { acceptIncoming, rejectIncoming, getActiveCall, onInviteCancelled } from "../lib/voice";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
 
@@ -68,6 +68,18 @@ export default function IncomingCallScreen() {
     rejectIncoming().catch(() => {});
     router.back();
   }
+
+  // The caller gave up (or another device took it) while this screen was up. Dismiss immediately:
+  // leaving a live Answer button on a withdrawn invite is what makes the app abort -- accepting a
+  // non-pending invite throws inside TwilioVoice's native CallKit path, which no JS catch can
+  // reach. `actedRef` is set first so a racing auto-answer timer cannot fire on the way out.
+  useEffect(() => {
+    return onInviteCancelled(() => {
+      if (actedRef.current) return;
+      actedRef.current = true;
+      router.back();
+    });
+  }, []);
 
   // Auto-answer: connect hands-free shortly after mount, unless the user acts first.
   useEffect(() => {
