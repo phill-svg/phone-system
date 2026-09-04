@@ -46,6 +46,27 @@ export function onInviteCancelled(fn: () => void): () => void {
     inviteCancelledListeners = inviteCancelledListeners.filter((l) => l !== fn);
   };
 }
+// Fires when a ringing invite is ANSWERED -- including natively, from CallKit's own lock-screen or
+// banner UI, which our React Native ringing screen otherwise never hears about. Without this the
+// screen stays up with a live Accept button while the staff member is already talking, and tapping
+// it accepts an already-accepted invite, which aborts the app down in TwilioVoice.
+let inviteAcceptedListeners: (() => void)[] = [];
+export function onInviteAccepted(fn: () => void): () => void {
+  inviteAcceptedListeners.push(fn);
+  return () => {
+    inviteAcceptedListeners = inviteAcceptedListeners.filter((l) => l !== fn);
+  };
+}
+function notifyInviteAccepted(): void {
+  inviteAcceptedListeners.forEach((l) => {
+    try {
+      l();
+    } catch {
+      /* a listener must never break invite teardown */
+    }
+  });
+}
+
 function notifyInviteCancelled(): void {
   inviteCancelledListeners.forEach((l) => {
     try {
@@ -200,6 +221,22 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     invite.on(CallInvite.Event.Cancelled, () => {
       if (pendingInvite === invite) pendingInvite = null;
       notifyInviteCancelled();
+    });
+    // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
+    // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
+    // second accept can reach the native layer, and tell the ringing screen to get out of the way.
+    invite.on(CallInvite.Event.Accepted, (call: Call) => {
+      if (pendingInvite === invite) pendingInvite = null;
+      if (call) {
+        activeCall = call;
+        call.on(Call.Event.Disconnected, () => {
+          if (activeCall === call) activeCall = null;
+        });
+        call.on(Call.Event.ConnectFailure, () => {
+          if (activeCall === call) activeCall = null;
+        });
+      }
+      notifyInviteAccepted();
     });
     onInvite(invite.getFrom());
   };

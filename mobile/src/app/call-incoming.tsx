@@ -8,7 +8,7 @@ import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
 import { formatPhone } from "../lib/phone";
-import { acceptIncoming, rejectIncoming, getActiveCall, onInviteCancelled } from "../lib/voice";
+import { acceptIncoming, rejectIncoming, getActiveCall, onInviteCancelled, onInviteAccepted } from "../lib/voice";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
 
@@ -80,6 +80,19 @@ export default function IncomingCallScreen() {
       router.back();
     });
   }, []);
+
+  // Answered somewhere other than this screen -- CallKit's lock-screen/banner UI answers the call
+  // without our JS being involved at all, and this screen would otherwise stay up, mid-conversation,
+  // still showing a live Accept button. Tapping that accepts an already-accepted invite, which
+  // aborts the app. Move straight to the in-call screen instead.
+  useEffect(() => {
+    return onInviteAccepted(() => {
+      if (actedRef.current) return;
+      actedRef.current = true;
+      router.replace({ pathname: "/call-active", params: { number, name, direction: "incoming" } });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [number, name]);
 
   // Auto-answer: connect hands-free shortly after mount, unless the user acts first.
   useEffect(() => {

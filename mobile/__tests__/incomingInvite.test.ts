@@ -65,6 +65,7 @@ function makeInvite(state: string) {
     getState() { return this.state; },
     on(e: string, fn: (...a: any[]) => void) { (listeners[e] ||= []).push(fn); return this; },
     fire(e: string) { (listeners[e] || []).forEach((f) => f()); },
+    fireWith(e: string, arg: any) { (listeners[e] || []).forEach((f) => f(arg)); },
     async accept() { this.accepted = true; return { on: jest.fn() }; },
     async reject() { this.rejected = true; },
   };
@@ -124,6 +125,30 @@ describe("incoming invite lifecycle", () => {
     invite.fire(CallInviteEvent.Cancelled);
 
     expect(seen).toHaveBeenCalledTimes(1);
+    off();
+    unsub();
+  });
+
+  // The screenshot case: the call was answered from CallKit's own lock-screen UI, so our JS never
+  // ran. Nothing dismissed the ringing screen, it stayed up mid-conversation with a live Accept
+  // button, and tapping it accepted an already-accepted invite -- which aborts the app.
+  it("adopts an invite answered natively, drops it, and notifies so the ringing screen moves on", async () => {
+    const unsub = await voiceLib.registerForIncoming(() => {});
+    const seen = jest.fn();
+    const off = voiceLib.onInviteAccepted(seen);
+
+    const invite = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    // CallKit answers it; the SDK raises Accepted with the resulting Call.
+    invite.state = CallInviteState.Accepted;
+    (invite as any).fireWith(CallInviteEvent.Accepted, { on: jest.fn() });
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(voiceLib.getPendingInvite()).toBeNull();
+    // And a later tap on the stale Accept button cannot reach the native layer.
+    await expect(voiceLib.acceptIncoming()).resolves.toBeNull();
+    expect(invite.accepted).toBe(false);
     off();
     unsub();
   });
