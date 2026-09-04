@@ -9,14 +9,14 @@ import { Segmented } from "../../components/ui/Segmented";
 import { BASE_URL, getRecordingSetting, setRecordingSetting, getMe, setPresence } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
-import { onRegStatus } from "../../lib/voice";
+import { onRegStatus, runConnectionTest } from "../../lib/voice";
 import { usePersistedBool, getPref, setPref } from "../../lib/prefs";
 import { useUserSettings } from "../../lib/userSettings";
 import { useTheme, useThemePreference, type ThemePreference } from "../../theme/theme";
 import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "40";
+const OTA_BUILD = "41";
 
 const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
   automatic: "Automatic",
@@ -77,6 +77,44 @@ export default function SettingsScreen() {
       Alert.alert("Update check failed", "Couldn't check for updates just now. Try again on Wi-Fi.");
     } finally {
       setChecking(false);
+    }
+  }
+
+  // Connection test. "The call sounded bad" is otherwise unfalsifiable: Twilio's Voice Insights
+  // reports the CARRIER leg, but the leg that actually degrades is this phone's own connection to
+  // Twilio, and nothing measured it. This samples that leg and reports it in plain language.
+  const [testing, setTesting] = useState(false);
+  const [lastTest, setLastTest] = useState<string | null>(null);
+  async function testConnection() {
+    if (testing) return;
+    setTesting(true);
+    try {
+      const r = await runConnectionTest();
+      // MOS is the standard 1.0-4.5 perceived-quality score; below ~3.5 is where callers start
+      // complaining, which is the threshold worth telling a non-technical user about.
+      const poor = (r.mos != null && r.mos < 3.5) || r.warnings.length > 0;
+      const headline = r.quality ? r.quality[0].toUpperCase() + r.quality.slice(1) : "Done";
+      setLastTest(r.quality ?? "done");
+      const lines = [
+        r.mos != null ? `Call quality score: ${r.mos} out of 4.5` : null,
+        r.jitterMs != null ? `Jitter: ${r.jitterMs} ms` : null,
+        r.rttMs != null ? `Round trip: ${r.rttMs} ms` : null,
+        r.edge ? `Connected via: ${r.edge}` : null,
+        r.warnings.length ? `Warnings: ${r.warnings.join(", ")}` : null,
+        "",
+        poor
+          ? "This connection is likely to cause choppy or robotic audio. Try Wi-Fi, or move somewhere with better signal, before making calls."
+          : "This connection looks fine for calls.",
+      ].filter((l) => l !== null);
+      Alert.alert(`Connection: ${headline}`, lines.join("\n"));
+    } catch (e) {
+      setLastTest(null);
+      Alert.alert(
+        "Test failed",
+        `Couldn't complete the connection test. ${e instanceof Error ? e.message : ""}`.trim()
+      );
+    } finally {
+      setTesting(false);
     }
   }
 
@@ -180,6 +218,7 @@ export default function SettingsScreen() {
 
         <Group title="About">
           <Row icon="info.circle.fill" iconColor="#8E8E93" label="Version" value="1.0.0" />
+          <Row icon="wifi" iconColor="#FF9F0A" label={testing ? "Testing…" : "Test Connection"} value={lastTest ?? undefined} chevron onPress={testConnection} />
           <Row icon="arrow.triangle.2.circlepath" iconColor="#34C759" label={checking ? "Checking…" : "Check for Updates"} value={`#${OTA_BUILD}`} chevron onPress={checkForUpdates} />
           <Row icon="lifepreserver" iconColor="#0A84FF" label="Support" chevron onPress={() => Linking.openURL("mailto:phill@tcbpestcontrolcanberra.com.au")} />
           <Row icon="hand.raised.fill" iconColor="#5E5CE6" label="Privacy Policy" chevron onPress={() => Linking.openURL(`${BASE_URL}/privacy`)} />
