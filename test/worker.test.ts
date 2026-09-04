@@ -649,6 +649,31 @@ describe("POST /twiml/voice-app", () => {
     expect(body).toContain(">CAagent</Conference>");
   });
 
+  // Settings -> Test Connection runs the Voice SDK's PreflightTest, which places a real test call
+  // through this same TwiML app to measure the device's jitter/MOS/round-trip time. It carries no
+  // `To`. Answering with <Echo/> loops the media back so the SDK can sample the network; returning
+  // an error instead would fail the test with an unhelpful "application error" and no report.
+  it("answers a PreflightTest call (no To) with <Echo/>, dialling nobody and writing no calls row", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CApreflight",
+      From: "client:a@b.com",
+    });
+
+    expect(res.status).toBe(200);
+    const xml = await res.text();
+    expect(xml).toContain("<Echo/>");
+    expect(xml).not.toContain("<Dial");
+    expect(xml).not.toContain("<Conference");
+
+    // No outbound REST call was placed, and nothing was recorded as a real call.
+    expect(fetchMock).not.toHaveBeenCalled();
+    const row = await env.DB.prepare("SELECT id FROM calls WHERE id = 'CApreflight'").first();
+    expect(row).toBeNull();
+  });
+
   it("inserts a calls row for the outbound leg so it shows up in Call History/Live Calls and the recording callback has a row to match", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(

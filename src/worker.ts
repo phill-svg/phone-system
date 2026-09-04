@@ -518,6 +518,21 @@ export default {
 
       const conferenceName = params.CallSid; // the agent's own browser-originated leg
       const target = normalizeAuNumber(params.To);
+
+      // No `To` at all means this is not a dial -- it is the Voice SDK's PreflightTest (Settings ->
+      // Test Connection), which places a real test call through this same TwiML app to measure the
+      // device's jitter/MOS/round-trip time. Answer it with <Echo/>: the media loops straight back
+      // so the SDK can sample the network, no number is dialled, no staff leg rings, and no `calls`
+      // row is written. Returning an error here instead would fail the test with an unhelpful
+      // "application error" rather than a report.
+      //
+      // Reaching this needs a valid signed webhook AND a valid access token, so it is staff-only.
+      if (!params.To) {
+        return new Response(
+          '<?xml version="1.0" encoding="UTF-8"?><Response><Echo/></Response>',
+          { headers: { "Content-Type": "text/xml" } }
+        );
+      }
       if (!target) return new Response("missing To", { status: 400 });
 
       // Caller-ID the staff member picked in the dialer (params.CallerId). Honoured only if it's an

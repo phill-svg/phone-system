@@ -1,5 +1,5 @@
 import { Platform, PermissionsAndroid, type Permission, type Rationale } from "react-native";
-import { Voice, Call, CallInvite } from "@twilio/voice-react-native-sdk";
+import { Voice, Call, CallInvite, PreflightTest } from "@twilio/voice-react-native-sdk";
 import { getSoftphoneToken } from "./api";
 import { chooseAudioDevice, type AudioRoutePref, type AudioDeviceLike } from "./audioRouting";
 import { getPref, getPrefBool } from "./prefs";
@@ -231,3 +231,75 @@ export async function rejectIncoming(): Promise<void> {
 }
 
 export { Call };
+
+
+// ---------------------------------------------------------------------------
+// Connection test (Settings -> Test Connection)
+//
+// Runs Twilio's PreflightTest: a short real call to Twilio that samples this device's network and
+// returns jitter, round-trip time and MOS (mean opinion score, 1.0-4.5 -- the standard measure of
+// perceived call quality). It exists because "the call sounded bad" is otherwise unfalsifiable:
+// Twilio's Voice Insights reports the CARRIER leg, but the leg that usually degrades is this one,
+// the phone's own connection to Twilio, and nothing measured it.
+//
+// The test call goes out through our own TwiML app, which answers a request with no `To` using
+// <Echo/> (see /twiml/voice-app in src/worker.ts) so the media loops back for sampling. It dials
+// nobody and rings no staff.
+// ---------------------------------------------------------------------------
+
+export type ConnectionTestResult = {
+  // Twilio's own banding of average MOS: excellent | great | good | fair | degraded.
+  quality: string | null;
+  mos: number | null;
+  jitterMs: number | null;
+  rttMs: number | null;
+  edge: string | null;
+  warnings: string[];
+};
+
+// Preflight normally takes ~10s. Cap it so a wedged test can't leave the button spinning forever.
+const PREFLIGHT_TIMEOUT_MS = 45000;
+
+function num(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? Math.round(v * 10) / 10 : null;
+}
+
+export async function runConnectionTest(): Promise<ConnectionTestResult> {
+  const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
+  const test = await voice.runPreflight(token);
+
+  return new Promise<ConnectionTestResult>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new Error("The connection test timed out."))),
+      PREFLIGHT_TIMEOUT_MS
+    );
+
+    test.on(PreflightTest.Event.Completed, (report: any) => {
+      finish(() => {
+        const stats = report?.stats ?? {};
+        resolve({
+          quality: report?.callQuality ?? null,
+          mos: num(stats?.mos?.average),
+          jitterMs: num(stats?.jitter?.average),
+          rttMs: num(stats?.rtt?.average),
+          edge: report?.selectedEdge ?? report?.edge ?? null,
+          // Warning entries are objects; keep just the names, which is what a human can act on.
+          warnings: Array.isArray(report?.warnings)
+            ? report.warnings.map((w: any) => String(w?.name ?? w)).filter(Boolean)
+            : [],
+        });
+      });
+    });
+
+    test.on(PreflightTest.Event.Failed, (err: unknown) => {
+      finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+    });
+  });
+}
