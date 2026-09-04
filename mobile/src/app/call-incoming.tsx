@@ -40,6 +40,13 @@ export default function IncomingCallScreen() {
   // declined (e.g. they tap Decline in the first second of a hands-free auto-answer window).
   const actedRef = useRef(false);
 
+  // Leaving this screen must never pop an empty stack -- that renders as a black screen with no way
+  // out, which is what a caller sees while actually connected. Fall back to the app root.
+  function dismiss() {
+    if (router.canGoBack()) router.back();
+    else router.replace("/");
+  }
+
   async function answer() {
     if (actedRef.current) return;
     actedRef.current = true;
@@ -59,14 +66,14 @@ export default function IncomingCallScreen() {
       // accepted natively, which used to dismiss the screen silently and strand a live call.
       console.warn("[call-incoming] accept failed", e);
     }
-    router.back();
+    dismiss();
   }
   function decline() {
     if (actedRef.current) return;
     actedRef.current = true;
     haptics.medium();
     rejectIncoming().catch(() => {});
-    router.back();
+    dismiss();
   }
 
   // The caller gave up (or another device took it) while this screen was up. Dismiss immediately:
@@ -77,8 +84,9 @@ export default function IncomingCallScreen() {
     return onInviteCancelled(() => {
       if (actedRef.current) return;
       actedRef.current = true;
-      router.back();
+      dismiss();
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Answered somewhere other than this screen -- CallKit's lock-screen/banner UI answers the call

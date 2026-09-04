@@ -42,6 +42,7 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
   Voice.Event = { CallInvite: "callInvite", Registered: "registered", Error: "error" };
   const Call: any = {};
   Call.Event = { Disconnected: "disconnected", ConnectFailure: "connectFailure" };
+  Call.State = { Connected: "connected", Connecting: "connecting", Disconnected: "disconnected" };
   const CallInvite: any = {};
   CallInvite.State = { Pending: "pending", Accepted: "accepted", Rejected: "rejected" };
   CallInvite.Event = { Accepted: "accepted", Rejected: "rejected", Cancelled: "cancelled" };
@@ -72,10 +73,20 @@ function makeInvite(state: string) {
 }
 
 describe("incoming invite lifecycle", () => {
+  const cleanups: (() => void)[] = [];
+  const track = <T extends () => void>(fn: T): T => { cleanups.push(fn); return fn; };
+
   beforeEach(() => { Platform.OS = "android"; });
+  // The module holds ONE Voice instance, so a test that fails before its own unsub would leak a
+  // listener and cascade into every later test. Always tear down.
+  afterEach(() => {
+    while (cleanups.length) cleanups.pop()!();
+    // `activeCall` is module state; without this a call adopted by one test leaks into the next.
+    voiceLib.setActiveCall(null);
+  });
 
   it("a cancelled invite is dropped, so a later accept cannot reach the native layer", async () => {
-    const unsub = await voiceLib.registerForIncoming(() => {});
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
     const invite = makeInvite(CallInviteState.Pending);
 
     mockVoiceRef.current.emit("callInvite", invite);
@@ -91,13 +102,32 @@ describe("incoming invite lifecycle", () => {
     unsub();
   });
 
-  it("never accepts an invite that is no longer pending, even if it is still the pending one", async () => {
-    const unsub = await voiceLib.registerForIncoming(() => {});
+  // Answered natively, then our JS races in behind it. We must NOT call accept() again (that aborts
+  // the app), but we must still hand back the live call: returning null here made the ringing screen
+  // treat a connected call as a failed answer and pop itself off an empty stack -- a black screen
+  // in front of a call that was actually up.
+  it("does not re-accept a natively-accepted invite, but returns the live call so the UI can follow", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
     const invite = makeInvite(CallInviteState.Pending);
     mockVoiceRef.current.emit("callInvite", invite);
 
-    // CallKit answered it natively; our JS then races in behind it.
+    const nativeCall = { on: jest.fn(), getState: () => "connected" };
     invite.state = CallInviteState.Accepted;
+    (invite as any).fireWith(CallInviteEvent.Accepted, nativeCall);
+
+    await expect(voiceLib.acceptIncoming()).resolves.toBe(nativeCall);
+    expect(invite.accepted).toBe(false);
+    unsub();
+  });
+
+  // A withdrawn invite has no call behind it, so null is still the right answer there.
+  it("returns null for a cancelled invite, since there is no call to show", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const invite = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    invite.state = CallInviteState.Rejected;
+    invite.fire(CallInviteEvent.Cancelled);
 
     await expect(voiceLib.acceptIncoming()).resolves.toBeNull();
     expect(invite.accepted).toBe(false);
@@ -105,7 +135,7 @@ describe("incoming invite lifecycle", () => {
   });
 
   it("never rejects an invite that is no longer pending", async () => {
-    const unsub = await voiceLib.registerForIncoming(() => {});
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
     const invite = makeInvite(CallInviteState.Pending);
     mockVoiceRef.current.emit("callInvite", invite);
 
@@ -116,9 +146,9 @@ describe("incoming invite lifecycle", () => {
   });
 
   it("notifies subscribers on cancellation so the ringing screen can dismiss", async () => {
-    const unsub = await voiceLib.registerForIncoming(() => {});
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
     const seen = jest.fn();
-    const off = voiceLib.onInviteCancelled(seen);
+    const off = track(voiceLib.onInviteCancelled(seen));
 
     const invite = makeInvite(CallInviteState.Pending);
     mockVoiceRef.current.emit("callInvite", invite);
@@ -133,28 +163,29 @@ describe("incoming invite lifecycle", () => {
   // ran. Nothing dismissed the ringing screen, it stayed up mid-conversation with a live Accept
   // button, and tapping it accepted an already-accepted invite -- which aborts the app.
   it("adopts an invite answered natively, drops it, and notifies so the ringing screen moves on", async () => {
-    const unsub = await voiceLib.registerForIncoming(() => {});
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
     const seen = jest.fn();
-    const off = voiceLib.onInviteAccepted(seen);
+    const off = track(voiceLib.onInviteAccepted(seen));
 
     const invite = makeInvite(CallInviteState.Pending);
     mockVoiceRef.current.emit("callInvite", invite);
 
     // CallKit answers it; the SDK raises Accepted with the resulting Call.
     invite.state = CallInviteState.Accepted;
-    (invite as any).fireWith(CallInviteEvent.Accepted, { on: jest.fn() });
+    (invite as any).fireWith(CallInviteEvent.Accepted, { on: jest.fn(), getState: () => "connected" });
 
     expect(seen).toHaveBeenCalledTimes(1);
     expect(voiceLib.getPendingInvite()).toBeNull();
-    // And a later tap on the stale Accept button cannot reach the native layer.
-    await expect(voiceLib.acceptIncoming()).resolves.toBeNull();
+    // A later tap on the stale Accept button must not reach the native layer (that aborts the app),
+    // but must still hand back the live call so the UI follows it rather than dead-ending on black.
+    await expect(voiceLib.acceptIncoming()).resolves.not.toBeNull();
     expect(invite.accepted).toBe(false);
     off();
     unsub();
   });
 
   it("still accepts a genuinely pending invite", async () => {
-    const unsub = await voiceLib.registerForIncoming(() => {});
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
     const invite = makeInvite(CallInviteState.Pending);
     mockVoiceRef.current.emit("callInvite", invite);
 
