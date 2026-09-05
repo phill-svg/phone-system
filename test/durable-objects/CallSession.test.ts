@@ -1181,6 +1181,24 @@ describe("CallSession", () => {
     expect(events.results.map((e) => e.event_type)).toContain("callback_requested");
   });
 
+  it("a callback request pushes a notification, so it is not just a silent row in a table", async () => {
+    await seedEntryGather({ option1: "main_callback", defaultNextNodeId: "main_vm" });
+    await seedNode({ id: "main_callback", type: "callback", config: { audioAssetId: null, ttsText: null } });
+    await seedVoicemail("main_vm", "voicemail");
+    await seedStaff("phill@b.com");
+    await seedPushToken("ExponentPushToken[callback-push]", "phill@b.com");
+
+    const stub = stubFor("CA-cb-push");
+    await send(stub, mainEvent("CA-cb-push", { from: "+61455512345" }));
+    await send(stub, mainEvent("CA-cb-push", { digits: "1" }));
+
+    const pushCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("exp.host"));
+    expect(pushCall).toBeTruthy();
+    const body = String((pushCall?.[1] as RequestInit)?.body ?? "");
+    expect(body).toContain("callback-push");
+    expect(body).toContain("asked for a callback");
+  });
+
   it("a callback node with its own recording plays that instead of the default spoken line", async () => {
     await createAudioAsset(env.DB, {
       id: "cb-asset",

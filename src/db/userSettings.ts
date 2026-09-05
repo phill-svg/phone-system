@@ -6,6 +6,7 @@ export type UserSettings = {
   notif_missed: boolean;
   notif_voicemail: boolean;
   notif_sms: boolean;
+  notif_callback: boolean;
   ring_my_mobile: boolean;
   mobile_number: string;
 };
@@ -15,11 +16,12 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   notif_missed: true,
   notif_voicemail: true,
   notif_sms: true,
+  notif_callback: true,
   ring_my_mobile: false,
   mobile_number: "",
 };
 
-export const NOTIF_KEYS = ["notif_incoming", "notif_missed", "notif_voicemail", "notif_sms"] as const;
+export const NOTIF_KEYS = ["notif_incoming", "notif_missed", "notif_voicemail", "notif_sms", "notif_callback"] as const;
 export type NotifKey = (typeof NOTIF_KEYS)[number];
 
 // Validate a stored/incoming value against the default's type. Wrong-typed values are dropped so a

@@ -92,3 +92,19 @@ export async function notifyVoicemail(db: D1Database, callerNumber: string): Pro
   });
   if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
 }
+
+// Fire-and-forget: notify staff that a caller asked to be rung back. Prunes dead tokens.
+// Without this a callback request lands silently in the table and nobody knows it is there --
+// which is exactly how one sat unactioned for two days before the app grew a screen for them.
+export async function notifyCallbackRequest(db: D1Database, callerNumber: string): Promise<void> {
+  const tokens = await getPushTokensForType(db, "notif_callback");
+  if (tokens.length === 0) return;
+  const contact = await findContactByPhone(db, callerNumber);
+  const who = contact?.name || callerNumber;
+  const { invalidTokens } = await sendExpoPush(tokens, {
+    title: `${who} asked for a callback`,
+    body: "Tap to see the callback list.",
+    data: { type: "callback_request", from: callerNumber },
+  });
+  if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
+}

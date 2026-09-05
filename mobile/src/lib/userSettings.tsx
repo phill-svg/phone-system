@@ -8,6 +8,7 @@ const DEFAULTS: UserSettings = {
   notif_missed: true,
   notif_voicemail: true,
   notif_sms: true,
+  notif_callback: true,
   ring_my_mobile: false,
   mobile_number: "",
 };

@@ -1,10 +1,11 @@
 import React, { useEffect } from "react";
 import { Tabs, router } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../../components/ui/Icon";
 import { registerForIncoming, getActiveCall, rejectIncoming } from "../../lib/voice";
 import { registerForPushNotifications } from "../../lib/push";
-import { sendHeartbeat } from "../../lib/api";
+import { sendHeartbeat, getCallbackRequests } from "../../lib/api";
 import { getPrefBool } from "../../lib/prefs";
 import { decideInviteAction } from "../../lib/callRouting";
 import { useTheme } from "../../theme/theme";
@@ -69,6 +70,16 @@ function TabIcon(name: SymbolViewProps["name"], fallback: string) {
 export default function TabsLayout() {
   const t = useTheme();
   useIncomingCalls();
+  // Open callback requests badge the Inbox tab. Polled rather than pushed, because the push that
+  // announces a new request only reaches a device whose owner left that notification on -- the
+  // badge has to be right either way. Same query key as the Inbox screen, so ticking one off there
+  // updates this count without a second fetch.
+  const { data: callbacks } = useQuery({
+    queryKey: ["callback-requests"],
+    queryFn: getCallbackRequests,
+    refetchInterval: 60_000,
+  });
+  const openCallbacks = (callbacks ?? []).filter((r) => r.status === "open").length;
   return (
     <Tabs
       screenOptions={{
@@ -88,7 +99,14 @@ export default function TabsLayout() {
       <Tabs.Screen name="recents" options={{ title: "Recents", tabBarIcon: TabIcon("clock.fill", "time") }} />
       <Tabs.Screen name="messages" options={{ title: "Messages", tabBarIcon: TabIcon("message.fill", "chatbubble") }} />
       <Tabs.Screen name="contacts" options={{ title: "Contacts", tabBarIcon: TabIcon("person.crop.circle.fill", "people") }} />
-      <Tabs.Screen name="voicemail" options={{ title: "Voicemail", tabBarIcon: TabIcon("waveform", "recording-outline") }} />
+      <Tabs.Screen
+        name="voicemail"
+        options={{
+          title: "Inbox",
+          tabBarIcon: TabIcon("waveform", "recording-outline"),
+          tabBarBadge: openCallbacks || undefined,
+        }}
+      />
       <Tabs.Screen name="settings" options={{ title: "Settings", tabBarIcon: TabIcon("gearshape.fill", "settings") }} />
     </Tabs>
   );

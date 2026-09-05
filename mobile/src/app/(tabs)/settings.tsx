@@ -16,7 +16,7 @@ import { useTheme, useThemePreference, type ThemePreference } from "../../theme/
 import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "44";
+const OTA_BUILD = "45";
 
 const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
   automatic: "Automatic",
@@ -200,6 +200,8 @@ export default function SettingsScreen() {
             toggle={settings.notif_voicemail} onToggle={(v) => update({ notif_voicemail: v })} />
           <Row icon="message.fill" iconColor="#30D158" label="SMS Messages"
             toggle={settings.notif_sms} onToggle={(v) => update({ notif_sms: v })} />
+          <Row icon="phone.arrow.up.right.fill" iconColor="#FF9F0A" label="Callback Requests"
+            toggle={settings.notif_callback} onToggle={(v) => update({ notif_callback: v })} />
         </Group>
 
         <Group title="Appearance" footer="Choose Light or Dark, or follow your device's setting.">
