@@ -24,7 +24,7 @@ import { appendCallEvent, parseRecordingDuration } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
-import { notifyMissedCall, notifyVoicemail } from "../api/push";
+import { notifyCallbackRequest, notifyMissedCall, notifyVoicemail } from "../api/push";
 
 type Env = {
   DB: D1Database;
@@ -476,6 +476,11 @@ export class CallSession extends DurableObject<Env> {
       .bind(Date.now(), callSid)
       .run();
     await this.logEvent(callSid, "callback_requested", { callerNumber: row?.caller_number ?? null });
+    // Fire-and-forget, like the voicemail and missed-call notifications: a push failure must never
+    // stop us returning TwiML, or the caller hears an application error after asking for a callback.
+    if (row?.caller_number) {
+      await notifyCallbackRequest(this.env.DB, row.caller_number).catch(() => {});
+    }
     // Harmless when there is no active ring (the flow-node route); required on the * route.
     await this.ctx.storage.delete("activeRing");
     return ackFragment

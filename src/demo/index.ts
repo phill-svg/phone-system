@@ -79,8 +79,10 @@ export function handleDemoRequest(
     return jsonResponse(demoContacts(now));
   }
 
-  // No real caller ever waits on a demo callback list.
-  if (url.pathname === "/api/callback-requests") {
+  // No real caller ever waits on a demo callback list -- and a reviewer ticking one off must not
+  // reach a real request, so the mark-done/reopen write is swallowed like every other demo write.
+  if (url.pathname === "/api/callback-requests" || /^\/api\/callback-requests\/\d+$/.test(url.pathname)) {
+    if (method !== "GET") return jsonResponse({ ok: true });
     return jsonResponse([]);
   }
 

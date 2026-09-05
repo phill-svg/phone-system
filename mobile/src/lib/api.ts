@@ -159,10 +159,22 @@ export type CallbackRequest = {
   caller_number: string;
   requested_at: number;
   status: "open" | "done";
+  done_at: number | null;
+  done_by: string | null;
 };
 
+// Open requests plus a bounded tail of handled ones -- the Inbox splits them into the work queue
+// and the history below it.
 export async function getCallbackRequests(): Promise<CallbackRequest[]> {
   return apiFetch<CallbackRequest[]>("/api/callback-requests");
+}
+
+// Mark a request handled, or reopen one that was ticked by mistake.
+export async function setCallbackRequestStatus(id: number, status: "open" | "done"): Promise<void> {
+  await apiFetch(`/api/callback-requests/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({ status }),
+  });
 }
 
 // ---- Contacts ----
@@ -280,6 +292,7 @@ export type UserSettings = {
   notif_missed: boolean;
   notif_voicemail: boolean;
   notif_sms: boolean;
+  notif_callback: boolean;
   ring_my_mobile: boolean;
   mobile_number: string;
 };

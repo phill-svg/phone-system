@@ -28,7 +28,7 @@ import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
-import { handleListCallbackRequests } from "./api/callbackRequests";
+import { handleListCallbackRequests, handleUpdateCallbackRequest } from "./api/callbackRequests";
 import {
   handleGetSoftphoneToken,
   handlePutPresence,
@@ -73,7 +73,7 @@ import { resetAvailabilityForNewDay } from "./db/staff";
 import { localDateKey } from "./ivr/businessHours";
 import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster, listStaffAccess } from "./db/staff";
-import { listOpenCallbackRequests } from "./db/callbackRequests";
+import { listCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
 import { transcribeCallRecording, backfillTranscripts } from "./transcribe";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
@@ -935,10 +935,19 @@ export default {
           : handleGetUserSettings(env.DB, staff);
       }
 
-      // Literal path, disjoint from every other /api/ segment above and below (no regex here to
-      // shadow or be shadowed by) -- so there's no ordering hazard to worry about.
+      // The bare collection path, checked before the /:id regex below. An exact-string match
+      // cannot collide with it (the regex requires a further "/<digits>" segment), and neither
+      // collides with any other /api/ segment above or below -- so there is no ordering hazard.
       if (url.pathname === "/api/callback-requests") {
         return handleListCallbackRequests(env.DB);
+      }
+
+      // Marking a request handled (or reopening it). PUT matches the convention used by
+      // /api/calls/:id and /api/settings/* rather than introducing PATCH for one route. The id is
+      // \d+ so a non-numeric segment falls through to the 404 below instead of reaching the DB.
+      const callbackIdMatch = url.pathname.match(/^\/api\/callback-requests\/(\d+)$/);
+      if (callbackIdMatch && request.method === "PUT") {
+        return handleUpdateCallbackRequest(request, env.DB, Number(callbackIdMatch[1]), staff);
       }
 
       if (url.pathname === "/api/ivr/audio") {
@@ -1165,7 +1174,7 @@ export default {
       }
 
       if (url.pathname === "/admin/callbacks") {
-        const html = renderCallbackRequestsPage(await listOpenCallbackRequests(env.DB), staffOrResponse.role);
+        const html = renderCallbackRequestsPage(await listCallbackRequests(env.DB), staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
