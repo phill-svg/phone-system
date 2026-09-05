@@ -91,8 +91,9 @@ is normal, not broken.
   in the console (the number's **Regional** tab) or via
   `POST routes.twilio.com/v2/PhoneNumbers/<e164>` with `VoiceRegion=au1`; a 404 on the GET means no
   explicit config, which defaults to us1. `/admin/settings` records the region per number and warns
-  when a voice number is not au1. **Unchecked:** `+61485034869` is `us1` with `voice_enabled=1` and
-  has never taken an inbound call.
+  when a voice number is not au1. `+61485034869` is `us1` but its `voice_enabled` is **0** (checked
+  against live D1 on 2026-09-06), so it takes no inbound calls and the region trap cannot bite it.
+  Re-check its region before ever turning voice back on.
 - **Ring-my-mobile is a DIVERT**, decided 2026-09-02: when a staff member enables it, their leg
   becomes their mobile and their softphone is **not** rung. Per-person — other staff still ring.
   This deliberately supersedes the "additive / also ring" wording in
@@ -119,6 +120,15 @@ is normal, not broken.
   on `/admin/settings` numbers, contact search in the web composer's To field, and a tappable
   contact name in mobile threads (OTA 37). Before that: ServiceM8 call logging (`src/servicem8/`),
   mobile reconnect-loop fix, and Facebook Messenger delivery-status tracking.
+- **Recent work (2026-09-04/06):** the hold-queue release fix (#45, see the hold-document note
+  above), an IVR **callback node** so a menu key logs a callback request (#46), an Australian
+  ringback tone (#47), a Settings **connection test** for call quality (#48), then the CallKit
+  native-answer chain — #49 (accepting a non-pending `CallInvite` aborts the process), #50 (adopt
+  the `Call` on `CallInvite.Event.Accepted`) and #51 (hand that adopted call back, or the ringing
+  screen pops an empty stack and goes black over a live call). Then #52: the mobile **Inbox** tab
+  (Voicemail | Callbacks segmented, replacing the Voicemail tab), `PUT /api/callback-requests/:id`
+  to mark one handled or reopen it, migration 0030's `done_at`/`done_by`, a `notif_callback` push,
+  and the same mark-done actions on `/admin/callbacks`. OTA 45.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring
