@@ -43,7 +43,7 @@ import {
 } from "./api/staff";
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
-import { logCallToServiceM8, syncContactFromServiceM8 } from "./servicem8/callLogging";
+import { logCallAndSyncContact } from "./servicem8/callLogging";
 import { describeChannelError } from "./twilio/channelErrors";
 import { handleRegisterPushToken, notifyInboundSms, notifyMessageFailed } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
@@ -277,16 +277,19 @@ export default {
                   endedAt: Date.now(),
                   status: normalized,
                 };
-                return Promise.all([
-                  logCallToServiceM8(apiKey, loggable),
-                  syncContactFromServiceM8(env.DB, apiKey, loggable),
-                ]);
+                return logCallAndSyncContact(env.DB, apiKey, loggable);
               })
-              .catch(() => {
+              .catch((e) => {
                 /* ServiceM8 logging is best-effort; never fail the webhook over it */
+                console.error("SERVICEM8_FAILED", String(e));
               });
             if (ctx) ctx.waitUntil(sm8Work);
             else await sm8Work;
+          } else {
+            // The integration is off because no key is configured -- which is indistinguishable
+            // from "it is broken" unless it says so. Set it with:
+            //   npx wrangler secret put SERVICEM8_API_KEY
+            console.log("SERVICEM8_DISABLED", JSON.stringify({ callSid: params.CallSid }));
           }
         }
         // The caller's leg ending may strand the agent alone in the conference (named by

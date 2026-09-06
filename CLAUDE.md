@@ -135,6 +135,21 @@ is normal, not broken.
   (`/api/staff`) deliberately omits schedules, ring order and password state so the softphone's
   transfer picker can stay ungated. Everything under `/api/admin/` is admin-only by construction.
   The IVR editor and Analytics stay web-only. OTA 46.
+- **ServiceM8 needs `SERVICEM8_API_KEY` set as a worker secret, and nothing tells you if it isn't.**
+  `deploy.yml` does not set it — wrangler secrets are separate (`npx wrangler secret put
+  SERVICEM8_API_KEY`). Both halves of the integration (the job diary note and the auto-created
+  contact) are gated on that one env var and used to fail in total silence, which is how it sat
+  inert while callers who ARE in ServiceM8 kept landing as bare numbers. Checked 2026-09-06: no
+  "Logged automatically by TCB Phone" note on any job, no contact created since 09-04. The paths
+  now log `SERVICEM8_DISABLED` (no key), `SERVICEM8_SEARCH_FAILED` (missing/revoked key — a 401
+  looks identical to no key), `SERVICEM8_NO_MATCH`, `SERVICEM8_NO_NAME` and
+  `SERVICEM8_CONTACT_CREATED`, so `wrangler tail | grep SERVICEM8_` answers "is it on?".
+- **ServiceM8 search tokenizes; its OData filters do not.** `search.json?q=` matches a number
+  however it is stored ("0402 430 107" matches a query of "0402430107"), but
+  `jobcontact.json?$filter=mobile eq '...'` is an exact string compare, so the old name lookup
+  missed every customer whose number carries spaces. The name now comes from the search results
+  themselves — the `company` result's `name` IS the customer — with jobcontact only as a fallback,
+  widened to several stored formats. One search per call now serves both the note and the contact.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring
