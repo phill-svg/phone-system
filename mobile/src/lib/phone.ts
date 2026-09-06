@@ -15,6 +15,14 @@ export function normalizePhone(raw: string): string {
   return digits;
 }
 
+// E.164 form ("+61400123456"). Twilio reports a call's `From` this way, and the call blocklist is
+// matched as a literal string against it (src/worker.ts: blocklist.includes(params.From)) -- so an
+// entry typed as "0400 123 456" only ever blocks anyone once it is stored in this shape.
+export function toE164(raw: string): string {
+  const digits = normalizePhone(raw);
+  return digits ? `+${digits}` : "";
+}
+
 // Pretty display for AU numbers; falls back to loose 3/4 grouping otherwise.
 export function formatPhone(raw: string): string {
   const d = raw.replace(/[^\d+]/g, "");

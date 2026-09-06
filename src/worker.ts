@@ -38,8 +38,8 @@ import {
   handlePostCompleteTransfer,
 } from "./api/softphone";
 import {
-  handleGetStaffRoster, handlePutStaffSchedule, handlePutStaffPriority, handlePutStaffStatus,
-  handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
+  handleGetStaffRoster, handleGetStaffAdminList, handlePutStaffSchedule, handlePutStaffPriority,
+  handlePutStaffStatus, handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
 } from "./api/staff";
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
@@ -869,7 +869,11 @@ export default {
       // already role-check inside their handlers; this closes the matching GET reads so a staff
       // member can't fetch the data directly. The staff ROSTER (/api/staff GET) is intentionally
       // NOT gated -- the softphone transfer picker needs the colleague list.
+      //
+      // Everything under /api/admin/ is admin-only by construction, whatever the method: it is
+      // where surfaces that cannot server-render their own admin data (the mobile app) read it.
       const adminOnlyRead =
+        url.pathname.startsWith("/api/admin/") ||
         url.pathname.startsWith("/api/ivr/") ||
         (request.method === "GET" &&
           (url.pathname === "/api/settings/business-hours" ||
@@ -1008,6 +1012,10 @@ export default {
       }
       if (url.pathname === "/api/softphone/transfer/complete" && request.method === "POST") {
         return handlePostCompleteTransfer(request, env, staff, env.DB);
+      }
+      // Full staff detail for the mobile Admin screens. Gated above with the rest of /api/admin/.
+      if (url.pathname === "/api/admin/staff" && request.method === "GET") {
+        return handleGetStaffAdminList(env.DB);
       }
       if (url.pathname === "/api/staff") {
         if (request.method === "GET") return handleGetStaffRoster(env.DB, demoEmails(env));

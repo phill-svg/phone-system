@@ -16,7 +16,7 @@ import { useTheme, useThemePreference, type ThemePreference } from "../../theme/
 import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "45";
+const OTA_BUILD = "46";
 
 const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
   automatic: "Automatic",
@@ -203,6 +203,13 @@ export default function SettingsScreen() {
           <Row icon="phone.arrow.up.right.fill" iconColor="#FF9F0A" label="Callback Requests"
             toggle={settings.notif_callback} onToggle={(v) => update({ notif_callback: v })} />
         </Group>
+
+        {isAdmin ? (
+          <Group title="Administration" footer="Business hours, blocked callers, sending numbers and the team. Only admins see this.">
+            <Row icon="slider.horizontal.3" iconColor={t.colors.accent} label="Admin Settings" chevron
+              onPress={() => router.push("/admin")} />
+          </Group>
+        ) : null}
 
         <Group title="Appearance" footer="Choose Light or Dark, or follow your device's setting.">
           <View style={{ paddingHorizontal: 14, paddingVertical: 12 }}>
