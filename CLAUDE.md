@@ -128,7 +128,13 @@ is normal, not broken.
   screen pops an empty stack and goes black over a live call). Then #52: the mobile **Inbox** tab
   (Voicemail | Callbacks segmented, replacing the Voicemail tab), `PUT /api/callback-requests/:id`
   to mark one handled or reopen it, migration 0030's `done_at`/`done_by`, a `notif_callback` push,
-  and the same mark-done actions on `/admin/callbacks`. OTA 45.
+  and the same mark-done actions on `/admin/callbacks`. OTA 45. Then the mobile **Admin** section
+  (Settings > Administration, admin role only): business hours, call blocklist, phone numbers with
+  the au1 region warning, and staff (working hours, ring order, availability, invite/reset/remove).
+  It reads `GET /api/admin/staff` — a new admin-only endpoint, because the plain roster
+  (`/api/staff`) deliberately omits schedules, ring order and password state so the softphone's
+  transfer picker can stay ungated. Everything under `/api/admin/` is admin-only by construction.
+  The IVR editor and Analytics stay web-only. OTA 46.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring

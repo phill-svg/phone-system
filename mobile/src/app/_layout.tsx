@@ -38,6 +38,8 @@ function RootNavigator() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: t.colors.bg } }}>
         <Stack.Protected guard={status === "authed"}>
           <Stack.Screen name="(tabs)" />
+          {/* The admin group brings its own Stack (and its own admin-only guard). */}
+          <Stack.Screen name="admin" />
           <Stack.Screen name="call/[id]" options={{ ...headerScreen, title: "Call Details" }} />
           <Stack.Screen name="contact/[id]" options={{ ...headerScreen, title: "" }} />
           <Stack.Screen name="call-forwarding" options={{ ...headerScreen, title: "Ring My Mobile" }} />

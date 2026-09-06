@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { getStaffRoster, setStaffSchedule, setStaffPriority, setStaffStatus, createInvitedStaff, deleteStaff } from "../db/staff";
+import { getStaffRoster, setStaffSchedule, setStaffPriority, setStaffStatus, createInvitedStaff, deleteStaff, listStaffAccess } from "../db/staff";
 import type { StaffUser } from "../access/requireStaffUser";
 import { issueToken } from "../access/passwordTokens";
 import { sendEmail, inviteEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
@@ -27,6 +27,29 @@ export async function handleGetStaffRoster(db: D1Database, excludeEmails: string
   const excluded = new Set(excludeEmails.map((e) => e.trim().toLowerCase()));
   const roster = (await getStaffRoster(db)).filter((s) => !excluded.has(s.email.toLowerCase()));
   return jsonResponse(roster.map((s) => ({ email: s.email, role: s.role, status: s.status })));
+}
+
+// Everything the admin surfaces need about every staff member, in one request: schedule, ring
+// order, availability and whether they have set a password yet. The web Settings page gets this
+// server-rendered; the mobile app can't, and the plain roster above deliberately omits all of it
+// so an ordinary softphone can't read the team's hours. Admin-gated at the router (/api/admin/*).
+export async function handleGetStaffAdminList(db: D1Database): Promise<Response> {
+  const [roster, access] = await Promise.all([getStaffRoster(db), listStaffAccess(db)]);
+  const hasPassword = new Map(access.map((a) => [a.email, a.hasPassword]));
+  return jsonResponse(
+    [...roster]
+      .sort((a, b) => a.email.localeCompare(b.email))
+      .map((s) => ({
+        email: s.email,
+        role: s.role,
+        status: s.status,
+        awayReason: s.awayReason,
+        schedule: s.schedule,
+        ringPriority: s.ringPriority,
+        lastHeartbeatAt: s.lastHeartbeatAt,
+        hasPassword: hasPassword.get(s.email) ?? false,
+      }))
+  );
 }
 
 export async function handlePutStaffSchedule(request: Request, db: D1Database, email: string, staff: StaffUser): Promise<Response> {

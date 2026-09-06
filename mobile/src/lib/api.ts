@@ -313,3 +313,121 @@ export async function getRecordingSetting(): Promise<boolean> {
 export async function setRecordingSetting(enabled: boolean): Promise<void> {
   await apiFetch("/api/settings/recording", { method: "PUT", body: JSON.stringify({ recording_enabled: enabled }) });
 }
+
+// ---- Admin: business-wide settings ----
+// Everything below is admin-only. The server is the real gate (403 for staff on every one of
+// these paths); the app hides the Admin section as well so nobody is offered a button that fails.
+
+export const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+export type DayKey = (typeof DAY_KEYS)[number];
+export const DAY_LABELS: Record<DayKey, string> = {
+  mon: "Monday",
+  tue: "Tuesday",
+  wed: "Wednesday",
+  thu: "Thursday",
+  fri: "Friday",
+  sat: "Saturday",
+  sun: "Sunday",
+};
+
+// null = closed that day. Times are "HH:MM" in Canberra local time, matching the web admin page
+// and what src/ivr/businessHours.ts reads.
+export type DayWindow = { open: string; close: string } | null;
+export type BusinessHours = Record<DayKey, DayWindow>;
+
+export const CLOSED_WEEK: BusinessHours = { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null };
+
+export async function getBusinessHours(): Promise<BusinessHours> {
+  return apiFetch<BusinessHours>("/api/settings/business-hours");
+}
+
+// The API replaces the whole schedule, so always send all seven days.
+export async function setBusinessHours(schedule: BusinessHours): Promise<void> {
+  await apiFetch("/api/settings/business-hours", { method: "PUT", body: JSON.stringify(schedule) });
+}
+
+export async function getCallBlocklist(): Promise<string[]> {
+  return apiFetch<string[]>("/api/settings/call-blocklist");
+}
+
+export async function setCallBlocklist(numbers: string[]): Promise<void> {
+  await apiFetch("/api/settings/call-blocklist", { method: "PUT", body: JSON.stringify(numbers) });
+}
+
+// ---- Admin: staff ----
+
+export type AdminStaff = {
+  email: string;
+  role: "admin" | "staff";
+  status: "available" | "away" | "offline";
+  awayReason: string | null;
+  schedule: BusinessHours;
+  // Cascade ring order: lower rings earlier. Each on-shift person contributes exactly one leg,
+  // so this ordering is what decides who hears the phone first.
+  ringPriority: number;
+  lastHeartbeatAt: number | null;
+  // False = invited but has never set a password, so they cannot sign in yet.
+  hasPassword: boolean;
+};
+
+// One request for the whole Admin > Staff surface. /api/staff (the transfer picker's roster)
+// deliberately carries none of this.
+export async function getAdminStaff(): Promise<AdminStaff[]> {
+  return apiFetch<AdminStaff[]>("/api/admin/staff");
+}
+
+export async function setStaffSchedule(email: string, schedule: BusinessHours): Promise<void> {
+  await apiFetch(`/api/staff/${encodeURIComponent(email)}/schedule`, { method: "PUT", body: JSON.stringify(schedule) });
+}
+
+export async function setStaffRingPriority(email: string, priority: number): Promise<void> {
+  await apiFetch(`/api/staff/${encodeURIComponent(email)}/priority`, { method: "PUT", body: JSON.stringify({ priority }) });
+}
+
+// Admin override of someone else's availability. "away" benches them from the ring cascade until
+// the server's local-morning reset, exactly like they had set it themselves.
+export async function setStaffAvailability(email: string, status: "available" | "away"): Promise<void> {
+  await apiFetch(`/api/staff/${encodeURIComponent(email)}/status`, { method: "PUT", body: JSON.stringify({ status }) });
+}
+
+export async function inviteStaff(email: string, role: "admin" | "staff"): Promise<void> {
+  await apiFetch("/api/staff", { method: "POST", body: JSON.stringify({ email, role }) });
+}
+
+export async function resendStaffInvite(email: string): Promise<void> {
+  await apiFetch(`/api/staff/${encodeURIComponent(email)}/invite`, { method: "POST" });
+}
+
+export async function sendStaffPasswordReset(email: string): Promise<void> {
+  await apiFetch(`/api/staff/${encodeURIComponent(email)}/reset`, { method: "POST" });
+}
+
+export async function removeStaff(email: string): Promise<void> {
+  await apiFetch(`/api/staff/${encodeURIComponent(email)}`, { method: "DELETE" });
+}
+
+// ---- Admin: phone numbers ----
+// Adding a row here configures nothing on Twilio's side -- the number must already exist there.
+// `region` records the Twilio Inbound Processing Region that handles the number's inbound calls.
+
+export type PhoneNumberInput = {
+  e164: string;
+  label: string;
+  voice_enabled: boolean;
+  sms_enabled: boolean;
+  is_default_voice: boolean;
+  is_default_sms: boolean;
+  region: string | null;
+};
+
+export async function createNumber(input: PhoneNumberInput): Promise<PhoneNumber> {
+  return apiFetch<PhoneNumber>("/api/numbers", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function updateNumber(id: number, input: PhoneNumberInput): Promise<void> {
+  await apiFetch(`/api/numbers/${id}`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+export async function deleteNumber(id: number): Promise<void> {
+  await apiFetch(`/api/numbers/${id}`, { method: "DELETE" });
+}
