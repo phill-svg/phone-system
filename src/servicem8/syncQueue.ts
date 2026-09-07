@@ -36,7 +36,7 @@ export async function syncPendingCallsToServiceM8(env: Env): Promise<void> {
   const now = Date.now();
   const pending = await env.DB.prepare(
     "SELECT id, direction, caller_number, called_number, started_at, ended_at, status FROM calls " +
-      "WHERE ended_at IS NOT NULL AND servicem8_synced_at IS NULL AND ended_at <= ? AND ended_at >= ? " +
+      "WHERE ended_at IS NOT NULL AND servicem8_synced_at IS NULL AND deleted_at IS NULL AND ended_at <= ? AND ended_at >= ? " +
       "ORDER BY ended_at ASC LIMIT ?"
   )
     .bind(now - SERVICEM8_SYNC_DELAY_MS, now - SERVICEM8_SYNC_WINDOW_MS, BATCH)

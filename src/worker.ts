@@ -46,6 +46,7 @@ import { insertMessage, updateMessageStatus } from "./db/messages";
 import { syncPendingCallsToServiceM8 } from "./servicem8/syncQueue";
 import { handleGetDiagnostics, handleTestPush, handleTestEmail } from "./api/diagnostics";
 import { handleCallViaMobile } from "./api/callViaMobile";
+import { handleDeleteCall, handleRestoreCall, handleDeleteThread, handleRestoreThread } from "./api/deletions";
 import { describeChannelError } from "./twilio/channelErrors";
 import { handleRegisterPushToken, notifyInboundSms, notifyMessageFailed } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
@@ -932,10 +933,22 @@ export default {
         }
       }
 
+      // Undo for a deleted call log. Longer than the id-only match below, so it is tested first.
+      const callRestoreMatch = url.pathname.match(/^\/api\/calls\/([^/]+)\/restore$/);
+      if (callRestoreMatch && request.method === "POST") {
+        try {
+          return handleRestoreCall(env.DB, decodeURIComponent(callRestoreMatch[1]), staff);
+        } catch (e) {
+          if (e instanceof URIError) return new Response("not found", { status: 404 });
+          throw e;
+        }
+      }
+
       const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
       if (callIdMatch) {
         try {
           const callId = decodeURIComponent(callIdMatch[1]);
+          if (request.method === "DELETE") return handleDeleteCall(env.DB, callId, staff);
           return request.method === "PUT"
             ? handleUpdateCallMeta(request, env.DB, callId)
             : handleCallDetail(env.DB, callId);
@@ -1146,12 +1159,33 @@ export default {
         if (request.method === "GET") return handleListConversations(env.DB);
         if (request.method === "POST") return handleSendMessage(request, env);
       }
+      // Undo for a deleted conversation. Checked before the id-only match, which is $-anchored.
+      const threadRestoreMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/restore$/);
+      if (threadRestoreMatch && request.method === "POST") {
+        try {
+          return handleRestoreThread(request, env.DB, decodeURIComponent(threadRestoreMatch[1]), staff);
+        } catch (e) {
+          if (e instanceof URIError) return new Response("not found", { status: 404 });
+          throw e;
+        }
+      }
+
       const messageThreadMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
-      if (messageThreadMatch && request.method === "GET") {
-        // ?peek=1 fetches the thread WITHOUT marking it read (used by the call detail preview,
-        // where merely viewing a call shouldn't clear the SMS unread badge).
-        const peek = url.searchParams.get("peek") === "1";
-        return handleGetThread(env.DB, decodeURIComponent(messageThreadMatch[1]), peek);
+      if (messageThreadMatch) {
+        let peerNumber: string;
+        try {
+          peerNumber = decodeURIComponent(messageThreadMatch[1]);
+        } catch (e) {
+          if (e instanceof URIError) return new Response("not found", { status: 404 });
+          throw e;
+        }
+        if (request.method === "DELETE") return handleDeleteThread(env.DB, peerNumber, staff);
+        if (request.method === "GET") {
+          // ?peek=1 fetches the thread WITHOUT marking it read (used by the call detail preview,
+          // where merely viewing a call shouldn't clear the SMS unread badge).
+          const peek = url.searchParams.get("peek") === "1";
+          return handleGetThread(env.DB, peerNumber, peek);
+        }
       }
 
       return new Response("not found", { status: 404 });

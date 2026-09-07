@@ -1,5 +1,7 @@
 import React, { useCallback, useRef } from "react";
 import { View, Text, Pressable, FlatList, ActivityIndicator, StyleSheet } from "react-native";
+import { confirmDelete } from "../../lib/confirmDelete";
+import { useAuth } from "../../lib/auth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, useFocusEffect } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
@@ -8,7 +10,7 @@ import { StatusPill } from "../../components/ui/StatusPill";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Avatar } from "../../components/ui/Avatar";
 import { Icon } from "../../components/ui/Icon";
-import { getConversations, getContacts, type Conversation } from "../../lib/api";
+import { getConversations, getContacts, deleteThread, restoreThread, type Conversation } from "../../lib/api";
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { useTheme, type } from "../../theme/theme";
 
@@ -23,6 +25,25 @@ export default function MessagesScreen() {
   const t = useTheme();
   const qc = useQueryClient();
   const convos = useQuery({ queryKey: ["conversations"], queryFn: getConversations });
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  // The unit people want gone is the conversation, not one text -- a junk sender, a wrong number.
+  function removeThread(number: string, label: string) {
+    confirmDelete({
+      title: `Delete conversation with ${label}?`,
+      message: "Every message in it disappears for the whole team.",
+      onDelete: async () => {
+        const { deletedAt } = await deleteThread(number);
+        // Undo targets this exact delete, so it cannot also revive an older one for the same number.
+        return () => restoreThread(number, deletedAt);
+      },
+      onDone: () => {
+        convos.refetch();
+        qc.invalidateQueries({ queryKey: ["thread", number] });
+      },
+    });
+  }
+
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
 
   // This screen stays mounted while a thread is open, so React Query never refetches it on its own
@@ -76,6 +97,7 @@ export default function MessagesScreen() {
           renderItem={({ item }) => (
             <Pressable
               onPress={() => router.push({ pathname: "/thread/[number]", params: { number: item.number, name: title(item) } })}
+              onLongPress={isAdmin ? () => removeThread(item.number, title(item)) : undefined}
               style={({ pressed }) => [styles.row, { backgroundColor: pressed ? t.colors.cardPressed : "transparent" }]}
             >
               <Avatar name={title(item)} size={50} />

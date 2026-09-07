@@ -49,7 +49,7 @@ export type CallEventRow = {
 
 export async function listCalls(db: D1Database, limit = 50): Promise<CallSummary[]> {
   const result = await db
-    .prepare("SELECT * FROM calls ORDER BY started_at DESC LIMIT ?")
+    .prepare("SELECT * FROM calls WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT ?")
     .bind(limit)
     .all<CallSummary>();
   return result.results;
@@ -77,7 +77,7 @@ export async function listLiveCalls(db: D1Database): Promise<CallSummary[]> {
   // and just plays hold music.
   const cutoff = Date.now() - 3 * 60 * 60 * 1000;
   const result = await db
-    .prepare("SELECT * FROM calls WHERE status = 'in_progress' AND started_at >= ? ORDER BY started_at DESC")
+    .prepare("SELECT * FROM calls WHERE status = 'in_progress' AND deleted_at IS NULL AND started_at >= ? ORDER BY started_at DESC")
     .bind(cutoff)
     .all<CallSummary>();
   return result.results;
@@ -102,7 +102,7 @@ export async function updateCallMeta(
 export async function getCallStats(db: D1Database, sinceMs: number): Promise<CallStats> {
   const calls = (
     await db
-      .prepare("SELECT id, started_at, ended_at, direction FROM calls WHERE started_at >= ?")
+      .prepare("SELECT id, started_at, ended_at, direction FROM calls WHERE started_at >= ? AND deleted_at IS NULL")
       .bind(sinceMs)
       .all<{ id: string; started_at: number; ended_at: number | null; direction: string }>()
   ).results;
@@ -175,11 +175,30 @@ export async function getCallDetail(
   db: D1Database,
   callId: string
 ): Promise<{ call: CallSummary; events: CallEventRow[] } | null> {
-  const call = await db.prepare("SELECT * FROM calls WHERE id = ?").bind(callId).first<CallSummary>();
+  const call = await db.prepare("SELECT * FROM calls WHERE id = ? AND deleted_at IS NULL").bind(callId).first<CallSummary>();
   if (!call) return null;
   const events = await db
     .prepare("SELECT * FROM call_events WHERE call_id = ? ORDER BY ts ASC")
     .bind(callId)
     .all<CallEventRow>();
   return { call, events: events.results };
+}
+
+// Hide a call from history. The row, its events and any recording are all left intact -- see
+// migration 0032 for why this is not a real delete.
+export async function softDeleteCall(db: D1Database, callId: string, byEmail: string): Promise<boolean> {
+  const res = await db
+    .prepare("UPDATE calls SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL")
+    .bind(Date.now(), byEmail, callId)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
+}
+
+// Undo. Guarded on deleted_at being set so a stray restore cannot resurrect anything unexpected.
+export async function restoreCall(db: D1Database, callId: string): Promise<boolean> {
+  const res = await db
+    .prepare("UPDATE calls SET deleted_at = NULL, deleted_by = NULL WHERE id = ? AND deleted_at IS NOT NULL")
+    .bind(callId)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
 }
