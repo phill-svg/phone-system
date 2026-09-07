@@ -42,11 +42,12 @@ export async function listConversations(db: D1Database): Promise<ConversationRow
   const rows = await db
     .prepare(
       `SELECT m.peer_number AS number, fb.name AS fb_name, m.body AS last_body, m.created_at AS last_ts,
-         (SELECT COUNT(*) FROM messages u WHERE u.peer_number = m.peer_number AND u.direction = 'inbound' AND u.read = 0) AS unread
+         (SELECT COUNT(*) FROM messages u WHERE u.peer_number = m.peer_number AND u.direction = 'inbound' AND u.read = 0 AND u.deleted_at IS NULL) AS unread
        FROM messages m
-       JOIN (SELECT peer_number, MAX(created_at) AS mx FROM messages GROUP BY peer_number) latest
+       JOIN (SELECT peer_number, MAX(created_at) AS mx FROM messages WHERE deleted_at IS NULL GROUP BY peer_number) latest
          ON m.peer_number = latest.peer_number AND m.created_at = latest.mx
        LEFT JOIN fb_contacts fb ON m.peer_number = 'messenger:' || fb.psid
+       WHERE m.deleted_at IS NULL
        GROUP BY m.peer_number
        ORDER BY m.created_at DESC`
     )
@@ -66,7 +67,7 @@ export async function listThread(db: D1Database, peer: string, limit?: number): 
   if (limit != null) {
     const rows = await db
       .prepare(
-        "SELECT * FROM (SELECT id, direction, body, created_at AS ts, status, error_code, error_message FROM messages WHERE peer_number = ? ORDER BY created_at DESC LIMIT ?) ORDER BY ts ASC"
+        "SELECT * FROM (SELECT id, direction, body, created_at AS ts, status, error_code, error_message FROM messages WHERE peer_number = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?) ORDER BY ts ASC"
       )
       .bind(peer, limit)
       .all<MessageRow>();
@@ -74,7 +75,7 @@ export async function listThread(db: D1Database, peer: string, limit?: number): 
   }
   const rows = await db
     .prepare(
-      "SELECT id, direction, body, created_at AS ts, status, error_code, error_message FROM messages WHERE peer_number = ? ORDER BY created_at ASC"
+      "SELECT id, direction, body, created_at AS ts, status, error_code, error_message FROM messages WHERE peer_number = ? AND deleted_at IS NULL ORDER BY created_at ASC"
     )
     .bind(peer)
     .all<MessageRow>();
@@ -101,4 +102,24 @@ export async function updateMessageStatus(
     .prepare("UPDATE messages SET status = ?, error_code = ?, error_message = ? WHERE id = ?")
     .bind(status, error?.code ?? null, error?.message ?? null, id)
     .run();
+}
+
+// Hide a whole conversation. Threads are the unit people actually want gone -- a junk sender, not
+// one text -- and hiding every message in it keeps the conversation list and the thread consistent.
+export async function softDeleteThread(db: D1Database, peerNumber: string, byEmail: string): Promise<number> {
+  const res = await db
+    .prepare("UPDATE messages SET deleted_at = ?, deleted_by = ? WHERE peer_number = ? AND deleted_at IS NULL")
+    .bind(Date.now(), byEmail, peerNumber)
+    .run();
+  return res.meta.changes ?? 0;
+}
+
+// Undo, scoped to the messages that one delete hid: restoring by peer alone would also resurrect a
+// thread deleted last month and quietly re-open it.
+export async function restoreThread(db: D1Database, peerNumber: string, deletedAt: number): Promise<number> {
+  const res = await db
+    .prepare("UPDATE messages SET deleted_at = NULL, deleted_by = NULL WHERE peer_number = ? AND deleted_at = ?")
+    .bind(peerNumber, deletedAt)
+    .run();
+  return res.meta.changes ?? 0;
 }

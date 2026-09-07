@@ -93,6 +93,7 @@ export async function backfillTranscripts(env: TranscribeEnv, limit = 3): Promis
       `SELECT id, recording_url, (mailbox_label IS NOT NULL AND mailbox_label <> '') AS is_voicemail
          FROM calls
         WHERE recording_url IS NOT NULL AND recording_url <> ''
+          AND deleted_at IS NULL
           AND transcribe_attempts < ?
           AND CASE WHEN mailbox_label IS NOT NULL AND mailbox_label <> ''
                    THEN transcription IS NULL OR transcription = ''

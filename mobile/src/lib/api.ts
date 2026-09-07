@@ -461,3 +461,28 @@ export async function sendTestPush(): Promise<{ sent: number; devices: number; p
 export async function sendTestEmail(): Promise<{ ok: boolean; to: string }> {
   return apiFetch("/api/admin/test-email", { method: "POST" });
 }
+
+// ---- Deleting call logs and conversations (admin only) ----
+// These HIDE rather than destroy: the row survives and the Twilio recording is untouched, so an
+// accidental delete is recoverable. The server 403s anyone who isn't an admin.
+
+export async function deleteCall(id: string): Promise<void> {
+  await apiFetch(`/api/calls/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function restoreCall(id: string): Promise<void> {
+  await apiFetch(`/api/calls/${encodeURIComponent(id)}/restore`, { method: "POST" });
+}
+
+// Returns the stamp this delete used, which the undo needs so it restores exactly these messages
+// and not an older deletion of the same conversation.
+export async function deleteThread(number: string): Promise<{ messages: number; deletedAt: number }> {
+  return apiFetch(`/api/messages/${encodeURIComponent(number)}`, { method: "DELETE" });
+}
+
+export async function restoreThread(number: string, deletedAt: number): Promise<void> {
+  await apiFetch(`/api/messages/${encodeURIComponent(number)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ deletedAt }),
+  });
+}
