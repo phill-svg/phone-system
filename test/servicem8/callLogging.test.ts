@@ -122,15 +122,21 @@ describe("logCallAndSyncContact", () => {
   it("logs and gives up when the search fails, without throwing", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     stubFetch({ search: () => json({ error: "unauthorized" }, 401) });
-    await expect(logCallAndSyncContact(env.DB, "key", CALL)).resolves.toBeUndefined();
+    // "failed" is what tells the queue to leave the call pending and try again later.
+    await expect(logCallAndSyncContact(env.DB, "key", CALL)).resolves.toBe("failed");
     expect(await findContactByPhone(env.DB, SUE)).toBeNull();
     expect(error).toHaveBeenCalledWith("SERVICEM8_SEARCH_FAILED", expect.stringContaining("401"));
   });
 
-  it("does nothing at all for a non-AU number", async () => {
+  it("does nothing at all for a non-AU number, and is never retried for one", async () => {
     const calls = stubFetch({});
-    await logCallAndSyncContact(env.DB, "key", { ...CALL, callerNumber: "+14155550100" });
+    await expect(logCallAndSyncContact(env.DB, "key", { ...CALL, callerNumber: "+14155550100" })).resolves.toBe("skipped");
     expect(calls).toHaveLength(0);
+  });
+
+  it("reports a caller ServiceM8 has never heard of as done, not as a failure to retry", async () => {
+    stubFetch({ search: () => json({ results: [] }) });
+    await expect(logCallAndSyncContact(env.DB, "key", CALL)).resolves.toBe("no-match");
   });
 
   it("uses the number that was called on an outbound call", async () => {

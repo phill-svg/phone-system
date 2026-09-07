@@ -24,15 +24,20 @@ function customerNumberFor(call: LoggableCall): string | null {
   return n?.startsWith("+61") ? n : null;
 }
 
+// What one call's ServiceM8 work came to. The queue reads this to decide whether the call is
+// finished with ("synced"/"no-match"/"skipped") or should be tried again on a later tick
+// ("failed" -- which is what a missing or revoked API key looks like).
+export type Sm8Outcome = "synced" | "no-match" | "skipped" | "failed";
+
 // Everything ServiceM8 does for one finished call, off a SINGLE search.
 //
 // Both halves are best-effort and independent: a note that fails must not stop the contact being
 // created, and vice versa. What is NOT optional any more is saying so -- every failure here used
 // to be swallowed whole, which is how the integration sat inert without anyone noticing. If you
 // are wondering why nothing is being logged, `wrangler tail` and look for SERVICEM8_.
-export async function logCallAndSyncContact(db: D1Database, apiKey: string, call: LoggableCall): Promise<void> {
+export async function logCallAndSyncContact(db: D1Database, apiKey: string, call: LoggableCall): Promise<Sm8Outcome> {
   const customerNumber = customerNumberFor(call);
-  if (!customerNumber) return;
+  if (!customerNumber) return "skipped";
 
   let results: Sm8SearchResult[];
   try {
@@ -41,14 +46,14 @@ export async function logCallAndSyncContact(db: D1Database, apiKey: string, call
     // The one failure worth shouting about: a missing or revoked API key looks exactly like this,
     // and it takes out both halves at once.
     console.error("SERVICEM8_SEARCH_FAILED", JSON.stringify({ number: customerNumber, error: String(e) }));
-    return;
+    return "failed";
   }
 
   if (results.length === 0) {
     // An unmatched number (a supplier, a wrong number, a brand-new customer) is the normal case,
     // not a failure -- but logging it is what tells you matching is working at all.
     console.log("SERVICEM8_NO_MATCH", JSON.stringify({ number: customerNumber }));
-    return;
+    return "no-match";
   }
 
   const outcomes = await Promise.allSettled([
@@ -60,6 +65,10 @@ export async function logCallAndSyncContact(db: D1Database, apiKey: string, call
       console.error("SERVICEM8_TASK_FAILED", JSON.stringify({ number: customerNumber, error: String(outcome.reason) }));
     }
   }
+  // A note or contact that failed on its own is not retried: the search worked, so this is a
+  // ServiceM8-side refusal that a retry would just repeat -- and re-running the note would risk
+  // posting it twice.
+  return "synced";
 }
 
 // Drops a diary note on the customer's most recently active job.
