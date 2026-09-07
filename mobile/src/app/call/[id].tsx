@@ -5,6 +5,8 @@ import { router, useLocalSearchParams } from "expo-router";
 import { getCallDetail, updateCallMeta, CALL_DISPOSITIONS, type Call, type CallEvent } from "../../lib/api";
 import { RecordingPlayer } from "../../components/recording-player";
 import { Icon } from "../../components/ui/Icon";
+import { placeCall } from "../../lib/placeCall";
+import { useUserSettings } from "../../lib/userSettings";
 import { haptics } from "../../theme/haptics";
 import { colors } from "../../lib/theme";
 
@@ -26,6 +28,7 @@ function fmtWhen(ms: number): string {
 }
 
 export default function CallDetailScreen() {
+  const { settings } = useUserSettings();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { data, isLoading, isError } = useQuery({
     queryKey: ["call", id],
@@ -37,7 +40,7 @@ export default function CallDetailScreen() {
 
   function callBack() {
     haptics.medium();
-    router.push({ pathname: "/call-active", params: { number: peer, name: peer } });
+    placeCall({ number: peer, settings });
   }
 
   function message() {

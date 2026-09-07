@@ -21,6 +21,8 @@ import {
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { resolveSendingNumber } from "../../lib/sendingNumber";
 import { usePersistedString } from "../../lib/prefs";
+import { placeCall } from "../../lib/placeCall";
+import { useUserSettings } from "../../lib/userSettings";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
 
@@ -93,6 +95,7 @@ type CallbackRow =
 // Callers who asked to be rung back (the IVR's callback node). Open requests are the work queue;
 // handled ones stay below as history, so "did anyone actually ring them?" stays answerable.
 function CallbackList() {
+  const { settings } = useUserSettings();
   const t = useTheme();
   const qc = useQueryClient();
   const requests = useQuery({ queryKey: ["callback-requests"], queryFn: getCallbackRequests });
@@ -115,10 +118,7 @@ function CallbackList() {
 
   function callBack(r: CallbackRequest) {
     haptics.medium();
-    router.push({
-      pathname: "/call-active",
-      params: { number: r.caller_number, name: name(r), from: effectiveFrom ?? "" },
-    });
+    placeCall({ number: r.caller_number, name: name(r), from: effectiveFrom ?? undefined, settings });
   }
 
   async function toggle(r: CallbackRequest) {
