@@ -11,24 +11,23 @@ function baseEnv(extra: Record<string, unknown> = {}) {
 
 // Routes by host so each test only says what differs from "everything healthy".
 function stubFetch(over: { servicem8?: number; twilio?: number; region?: string | number; expo?: unknown } = {}) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("servicem8.com")) return Promise.resolve(new Response("{}", { status: over.servicem8 ?? 200 }));
-      if (url.includes("routes.twilio.com")) {
-        if (typeof over.region === "number") return Promise.resolve(new Response("{}", { status: over.region }));
-        return Promise.resolve(new Response(JSON.stringify({ voice_region: over.region ?? "au1" }), { status: 200 }));
-      }
-      if (url.includes("api.sydney.au1.twilio.com")) {
-        return Promise.resolve(new Response(JSON.stringify({ status: "active", friendly_name: "TCB" }), { status: over.twilio ?? 200 }));
-      }
-      if (url.includes("exp.host")) {
-        return Promise.resolve(new Response(JSON.stringify(over.expo ?? { data: [{ status: "ok", id: "t1" }] }), { status: 200 }));
-      }
-      throw new Error(`unexpected fetch: ${url}`);
-    })
-  );
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("servicem8.com")) return Promise.resolve(new Response("{}", { status: over.servicem8 ?? 200 }));
+    if (url.includes("routes.twilio.com")) {
+      if (typeof over.region === "number") return Promise.resolve(new Response("{}", { status: over.region }));
+      return Promise.resolve(new Response(JSON.stringify({ voice_region: over.region ?? "au1" }), { status: 200 }));
+    }
+    if (url.includes("api.sydney.au1.twilio.com")) {
+      return Promise.resolve(new Response(JSON.stringify({ status: "active", friendly_name: "TCB" }), { status: over.twilio ?? 200 }));
+    }
+    if (url.includes("exp.host")) {
+      return Promise.resolve(new Response(JSON.stringify(over.expo ?? { data: [{ status: "ok", id: "t1" }] }), { status: 200 }));
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 async function run(e = baseEnv()): Promise<Check[]> {
@@ -133,12 +132,12 @@ describe("test push", () => {
   it("sends only to the caller's own devices, never a colleague's", async () => {
     await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)").bind(TOKEN, ADMIN.email).run();
     await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[someone-else]', 'android', 'mate@example.com', 1, 1)").run();
-    stubFetch();
+    const fetchMock = stubFetch();
     const res = await handleTestPush(baseEnv(), ADMIN);
     expect(res.status).toBe(200);
-    const body = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
-    expect(String(body.body)).toContain("test-device-1");
-    expect(String(body.body)).not.toContain("someone-else");
+    const sentBody = String(fetchMock.mock.calls[0][1]?.body);
+    expect(sentBody).toContain("test-device-1");
+    expect(sentBody).not.toContain("someone-else");
   });
 
   // A dead token means a phone that will never buzz; leaving it in the count is a lie.
