@@ -431,3 +431,23 @@ export async function updateNumber(id: number, input: PhoneNumberInput): Promise
 export async function deleteNumber(id: number): Promise<void> {
   await apiFetch(`/api/numbers/${id}`, { method: "DELETE" });
 }
+
+// ---- Admin: health checks ----
+// Each of these exists because it went wrong in production and nothing said so. The two "test"
+// calls below are end-to-end on purpose: a status row describes a chain, a buzzing phone proves it.
+
+export type CheckStatus = "ok" | "warn" | "fail";
+export type Check = { key: string; label: string; status: CheckStatus; detail: string };
+
+export async function getDiagnostics(): Promise<Check[]> {
+  return apiFetch<Check[]>("/api/admin/diagnostics");
+}
+
+// Sends a push to YOUR devices only, and prunes any Expo reports as dead.
+export async function sendTestPush(): Promise<{ sent: number; devices: number; pruned: number }> {
+  return apiFetch("/api/admin/test-push", { method: "POST" });
+}
+
+export async function sendTestEmail(): Promise<{ ok: boolean; to: string }> {
+  return apiFetch("/api/admin/test-email", { method: "POST" });
+}

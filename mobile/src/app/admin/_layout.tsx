@@ -30,6 +30,7 @@ export default function AdminLayout() {
       <Stack.Screen name="business-hours" options={{ title: "Business Hours" }} />
       <Stack.Screen name="blocklist" options={{ title: "Call Blocklist" }} />
       <Stack.Screen name="numbers" options={{ title: "Phone Numbers" }} />
+      <Stack.Screen name="diagnostics" options={{ title: "Health Checks" }} />
       <Stack.Screen name="staff/index" options={{ title: "Staff" }} />
       <Stack.Screen name="staff/[email]" options={{ title: "Staff Member" }} />
     </Stack>

@@ -160,6 +160,15 @@ is normal, not broken.
   missed every customer whose number carries spaces. The name now comes from the search results
   themselves — the `company` result's `name` IS the customer — with jobcontact only as a fallback,
   widened to several stored formats. One search per call now serves both the note and the contact.
+- **Admin > Health Checks (mobile) is where "is it actually working?" gets answered.**
+  `GET /api/admin/diagnostics` runs six checks, each one added because it failed silently in
+  production: Twilio credentials, **live** voice-number regions (asks `routes.twilio.com` rather
+  than trusting the region recorded on `/admin/settings` — a 404 there means no explicit config,
+  which defaults to us1), who is on call right now, ServiceM8 (distinguishing "no key" from "key
+  rejected"), the email binding, and the caller's registered push devices. `POST
+  /api/admin/test-push` and `/api/admin/test-email` are end-to-end and deliberately target only the
+  CALLER's own account, so a test never pages the team; the push one prunes any token Expo reports
+  as `DeviceNotRegistered`.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring
