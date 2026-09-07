@@ -44,6 +44,7 @@ import {
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
 import { syncPendingCallsToServiceM8 } from "./servicem8/syncQueue";
+import { handleGetDiagnostics, handleTestPush, handleTestEmail } from "./api/diagnostics";
 import { describeChannelError } from "./twilio/channelErrors";
 import { handleRegisterPushToken, notifyInboundSms, notifyMessageFailed } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
@@ -998,6 +999,16 @@ export default {
       // Full staff detail for the mobile Admin screens. Gated above with the rest of /api/admin/.
       if (url.pathname === "/api/admin/staff" && request.method === "GET") {
         return handleGetStaffAdminList(env.DB);
+      }
+      // Health checks, and the two end-to-end tests that prove a chain rather than describe it.
+      if (url.pathname === "/api/admin/diagnostics" && request.method === "GET") {
+        return handleGetDiagnostics(env, staff);
+      }
+      if (url.pathname === "/api/admin/test-push" && request.method === "POST") {
+        return handleTestPush(env, staff);
+      }
+      if (url.pathname === "/api/admin/test-email" && request.method === "POST") {
+        return handleTestEmail(env, staff);
       }
       if (url.pathname === "/api/staff") {
         if (request.method === "GET") return handleGetStaffRoster(env.DB, demoEmails(env));

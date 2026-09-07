@@ -71,6 +71,11 @@ export default function AdminHomeScreen() {
             onPress={() => router.push("/admin/staff")} />
         </Group>
 
+        <Group title="Diagnostics" footer="Whether Twilio, ServiceM8, email and push are actually working right now — and a test notification you can send to your own phone.">
+          <Row icon="stethoscope" iconColor="#FF375F" label="Health Checks" chevron
+            onPress={() => router.push("/admin/diagnostics")} />
+        </Group>
+
         <Group footer="The IVR phone menu and the analytics dashboard are still web-only — open tcbvoip.app on a computer for those.">
           <Row icon="info.circle.fill" iconColor="#8E8E93" label="Not on mobile" value="IVR · Analytics" />
         </Group>
