@@ -7,6 +7,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
+import { useContactName } from "../lib/useContactName";
 import { formatPhone } from "../lib/phone";
 import { acceptIncoming, rejectIncoming, getActiveCall, onInviteCancelled, onInviteAccepted } from "../lib/voice";
 import { haptics } from "../theme/haptics";
@@ -34,7 +35,12 @@ export default function IncomingCallScreen() {
   const name = String(params.name ?? "");
   const isAuto = params.auto === "1";
   const isWaiting = params.waiting === "1";
-  const title = name || formatPhone(number) || "Unknown";
+  // Display only. The effects below deliberately keep depending on the PARAM `name`, not this: a
+  // name that arrives late would otherwise tear down and re-subscribe onInviteAccepted mid-ring,
+  // and a missed accept there is the black-screen-over-a-live-call bug from #50/#51. The in-call
+  // screen resolves the name itself, so nothing is lost by passing the raw param onward.
+  const displayName = useContactName(number, name);
+  const title = displayName || formatPhone(number) || "Unknown";
 
   // Guards the auto-answer timer so it doesn't fire after the user has already accepted or
   // declined (e.g. they tap Decline in the first second of a hands-free auto-answer window).
@@ -118,10 +124,10 @@ export default function IncomingCallScreen() {
       <LinearGradient colors={["#26262A", "#0C0C0E"]} style={StyleSheet.absoluteFill} />
 
       <View style={[styles.header, { paddingTop: insets.top + 60 }]}>
-        <Avatar name={name || undefined} size={116} />
+        <Avatar name={displayName || undefined} size={116} />
         <Text style={[type.title1, { color: "#FFFFFF", marginTop: 22 }]} numberOfLines={1}>{title}</Text>
         <Text style={[type.callout, { color: "rgba(235,235,245,0.6)", marginTop: 4 }]}>
-          {name ? formatPhone(number) : "TCB Phone · Incoming"}
+          {displayName ? formatPhone(number) : "TCB Phone · Incoming"}
         </Text>
         {isWaiting && (
           <Text style={[type.footnote, { color: "#FFD60A", marginTop: 14, textAlign: "center", paddingHorizontal: 32 }]}>
