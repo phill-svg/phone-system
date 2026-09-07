@@ -43,7 +43,7 @@ import {
 } from "./api/staff";
 import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
-import { logCallAndSyncContact } from "./servicem8/callLogging";
+import { syncPendingCallsToServiceM8 } from "./servicem8/syncQueue";
 import { describeChannelError } from "./twilio/channelErrors";
 import { handleRegisterPushToken, notifyInboundSms, notifyMessageFailed } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
@@ -119,6 +119,11 @@ type Env = {
   // job (see src/servicem8/). Unset means the feature is simply off -- no error, no missing data.
   SERVICEM8_API_KEY?: string;
 };
+
+// The extra cron added purely so the ServiceM8 sweep can fire near its 3-minute mark; the 5-minute
+// tick everything else uses would have stretched that to anywhere from 3 to 8 minutes. Must stay in
+// step with the "crons" array in wrangler.jsonc.
+const MINUTE_CRON = "* * * * *";
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
 // Australian local formats get +61; anything already-E.164 or a client: identity passes through.
@@ -260,37 +265,11 @@ export default {
           } catch {
             /* timeline logging is best-effort; never fail the webhook over it */
           }
-          if (env.SERVICEM8_API_KEY) {
-            const apiKey = env.SERVICEM8_API_KEY;
-            const sm8Work = env.DB.prepare(
-              "SELECT direction, caller_number, called_number, started_at FROM calls WHERE id = ?"
-            )
-              .bind(params.CallSid)
-              .first<{ direction: "inbound" | "outbound"; caller_number: string; called_number: string; started_at: number }>()
-              .then((call) => {
-                if (!call) return;
-                const loggable = {
-                  direction: call.direction,
-                  callerNumber: call.caller_number,
-                  calledNumber: call.called_number,
-                  startedAt: call.started_at,
-                  endedAt: Date.now(),
-                  status: normalized,
-                };
-                return logCallAndSyncContact(env.DB, apiKey, loggable);
-              })
-              .catch((e) => {
-                /* ServiceM8 logging is best-effort; never fail the webhook over it */
-                console.error("SERVICEM8_FAILED", String(e));
-              });
-            if (ctx) ctx.waitUntil(sm8Work);
-            else await sm8Work;
-          } else {
-            // The integration is off because no key is configured -- which is indistinguishable
-            // from "it is broken" unless it says so. Set it with:
-            //   npx wrangler secret put SERVICEM8_API_KEY
-            console.log("SERVICEM8_DISABLED", JSON.stringify({ callSid: params.CallSid }));
-          }
+          // ServiceM8 is deliberately NOT called here. Staff often create the client or job during
+          // the call or just after hanging up, so looking the caller up the moment it ended
+          // searched for a record that did not exist yet and gave up for good. The row is left
+          // with servicem8_synced_at NULL and the cron picks it up a few minutes later --
+          // see src/servicem8/syncQueue.ts.
         }
         // The caller's leg ending may strand the agent alone in the conference (named by
         // this same CallSid) -- end it if at most one participant remains.
@@ -1229,7 +1208,17 @@ export default {
   // Cron: reconcile any calls stuck as `in_progress` (a missed Twilio status callback) against
   // Twilio's real state, so Call History / analytics / Live Calls stay accurate without depending
   // on every status webhook landing. See reconcileStaleCalls.
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Runs on EVERY tick, the 1-minute one included: this is the only time-sensitive job here
+    // (3 minutes after a call ends, near enough), and each call is claimed in D1 before any work,
+    // so an overlapping tick cannot post a diary note twice.
+    ctx.waitUntil(syncPendingCallsToServiceM8(env).catch(() => {}));
+
+    // Everything below was written for the 5-minute tick and must not run every minute. An
+    // unrecognised or absent cron string falls through to here, which is the safe default: the
+    // work still happens, just on whatever schedule fired.
+    if (event.cron === MINUTE_CRON) return;
+
     ctx.waitUntil(reconcileStaleCalls(env).catch(() => {}));
     // Catch recordings the recording-status webhook never transcribed (made before Whisper
     // shipped, or a dropped webhook). Bounded per tick; rows are attempt-capped so this drains

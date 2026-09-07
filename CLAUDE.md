@@ -144,6 +144,16 @@ is normal, not broken.
   now log `SERVICEM8_DISABLED` (no key), `SERVICEM8_SEARCH_FAILED` (missing/revoked key — a 401
   looks identical to no key), `SERVICEM8_NO_MATCH`, `SERVICEM8_NO_NAME` and
   `SERVICEM8_CONTACT_CREATED`, so `wrangler tail | grep SERVICEM8_` answers "is it on?".
+- **ServiceM8 runs 3 minutes AFTER a call ends, on a cron — not from the status webhook.** Staff
+  routinely create the ServiceM8 client or job during the call or right after hanging up, so firing
+  the instant it ended searched for a record that did not exist yet, found nothing, and never tried
+  again — the note and the contact were both lost for that call. The status webhook now only leaves
+  `calls.servicem8_synced_at` NULL (migration `0031`) and `src/servicem8/syncQueue.ts` sweeps on the
+  cron. A **second cron, `* * * * *`, exists solely for this sweep** — the `*/5` tick would have
+  stretched "3 minutes" to 3–8; `scheduled()` branches on `event.cron` so everything else stays on
+  `*/5`. Each call is CLAIMED in D1 before any work, because two overlapping ticks would otherwise
+  post the diary note twice. The sweep reaches back only 2 hours, which is what stops the first tick
+  after a deploy noting every call in history, and also bounds retries.
 - **ServiceM8 search tokenizes; its OData filters do not.** `search.json?q=` matches a number
   however it is stored ("0402 430 107" matches a query of "0402430107"), but
   `jobcontact.json?$filter=mobile eq '...'` is an exact string compare, so the old name lookup
