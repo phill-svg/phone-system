@@ -1,6 +1,6 @@
 import { authorizeTwilioWebhook, appendWebhookSecret } from "./twilio/webhookAuth";
 import { isDemoUser, handleDemoRequest, demoEmails } from "./demo";
-import { renderJoinConference, renderDialAgentIntoConference, renderListenConference } from "./twilio/conferenceTwiml";
+import { renderJoinConference, renderDialAgentIntoConference, renderListenConference, renderBridgeToCustomer, renderAbandonToVoicemail } from "./twilio/conferenceTwiml";
 import { createOutboundCall } from "./twilio/restClient";
 import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
@@ -45,6 +45,7 @@ import { handleListConversations, handleGetThread, handleSendMessage } from "./a
 import { insertMessage, updateMessageStatus } from "./db/messages";
 import { syncPendingCallsToServiceM8 } from "./servicem8/syncQueue";
 import { handleGetDiagnostics, handleTestPush, handleTestEmail } from "./api/diagnostics";
+import { handleCallViaMobile } from "./api/callViaMobile";
 import { describeChannelError } from "./twilio/channelErrors";
 import { handleRegisterPushToken, notifyInboundSms, notifyMessageFailed } from "./api/push";
 import { handleResolveFacebookNames, handleSetFacebookName, handleFacebookProbe } from "./api/facebook";
@@ -460,6 +461,48 @@ export default {
           conferenceName,
           actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
           recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          record,
+        }),
+        { headers: { "Content-Type": "text/xml" } }
+      );
+    }
+
+    // "Call via my mobile" leg answered. Twilio calls this on the STAFF member's mobile leg; the
+    // customer has not been dialled yet, which is what makes refusing to connect possible here.
+    if (url.pathname === "/twiml/mobile-bridge" && request.method === "POST") {
+      const formData = await request.formData();
+      const params: Record<string, string> = {};
+      for (const [key, value] of formData.entries()) {
+        params[key] = String(value);
+      }
+      const valid = await authorizeTwilioWebhook(request, params, env);
+      if (!valid) return new Response("invalid signature", { status: 401 });
+
+      const to = url.searchParams.get("to");
+      const callerId = url.searchParams.get("callerId");
+      if (!to || !callerId) return new Response("missing to/callerId", { status: 400 });
+
+      // AnsweredBy comes from the synchronous AMD on this leg. Anything that is not a human means
+      // the staff member's voicemail (or a fax) answered, so the customer is never dialled.
+      const answeredBy = params.AnsweredBy ?? "";
+      if (answeredBy.startsWith("machine") || answeredBy === "fax") {
+        console.log("CALL_VIA_MOBILE_VOICEMAIL", JSON.stringify({ callSid: params.CallSid, answeredBy }));
+        await env.DB.prepare("UPDATE calls SET status = 'no-answer' WHERE id = ? AND ended_at IS NULL")
+          .bind(params.CallSid)
+          .run();
+        return new Response(renderAbandonToVoicemail(), { headers: { "Content-Type": "text/xml" } });
+      }
+
+      const record = await getRecordingEnabled(env.DB);
+      return new Response(
+        renderBridgeToCustomer({
+          to,
+          callerId,
+          actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/status`, env.TWILIO_WEBHOOK_SECRET),
+          recordingStatusCallbackUrl: appendWebhookSecret(
+            `${url.origin}/webhooks/twilio/recording-status?callSid=${encodeURIComponent(params.CallSid)}`,
+            env.TWILIO_WEBHOOK_SECRET
+          ),
           record,
         }),
         { headers: { "Content-Type": "text/xml" } }
@@ -978,6 +1021,11 @@ export default {
         }
       }
 
+      // Dial without using VoIP at all: Twilio rings this staff member's mobile, then bridges the
+      // customer. See src/api/callViaMobile.ts.
+      if (url.pathname === "/api/softphone/call-via-mobile" && request.method === "POST") {
+        return handleCallViaMobile(request, env, staff, url.origin, appendWebhookSecret);
+      }
       if (url.pathname === "/api/softphone/token" && request.method === "GET") {
         return handleGetSoftphoneToken(env, staff, url.searchParams.get("platform") ?? undefined);
       }

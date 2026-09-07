@@ -38,3 +38,35 @@ export function renderDialAgentIntoConference(opts: {
       `</Dial>`
   );
 }
+
+// "Call via my mobile": the staff member has answered their mobile, so dial the customer and bridge
+// them. `callerId` is the business number, so the customer sees the office, not a personal mobile.
+//
+// `answerOnBridge` matters here: without it Twilio answers the staff leg immediately and they hear
+// silence while the customer's phone rings. With it they hear real ringback, which is what any
+// phone call sounds like -- and if the customer never answers, the staff leg is never billed as
+// connected either.
+export function renderBridgeToCustomer(opts: {
+  to: string;
+  callerId: string;
+  actionUrl: string;
+  recordingStatusCallbackUrl: string;
+  record?: boolean;
+}): string {
+  const rec =
+    opts.record === false
+      ? ""
+      : ` record="record-from-answer" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
+  return wrapResponse(
+    `<Dial answerOnBridge="true" callerId="${escapeXml(opts.callerId)}" action="${escapeXml(opts.actionUrl)}" method="POST"${rec}>` +
+      `<Number>${escapeXml(opts.to)}</Number>` +
+      `</Dial>`
+  );
+}
+
+// The staff member's own voicemail picked up instead of them. Hanging up here is the entire reason
+// answering-machine detection runs on that leg: the alternative is dialling the customer and
+// connecting them to a stranger's voicemail greeting.
+export function renderAbandonToVoicemail(): string {
+  return wrapResponse("<Hangup/>");
+}

@@ -294,6 +294,9 @@ export type UserSettings = {
   notif_sms: boolean;
   notif_callback: boolean;
   ring_my_mobile: boolean;
+  // OUTBOUND, and nothing to do with ring_my_mobile above (that is the inbound divert). When on,
+  // dialling rings YOUR mobile and bridges the customer once you answer.
+  call_via_mobile: boolean;
   mobile_number: string;
 };
 
@@ -312,6 +315,13 @@ export async function getRecordingSetting(): Promise<boolean> {
 }
 export async function setRecordingSetting(enabled: boolean): Promise<void> {
   await apiFetch("/api/settings/recording", { method: "PUT", body: JSON.stringify({ recording_enabled: enabled }) });
+}
+
+// ---- Call via my mobile ----
+// Asks the server to ring this staff member's mobile and bridge the customer on answer. There is no
+// VoIP leg and no in-call screen: the native dialler owns the call once the phone rings.
+export async function callViaMobile(to: string, from?: string): Promise<{ callSid: string; ringing: string }> {
+  return apiFetch("/api/softphone/call-via-mobile", { method: "POST", body: JSON.stringify({ to, from }) });
 }
 
 // ---- Admin: business-wide settings ----

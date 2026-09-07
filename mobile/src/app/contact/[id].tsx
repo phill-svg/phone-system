@@ -1,6 +1,8 @@
 import React, { useMemo } from "react";
 import { ScrollView, View, Text, Pressable, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
+import { placeCall } from "../../lib/placeCall";
+import { useUserSettings } from "../../lib/userSettings";
 import { router, useLocalSearchParams } from "expo-router";
 import { type SymbolViewProps } from "expo-symbols";
 import { Screen } from "../../components/ui/Screen";
@@ -26,6 +28,7 @@ function QuickAction({ icon, fallback, label, onPress, color }: { icon: SymbolVi
 }
 
 export default function ContactDetailScreen() {
+  const { settings } = useUserSettings();
   const t = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts });
@@ -48,7 +51,7 @@ export default function ContactDetailScreen() {
 
   function call() {
     haptics.medium();
-    router.push({ pathname: "/call-active", params: { number: contact!.phone, name: contact!.name } });
+    placeCall({ number: contact!.phone, name: contact!.name, settings });
   }
 
   return (
