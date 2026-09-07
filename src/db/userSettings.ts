@@ -8,6 +8,10 @@ export type UserSettings = {
   notif_sms: boolean;
   notif_callback: boolean;
   ring_my_mobile: boolean;
+  // OUTBOUND, and unrelated to ring_my_mobile above (which is the inbound divert). When on, tapping
+  // dial asks Twilio to ring this person's mobile and bridge the customer once they answer, so both
+  // legs are carrier calls and the app never carries the audio.
+  call_via_mobile: boolean;
   mobile_number: string;
 };
 
@@ -18,6 +22,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   notif_sms: true,
   notif_callback: true,
   ring_my_mobile: false,
+  call_via_mobile: false,
   mobile_number: "",
 };
 

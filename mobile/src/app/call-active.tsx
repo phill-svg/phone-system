@@ -7,6 +7,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../components/ui/Icon";
+import { useContactName } from "../lib/useContactName";
 import { Avatar } from "../components/ui/Avatar";
 import { DialPad } from "../components/keypad/DialPad";
 import { formatPhone } from "../lib/phone";
@@ -78,6 +79,9 @@ export default function ActiveCallScreen() {
   const params = useLocalSearchParams<{ number?: string; name?: string; direction?: string; from?: string }>();
   const number = String(params.number ?? "");
   const name = String(params.name ?? "");
+  // Resolved here too, so an incoming call names the caller even though the ringing screen passes
+  // the raw param through, and an outbound call from a screen that had no name still shows one.
+  const displayName = useContactName(number, name);
   const fromNumber = String(params.from ?? "") || undefined;
   const isIncoming = params.direction === "incoming";
 
@@ -224,7 +228,7 @@ export default function ActiveCallScreen() {
 
   const statusLine =
     state === "calling" ? "Calling…" : state === "ended" ? (errorText ?? "Call Ended") : held ? "On Hold" : fmtDuration(seconds);
-  const title = name || formatPhone(number) || "Unknown";
+  const title = displayName || formatPhone(number) || "Unknown";
 
   return (
     <View style={styles.root}>
@@ -239,7 +243,7 @@ export default function ActiveCallScreen() {
             <Text style={styles.recText}>REC</Text>
           </View>
         ) : null}
-        <Avatar name={name || undefined} size={104} />
+        <Avatar name={displayName || undefined} size={104} />
         <Text style={[type.title1, { color: C.text, marginTop: 20 }]} numberOfLines={1}>{title}</Text>
         {name ? <Text style={[type.callout, { color: C.sub, marginTop: 2 }]}>{formatPhone(number)}</Text> : null}
         <Text style={[type.body, { color: state === "calling" ? C.sub : C.text, marginTop: 10, fontVariant: ["tabular-nums"] }]}>

@@ -169,6 +169,16 @@ is normal, not broken.
   /api/admin/test-push` and `/api/admin/test-email` are end-to-end and deliberately target only the
   CALLER's own account, so a test never pages the team; the push one prunes any token Expo reports
   as `DeviceNotRegistered`.
+- **"Call via my mobile" is the OUTBOUND counterpart to ring-my-mobile, and is a separate toggle.**
+  `POST /api/softphone/call-via-mobile` asks Twilio to ring the staff member's mobile, and
+  `/twiml/mobile-bridge` dials the customer once they answer, with the business number as caller ID
+  on both legs. No VoIP leg exists, so the **native dialler owns the call** — mute, speaker, keypad
+  and hangup come free, and there is deliberately no in-call screen. The trade is no in-app
+  hold/transfer/notes mid-call. AMD on the staff leg is **synchronous here** — the exact opposite of
+  the inbound pstn leg, and not a mistake: no caller is waiting yet, so blocking for the verdict is
+  what lets us hang up instead of connecting a customer to someone's voicemail greeting. The row is
+  keyed on the mobile leg's CallSid so history, the status webhook, recording and the ServiceM8
+  sweep all treat it as an ordinary outbound call.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring

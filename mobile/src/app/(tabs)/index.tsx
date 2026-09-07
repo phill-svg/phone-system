@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { View, Text, Pressable, StyleSheet, ScrollView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
+import { placeCall } from "../../lib/placeCall";
 import { router } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { Screen } from "../../components/ui/Screen";
@@ -16,12 +17,14 @@ import { haptics } from "../../theme/haptics";
 import { NumberPicker } from "../../components/ui/NumberPicker";
 import { usePersistedString } from "../../lib/prefs";
 import { resolveSendingNumber } from "../../lib/sendingNumber";
+import { useUserSettings } from "../../lib/userSettings";
 import { useTheme, type } from "../../theme/theme";
 
 export default function KeypadScreen() {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const [number, setNumber] = useState("");
+  const { settings } = useUserSettings();
   const { data: contacts } = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
   const { data: numbers } = useQuery({ queryKey: ["numbers"], queryFn: getNumbers, staleTime: 300_000 });
 
@@ -39,7 +42,7 @@ export default function KeypadScreen() {
     const dialed = target.trim();
     if (!dialed) return;
     haptics.medium();
-    router.push({ pathname: "/call-active", params: { number: dialed, name: name ?? "", from: effectiveFrom ?? "" } });
+    placeCall({ number: dialed, name, from: effectiveFrom ?? undefined, settings });
   }
 
   async function paste() {

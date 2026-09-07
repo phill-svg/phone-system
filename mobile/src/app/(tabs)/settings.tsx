@@ -16,7 +16,7 @@ import { useTheme, useThemePreference, type ThemePreference } from "../../theme/
 import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "47";
+const OTA_BUILD = "49";
 
 const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
   automatic: "Automatic",
@@ -173,11 +173,20 @@ export default function SettingsScreen() {
           <Row icon="bell.badge" iconColor={voiceReg.startsWith("registered") ? t.colors.success : t.colors.warning} label="Incoming calls" value={voiceReg} />
         </Group>
 
-        <Group title="Calling" footer="Call Waiting shows a second incoming call while you're on a call. Ring My Mobile sends calls to your mobile instead of this app. Auto-Answer automatically answers incoming calls after a moment. Call Recording is a business-wide setting managed by admins.">
+        <Group title="Calling" footer="Call Waiting shows a second incoming call while you're on a call. Ring My Mobile diverts INCOMING calls to your mobile instead of this app. Call via My Mobile does the same for OUTGOING ones: we ring your mobile, then connect the customer — better audio on a poor data connection, and they still see the office number. Auto-Answer automatically answers incoming calls after a moment. Call Recording is a business-wide setting managed by admins.">
           <Row icon="phone.arrow.up.right.fill" iconColor="#34C759" label="Call Waiting" toggle={callWaiting} onToggle={setCallWaiting} />
           <Row icon="arrow.turn.up.right" iconColor="#0A84FF" label="Ring My Mobile"
             value={settings.ring_my_mobile ? "Diverting" : "Off"} chevron
             onPress={() => router.push("/call-forwarding")} />
+          <Row icon="phone.connection" iconColor="#FF9500" label="Call via My Mobile"
+            toggle={settings.call_via_mobile}
+            onToggle={(v) => {
+              if (v && !settings.mobile_number.trim()) {
+                Alert.alert("Mobile number needed", "Add your mobile number under Ring My Mobile first — that's the number we'll ring.");
+                return;
+              }
+              update({ call_via_mobile: v });
+            }} />
           <Row icon="phone.badge.checkmark" iconColor="#5E5CE6" label="Auto-Answer" toggle={autoAnswer} onToggle={setAutoAnswer} />
           {isAdmin ? (
             <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" toggle={recording} onToggle={onToggleRecording} />
