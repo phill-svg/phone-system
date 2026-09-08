@@ -548,11 +548,7 @@ export class CallSession extends DurableObject<Env> {
         // Swallowing this silently once hid a credentials outage for a full day -- always log it.
         console.log("DIAL_STAFF_FAILED", JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) }));
         for (const sid of attemptSids) {
-          try {
-            await this.cancelStaff(sid);
-          } catch {
-            /* leg may already be torn down; ignore */
-          }
+          await this.cancelStaff(sid);
         }
         return null;
       }
@@ -629,11 +625,7 @@ export class CallSession extends DurableObject<Env> {
       activeRing.ringPlanState.name === "DIALING" && activeRing.attemptSids.length > 0;
     if (abandonedMidRing) {
       for (const sid of activeRing.attemptSids) {
-        try {
-          await this.cancelStaff(sid);
-        } catch {
-          /* leg may already be torn down; ignore */
-        }
+        await this.cancelStaff(sid);
       }
     }
     await this.logEvent(body.callSid, abandonedMidRing ? "caller_hung_up" : "no_answer");
@@ -1016,8 +1008,28 @@ export class CallSession extends DurableObject<Env> {
     return sid;
   }
 
+  // Stop a staff leg ringing. BEST EFFORT, and deliberately incapable of throwing.
+  //
+  // Twilio's Status=canceled only applies to a leg still queued/ringing: a sibling that just went
+  // to voicemail, was declined, or answered a fraction of a second earlier answers 400, and one
+  // already torn down answers 404. In a simultaneous ring that is an ordinary race, not an
+  // exception -- but this used to throw, and two of the four callers did not catch it.
+  //
+  // The damage was worst on the ANSWER path, which cancels the other ringing legs before bridging
+  // the caller: one unlucky sibling aborted the loop, so every leg after it kept ringing, the
+  // `answered` event was never written, and -- the real harm -- the redirect that joins the caller
+  // to the conference never ran. Whoever answered got silence and the rest of the team kept
+  // ringing. Production shows the signature: calls with two ring rounds, no `answered`, and only
+  // one `no_answer`, ending in no terminal state at all.
+  //
+  // So the tolerance lives here rather than at each call site, where the next one added would
+  // forget it again.
   private async cancelStaff(sid: string): Promise<void> {
-    await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);
+    try {
+      await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);
+    } catch (err) {
+      console.log("CANCEL_STAFF_FAILED", JSON.stringify({ sid, error: err instanceof Error ? err.message : String(err) }));
+    }
   }
 
   // Best-effort append to the per-call event timeline. Never let a logging failure break the

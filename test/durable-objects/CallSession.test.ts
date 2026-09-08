@@ -685,6 +685,57 @@ describe("CallSession", () => {
     expect(cancelHits(fetchMock).length).toBe(2);
   });
 
+  // A sibling leg that just went to voicemail, was declined, or answered a fraction of a second
+  // earlier answers Twilio's Status=canceled with a 400; an already torn-down one answers 404. That
+  // is an ordinary race in a ring-all, and it used to throw straight out of the answer handler --
+  // aborting the loop, so every leg after it kept ringing, and (the real harm) skipping the redirect
+  // that joins the caller to the conference. Whoever answered heard silence while the rest of the
+  // team's phones rang on.
+  it("one sibling that refuses to cancel does not strand the other phones or the caller", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await seedStaff("jo@b.com");
+
+    const stub = stubFor("CA-cancelfail");
+    await send(stub, mainEvent("CA-cancelfail"));
+    await send(stub, mainEvent("CA-cancelfail", { digits: "1" }));
+
+    // Sam's leg rejects the cancel, exactly as Twilio does for a leg no longer ringing.
+    const samSid = "sid-client:sam@b.com?CallerNumber=61400000000";
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const isCancel =
+        String(input).endsWith(`/Calls/${samSid}.json`) &&
+        new URLSearchParams((init as RequestInit).body as string).get("Status") === "canceled";
+      if (isCancel) return new Response("call is not in-progress", { status: 400 });
+      return previous(input, init);
+    });
+
+    const answer = await send(
+      stub,
+      agentAnswer("CA-cancelfail", "sid-client:phill@b.com?CallerNumber=61400000000")
+    );
+
+    // The caller is still bridged -- this is the part that was silently lost.
+    expect(answer.status).toBe(200);
+    expect(answer.xml).toContain("<Dial");
+
+    // Both siblings were still attempted, including the one ordered after the failure.
+    expect(cancelHits(fetchMock).length).toBe(2);
+    expect(cancelHits(fetchMock).some((u) => u.includes("jo@b.com"))).toBe(true);
+
+    // And the call is recorded as answered rather than left with no terminal state at all.
+    const events = await env.DB.prepare(
+      "SELECT event_type FROM call_events WHERE call_id = ? ORDER BY ts"
+    )
+      .bind("CA-cancelfail")
+      .all<{ event_type: string }>();
+    expect(events.results.map((e) => e.event_type)).toContain("answered");
+  });
+
   it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {
     await seedEntryGather({ option1: "main_ring_emergency", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring_emergency", { target: ["phill@b.com", "sam@b.com"], noAnswerNextNodeId: "main_vm" });
