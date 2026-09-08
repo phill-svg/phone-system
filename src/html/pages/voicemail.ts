@@ -14,9 +14,34 @@ function fmtWhen(ms: number): string {
   return new Date(ms).toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
 }
 
-// Every voicemail on one page, each playable where it sits.
+// One player, moved to whichever row is playing. Six native <audio> controls stacked down a page is
+// a wall of chrome, and each one preloads its own connection; a single element also means starting
+// a second message stops the first, which is what "playing through the voicemails" actually wants.
+// No backticks or ${} in here -- it is embedded in a template literal.
+const CLIENT_JS = `
+document.addEventListener("click", function (ev) {
+  var btn = ev.target.closest(".vm-play");
+  if (!btn) return;
+  var audio = document.getElementById("vm-audio");
+  var row = btn.closest("tr");
+  var playing = row.classList.contains("vm-playing");
+  document.querySelectorAll(".vm-playing").forEach(function (r) { r.classList.remove("vm-playing"); });
+  document.querySelectorAll(".vm-play").forEach(function (b) { b.textContent = "Play"; });
+  if (playing) { audio.pause(); audio.removeAttribute("src"); return; }
+  audio.src = btn.dataset.src;
+  audio.play();
+  row.classList.add("vm-playing");
+  btn.textContent = "Stop";
+});
+document.getElementById("vm-audio").addEventListener("ended", function () {
+  document.querySelectorAll(".vm-playing").forEach(function (r) { r.classList.remove("vm-playing"); });
+  document.querySelectorAll(".vm-play").forEach(function (b) { b.textContent = "Play"; });
+});
+`;
+
+// Every voicemail on one page, newest first.
 //
-// Until now a voicemail was only findable by scrolling call history and knowing that "Voicemail" in
+// Until now a voicemail was only findable by scrolling Call History and knowing that "Voicemail" in
 // the outcome column meant there was audio behind it. That is fine for auditing a call and useless
 // for the actual job, which is working through the messages people left.
 export function renderVoicemailPage(
@@ -28,49 +53,45 @@ export function renderVoicemailPage(
     .map((call) => {
       const src = `/api/calls/${encodeURIComponent(call.id)}/recording`;
       const name = contactNames.get(call.caller_number);
+      const number = formatAuNumber(call.caller_number);
+      // The name is the useful line; the number stays beneath it so a callback never needs a
+      // second click to find one.
       const who = name
-        ? `${escapeHtml(name)} <span class="vm-num">${escapeHtml(formatAuNumber(call.caller_number))}</span>`
-        : escapeHtml(formatAuNumber(call.caller_number));
-      return `<article class="vm">
-        <div class="vm-head">
-          <div>
-            <strong class="vm-who">${who}</strong>
-            <div class="vm-meta">${escapeHtml(fmtWhen(call.started_at))}${
-              call.recording_duration ? ` &middot; ${escapeHtml(fmtSecs(call.recording_duration))}` : ""
-            }${call.mailbox_label ? ` &middot; ${escapeHtml(call.mailbox_label)}` : ""}</div>
-          </div>
-          <div class="vm-actions">
-            <a href="tel:${escapeHtml(call.caller_number)}" class="vm-btn">Call back</a>
-            <a href="/admin/calls/${escapeHtml(encodeURIComponent(call.id))}" class="vm-btn">Details</a>
-          </div>
-        </div>
-        <audio controls preload="none" src="${escapeHtml(src)}"></audio>
-        ${
-          call.transcription
-            ? `<p class="vm-transcript">${escapeHtml(call.transcription)}</p>`
-            : '<p class="vm-transcript vm-none">No transcript.</p>'
-        }
-        <p class="vm-download"><a href="${escapeHtml(src)}" download="voicemail-${escapeHtml(encodeURIComponent(call.id))}.mp3">Download</a></p>
-      </article>`;
+        ? `${escapeHtml(name)}<div class="vm-sub">${escapeHtml(number)}</div>`
+        : escapeHtml(number);
+      const transcript = call.transcription?.trim();
+      return `<tr>
+        <td><a href="/admin/calls/${escapeHtml(encodeURIComponent(call.id))}">${escapeHtml(fmtWhen(call.started_at))}</a>${
+        call.mailbox_label ? `<div class="vm-sub">${escapeHtml(call.mailbox_label)}</div>` : ""
+      }</td>
+        <td>${who}</td>
+        <td class="vm-len">${call.recording_duration === null ? "" : escapeHtml(fmtSecs(call.recording_duration))}</td>
+        <td class="vm-msg">${
+          transcript ? escapeHtml(transcript) : '<span class="vm-none">No transcript</span>'
+        }</td>
+        <td class="vm-actions"><button type="button" class="vm-play" data-src="${escapeHtml(src)}">Play</button> <a href="${escapeHtml(
+        src
+      )}" download="voicemail-${escapeHtml(encodeURIComponent(call.id))}.mp3">Save</a></td>
+      </tr>`;
     })
     .join("");
 
   const body = `<h2>Voicemail</h2>
     <style>
-      .vm { background: var(--admin-surface); border: 1px solid var(--admin-border); border-radius: 12px; padding: 0.9rem 1.1rem; margin-bottom: 0.9rem; }
-      .vm-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
-      .vm-who { font-size: 1rem; }
-      .vm-num { color: var(--admin-dim); font-weight: 400; font-family: monospace; font-size: 0.85rem; margin-left: 0.4rem; }
-      .vm-meta { color: var(--admin-dim); font-size: 0.82rem; margin-top: 0.15rem; }
-      .vm-actions { display: flex; gap: 0.5rem; }
-      .vm-btn { text-decoration: none; font-size: 0.82rem; padding: 0.3rem 0.7rem; border: 1px solid var(--admin-border); border-radius: 999px; color: var(--admin-text); }
-      .vm-btn:hover { border-color: var(--admin-brand); }
-      .vm audio { width: 100%; max-width: 460px; }
-      .vm-transcript { margin: 0.6rem 0 0; font-size: 0.9rem; line-height: 1.45; }
-      .vm-none { color: var(--admin-dim); font-style: italic; }
-      .vm-download { margin: 0.5rem 0 0; font-size: 0.8rem; }
-      .vm-empty { color: var(--admin-dim); }
+      .vm-sub { color: var(--admin-mute); font-size: 0.78rem; margin-top: 0.15rem; }
+      .vm-len { color: var(--admin-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .vm-msg { color: var(--admin-dim); font-size: 0.85rem; line-height: 1.4; }
+      .vm-none { color: var(--admin-mute); font-style: italic; }
+      .vm-actions { white-space: nowrap; text-align: right; }
+      .vm-actions a { font-size: 0.8rem; margin-left: 0.5rem; }
+      .vm-playing { background: var(--admin-surface-hover); }
+      .vm-playing .vm-play { border-color: var(--admin-brand); color: #ff8ea0; }
     </style>
-    ${calls.length === 0 ? '<p class="vm-empty">No voicemails yet.</p>' : rows}`;
+    <table>
+      <thead><tr><th>Received</th><th>From</th><th>Length</th><th>Message</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5">No voicemails yet.</td></tr>'}</tbody>
+    </table>
+    <audio id="vm-audio"></audio>
+    <script>${CLIENT_JS}</script>`;
   return renderLayout("Voicemail", "voicemail", body, { role });
 }

@@ -26,10 +26,23 @@ function call(overrides: Partial<CallSummary> = {}): CallSummary {
 }
 
 describe("html/pages/voicemail", () => {
-  it("renders a player and a download link pointing at the recording proxy", () => {
+  it("wires each row's play button and save link to the recording proxy", () => {
     const html = renderVoicemailPage([call()], new Map(), "admin");
-    expect(html).toContain('<audio controls preload="none" src="/api/calls/CA-1/recording">');
+    expect(html).toContain('class="vm-play" data-src="/api/calls/CA-1/recording"');
     expect(html).toContain('href="/api/calls/CA-1/recording" download=');
+  });
+
+  // Six stacked native players is a wall of chrome, each preloading its own connection -- and one
+  // shared element is what makes starting a second message stop the first.
+  it("uses a single shared audio element, not one per row", () => {
+    const html = renderVoicemailPage([call({ id: "CA-1" }), call({ id: "CA-2" })], new Map(), "admin");
+    expect(html.match(/<audio/g)).toHaveLength(1);
+    expect(html.match(/class="vm-play"/g)).toHaveLength(2);
+  });
+
+  it("shows the recorded length, and nothing at all when Twilio never reported one", () => {
+    expect(renderVoicemailPage([call({ recording_duration: 95 })], new Map(), "admin")).toContain("1:35");
+    expect(renderVoicemailPage([call({ recording_duration: null })], new Map(), "admin")).not.toContain("NaN");
   });
 
   it("shows the contact name when one is known, and the number either way", () => {
@@ -54,6 +67,10 @@ describe("html/pages/voicemail", () => {
 
   it("says so when there are no voicemails", () => {
     expect(renderVoicemailPage([], new Map(), "admin")).toContain("No voicemails yet.");
+  });
+
+  it("labels a message with no transcript rather than leaving the cell blank", () => {
+    expect(renderVoicemailPage([call({ transcription: null })], new Map(), "admin")).toContain("No transcript");
   });
 
   it("marks Voicemail as the active nav item", () => {
