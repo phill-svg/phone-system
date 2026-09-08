@@ -4,6 +4,7 @@ import {
   getCallDetail,
   listCalls,
   listLiveCalls,
+  listVoicemails,
   updateCallMeta,
   getCallStats,
   appendCallEvent,
@@ -39,6 +40,18 @@ describe("db/calls", () => {
 
     const result = await listLiveCalls(env.DB);
     expect(result.map((c) => c.id)).toEqual(["CA-live"]);
+  });
+
+  it("listVoicemails returns only calls with a mailbox, newest-first, and skips deleted ones", async () => {
+    await seedCall("CA-vm-old", { startedAt: 1000 });
+    await seedCall("CA-vm-new", { startedAt: 3000 });
+    await seedCall("CA-vm-gone", { startedAt: 4000 });
+    await seedCall("CA-plain", { startedAt: 5000 });
+    await env.DB.prepare("UPDATE calls SET mailbox_label = 'General' WHERE id LIKE 'CA-vm-%'").run();
+    await env.DB.prepare("UPDATE calls SET deleted_at = 1 WHERE id = 'CA-vm-gone'").run();
+
+    const result = await listVoicemails(env.DB);
+    expect(result.map((c) => c.id)).toEqual(["CA-vm-new", "CA-vm-old"]);
   });
 
   it("getCallDetail returns null for a missing call", async () => {
