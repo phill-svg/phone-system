@@ -46,10 +46,15 @@ export function renderDialAgentIntoConference(opts: {
 // silence while the customer's phone rings. With it they hear real ringback, which is what any
 // phone call sounds like -- and if the customer never answers, the staff leg is never billed as
 // connected either.
+//
+// There is deliberately NO `action` on this Dial. An action URL must return TwiML, and pointing one
+// at a status-callback endpoint (which answers with a plain "ok") made Twilio play "an application
+// error has occurred" to the staff member at the end of EVERY call. Without it, Twilio simply falls
+// off the end of the document and hangs up, which is what we want; the parent call's statusCallback
+// already records how the call finished.
 export function renderBridgeToCustomer(opts: {
   to: string;
   callerId: string;
-  actionUrl: string;
   recordingStatusCallbackUrl: string;
   record?: boolean;
 }): string {
@@ -58,7 +63,7 @@ export function renderBridgeToCustomer(opts: {
       ? ""
       : ` record="record-from-answer" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
   return wrapResponse(
-    `<Dial answerOnBridge="true" callerId="${escapeXml(opts.callerId)}" action="${escapeXml(opts.actionUrl)}" method="POST"${rec}>` +
+    `<Dial answerOnBridge="true" callerId="${escapeXml(opts.callerId)}"${rec}>` +
       `<Number>${escapeXml(opts.to)}</Number>` +
       `</Dial>`
   );

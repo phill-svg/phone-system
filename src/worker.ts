@@ -499,7 +499,6 @@ export default {
         renderBridgeToCustomer({
           to,
           callerId,
-          actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/status`, env.TWILIO_WEBHOOK_SECRET),
           recordingStatusCallbackUrl: appendWebhookSecret(
             `${url.origin}/webhooks/twilio/recording-status?callSid=${encodeURIComponent(params.CallSid)}`,
             env.TWILIO_WEBHOOK_SECRET
