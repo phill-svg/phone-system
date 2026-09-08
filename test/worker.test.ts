@@ -1008,25 +1008,18 @@ describe("GET/PUT /api/settings/*", () => {
   });
 });
 
-describe("GET /admin/calls and /admin/calls/:id", () => {
+describe("GET /admin/calls/:id", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM call_events").run();
     await env.DB.prepare("DELETE FROM calls").run();
   });
 
-  it("renders the call history list", async () => {
-    await env.DB.prepare(
-      "INSERT INTO calls (id, caller_number, called_number, started_at, ivr_path) VALUES (?, ?, ?, ?, ?)"
-    )
-      .bind("CA-html-1", "+61400000000", "+61200000000", Date.now(), "new_booking")
-      .run();
-
+  // The Call History list is gone from the dashboard -- the handset carries the same list, and
+  // repeating it on the web was a second place to keep in step for no benefit. The per-call DETAIL
+  // page stays, because a Voicemail row links straight to it.
+  it("no longer serves a call history list", async () => {
     const response = await SELF.fetch("https://example.com/admin/calls");
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    // Numbers render in AU national grouped form (formatAuNumber), not raw E.164.
-    expect(html).toContain("0400 000 000");
-    expect(html).toContain('href="/admin/calls/CA-html-1"');
+    expect(response.status).toBe(404);
   });
 
   it("renders the call detail page with the recording player, transcript, and disposition/notes when present", async () => {
@@ -1063,19 +1056,23 @@ describe("GET /admin/calls and /admin/calls/:id", () => {
     expect(response.status).toBe(404);
   });
 
-  it("HTML-escapes the call ID in the href on the list page", async () => {
+  // The link into this page now comes from the Voicemail list, so that is where the ID escaping
+  // has to hold.
+  it("HTML-escapes the call ID in the href the Voicemail page links with", async () => {
     await env.DB.prepare(
-      "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
+      "INSERT INTO calls (id, caller_number, called_number, started_at, mailbox_label) VALUES (?, ?, ?, ?, ?)"
     )
-      .bind("CA-test'call", "+61400000000", "+61200000000", Date.now())
+      .bind("CA-test'call", "+61400000000", "+61200000000", Date.now(), "after hours")
       .run();
 
-    const response = await SELF.fetch("https://example.com/admin/calls");
+    const response = await SELF.fetch("https://example.com/admin/voicemail");
     expect(response.status).toBe(200);
     const html = await response.text();
     // The ID contains ', which encodeURIComponent leaves unescaped (not in its encoding set),
     // then escapeHtml converts to &#39;, proving that escapeHtml actually ran.
     expect(html).toContain('href="/admin/calls/CA-test&#39;call"');
+    // And numbers render in AU national grouped form (formatAuNumber), not raw E.164.
+    expect(html).toContain("0400 000 000");
   });
 
   it("returns 404 for malformed URL-encoded call ID in /admin/calls/:id", async () => {

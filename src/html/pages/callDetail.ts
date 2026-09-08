@@ -54,5 +54,7 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[], 
         ? `<h3>Call transcript</h3><p style="white-space:pre-wrap">${escapeHtml(call.call_transcript)}</p>`
         : ""
     }`;
-  return renderLayout(`Call ${call.id}`, "calls", body, { role });
+  // No nav key: Call History is gone (the handset has the same list), so this page is reached
+  // from a Voicemail row or a link, and highlighting a section that no longer exists would lie.
+  return renderLayout(`Call ${call.id}`, "", body, { role });
 }
