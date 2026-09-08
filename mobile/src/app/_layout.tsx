@@ -1,5 +1,5 @@
-import React from "react";
-import { Stack } from "expo-router";
+import React, { useEffect } from "react";
+import { Stack, usePathname } from "expo-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -8,12 +8,28 @@ import { AuthProvider, useAuth } from "../lib/auth";
 import { UserSettingsProvider } from "../lib/userSettings";
 import { RegistrationProvider } from "../lib/registration";
 import { useTheme, ThemeProvider } from "../theme/theme";
+import { ErrorBoundary } from "../components/ErrorBoundary";
+import { installCrashReporter, flushCrashQueue, setCurrentScreen } from "../lib/crashReport";
 
 const queryClient = new QueryClient();
+
+// Installed at module scope, before any component renders, so an error thrown while the tree is
+// first mounting is still caught -- that is precisely when the worst ones happen.
+installCrashReporter();
 
 function RootNavigator() {
   const t = useTheme();
   const { status } = useAuth();
+  const pathname = usePathname();
+
+  // The route is recorded for crash reports, which are gathered outside React and cannot read it.
+  useEffect(() => setCurrentScreen(pathname), [pathname]);
+
+  // Anything last launch could not send goes out once signed in -- the endpoint is authenticated,
+  // and a crash on the login screen is exactly the case where the queue has to survive until then.
+  useEffect(() => {
+    if (status === "authed") void flushCrashQueue();
+  }, [status]);
 
   if (status === "loading") {
     return (
@@ -65,7 +81,9 @@ export default function RootLayout() {
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
               <UserSettingsProvider>
-                <RootNavigator />
+                <ErrorBoundary>
+                  <RootNavigator />
+                </ErrorBoundary>
               </UserSettingsProvider>
             </AuthProvider>
           </QueryClientProvider>

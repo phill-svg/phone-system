@@ -6,6 +6,7 @@ import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { Group, Row } from "../../components/ui/Grouped";
 import { Segmented } from "../../components/ui/Segmented";
+import { OTA_BUILD } from "../../lib/build";
 import { BASE_URL, getRecordingSetting, setRecordingSetting, getMe, setPresence } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
@@ -16,7 +17,6 @@ import { useTheme, useThemePreference, type ThemePreference } from "../../theme/
 import type { AudioRoutePref } from "../../lib/audioRouting";
 
 // Bumped on every OTA publish so we can confirm on-device that an update actually landed.
-const OTA_BUILD = "52";
 
 const AUDIO_ROUTE_LABELS: Record<AudioRoutePref, string> = {
   automatic: "Automatic",

@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { href: "/admin/calls", label: "Call History", key: "calls" },
   { href: "/admin/voicemail", label: "Voicemail", key: "voicemail" },
   { href: "/admin/callbacks", label: "Callback Requests", key: "callbacks" },
+  { href: "/admin/errors", label: "App Errors", key: "errors", adminOnly: true },
   { href: "/admin/settings", label: "Settings", key: "settings", adminOnly: true },
 ];
 
