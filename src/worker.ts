@@ -68,6 +68,9 @@ import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
 import { renderVoicemailPage } from "./html/pages/voicemail";
 import { listContacts, normalizePhone } from "./db/contacts";
+import { handleReportClientErrors, handleListClientErrors } from "./api/clientErrors";
+import { renderClientErrorsPage } from "./html/pages/clientErrors";
+import { listClientErrors } from "./db/clientErrors";
 import { renderMessagesPage } from "./html/pages/messages";
 import {
   getCallDetail,
@@ -1056,6 +1059,11 @@ export default {
       if (url.pathname === "/api/softphone/heartbeat" && request.method === "POST") {
         return handlePostHeartbeat(env.DB, staff);
       }
+      // Deliberately NOT under /api/admin/: a handset that is crashing needs to be able to say so
+      // whoever is holding it, and most staff are not admins. Reading the reports is admin-only.
+      if (url.pathname === "/api/client-errors" && request.method === "POST") {
+        return handleReportClientErrors(env.DB, request, staff);
+      }
       if (url.pathname === "/api/softphone/hold" && request.method === "POST") {
         return handlePostHold(request, env, staff, env.DB);
       }
@@ -1070,6 +1078,9 @@ export default {
         return handleGetStaffAdminList(env.DB);
       }
       // Health checks, and the two end-to-end tests that prove a chain rather than describe it.
+      if (url.pathname === "/api/admin/client-errors" && request.method === "GET") {
+        return handleListClientErrors(env.DB);
+      }
       if (url.pathname === "/api/admin/diagnostics" && request.method === "GET") {
         return handleGetDiagnostics(env, staff);
       }
@@ -1261,6 +1272,12 @@ export default {
           listStaffAccess(env.DB),
         ]);
         const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+
+      if (url.pathname === "/admin/errors") {
+        if (staffOrResponse.role !== "admin") return new Response("forbidden", { status: 403 });
+        const html = renderClientErrorsPage(await listClientErrors(env.DB), staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 

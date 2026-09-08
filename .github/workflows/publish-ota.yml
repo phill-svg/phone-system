@@ -93,9 +93,9 @@ jobs:
       - name: Read OTA_BUILD
         id: ota
         run: |
-          build=$(grep -oP 'OTA_BUILD\s*=\s*"\K\d+' "src/app/(tabs)/settings.tsx")
+          build=$(grep -oP 'OTA_BUILD\s*=\s*"\K\d+' src/lib/build.ts)
           if [ -z "$build" ]; then
-            echo "::error::Could not find OTA_BUILD in mobile/src/app/(tabs)/settings.tsx. Bump it before publishing."
+            echo "::error::Could not find OTA_BUILD in mobile/src/lib/build.ts. Bump it before publishing."
             exit 1
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"

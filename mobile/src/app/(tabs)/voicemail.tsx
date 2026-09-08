@@ -42,8 +42,12 @@ function VoicemailList() {
   const calls = useQuery({ queryKey: ["calls"], queryFn: getCalls });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
 
+  // A voicemail is a call that landed in a mailbox -- NOT one that happens to have a transcript.
+  // Filtering on the transcript hid every message Whisper produced nothing for, which is most short
+  // ones: a caller who says "it's Dave, call me" in four seconds often transcribes to silence, and
+  // those were exactly the messages that vanished. The recording was always there to play.
   const voicemails = useMemo(
-    () => (calls.data ?? []).filter((c) => c.transcription && c.transcription.trim().length > 0),
+    () => (calls.data ?? []).filter((c) => c.mailbox_label !== null && c.mailbox_label.trim() !== ""),
     [calls.data]
   );
 
@@ -76,7 +80,12 @@ function VoicemailList() {
           <Avatar name={contactForNumber(item.caller_number, contacts.data ?? [])?.name} size={42} />
           <View style={{ flex: 1 }}>
             <Text style={[type.body, { color: t.colors.label, fontWeight: "600" }]} numberOfLines={1}>{title(item)}</Text>
-            <Text style={[type.footnote, { color: t.colors.labelSecondary }]} numberOfLines={2}>{item.transcription}</Text>
+            <Text
+              style={[type.footnote, { color: item.transcription ? t.colors.labelSecondary : t.colors.labelTertiary }]}
+              numberOfLines={2}
+            >
+              {item.transcription ?? "No transcript \u2014 tap to play the message."}
+            </Text>
             <Text style={[type.caption, { color: t.colors.labelTertiary, marginTop: 2 }]}>
               {whenLabel(item.started_at)}
             </Text>

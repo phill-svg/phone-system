@@ -106,6 +106,9 @@ export type Call = {
   recording_sid: string | null;
   recording_url: string | null;
   recording_duration: number | null;
+  // Set only when the caller landed in a mailbox and left a message -- this, not the presence of a
+  // transcript, is what makes a call a voicemail. A short message transcribes to nothing at all.
+  mailbox_label: string | null;
   // Two separate transcripts, never merged: `transcription` is the voicemail one, written when a
   // caller leaves a message; `call_transcript` is the full recording of an answered call. The API
   // returns both (SELECT * over `calls`) and the web app renders each under its own heading.
