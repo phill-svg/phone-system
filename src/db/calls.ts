@@ -202,3 +202,18 @@ export async function restoreCall(db: D1Database, callId: string): Promise<boole
     .run();
   return (res.meta.changes ?? 0) > 0;
 }
+
+// Every voicemail, newest first: an inbound call the caller left a message on, which is what
+// `mailbox_label` records (the IVR mailbox they landed in). Deleted calls are excluded like
+// everywhere else. There is no separate voicemails table -- a voicemail IS a call with a recording
+// and a mailbox, which is why they were only ever visible mixed into call history until now.
+export async function listVoicemails(db: D1Database, limit = 200): Promise<CallSummary[]> {
+  const result = await db
+    .prepare(
+      "SELECT * FROM calls WHERE mailbox_label IS NOT NULL AND mailbox_label <> '' AND deleted_at IS NULL " +
+        "ORDER BY started_at DESC LIMIT ?"
+    )
+    .bind(limit)
+    .all<CallSummary>();
+  return result.results;
+}

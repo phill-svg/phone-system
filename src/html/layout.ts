@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/admin/messages", label: "Messages", key: "messages" },
   { href: "/admin/live", label: "Live Calls", key: "live" },
   { href: "/admin/calls", label: "Call History", key: "calls" },
+  { href: "/admin/voicemail", label: "Voicemail", key: "voicemail" },
   { href: "/admin/callbacks", label: "Callback Requests", key: "callbacks" },
   { href: "/admin/settings", label: "Settings", key: "settings", adminOnly: true },
 ];

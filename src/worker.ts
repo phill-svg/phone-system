@@ -66,8 +66,17 @@ import { renderWebhooksPage } from "./html/pages/webhooks";
 import { renderLiveCallsPage } from "./html/pages/liveCalls";
 import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
+import { renderVoicemailPage } from "./html/pages/voicemail";
+import { listContacts, normalizePhone } from "./db/contacts";
 import { renderMessagesPage } from "./html/pages/messages";
-import { getCallDetail, listCalls, appendCallEvent, getCallStats, parseRecordingDuration } from "./db/calls";
+import {
+  getCallDetail,
+  listCalls,
+  listVoicemails,
+  appendCallEvent,
+  getCallStats,
+  parseRecordingDuration,
+} from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist, getRecordingEnabled } from "./db/settings";
@@ -499,7 +508,6 @@ export default {
         renderBridgeToCustomer({
           to,
           callerId,
-          actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/status`, env.TWILIO_WEBHOOK_SECRET),
           recordingStatusCallbackUrl: appendWebhookSecret(
             `${url.origin}/webhooks/twilio/recording-status?callSid=${encodeURIComponent(params.CallSid)}`,
             env.TWILIO_WEBHOOK_SECRET
@@ -1253,6 +1261,20 @@ export default {
           listStaffAccess(env.DB),
         ]);
         const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+
+      if (url.pathname === "/admin/voicemail") {
+        // The contact names are resolved here, in one query, rather than per row: the roster is
+        // small and a lookup per voicemail is a D1 round trip each.
+        const [voicemails, contacts] = await Promise.all([listVoicemails(env.DB), listContacts(env.DB)]);
+        const byNormalized = new Map(contacts.map((c) => [c.phone_normalized, c.name]));
+        const names = new Map<string, string>();
+        for (const vm of voicemails) {
+          const name = byNormalized.get(normalizePhone(vm.caller_number));
+          if (name) names.set(vm.caller_number, name);
+        }
+        const html = renderVoicemailPage(voicemails, names, staffOrResponse.role);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
