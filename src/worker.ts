@@ -59,7 +59,6 @@ import {
   handleImportContacts,
 } from "./api/contacts";
 import { renderPhonePage } from "./html/pages/phone";
-import { renderCallHistoryPage } from "./html/pages/callHistory";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
 import { renderWebhooksPage } from "./html/pages/webhooks";
@@ -74,7 +73,6 @@ import { listClientErrors } from "./db/clientErrors";
 import { renderMessagesPage } from "./html/pages/messages";
 import {
   getCallDetail,
-  listCalls,
   listVoicemails,
   appendCallEvent,
   getCallStats,
@@ -1245,10 +1243,6 @@ export default {
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
-      if (url.pathname === "/admin/calls") {
-        const html = renderCallHistoryPage(await listCalls(env.DB), staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
-      }
       const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
       if (callIdMatch) {
         try {
