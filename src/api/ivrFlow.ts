@@ -1,6 +1,7 @@
 import { jsonResponse } from "./respond";
 import { listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes, updateNodePosition } from "../db/ivrNodes";
 import type { StaffUser } from "../access/requireStaffUser";
+import { isValidClosedDateEntry } from "../ivr/dateRules";
 
 const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail", "date_rule", "input", "redirect", "callback"] as const;
 type NodeType = (typeof NODE_TYPES)[number];
@@ -91,7 +92,16 @@ function isCallbackConfig(c: Record<string, unknown>): boolean {
 }
 
 function isDateRuleConfig(c: Record<string, unknown>): boolean {
-  return isStringArray(c.closedDates) && isString(c.openNextNodeId) && isString(c.closedNextNodeId);
+  // Every entry must be one isClosedDate can act on. An unrecognised entry is skipped at match
+  // time -- refusing to answer calls over a typo would be worse -- so a mistyped holiday would
+  // otherwise leave the IVR open on the one day of the year it mattered, with nothing saying so.
+  // Refusing it here puts the error in front of the person who typed it.
+  return (
+    isStringArray(c.closedDates) &&
+    (c.closedDates as string[]).every(isValidClosedDateEntry) &&
+    isString(c.openNextNodeId) &&
+    isString(c.closedNextNodeId)
+  );
 }
 
 function isInputConfig(c: Record<string, unknown>): boolean {
@@ -182,6 +192,18 @@ export async function handlePutFlow(
       return new Response(`node '${raw.id}' has unknown type '${String(raw.type)}'`, { status: 400 });
     }
     const type = raw.type as NodeType;
+    // Named before the generic shape check, because "invalid config shape" sends you hunting
+    // through a list of dates for the one that is wrong -- which is exactly the typo this
+    // validation exists to catch.
+    if (type === "date_rule" && isPlainObject(raw.config) && isStringArray(raw.config.closedDates)) {
+      const bad = raw.config.closedDates.find((d) => !isValidClosedDateEntry(d));
+      if (bad !== undefined) {
+        return new Response(
+          `node '${raw.id}': closed date '${bad}' is not a date this can match. Use YYYY-MM-DD, MM-DD, or a range of either with '..'.`,
+          { status: 400 }
+        );
+      }
+    }
     if (!isValidConfigForType(type, raw.config)) {
       return new Response(`node '${raw.id}' has an invalid config shape for type '${type}'`, { status: 400 });
     }

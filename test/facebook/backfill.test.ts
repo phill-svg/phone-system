@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { backfillFacebookNames, MAX_NAME_ATTEMPTS, RETRY_AFTER_MS } from "../../src/facebook/backfill";
+import { backfillFacebookNames, isTokenLevelFailure, MAX_NAME_ATTEMPTS, RETRY_AFTER_MS } from "../../src/facebook/backfill";
 
 // A stand-in for D1: records every statement it is asked to prepare, answers the one SELECT with
 // whatever psids the test wants swept. Enough to check the control flow (what gets written when a
@@ -68,6 +68,53 @@ describe("backfillFacebookNames", () => {
     await backfillFacebookNames({ DB: db, FB_PAGE_ACCESS_TOKEN: "t" }, 5, now);
     const select = calls.find((c) => c.sql.includes("FROM messages"));
     expect(select?.params).toEqual([MAX_NAME_ATTEMPTS, now - RETRY_AFTER_MS, 5]);
+  });
+
+  // The attempt cap exists to stop asking about a psid the token can never read (Graph code 100).
+  // A DEAD TOKEN fails identically for everyone and says nothing about any one psid, so counting it
+  // burned the cap on the whole backlog: six hours later every pending psid is past the cap and
+  // excluded permanently, and fixing the token afterwards cannot bring those names back.
+  it("does not count a dead-token failure against the attempt cap", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(dead));
+    const { db, calls } = fakeDb(["psid-1"]);
+    await backfillFacebookNames({ DB: db, FB_PAGE_ACCESS_TOKEN: "t" });
+    const attempt = calls.find((c) => c.sql.startsWith("INSERT INTO fb_name_attempts"));
+    // The reason and the timestamp are still recorded -- the retry interval still spaces these out.
+    expect(String(attempt?.params[2])).toContain("Session has expired.");
+    // ...but the count stays put, so the next tick after the token is fixed may still ask.
+    expect(attempt?.sql).toContain("VALUES (?, 0, ?, ?)");
+    expect(attempt?.sql).not.toContain("attempts = attempts + 1");
+  });
+
+  // A refusal that IS about this psid still counts, or the cap would never drain.
+  it("counts a per-psid refusal against the cap", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: { message: "Unsupported get request.", type: "GraphMethodException", code: 100 },
+        }),
+      })
+    );
+    const { db, calls } = fakeDb(["psid-1"]);
+    await backfillFacebookNames({ DB: db, FB_PAGE_ACCESS_TOKEN: "t" });
+    const attempt = calls.find((c) => c.sql.startsWith("INSERT INTO fb_name_attempts"));
+    expect(attempt?.sql).toContain("attempts = attempts + 1");
+  });
+
+  it("classifies failures by whether they are about the token or the person", () => {
+    expect(isTokenLevelFailure("OAuthException 190: Session has expired.")).toBe(true);
+    expect(isTokenLevelFailure("Could not reach the Facebook Graph API: TypeError")).toBe(true);
+    expect(isTokenLevelFailure("GraphMethodException 100: Unsupported get request.")).toBe(false);
+    expect(isTokenLevelFailure("Facebook returned no name for this person.")).toBe(false);
+    // Only a THROWN fetch produces "Could not reach...". A Graph incident that answers 502 with a
+    // non-JSON body lands here instead, and used to count against the cap after all -- so the fix
+    // did not cover the outage it was written for.
+    expect(isTokenLevelFailure("Facebook returned HTTP 502.")).toBe(true);
+    expect(isTokenLevelFailure("Facebook returned HTTP 429.")).toBe(true);
+    expect(isTokenLevelFailure("Facebook returned HTTP 404.")).toBe(false);
   });
 
   it("sweeps every sender it was handed", async () => {

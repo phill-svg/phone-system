@@ -137,6 +137,58 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
     expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual([]);
   });
 
+  // Tier 1's lesson, third instance: a throw inside startRing escapes handleMainWebhook to the DO's
+  // catch-all, which answers "we're experiencing a technical issue" and HANGS UP on a live customer.
+  // resolveRingTargets reads user_settings once per on-shift person, one line from the callerId()
+  // call that was fixed for exactly this. A failed read must ring the softphone, not end the call.
+  it("still rings when the preferences read fails outright", async () => {
+    await insertStaff("a@b.com", "available", NOW.getTime());
+    await env.DB.exec("ALTER TABLE user_settings RENAME TO user_settings_hidden");
+    try {
+      expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:a@b.com"]);
+    } finally {
+      await env.DB.exec("ALTER TABLE user_settings_hidden RENAME TO user_settings");
+    }
+  });
+
+  // The ROSTER read has the same exposure as the per-person one, and guarding only the inner one
+  // left the outer a single D1 blip from the same hangup. Zero legs is the fall-through the ring
+  // node already handles: it continues from noAnswerNextNodeId, i.e. voicemail.
+  it("falls through to no-answer when the roster read fails outright", async () => {
+    await insertStaff("a@b.com", "available", NOW.getTime());
+    await env.DB.exec("ALTER TABLE staff_users RENAME TO staff_users_hidden");
+    try {
+      expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual([]);
+    } finally {
+      await env.DB.exec("ALTER TABLE staff_users_hidden RENAME TO staff_users");
+    }
+  });
+
+  // getStaffRoster JSON.parses every row's schedule, so one unreadable row used to take the whole
+  // roster read down -- and with it every caller, for the same reason as above.
+  it("drops only the staff member whose schedule will not parse", async () => {
+    await insertStaff("good@b.com", "available", NOW.getTime());
+    await env.DB.prepare(
+      "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', ?, 'available', ?, ?, 100)"
+    )
+      .bind("broken@b.com", Date.now(), "{not json", NOW.getTime())
+      .run();
+    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:good@b.com"]);
+  });
+
+  // Catching the JSON.parse THROW is not enough: a column holding the literal text `null` parses
+  // perfectly well, and isWithinBusinessHours then does schedule[dayKey] on it -- a TypeError,
+  // straight back into the hangup path the guard exists to close.
+  it("drops a staff member whose schedule parses to something that is not a schedule", async () => {
+    await insertStaff("good@b.com", "available", NOW.getTime());
+    await env.DB.prepare(
+      "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', ?, 'available', ?, ?, 100)"
+    )
+      .bind("nullsched@b.com", Date.now(), "null", NOW.getTime())
+      .run();
+    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:good@b.com"]);
+  });
+
   // The old implementation returned [...clientLegs, ...pstnLegs], which reordered people by leg
   // type and broke cascade's priority contract. One leg per person keeps ring_priority intact.
   it("keeps ring_priority order across mixed mobile and softphone legs", async () => {

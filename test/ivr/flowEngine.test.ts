@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { advanceFlow, walkFromNode } from "../../src/ivr/flowEngine";
+import { renderFlowTwiml } from "../../src/twilio/flowTwiml";
 
 const NOW = Date.now();
 
@@ -512,5 +513,60 @@ describe("callback node", () => {
 
     expect(result.nextNodeId).toBe("cb_bare");
     expect(result.commands).toEqual([{ type: "CALLBACK_HANDOFF" }]);
+  });
+});
+
+// renderCommand THROWS when a PLAY carries both audioAssetId and ttsText -- deliberately, as a
+// defensive check -- but nothing on the engine side enforced it. isPlayConfig permits both and
+// playCommandFor passed both straight through, so the only thing holding the invariant was the
+// browser JavaScript in the IVR editor. A config that violates it hangs up EVERY caller reaching
+// that node, and a throw here is not caught anywhere that can still answer the call.
+describe("a play node must never render TwiML that throws", () => {
+  it("picks the recorded audio when a config carries both", async () => {
+    await insertNode({
+      id: "both_play",
+      flow: "both_flow",
+      isEntry: true,
+      type: "play",
+      config: { audioAssetId: "asset-1", ttsText: "and also this", nextNodeId: "both_play_end" },
+    });
+    await insertNode({ id: "both_play_end", flow: "both_flow", type: "voicemail", config: { mailboxLabel: "Main", audioAssetId: null, ttsText: null } });
+    const result = await walkFromNode(env.DB, "both_play", false);
+    const play = result.commands.find((c) => c.type === "PLAY");
+    expect(play).toMatchObject({ audioAssetId: "asset-1", ttsText: null });
+    // The whole point: this used to throw.
+    expect(() => renderFlowTwiml(result.commands, { baseUrl: "https://example.com" })).not.toThrow();
+  });
+
+  // `config.audioAssetId ?? null` keeps "" -- it is not null -- and the renderer then plays
+  // {origin}/media/, a 404 at the caller.
+  it("treats a blank field as absent rather than playing /media/", async () => {
+    await insertNode({
+      id: "blank_play",
+      flow: "blank_flow",
+      isEntry: true,
+      type: "play",
+      config: { audioAssetId: "", ttsText: "just the words", nextNodeId: "blank_play_end" },
+    });
+    await insertNode({ id: "blank_play_end", flow: "blank_flow", type: "voicemail", config: { mailboxLabel: "Main", audioAssetId: null, ttsText: null } });
+    const result = await walkFromNode(env.DB, "blank_play", false);
+    expect(result.commands.find((c) => c.type === "PLAY")).toMatchObject({
+      audioAssetId: null,
+      ttsText: "just the words",
+    });
+    expect(renderFlowTwiml(result.commands, { baseUrl: "https://example.com" })).not.toContain("/media/<");
+  });
+
+  it("emits no play command when both fields are blank", async () => {
+    await insertNode({
+      id: "empty_play",
+      flow: "empty_flow",
+      isEntry: true,
+      type: "play",
+      config: { audioAssetId: "", ttsText: "   ", nextNodeId: "empty_play_end" },
+    });
+    await insertNode({ id: "empty_play_end", flow: "empty_flow", type: "voicemail", config: { mailboxLabel: "Main", audioAssetId: null, ttsText: null } });
+    const result = await walkFromNode(env.DB, "empty_play", false);
+    expect(result.commands.find((c) => c.type === "PLAY")).toBeUndefined();
   });
 });

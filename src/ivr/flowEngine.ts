@@ -73,10 +73,30 @@ function parseConfig(node: NodeRow): Record<string, any> {
   }
 }
 
+// renderCommand THROWS when a PLAY carries both audioAssetId and ttsText, deliberately, as a
+// defensive check -- but nothing on this side enforced it. `isPlayConfig` permits both, and this
+// passed both straight through, so the only thing holding that invariant was the browser JavaScript
+// in the IVR editor. A config that violates it hangs up EVERY caller who reaches that node.
+//
+// A blank string had the same shape of problem from the other end: `config.audioAssetId ?? null`
+// keeps "" (it is not null), and the renderer then plays `{origin}/media/` -- a 404, at the caller.
+//
+// So: blank is nothing, and when both survive that, the recorded audio wins. Degrading to something
+// playable is strictly better than throwing, because the throw is not caught anywhere that can
+// still answer the call.
+function blank(v: unknown): string | null {
+  const s = typeof v === "string" ? v.trim() : v == null ? "" : String(v);
+  return s === "" ? null : s;
+}
+
 function playCommandFor(config: Record<string, any>): FlowCommand | null {
-  const audioAssetId = config.audioAssetId ?? null;
-  const ttsText = config.ttsText ?? null;
+  const audioAssetId = blank(config.audioAssetId);
+  const ttsText = blank(config.ttsText);
   if (audioAssetId === null && ttsText === null) return null;
+  if (audioAssetId !== null && ttsText !== null) {
+    console.log("PLAY_CONFIG_AMBIGUOUS", JSON.stringify({ audioAssetId }));
+    return { type: "PLAY", audioAssetId, ttsText: null };
+  }
   return { type: "PLAY", audioAssetId, ttsText };
 }
 

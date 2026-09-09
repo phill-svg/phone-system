@@ -389,6 +389,62 @@ is normal, not broken.
   handset relies on the same rule: `mobile/src/lib/api.ts` sends `{status}` only. Preserving is
   scoped to `away` — any other status clears the reason said or unsaid, so nobody is left available
   carrying a stale "On site until 3".
+- **THREE reads on the ring path must never throw, and that list is the thing to check.** A throw
+  inside `startRing` escapes `handleMainWebhook` to the DO's catch-all, which says "we're
+  experiencing a technical issue" and **hangs up on a live customer** — via `performDeferredDial`, on
+  someone already waiting on hold. `callerId()` was fixed for this (#71); `resolveRingTargets` sits
+  one line away at `CallSession.ts:402` and had the same exposure twice over — `getStaffRoster`
+  (which `JSON.parse`s every row's schedule) and a per-person `getUserSettings` read inside the loop.
+  Both are guarded now (`RING_ROSTER_LOOKUP_FAILED`, `RING_PREFS_LOOKUP_FAILED`), and both fall
+  **closed**: a failed preferences read rings that person's softphone, an unreadable roster returns
+  zero legs, which the ring node already handles by continuing to `noAnswerNextNodeId` (voicemail).
+  Catching `JSON.parse` throwing is not enough, either — a schedule column holding the literal text
+  `null` parses fine and then throws in `isWithinBusinessHours`, so the SHAPE is checked with
+  `isBusinessHoursSchedule`. The fourth member of this family is `playFromConfig`: a wait node with a
+  blank `audioAssetId` (`""` survives `?? null`) throws in `resolveAudioCommands`, and one with both
+  fields set throws in `renderHold`. **Anything new that reads or parses inside `startRing` joins
+  this list.**
+- **A Twilio status callback may not erase what an earlier one recorded.** Twilio's callbacks are
+  **not ordered**, so a late `sent` landing after a `failed` used to overwrite the terminal status
+  and NULL its `ErrorCode` — the message then read as fine in the app AND dropped out of
+  `checkMessengerChannelHealth`'s count, quietening the outage alarm exactly when the outage was
+  worst. `updateMessageStatus` now refuses a non-terminal status once a terminal one is stored and
+  COALESCEs the error fields. Terminal-to-terminal is still allowed deliberately: ordering
+  `delivered`/`failed`/`undelivered`/`read` against each other would invent a progression Twilio
+  does not promise.
+- **Sending a message is TWO failures, not one.** `insertMessage` used to sit inside the send `try`,
+  so a D1 hiccup after Twilio returned a sid answered "Could not send" for a message the customer
+  had already received: staff resend, the customer gets it twice, and with no row the status
+  callback for that sid is a permanent no-op. The insert is its own try now
+  (`MESSAGE_INSERT_FAILED`). Splitting it is also what made a 2xx carrying no `sid` a silent
+  success, so that is explicitly a 502 — `sendSms` only throws on `!res.ok`.
+- **One failed Messenger message is not an outage, and nobody to tell is not the same as telling
+  them.** `checkMessengerChannelHealth` fired on a count of **one** — a single reply outside Meta's
+  24-hour window — and then armed a six-hour cooldown, silencing a real channel break minutes later.
+  Threshold is `CHANNEL_FAILURE_THRESHOLD`, and the cooldown is stamped only when a push actually
+  went out. Relatedly, `fb_name_attempts` must not count a failure that is about the **token**
+  rather than the person: a dead token (or a Graph 5xx/429) fails identically for every psid, and
+  counting it burned `MAX_NAME_ATTEMPTS` on the whole backlog in six hours — after which those names
+  can never be backfilled, because the manual refresh uses the same per-psid route. Graph code 100
+  IS about the person and still counts.
+- **A business-hours window is validated in ONE place, and a close of `00:00` means midnight.**
+  `isWithinBusinessHours` is `minutes >= open && minutes < close`, and the two duplicate
+  `isDayWindow` copies (`api/settings.ts`, `api/staff.ts`) checked only the `\d{2}:\d{2}` shape — so
+  `09:00`–`00:00`, the natural way to write "until midnight", read as **closed all day**: every
+  in-hours call routed to after-hours and that person dropped off the ring roster, while the
+  schedule screen showed hours that look perfectly correct. One validator now, in
+  `ivr/businessHours.ts`, requiring a real `HH:MM` and `close > open` — with `00:00` resolving to
+  end-of-day in the matcher too, because rejecting it outright would make "until midnight"
+  inexpressible, which is a worse fix than the bug. Tightening a validator can lock an admin out of
+  saving an already-stored bad row, so **check live D1 before deploying one** (checked 2026-09-09:
+  all clean).
+- **A closed date the matcher cannot read is SKIPPED, so it is validated on write.** A mistyped
+  holiday otherwise leaves the IVR open on the one day of the year it mattered, silently. Digit
+  shape is not enough either — `"25-12"` and `"2026-13-01"` both match their regex and can never
+  fire — so `isValidClosedDateEntry` checks a real month/day and refuses an inverted full-date
+  range, and the error names the offending entry. `MM-DD..MM-DD` recurring ranges now work: they are
+  compared against `MM-DD`, since against `YYYY-MM-DD` `"2026-12-27" <= "12-31"` is already false on
+  the first character. One that wraps the new year is two ranges under string comparison.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

@@ -66,24 +66,42 @@ export async function handleSendMessage(request: Request, env: Env): Promise<Res
     fromNumber =
       (await resolveSendingNumber(env.DB, "sms", requestedFrom)) ?? env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER;
   }
+  // Twilio's 201 on this call only means "accepted" -- for Messenger sends in particular, Meta
+  // can still reject the message asynchronously (most commonly for replying outside the 24-hour
+  // window). Point Twilio at our status callback so that outcome ever reaches `messages.status`
+  // instead of the app permanently showing "sent" for a message that never actually delivered.
+  const statusCallback = appendWebhookSecret(
+    `${new URL(request.url).origin}/webhooks/twilio/sms-status`,
+    env.TWILIO_WEBHOOK_SECRET
+  );
+  let sid: string;
   try {
-    // Twilio's 201 on this call only means "accepted" -- for Messenger sends in particular, Meta
-    // can still reject the message asynchronously (most commonly for replying outside the 24-hour
-    // window). Point Twilio at our status callback so that outcome ever reaches `messages.status`
-    // instead of the app permanently showing "sent" for a message that never actually delivered.
-    const statusCallback = appendWebhookSecret(
-      `${new URL(request.url).origin}/webhooks/twilio/sms-status`,
-      env.TWILIO_WEBHOOK_SECRET
-    );
-    const { sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET, {
+    ({ sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET, {
       to: target,
       from: fromNumber,
       body: text,
       statusCallback,
-    });
-    await insertMessage(env.DB, { id: sid, direction: "outbound", peer_number: target, our_number: fromNumber, body: text, status: "sent", read: 1, createdAt: Date.now() });
-    return jsonResponse({ ok: true, id: sid });
+    }));
   } catch (e) {
     return jsonResponse({ error: "Could not send the message.", detail: String(e) }, 502);
   }
+  // sendSms only throws on !res.ok, so a 2xx whose body carries no sid would otherwise fall through
+  // as a success with no id -- and splitting the try/catch below is exactly what would turn that
+  // from a visible 502 into a silent one.
+  if (!sid) return jsonResponse({ error: "Twilio accepted the message but returned no id." }, 502);
+
+  // Deliberately OUTSIDE the send try. Twilio has accepted the message by this point -- the
+  // customer is going to receive it -- so a D1 failure here is a bookkeeping failure, not a send
+  // failure, and reporting it as "Could not send" makes staff resend and the customer get it twice.
+  // Worse, the row would never exist, so the status callback for this sid is a permanent no-op and
+  // the message never appears in the thread at all.
+  try {
+    await insertMessage(env.DB, { id: sid, direction: "outbound", peer_number: target, our_number: fromNumber, body: text, status: "sent", read: 1, createdAt: Date.now() });
+  } catch (e) {
+    console.log(
+      "MESSAGE_INSERT_FAILED",
+      JSON.stringify({ sid, peer: target, error: e instanceof Error ? e.message : String(e) })
+    );
+  }
+  return jsonResponse({ ok: true, id: sid });
 }

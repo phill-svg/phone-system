@@ -14,6 +14,14 @@ import { getFbChannelAlertLastSent, setFbChannelAlertLastSent } from "../db/sett
 const WINDOW_MS = 15 * 60 * 1000;
 const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
+// How many failures in the window count as CHANNEL-wide rather than one bad recipient.
+//
+// This was 1, which made the alert self-defeating: replying to a customer outside Meta's 24-hour
+// window fails for that recipient alone, and one of those fired "Facebook Messenger may be down"
+// and then armed the six-hour cooldown -- so a real channel break starting a minute later stayed
+// silent until the afternoon. Three in fifteen minutes is a pattern; one is a Tuesday.
+export const CHANNEL_FAILURE_THRESHOLD = 3;
+
 type Env = { DB: D1Database };
 
 export async function checkMessengerChannelHealth(env: Env, now = Date.now()): Promise<void> {
@@ -25,19 +33,24 @@ export async function checkMessengerChannelHealth(env: Env, now = Date.now()): P
     .bind(now - WINDOW_MS)
     .first<{ n: number }>();
   const count = recentFailures?.n ?? 0;
-  if (count === 0) return;
+  if (count < CHANNEL_FAILURE_THRESHOLD) return;
 
   const lastSent = await getFbChannelAlertLastSent(env.DB);
   if (now - lastSent < ALERT_COOLDOWN_MS) return;
 
   const tokens = await getPushTokensForType(env.DB, "notif_sms");
-  if (tokens.length > 0) {
-    const { invalidTokens } = await sendExpoPush(tokens, {
-      title: "Facebook Messenger may be down",
-      body: `${count} message${count === 1 ? "" : "s"} failed to send in the last 15 minutes. Check Twilio Console > Messaging > Senders > reconnect the Facebook Page.`,
-      data: { type: "channel_health", channel: "messenger" },
-    });
-    if (invalidTokens.length) await deletePushTokens(env.DB, invalidTokens);
+  // Nobody to tell is not the same as having told them. Stamping the cooldown here anyway meant an
+  // alert that reached no handset -- everyone with notif_sms off, or no device registered -- still
+  // suppressed the next six hours of them, so the outage went unreported for a working day.
+  if (tokens.length === 0) {
+    console.log("FB_CHANNEL_ALERT_NO_DEVICES", JSON.stringify({ count }));
+    return;
   }
+  const { invalidTokens } = await sendExpoPush(tokens, {
+    title: "Facebook Messenger may be down",
+    body: `${count} messages failed to send in the last 15 minutes. Check Twilio Console > Messaging > Senders > reconnect the Facebook Page.`,
+    data: { type: "channel_health", channel: "messenger" },
+  });
+  if (invalidTokens.length) await deletePushTokens(env.DB, invalidTokens);
   await setFbChannelAlertLastSent(env.DB, now);
 }
