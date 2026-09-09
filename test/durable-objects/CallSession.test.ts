@@ -220,6 +220,11 @@ describe("CallSession", () => {
 
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM callback_requests").run();
+    // phone_numbers too: seedDefaultVoiceNumber clears migration 0020's seeded default and inserts
+    // another row, which would otherwise leak into every test after it and fail whichever one next
+    // resolves a sending number -- pointing at the innocent test, not the guilty one.
+    await env.DB.prepare("DELETE FROM phone_numbers WHERE created_at = 1").run();
+    await env.DB.prepare("UPDATE phone_numbers SET is_default_voice = 1 WHERE e164 = '+61866108941'").run();
     await env.DB.prepare("DELETE FROM call_events").run();
     await env.DB.prepare("DELETE FROM calls").run();
     await env.DB.prepare("DELETE FROM ivr_nodes").run();

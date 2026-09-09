@@ -542,9 +542,10 @@ export class CallSession extends DurableObject<Env> {
   // them.
   private async dialBatch(numbers: string[], callSid: string, origin: string, timeoutSeconds: number): Promise<string[] | null> {
     const attemptSids: string[] = [];
+    const from = await this.callerId();
     for (const number of numbers) {
       try {
-        attemptSids.push(await this.dialStaff(number, callSid, origin, timeoutSeconds));
+        attemptSids.push(await this.dialStaff(number, callSid, origin, timeoutSeconds, from));
       } catch (err) {
         // Swallowing this silently once hid a credentials outage for a full day -- always log it.
         console.log("DIAL_STAFF_FAILED", JSON.stringify({ number, error: err instanceof Error ? err.message : String(err) }));
@@ -924,7 +925,14 @@ export class CallSession extends DurableObject<Env> {
     return resolved;
   }
 
-  private async dialStaff(number: string, callSid: string, origin: string, timeoutSeconds?: number): Promise<string> {
+  private async dialStaff(
+    number: string,
+    callSid: string,
+    origin: string,
+    timeoutSeconds?: number,
+    from?: string
+  ): Promise<string> {
+    const callerId = from ?? (await this.callerId());
     // A ring target is either a softphone identity ("client:{email}") or a personal mobile
     // ("pstn:{email}|{e164}", see resolveRingTargets). For a softphone we pass the real caller's
     // number as a custom Client param (CallerNumber); for a PSTN mobile we dial the number directly
@@ -976,13 +984,15 @@ export class CallSession extends DurableObject<Env> {
       {
         to,
         // The number STAFF see when their mobile rings on a divert. Resolved from the
-        // phone_numbers table like every other outbound path, not from TWILIO_FROM_NUMBER: that
-        // env var still holds +61866108941, the number this system was built on, and it never
-        // moved when the Canberra landline ported in and became the default caller ID. So a
-        // diverted call announced itself from the old test line -- which is not the number staff
-        // recognise, and not the one to call back. Falls back to the env var only if the table
-        // has no voice number at all.
-        from: (await resolveSendingNumber(this.env.DB, "voice", null)) ?? this.env.TWILIO_FROM_NUMBER,
+        // phone_numbers table like every other outbound path, not from TWILIO_FROM_NUMBER: that env
+        // var still holds the number this system was built on, and it never moved when the Canberra
+        // landline ported in and became the default caller ID. So a diverted call announced itself
+        // from the old line -- not the number staff recognise, and not the one to call back.
+        //
+        // `from` is passed by the caller, resolved ONCE per ring round rather than once per leg: a
+        // four-person simultaneous ring was otherwise four identical full-table reads, serially, in
+        // front of a caller listening to hold music.
+        from: callerId,
         url: appendWebhookSecret(`${origin}/webhooks/twilio/agent-answer?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         statusCallback: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         statusCallbackEvent: ["completed"],
@@ -1018,6 +1028,24 @@ export class CallSession extends DurableObject<Env> {
   //
   // So the tolerance lives here rather than at each call site, where the next one added would
   // forget it again.
+  // The business's caller ID for outbound staff legs.
+  //
+  // `phone_numbers` is admin-editable and NOTHING validates a row against Twilio -- CLAUDE.md is
+  // explicit that adding one configures nothing on Twilio's side. A typo'd or not-yet-ported default
+  // would make createOutboundCall 400, dialBatch cancel and return null, and EVERY inbound call fall
+  // straight to voicemail with no handset ringing, for as long as the bad row is the default. The
+  // env var it replaced was static and definitely owned, so the shape check below keeps the fix
+  // without trading a guaranteed-valid caller ID for an unvalidated one on the most critical path
+  // in the system.
+  private async callerId(): Promise<string> {
+    const resolved = await resolveSendingNumber(this.env.DB, "voice", null);
+    if (resolved && /^\+[1-9]\d{7,14}$/.test(resolved.trim())) return resolved.trim();
+    if (resolved) {
+      console.log("CALLER_ID_INVALID", JSON.stringify({ resolved, fallback: this.env.TWILIO_FROM_NUMBER }));
+    }
+    return this.env.TWILIO_FROM_NUMBER;
+  }
+
   private async cancelStaff(sid: string): Promise<void> {
     try {
       await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);

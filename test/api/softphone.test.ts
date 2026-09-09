@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { jwtVerify } from "jose";
 import { env } from "cloudflare:test";
 import {
@@ -180,6 +180,12 @@ describe("handlePostTransfer", () => {
     await env.DB.prepare(
       "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, created_at) VALUES ('+61261059771', 'Landline', 1, 0, 1, 0, 'au1', 1)"
     ).run();
+    // Undone at the end of the test: this table is not in any beforeEach, so a leaked default would
+    // silently change what every later test resolves.
+    onTestFinished(async () => {
+      await env.DB.prepare("DELETE FROM phone_numbers WHERE e164 = '+61261059771'").run();
+      await env.DB.prepare("UPDATE phone_numbers SET is_default_voice = 1 WHERE e164 = '+61866108941'").run();
+    });
     const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAagent" }, { callSid: "CAcaller" }]);

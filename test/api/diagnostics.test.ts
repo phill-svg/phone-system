@@ -101,6 +101,17 @@ describe("admin diagnostics", () => {
     expect(wired.status).toBe("ok");
   });
 
+  // handleGetDiagnostics positionally destructures its Promise.all, so adding a check without a
+  // binding shifts every one after it and drops the last off the end. That is not hypothetical: it
+  // happened when the transcripts check was added, and it silently removed the push check while
+  // every other assertion still passed.
+  it("returns every check, with no key lost or duplicated", async () => {
+    stubFetch();
+    const keys = (await run()).map((c) => c.key);
+    expect(keys).toEqual(["twilio", "regions", "roster", "servicem8", "transcripts", "email", "push"]);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
   it("tells you when no device of yours is registered for push", async () => {
     stubFetch();
     expect(find(await run(), "push").status).toBe("fail");

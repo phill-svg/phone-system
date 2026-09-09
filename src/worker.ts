@@ -89,8 +89,9 @@ import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
 import { transcribeCallRecording, backfillTranscripts } from "./transcribe";
-import { intelligenceEnabled, requestTranscript } from "./twilio/intelligence";
+import { intelligenceEnabled, isDualChannelRecording, requestTranscript } from "./twilio/intelligence";
 import { collectPendingTranscripts } from "./twilio/intelligenceQueue";
+import { getTranscriptStaffChannel } from "./db/settings";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
 import { resolveSendingNumber } from "./db/phoneNumbers";
 import { getFacebookName, upsertFacebookName, noteTwilioMessengerFields } from "./db/fbContacts";
@@ -779,21 +780,43 @@ export default {
         //
         // Voicemail is deliberately excluded. Only the caller is speaking, so there is nothing to
         // label and it would be paying per minute for the same text.
-        if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env)) {
-          const caller = await env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
+        //
+        // Only CONFERENCE recordings, which is what `RecordingChannels === "2"` identifies. A
+        // call-via-mobile leg is recorded by <Dial record="record-from-answer"> -- mono by
+        // construction, unaffected by any Console conference setting -- so every one of those
+        // transcripts would come back single-channel, be discarded, and still be billed per minute.
+        if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && !isDualChannelRecording(params.RecordingChannels)) {
+          // Say so rather than going quiet. A mono recording here almost always means the Console's
+          // dual-channel conference switch is off, which is the difference between this feature
+          // working for every call and not working at all -- and silence is how SERVICEM8_API_KEY
+          // sat inert for a day.
+          console.log(
+            "INTELLIGENCE_SKIPPED_MONO",
+            JSON.stringify({ callSid, channels: params.RecordingChannels ?? null })
+          );
+        }
+        if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && isDualChannelRecording(params.RecordingChannels)) {
+          // The CUSTOMER is whichever end is not us, and that flips with direction: both outbound
+          // paths store the business number as caller_number and the customer as called_number, so
+          // reading caller_number unconditionally told Twilio the office landline was the customer.
+          const row = await env.DB.prepare("SELECT caller_number, called_number, direction FROM calls WHERE id = ?")
             .bind(callSid)
-            .first<{ caller_number: string }>();
-          const request = requestTranscript(env, params.RecordingSid, {
-            staffChannel: 1,
-            customerNumber: caller?.caller_number ?? null,
+            .first<{ caller_number: string; called_number: string; direction: string }>();
+          const customerNumber =
+            row === null ? null : row.direction === "outbound" ? row.called_number : row.caller_number;
+          // NOT named `request`: the fetch handler's own `request: Request` is in scope here, and
+          // shadowing it in a webhook handler is a trap for whoever next reads a header in this block.
+          const intelligenceJob = requestTranscript(env, params.RecordingSid, {
+            staffChannel: await getTranscriptStaffChannel(env.DB),
+            customerNumber,
           }).then(async (sid) => {
             if (!sid) return;
-            await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = '0' WHERE id = ?")
+            await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
               .bind(sid, callSid)
               .run();
           });
-          if (ctx) ctx.waitUntil(request);
-          else await request;
+          if (ctx) ctx.waitUntil(intelligenceJob);
+          else await intelligenceJob;
         }
       }
 

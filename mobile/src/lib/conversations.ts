@@ -21,22 +21,27 @@ export function canSaveContactFromThread(opts: {
   isMessenger: boolean;
   knownName: string | undefined;
 }): boolean {
-  if (opts.isNew || opts.isMessenger) return false;
-  if (opts.to.trim().length <= 2) return false;
-  return !opts.knownName;
+  // `isNew` is the thread's own concern -- a half-typed new message has nothing worth saving yet.
+  // Everything else is the shared rule, so the two screens cannot drift: they had already, with the
+  // thread treating a whitespace-only stored name as a real name and Call Details not.
+  if (opts.isNew) return false;
+  return canSaveContact({ number: opts.isMessenger ? "messenger:" : opts.to, knownName: opts.knownName ?? "" });
 }
 
-// Whether the Call Details screen should offer "Add Contact". Pure, for the same reason as the
-// thread rule above.
+// The one rule both screens ask: is there a real phone number here that we do not already have a
+// name for?
 //
-// Saving was reachable from the keypad and from a message thread, but never from Call Details --
-// the screen you land on from Recents, and so the one place you are actually looking at an unknown
-// caller. A number already in the book is not offered again (that would make a duplicate), and a
-// call with no usable peer number -- a Messenger peer, or a withheld caller ID -- has nothing to
-// save.
-export function canSaveContactFromCall(opts: { number: string; knownName: string }): boolean {
+// A number already in the book is not offered again (that would make a duplicate), and anything
+// that is not a phone number -- a Messenger peer, a client: identity, a withheld caller ID -- has
+// nothing to save. A stored name that is only whitespace is not a name.
+export function canSaveContact(opts: { number: string; knownName: string }): boolean {
   const n = opts.number.trim();
   if (n.length <= 2) return false;
   if (n.startsWith("messenger:") || n.startsWith("client:")) return false;
   return !opts.knownName.trim();
 }
+
+// Whether the Call Details screen should offer "Add Contact". Saving was reachable from the keypad
+// and from a message thread, but never from here -- the screen you land on from Recents, and so the
+// one place you are actually looking at an unknown caller.
+export const canSaveContactFromCall = canSaveContact;

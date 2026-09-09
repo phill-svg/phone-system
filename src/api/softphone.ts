@@ -3,6 +3,12 @@ import { mintAccessToken } from "../twilio/accessToken";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
 import { setStaffStatus, touchHeartbeat } from "../db/staff";
 import { resolveSendingNumber } from "../db/phoneNumbers";
+
+// A resolved sending number, or null if it is not a plausible E.164 number Twilio would accept.
+function validCallerId(resolved: string | null): string | null {
+  const n = (resolved ?? "").trim();
+  return /^\+[1-9]\d{7,14}$/.test(n) ? n : null;
+}
 import { recordCallLeg, isOwnLeg } from "../db/callLegs";
 import type { StaffUser } from "../access/requireStaffUser";
 import {
@@ -175,9 +181,11 @@ export async function handlePostTransfer(
   }
   const { sid } = await deps.createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
     to: `client:${targetEmail}`,
-    // Same source as every other outbound leg -- TWILIO_FROM_NUMBER is the original build number
-    // and stopped being the business's caller ID when the landline ported in.
-    from: (await resolveSendingNumber(db, "voice", null)) ?? env.TWILIO_FROM_NUMBER,
+    // Same source as every other outbound leg -- TWILIO_FROM_NUMBER is the original build number and
+    // stopped being the business's caller ID when the landline ported in. Shape-checked for the same
+    // reason as the ring path: phone_numbers is admin-editable and nothing validates a row against
+    // Twilio, so a typo'd default would 400 every transfer.
+    from: validCallerId(await resolveSendingNumber(db, "voice", null)) ?? env.TWILIO_FROM_NUMBER,
     url: appendWebhookSecret(`${origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
   });
   // Staff-gate the transferred-to leg for the TARGET staff member, before they even exist as a

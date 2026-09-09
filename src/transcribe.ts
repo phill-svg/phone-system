@@ -70,7 +70,15 @@ export async function transcribeCallRecording(
     if (isLikelyHallucination(text)) text = "";
     if (!text) return;
 
-    await env.DB.prepare("UPDATE calls SET " + column + " = ? WHERE id = ?").bind(text, callSid).run();
+    // Never overwrite a speaker-labelled transcript with this unlabelled one.
+    //
+    // Both writers run in the same cron tick: backfillTranscripts can SELECT a row whose transcript
+    // is still NULL, spend 10-30s fetching audio and running Workers AI, and land here AFTER the
+    // Twilio sweep has written the labelled text -- destroying it permanently, since the row is by
+    // then out of that sweep's query. The guard is on the write rather than the read because the
+    // gap between them is exactly where the race lives.
+    const guard = column === "call_transcript" ? " AND COALESCE(intelligence_status, '') <> 'completed'" : "";
+    await env.DB.prepare("UPDATE calls SET " + column + " = ? WHERE id = ?" + guard).bind(text, callSid).run();
   } catch (e) {
     console.log("TRANSCRIBE_FAILED", callSid, e instanceof Error ? e.message : String(e));
   }

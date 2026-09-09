@@ -102,8 +102,8 @@ export default function CallDetailScreen() {
             <Field label="Direction" value={data.call.direction === "outbound" ? "Outgoing" : "Incoming"} />
             {/* Every list in the app shows AU national form; this screen was the one place still
                 printing raw E.164 at you. */}
-            <Field label="From" value={formatPhone(data.call.caller_number) ?? data.call.caller_number} />
-            <Field label="To" value={formatPhone(data.call.called_number) ?? data.call.called_number} />
+            <Field label="From" value={formatPhone(data.call.caller_number)} />
+            <Field label="To" value={formatPhone(data.call.called_number)} />
             <Field label="Status" value={data.call.status} />
             <Field label="Started" value={fmtWhen(data.call.started_at)} />
           </View>

@@ -73,3 +73,33 @@ export async function setFbChannelAlertLastSent(db: D1Database, ts: number): Pro
     .bind(FB_CHANNEL_ALERT_KEY, JSON.stringify(ts))
     .run();
 }
+
+const TRANSCRIPT_STAFF_CHANNEL_KEY = "transcript_staff_channel";
+
+// Which audio channel the STAFF member is on in a dual-channel conference recording, for labelling
+// speaker-separated transcripts.
+//
+// This is a setting rather than a constant because the code cannot know it. Twilio assigns channel 1
+// to the first participant to join the conference, and our answer path awaits the caller's
+// redirectCall into /join-conference BEFORE it returns the staff leg's <Dial><Conference> -- so the
+// caller usually joins first and staff are channel 2. "Usually" is the problem: it is a race between
+// two Twilio-side joins, and an earlier version of this code hardcoded the opposite and would have
+// labelled every transcript backwards while presenting it as fact.
+//
+// So: default to 2 (matching that ordering), and make it one setting to flip after reading a real
+// transcript, instead of a guess baked into a deploy.
+export async function getTranscriptStaffChannel(db: D1Database): Promise<1 | 2> {
+  const row = await db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .bind(TRANSCRIPT_STAFF_CHANNEL_KEY)
+    .first<{ value: string }>();
+  if (!row) return 2;
+  return JSON.parse(row.value) === 1 ? 1 : 2;
+}
+
+export async function setTranscriptStaffChannel(db: D1Database, channel: 1 | 2): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(TRANSCRIPT_STAFF_CHANNEL_KEY, JSON.stringify(channel))
+    .run();
+}

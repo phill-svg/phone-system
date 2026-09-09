@@ -216,6 +216,39 @@ is normal, not broken.
 - **Call History was removed from the web dashboard (#63).** The handset carries the same list. The
   per-call DETAIL page `/admin/calls/:id` stays — `/admin/voicemail` links into it — but
   `/admin/calls` 404s deliberately, and a test pins that.
+- **Speaker-labelled call transcripts need TWO things set, and neither announces itself.**
+  `TWILIO_INTELLIGENCE_SERVICE_SID` (a `GA...` Conversational Intelligence service) as a worker
+  secret -- `deploy.yml` does not set it, wrangler secrets are separate -- AND **Dual-channel
+  Recording for Conference** turned on in the Twilio Console (Voice > Settings). Without the secret
+  nothing runs; without the toggle every recording comes back on one channel and is discarded
+  unlabelled, because labelling a mono mix would be a guess presented as fact. Both states are
+  reported by Admin > Health Checks, which is the answer to "is it on?" -- added precisely because
+  `SERVICEM8_API_KEY` sat inert for a day with nothing saying so.
+- **Which audio channel is the staff member is a SETTING, not a constant** (`transcript_staff_channel`,
+  default 2). Twilio gives channel 1 to whoever joins the conference first, and `handleAgentAnswer`
+  awaits the caller's `redirectCall` into `/join-conference` BEFORE returning the staff leg's
+  `<Dial><Conference>` -- so the caller usually lands first. It is a race, not a rule: an earlier
+  version hardcoded 1 on the opposite claim and would have labelled every inbound transcript
+  backwards. Read one real transcript and flip the setting if the labels are the wrong way round.
+- **Whisper and the Twilio sweep both write `call_transcript`, in the same cron tick.**
+  `backfillTranscripts` can select a row with a NULL transcript, spend 10-30s in Workers AI, and land
+  after the labelled text was written -- destroying it permanently, since the row is by then out of
+  the sweep's query. `transcribeCallRecording` therefore guards its UPDATE on
+  `intelligence_status <> 'completed'`. The guard belongs on the WRITE; the gap between read and
+  write is where the race lives.
+- **Outbound calls store the BUSINESS number in `caller_number`.** Both outbound paths bind it that
+  way and the customer's number is `called_number`, so anything identifying "the customer" has to
+  branch on `direction` -- reading `caller_number` unconditionally told Twilio the office landline
+  was the customer.
+- **`handleGetDiagnostics` positionally destructures its `Promise.all`.** Adding a check without
+  adding a binding shifts every one after it and drops the last off the end silently. That happened
+  when the transcripts check was added: the push check vanished while every other assertion still
+  passed. A test now pins the exact key list.
+- **Staff-leg caller ID comes from `phone_numbers`, and nothing validates those rows against
+  Twilio.** `dialStaff` used `TWILIO_FROM_NUMBER` (the number this system was built on) and so
+  ignored the ported landline entirely; it now resolves the default like every other outbound path,
+  shape-checked against E.164 first. Without that check a typo'd default would 400 every leg, and
+  every inbound call would fall to voicemail with no handset ringing.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

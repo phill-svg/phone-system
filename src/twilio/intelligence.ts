@@ -24,6 +24,18 @@ export type IntelligenceEnv = {
 
 export type Sentence = { media_channel: number; transcript: string; sentence_index: number };
 
+// Whether a recording-status callback describes a DUAL-channel recording, which is the only kind
+// worth transcribing here -- a mono one comes back entirely on channel 1 and gets discarded, having
+// been billed per minute anyway.
+//
+// Both spellings are accepted deliberately: Twilio documents `RecordingChannels` as mono/dual when
+// CREATING a recording and as 1/2 on the status callback, and gating a paid feature on guessing
+// which one arrives is not a bet worth taking.
+export function isDualChannelRecording(recordingChannels: string | undefined | null): boolean {
+  const v = (recordingChannels ?? "").trim().toLowerCase();
+  return v === "2" || v === "dual";
+}
+
 // True only when the account is actually configured for this. Everything below no-ops otherwise, so
 // an unset secret leaves the existing Whisper behaviour exactly as it was.
 export function intelligenceEnabled(env: IntelligenceEnv): boolean {
@@ -33,11 +45,13 @@ export function intelligenceEnabled(env: IntelligenceEnv): boolean {
 // Ask Twilio to transcribe a recording. Returns the GT... transcript sid, or null on any failure --
 // a transcript is a nicety and must never break the recording webhook that calls this.
 //
-// `participants` declares which channel is whom. For a CONFERENCE recording Twilio puts the FIRST
-// participant to join on channel 1 and everyone else mixed on channel 2; our conference is joined by
-// the staff leg first (it renders the conference TwiML on answer) and the caller is REST-redirected
-// in after, so channel 1 is staff. That ordering is asserted by a test rather than left implicit,
-// and `CALL_TRANSCRIPT_CHANNELS_SWAPPED` in settings flips it without a deploy if it ever changes.
+// `participants` only LABELS the channels for Twilio's own viewer -- it does not choose them. Twilio
+// assigns channel 1 to whoever joins the conference first, and that is a race we do not control:
+// handleAgentAnswer awaits the caller's redirectCall into /join-conference BEFORE it returns the
+// staff leg's <Dial><Conference>, so the caller usually lands first. Which channel is staff is
+// therefore a SETTING (getTranscriptStaffChannel), read at collection time and defaulting to 2 --
+// an earlier version of this hardcoded 1 on the opposite claim, which would have labelled every
+// inbound transcript backwards while presenting it as fact.
 export async function requestTranscript(
   env: IntelligenceEnv,
   recordingSid: string,
@@ -98,15 +112,34 @@ export async function fetchTranscriptStatus(env: IntelligenceEnv, transcriptSid:
   }
 }
 
+// Every sentence, following pagination.
+//
+// 1000 is Twilio's maximum page size, not a guarantee of completeness: a long site consultation runs
+// past it, and stopping at one page would store a transcript that ends mid-conversation -- no error,
+// marked completed, overwriting a COMPLETE Whisper transcript. Truncated-but-labelled is strictly
+// worse than whole-but-unlabelled, so the pages are followed and any doubt returns [] instead.
+const MAX_SENTENCE_PAGES = 20;
+
 export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string): Promise<Sentence[]> {
+  const out: Sentence[] = [];
+  let url: string | null =
+    `${INTELLIGENCE_BASE}/Transcripts/${encodeURIComponent(transcriptSid)}/Sentences?PageSize=1000`;
   try {
-    const res = await fetch(
-      `${INTELLIGENCE_BASE}/Transcripts/${encodeURIComponent(transcriptSid)}/Sentences?PageSize=1000`,
-      { headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) } }
-    );
-    if (!res.ok) return [];
-    const json = (await res.json()) as { sentences?: Sentence[] };
-    return Array.isArray(json.sentences) ? json.sentences : [];
+    for (let page = 0; url && page < MAX_SENTENCE_PAGES; page++) {
+      const res: Response = await fetch(url, {
+        headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) },
+      });
+      if (!res.ok) return [];
+      const json = (await res.json()) as { sentences?: Sentence[]; meta?: { next_page_url?: string | null } };
+      if (Array.isArray(json.sentences)) out.push(...json.sentences);
+      url = json.meta?.next_page_url ?? null;
+    }
+    if (url) {
+      // More pages than the cap allows: we cannot claim to have the whole call.
+      console.log("INTELLIGENCE_TOO_MANY_PAGES", JSON.stringify({ transcriptSid }));
+      return [];
+    }
+    return out;
   } catch {
     return [];
   }

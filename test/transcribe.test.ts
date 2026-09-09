@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { backfillTranscripts, MAX_TRANSCRIBE_ATTEMPTS } from "../src/transcribe";
+import { backfillTranscripts, transcribeCallRecording, MAX_TRANSCRIBE_ATTEMPTS } from "../src/transcribe";
 
 // backfillTranscripts fetches the recording from Twilio and runs Workers AI. Both are stubbed:
 // `fetch` returns a tiny mp3 body, and a fake AI binding returns whatever text the test wants.
@@ -129,5 +129,37 @@ describe("backfillTranscripts", () => {
       "SELECT COUNT(*) AS n FROM calls WHERE transcription IS NULL AND transcribe_attempts = 0"
     ).first<{ n: number }>();
     expect(remaining?.n).toBe(3);
+  });
+});
+
+describe("Whisper never overwrites a speaker-labelled transcript", () => {
+  // backfillTranscripts and the Twilio sweep run in the SAME cron tick. Backfill can select a row
+  // whose transcript is still NULL, spend 10-30s in Workers AI, and land after the sweep has written
+  // the labelled text -- destroying it permanently, since the row is by then out of the sweep's
+  // query. The guard is on the write, because the gap between read and write is where the race is.
+  it("leaves call_transcript alone once intelligence_status is completed", async () => {
+    await env.DB.prepare("DELETE FROM calls").run();
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, status, call_transcript, intelligence_status) VALUES ('CA-race', '+61400000000', '+61261059771', ?, 'completed', 'Customer: hello.', 'completed')"
+    )
+      .bind(Date.now())
+      .run();
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new ArrayBuffer(8), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const aiEnv = {
+      DB: env.DB,
+      AI: { run: async () => ({ text: "unlabelled whisper blob" }) },
+      TWILIO_ACCOUNT_SID: "AC",
+      TWILIO_AUTH_TOKEN: "tok",
+    };
+
+    await transcribeCallRecording(aiEnv as never, "CA-race", "https://api.twilio.com/rec", "call_transcript");
+
+    const row = await env.DB.prepare("SELECT call_transcript FROM calls WHERE id = 'CA-race'").first<{
+      call_transcript: string;
+    }>();
+    expect(row?.call_transcript).toBe("Customer: hello.");
+    vi.unstubAllGlobals();
   });
 });
