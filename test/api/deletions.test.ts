@@ -125,6 +125,28 @@ describe("deleting a conversation", () => {
     expect(thread.map((m) => m.id)).toEqual(["NEW"]);
   });
 
+  // The bug this pins was a genuine production defect that CI caught only by luck, on a run that
+  // happened to straddle a millisecond: handleDeleteThread returned its own Date.now() as the undo
+  // token while softDeleteThread wrote a SECOND, independent Date.now() into the rows. Whenever the
+  // clock ticked between the two, Undo matched nothing and the conversation stayed hidden with
+  // "Nothing to restore" -- recoverable only from D1.
+  //
+  // Forcing the clock to advance on every reading makes that deterministic: against the old code
+  // the stored stamp is always one ahead of the returned one, so this fails every time rather than
+  // occasionally.
+  it("returns the stamp it actually stored, even if the clock ticks mid-delete", async () => {
+    await seedMessage("SM1", 1000);
+    let clock = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+
+    const res = await handleDeleteThread(env.DB, PEER, ADMIN);
+    const { deletedAt } = await res.json<{ deletedAt: number }>();
+
+    const undo = await handleRestoreThread(restoreReq(deletedAt), env.DB, PEER, ADMIN);
+    expect(undo.status).toBe(200);
+    expect(await listThread(env.DB, PEER)).toHaveLength(1);
+  });
+
   it("refuses an undo with no stamp rather than guessing which delete to reverse", async () => {
     await seedMessage("SM1", 1000);
     await handleDeleteThread(env.DB, PEER, ADMIN);

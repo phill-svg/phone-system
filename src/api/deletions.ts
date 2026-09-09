@@ -38,9 +38,11 @@ export async function handleDeleteThread(db: D1Database, peerNumber: string, sta
   const denied = forbidden(staff);
   if (denied) return denied;
   // Stamped once for the whole thread so the undo can target exactly the messages this delete hid,
-  // and not also revive an older deletion of the same conversation.
+  // and not also revive an older deletion of the same conversation. The SAME value is both written
+  // and returned -- softDeleteThread used to take its own Date.now(), which is a different reading
+  // across the await and broke Undo whenever the two landed in different milliseconds.
   const deletedAt = Date.now();
-  const hidden = await softDeleteThread(db, peerNumber, staff.email);
+  const hidden = await softDeleteThread(db, peerNumber, staff.email, deletedAt);
   if (hidden === 0) return jsonResponse({ error: "That conversation is already deleted, or doesn't exist." }, 404);
   console.log("THREAD_DELETED", JSON.stringify({ peerNumber, messages: hidden, by: staff.email }));
   return jsonResponse({ ok: true, messages: hidden, deletedAt });
