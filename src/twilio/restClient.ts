@@ -41,14 +41,23 @@ export class TwilioApiError extends Error {
 }
 
 // Whether a failed create-call PROVES no call was created, and so may be safely retried with a
-// different caller ID. Twilio validated the request and rejected it: 21210/21212/13224 ("'From'
-// phone number not verified" and its siblings) all land here as a 4xx.
+// different caller ID.
 //
-// 429 is excluded with the 5xx range: a throttled or server-errored request may have created the
-// call before failing to report it, and a retry would leave a second leg ringing that nothing
-// tracks or cancels.
+// HTTP 400 ONLY. Twilio's caller-ID rejections -- 21210 ("'From' phone number not verified"), 21212,
+// 13224 -- are all 400 validation errors: the request was parsed, judged invalid, and nothing was
+// created. Everything else is a different failure wearing the same shape:
+//   401/403  the API key was rotated or revoked. Retrying dialled every divert leg TWICE during an
+//            outage and recorded the result as a caller-ID rejection, so Admin > Health Checks
+//            blamed the divert feature instead of the credentials.
+//   404      the resource is gone; a second call will not find it either.
+//   429      throttled, and 5xx may have created the call before failing to say so -- a retry there
+//            leaves a second leg ringing that is in no attemptSids and is never cancelled on answer.
+//
+// The whole 400 class is kept rather than an allowlist of error codes on purpose: an unrecognised
+// validation error should still fall back to the business number and ring, not drop the leg and
+// send the caller to voicemail.
 export function isCallerIdRejection(err: TwilioApiError): boolean {
-  return err.status >= 400 && err.status < 500 && err.status !== 429;
+  return err.status === 400;
 }
 
 // The business number -- and therefore every caller leg, conference, and agent leg we attach

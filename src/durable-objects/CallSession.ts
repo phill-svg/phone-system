@@ -18,7 +18,13 @@ import { createOutboundCall, cancelCall, redirectCall, hangupCall, TwilioApiErro
 import { cleanupLoneConference } from "../twilio/conferenceClient";
 import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/conferenceTwiml";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
-import { getBusinessHours, getRecordingEnabled, getDivertCallerId, recordDivertCallerIdRejection } from "../db/settings";
+import {
+  getBusinessHours,
+  getRecordingEnabled,
+  getDivertCallerId,
+  recordDivertCallerIdRejection,
+  clearDivertCallerIdRejection,
+} from "../db/settings";
 import { resolveSendingNumber } from "../db/phoneNumbers";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { appendCallEvent, parseRecordingDuration } from "../db/calls";
@@ -1055,6 +1061,15 @@ export class CallSession extends DurableObject<Env> {
     if (divert) {
       try {
         ({ sid } = await createLeg(divert.from, divert.token, true));
+        // A working divert clears any recorded rejection, so Health Checks reflects now rather than
+        // the worst thing that ever happened. Once per CALL, not per leg: a four-person ring must
+        // not put a D1 write back into the hot path this was hoisted out of.
+        if (!this.divertRecoveryCleared) {
+          this.divertRecoveryCleared = true;
+          await clearDivertCallerIdRejection(this.env.DB).catch(() => {
+            /* best effort -- never cost a live leg over a diagnostics marker */
+          });
+        }
       } catch (err) {
         if (!(err instanceof TwilioApiError) || !isCallerIdRejection(err)) throw err;
         console.log(
@@ -1102,8 +1117,25 @@ export class CallSession extends DurableObject<Env> {
   // env var it replaced was static and definitely owned, so the shape check below keeps the fix
   // without trading a guaranteed-valid caller ID for an unvalidated one on the most critical path
   // in the system.
+  // It must also be incapable of THROWING, and that is not a nicety. dialBatch resolves this once
+  // per ring round rather than once per leg -- deliberately, for the serial-read cost -- which puts
+  // the call ABOVE its per-leg try/catch. Every dialStaff failure used to return null and fall the
+  // caller through to business voicemail; a transient D1 error here instead escapes dialBatch,
+  // startRing and handleMainWebhook to the DO's catch-all, which says "we're experiencing a
+  // technical issue" and hangs up on a live customer. Via performDeferredDial it does that to
+  // someone already waiting on hold. A failed READ therefore falls back exactly like an invalid
+  // VALUE: the env var is static and definitely owned, so the leg still rings.
   private async callerId(): Promise<string> {
-    const resolved = await resolveSendingNumber(this.env.DB, "voice", null);
+    let resolved: string | null = null;
+    try {
+      resolved = await resolveSendingNumber(this.env.DB, "voice", null);
+    } catch (err) {
+      console.log(
+        "CALLER_ID_LOOKUP_FAILED",
+        JSON.stringify({ error: err instanceof Error ? err.message : String(err), fallback: this.env.TWILIO_FROM_NUMBER })
+      );
+      return this.env.TWILIO_FROM_NUMBER;
+    }
     if (resolved && E164.test(resolved.trim())) return resolved.trim();
     if (resolved) {
       console.log("CALLER_ID_INVALID", JSON.stringify({ resolved, fallback: this.env.TWILIO_FROM_NUMBER }));
@@ -1119,6 +1151,9 @@ export class CallSession extends DurableObject<Env> {
   // full-table reads, serially, in front of a caller listening to hold music. The inputs here are
   // all call-invariant, so reading them per leg would put that back.
   private divertMemo?: { from: string; token: string } | null;
+
+  // At most one clear per call -- see the successful-divert branch in dialStaff.
+  private divertRecoveryCleared = false;
 
   private async divertCallerId(callSid: string): Promise<{ from: string; token: string } | null> {
     if (this.divertMemo !== undefined) return this.divertMemo;

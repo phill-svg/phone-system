@@ -1,6 +1,11 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setBusinessHours, setDivertCallerId } from "../../src/db/settings";
+import {
+  setBusinessHours,
+  setDivertCallerId,
+  recordDivertCallerIdRejection,
+  getDivertCallerIdRejection,
+} from "../../src/db/settings";
 import { setUserSettings } from "../../src/db/userSettings";
 import { createAudioAsset } from "../../src/db/audioAssets";
 import type { CallSession } from "../../src/durable-objects/CallSession";
@@ -957,6 +962,56 @@ describe("CallSession", () => {
     expect(dial?.get("From")).toBe("+61261059771");
     expect(dial?.get("CallToken")).toBeNull();
     expect(dial?.get("Url")).not.toContain("whisper=1");
+  });
+
+  // #67 hoisted the caller-ID resolve out of dialBatch's per-leg loop for performance, which put it
+  // ABOVE the try/catch. Every dialStaff failure used to return null and fall the caller through to
+  // business voicemail; a transient D1 error there instead escaped dialBatch, startRing and
+  // handleMainWebhook to the DO's catch-all, which says "we're experiencing a technical issue" and
+  // HANGS UP on a live customer. The table is renamed so the read genuinely throws inside the DO
+  // rather than being mocked at the boundary.
+  it("still rings the staff member when the caller-ID lookup throws, instead of hanging up", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    await env.DB.prepare("ALTER TABLE phone_numbers RENAME TO phone_numbers_broken").run();
+    try {
+      const stub = stubFor("CA-callerid-throws");
+      await send(stub, mainEvent("CA-callerid-throws"));
+      const { xml } = await send(stub, mainEvent("CA-callerid-throws", { digits: "1" }));
+
+      // The caller is enqueued and the leg is dialled from the env fallback -- NOT hung up.
+      expect(xml).toContain("<Enqueue");
+      expect(xml).not.toContain("technical issue");
+      const dial = outboundDialBodies(fetchMock).find((b) => b.get("To")?.startsWith("client:"));
+      expect(dial?.get("From")).toBe("+61866108941"); // TWILIO_FROM_NUMBER
+    } finally {
+      await env.DB.prepare("ALTER TABLE phone_numbers_broken RENAME TO phone_numbers").run();
+    }
+  });
+
+  // A check that cannot recover is worse than no check. One anonymous caller or one transient 400
+  // used to leave Admin > Health Checks reporting "diverts are silently falling back" for seven
+  // days while every divert worked.
+  it("clears a recorded divert rejection once the divert works again", async () => {
+    await recordDivertCallerIdRejection(env.DB, 400);
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-divert-recover");
+    await send(stub, mainEvent("CA-divert-recover", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-recover", { digits: "1" }));
+
+    // The leg went out as the customer, and the stale failure marker is gone.
+    const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678");
+    expect(dial?.get("From")).toBe("+61402430107");
+    expect(await getDivertCallerIdRejection(env.DB)).toBeNull();
   });
 
   it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {

@@ -146,6 +146,14 @@ export async function recordDivertCallerIdRejection(db: D1Database, status: numb
     .run();
 }
 
+// Cleared on a successful divert, so the check reports CURRENT state. Without this one anonymous
+// caller or one transient 400 leaves Admin > Health Checks reporting a failure for seven days while
+// every divert works -- and a check that cannot recover is worse than no check, because it teaches
+// you to ignore it.
+export async function clearDivertCallerIdRejection(db: D1Database): Promise<void> {
+  await db.prepare("DELETE FROM settings WHERE key = ?").bind(DIVERT_CALLER_ID_ERROR_KEY).run();
+}
+
 export async function getDivertCallerIdRejection(db: D1Database): Promise<DivertCallerIdRejection | null> {
   const row = await db
     .prepare("SELECT value FROM settings WHERE key = ?")

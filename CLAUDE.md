@@ -303,6 +303,21 @@ is normal, not broken.
   `THREAD_DELETED` logs `deletedAt` because it IS the token and the client's copy dies with the undo
   alert. Deliberately NOT changed: `softDeleteCall` reads its own clock too, but `restoreCall`
   matches on `id`, never on the stamp, so no drift is possible there.
+- **Resolving the caller ID must never THROW on the ring path, and the rejection marker clears
+  itself.** `dialBatch` resolves the business caller ID once per ring round rather than once per leg
+  (four serial full-table reads in front of a caller on hold), which puts that call ABOVE its per-leg
+  try/catch. Every `dialStaff` failure falls the caller through to business voicemail; a throw from
+  `callerId()` instead escapes `dialBatch`, `startRing` and `handleMainWebhook` to the DO's catch-all,
+  which says "we're experiencing a technical issue" and HANGS UP on a live customer — and via
+  `performDeferredDial` does that to someone already on hold. So `callerId()` swallows a failed READ
+  the same way it already handled an invalid VALUE, falling back to `TWILIO_FROM_NUMBER`
+  (`CALLER_ID_LOOKUP_FAILED`). A test renames `phone_numbers` so the read genuinely throws; against
+  the old code it fails with the technical-issue hangup.
+  Two companions from the same review: `divert_caller_id_last_error` is cleared on the first
+  successful divert of a call, because a marker that only ever gets set pins Health Checks red for
+  seven days and teaches you to ignore it; and `isCallerIdRejection` is **HTTP 400 only**, since
+  401/403 are auth (a rotated key was dialling every divert leg twice during an outage and being
+  reported as a caller-ID fault), 404 is not-found, and 429/5xx may have created the call.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and
