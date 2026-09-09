@@ -430,9 +430,11 @@ export default {
           // Present only when the leg was dialed with MachineDetection enabled (the pstn mobile
           // leg -- see CallSession.dialStaff). Absent for softphone legs and other AMD-less legs.
           answeredBy: params.AnsweredBy,
-          // Set by dialStaff on the mobile (divert) leg only. The whisper that identifies the call
-          // as a work call is for that leg -- a softphone leg already says so on its own screen.
-          pstn: url.searchParams.get("pstn") === "1",
+          // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
+          // staff member is told on pickup that an unfamiliar number is work. NOT "this leg is a
+          // mobile": a divert that fell back to the business number leaves this off, because the
+          // screen already said who it was from.
+          whisper: url.searchParams.get("whisper") === "1",
           webhookUrl: request.url,
         }),
       });

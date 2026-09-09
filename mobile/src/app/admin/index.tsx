@@ -85,16 +85,18 @@ export default function AdminHomeScreen() {
           <Row icon="phone.fill" iconColor="#34C759" label="Phone Numbers" value={numberCount} chevron
             onPress={() => router.push("/admin/numbers")} />
           <Row icon="record.circle" iconColor="#FF9F0A" label="Call Recording"
-            toggle={recording ?? false} onToggle={onToggleRecording} />
+            toggle={recording ?? false} onToggle={onToggleRecording} toggleDisabled={recording === null} />
         </Group>
 
         <Group
           title="Diverted calls"
           footer={
-            "When a call is diverted to your mobile, show the customer's number so you know who it is before you answer — " +
-            "a saved customer rings by name. You'll hear a short \u201cTCB call\u201d on pickup so a work call is never mistaken " +
-            "for a personal one. Off rings from the business number instead. Note that with this on, a MISSED divert looks " +
-            "like an ordinary unknown number in your phone's own call log — Recents here is the reliable list either way."
+            "Applies to every staff member, not just this phone. When a call is diverted to a staff member's mobile, " +
+            "show the customer's number so they know who it is before answering — a saved customer rings by name. They " +
+            "hear a short \u201cTCB call\u201d on pickup so a work call is never mistaken for a personal one. Off rings " +
+            "from the business number instead.\n\nWith this on, a MISSED divert looks like an ordinary unknown number in " +
+            "the phone's own call log, and calling it back from there dials the customer from that staff member's " +
+            "personal number. Recents here stays the reliable list, and calling back from the app uses the business number."
           }
         >
           <Row icon="person.crop.circle.badge.questionmark" iconColor="#0A84FF" label="Show the customer's number"

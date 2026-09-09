@@ -139,14 +139,14 @@ const queueLeft = (callSid: string, queueResult: string | null = "bridged") => (
   queueResult,
   webhookUrl: `${ORIGIN}/webhooks/twilio/queue-left`,
 });
-const agentAnswer = (callSid: string, agentCallSid: string, answeredBy?: string, pstn?: boolean) => ({
+const agentAnswer = (callSid: string, agentCallSid: string, answeredBy?: string, whisper?: boolean) => ({
   kind: "agent_answer",
   callSid,
   agentCallSid,
   ...(answeredBy !== undefined ? { answeredBy } : {}),
-  // worker.ts sets this from the answer webhook's `pstn=1`, which dialStaff adds only to a divert
+  // worker.ts sets this from the answer webhook's `whisper=1`, which dialStaff adds only to a divert
   // leg that presented the customer's number.
-  ...(pstn !== undefined ? { pstn } : {}),
+  ...(whisper !== undefined ? { whisper } : {}),
   webhookUrl: `${ORIGIN}/webhooks/twilio/agent-answer?callSid=${callSid}`,
 });
 const amdStatus = (callSid: string, agentCallSid: string, answeredBy: string | null) => ({
@@ -844,7 +844,7 @@ describe("CallSession", () => {
     expect(dial?.get("CallToken")).toBe("CT-abc");
     // The whisper flag rides on the answer webhook, so the staff member is told on pickup that a
     // call from an unfamiliar number is work.
-    expect(dial?.get("Url")).toContain("pstn=1");
+    expect(dial?.get("Url")).toContain("whisper=1");
   });
 
   // The token arrives on the FIRST webhook only, but the ring is several gather turns later -- so
@@ -899,7 +899,7 @@ describe("CallSession", () => {
     expect(dials[1].get("From")).toBe("+61261059771");
     expect(dials[1].get("CallToken")).toBeNull();
     // No whisper: the screen showed the business number after all, so there is nothing to explain.
-    expect(dials[1].get("Url")).not.toContain("pstn=1");
+    expect(dials[1].get("Url")).not.toContain("whisper=1");
   });
 
   it("rings from the business number when the divert caller ID is switched off", async () => {
@@ -918,7 +918,7 @@ describe("CallSession", () => {
     const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678");
     expect(dial?.get("From")).toBe("+61261059771");
     expect(dial?.get("CallToken")).toBeNull();
-    expect(dial?.get("Url")).not.toContain("pstn=1");
+    expect(dial?.get("Url")).not.toContain("whisper=1");
   });
 
   // A withheld caller ID has no number to present, and "anonymous" is not a valid From -- sending
@@ -956,7 +956,7 @@ describe("CallSession", () => {
     const dial = outboundDialBodies(fetchMock).find((b) => b.get("To")?.startsWith("client:"));
     expect(dial?.get("From")).toBe("+61261059771");
     expect(dial?.get("CallToken")).toBeNull();
-    expect(dial?.get("Url")).not.toContain("pstn=1");
+    expect(dial?.get("Url")).not.toContain("whisper=1");
   });
 
   it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {

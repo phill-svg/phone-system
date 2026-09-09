@@ -40,6 +40,17 @@ export class TwilioApiError extends Error {
   }
 }
 
+// Whether a failed create-call PROVES no call was created, and so may be safely retried with a
+// different caller ID. Twilio validated the request and rejected it: 21210/21212/13224 ("'From'
+// phone number not verified" and its siblings) all land here as a 4xx.
+//
+// 429 is excluded with the 5xx range: a throttled or server-errored request may have created the
+// call before failing to report it, and a retry would leave a second leg ringing that nothing
+// tracks or cancels.
+export function isCallerIdRejection(err: TwilioApiError): boolean {
+  return err.status >= 400 && err.status < 500 && err.status !== 429;
+}
+
 // The business number -- and therefore every caller leg, conference, and agent leg we attach
 // to them -- is homed in Twilio's au1 (Australia) region. Regional resources are only visible
 // to the regional endpoint, authenticated with au1-region credentials.

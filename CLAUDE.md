@@ -191,7 +191,7 @@ is normal, not broken.
   global handler chains to the previous one (observes, does not change behaviour) and an error
   boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
   (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
-  falling over must be able to say so whoever holds it). Handsets are on **OTA 53**.
+  falling over must be able to say so whoever holds it). Handsets are on **OTA 56**.
 - **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
   the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
   moving it again means moving the grep in the same commit or every publish fails at "Read
@@ -260,13 +260,25 @@ is normal, not broken.
   `dialStaff` retries once with the business number on a `TwilioApiError` and logs
   `DIVERT_CALLER_ID_REJECTED`. That fallback is not optional: without it a rejected caller ID
   throws, `dialBatch` cancels, and every inbound call falls to voicemail with no handset ringing.
-  Only a `TwilioApiError` is retried (a real HTTP response, so no call was created); a network
-  error stays fatal because it could have created one, and dialling a staff member twice is worse.
+  The retry is deliberately narrow: a **4xx that is not 429** only. Those are the caller-ID
+  rejections it exists for, where Twilio validated the request and created nothing. A 5xx, a 429, or
+  a network error may have created the call before failing to say so, and re-dialling then leaves a
+  second leg ringing that is in no `attemptSids` and so is never cancelled on answer — #63's symptom
+  exactly.
   A withheld caller ID or a missing token logs `DIVERT_CALLER_ID_SKIPPED` and rings as the business.
-- **The trade on that setting is the MISSED call, not the answered one.** With it on, a missed
-  divert sits in the phone's own call log looking like an ordinary unknown number rather than a work
-  call — the app's Recents stays the authoritative missed-call list, and marks them red. That is why
-  it is a setting and not a constant.
+- **The trade on that setting is the MISSED call, not the answered one — and it has two halves.**
+  With it on, a missed divert sits in the phone's own call log looking like an ordinary unknown
+  number rather than a work call; the app's Recents stays the authoritative missed-call list, and
+  marks them red. The second half is worse and less obvious: **returning that call from the phone's
+  own log dials the customer from the staff member's PERSONAL number.** The customer keeps it and
+  rings it directly from then on, and the call creates no `calls` row, no recording, no ServiceM8
+  diary note and never appears in Recents. Calling back from the app goes out as the business, as
+  before. That pair is why this is a setting and not a constant.
+- **`Admin > Health Checks` reports the divert caller ID**, because the fallback is invisible on
+  purpose — the phone still rings, the call still connects, just from the business number. A
+  rejection is persisted (`divert_caller_id_last_error`) rather than left in a log line nobody
+  tails. What the check CANNOT see is a carrier that accepts the leg and then rewrites the presented
+  number downstream, so it says "make one test divert" rather than claiming more than it knows.
 - **The answered case is covered by a whisper, and it must precede the `<Dial>`.**
   `renderDialAgentIntoConference({ whisper: true })` prepends `<Say>T C B call.</Say>`, so a staff
   member seeing an unfamiliar number is told it is work before they speak. Letter-spaced because TTS

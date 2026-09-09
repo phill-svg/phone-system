@@ -26,9 +26,12 @@ export function renderListenConference(opts: { conferenceName: string }): string
 // customer's number rather than the business one. Without it a divert is indistinguishable from a
 // personal call until someone speaks, which is how a customer gets answered with "hello?".
 //
-// Letter-spaced because TTS reads "TCB" as a word. Kept to two seconds: the customer is already in
-// the conference by this point (handleAgentAnswer redirects them first) hearing ringback, so every
-// syllable here is a syllable they spend waiting.
+// Letter-spaced because TTS reads "TCB" as a word, and as short as it can be while still being a
+// sentence. The customer is ALREADY in the conference by this point -- handleAgentAnswer redirects
+// them in before returning this document -- so every syllable is one they spend still hearing
+// ringback after the phone was picked up. That is the same class of defect as the synchronous-AMD
+// bug (CLAUDE.md: "the caller keeps hearing ringback for 2-4s after staff answer"), which is why
+// this is ~1s and not a fuller announcement naming the caller. Never grow it.
 const WORK_CALL_WHISPER = "T C B call.";
 
 export function renderDialAgentIntoConference(opts: {

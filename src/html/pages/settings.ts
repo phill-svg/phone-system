@@ -188,7 +188,7 @@ export function renderSettingsPage(
         ? `<form class="settings-form" id="divert-callerid-form">
       <h3>Caller ID on Ring-My-Mobile</h3>
       <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">When a call is diverted to a staff member's mobile, show the <strong>customer's number</strong> on their screen so they know who is calling before they answer — a saved customer rings by name. They hear a short “TCB call” on pickup so a work call is never mistaken for a personal one. Turn this off to ring from the business number instead, which is what the phone's own contacts show as “TCB Phone”.</p>
-      <p style="color:var(--admin-dim);font-size:0.85rem">With it on, a <em>missed</em> divert sits in the phone's own call log looking like an ordinary unknown number. The app's Recents is the reliable missed-call list either way, and marks them red.</p>
+      <p style="color:var(--admin-dim);font-size:0.85rem">Two things to know before turning this on. A <em>missed</em> divert sits in the phone's own call log looking like an ordinary unknown number — the app's Recents is the reliable missed-call list either way, and marks them red. And calling that entry back <strong>from the phone's own log dials the customer from that staff member's personal number</strong>, which the customer then keeps, and which leaves no call history, no recording and no ServiceM8 note. Call back from the app instead and it goes out as the business.</p>
       <label><input type="checkbox" id="divert-callerid"${divertCallerId ? " checked" : ""}> Show the customer's number</label>
       <button type="submit">Save</button>
       <span id="divert-callerid-status"></span>

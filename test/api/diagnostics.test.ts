@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleGetDiagnostics, handleTestPush, handleTestEmail, type Check } from "../../src/api/diagnostics";
+import { recordDivertCallerIdRejection, setDivertCallerId } from "../../src/db/settings";
 
 const ADMIN = { email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" as const };
 const TOKEN = "ExponentPushToken[test-device-1]";
@@ -108,7 +109,7 @@ describe("admin diagnostics", () => {
   it("returns every check, with no key lost or duplicated", async () => {
     stubFetch();
     const keys = (await run()).map((c) => c.key);
-    expect(keys).toEqual(["twilio", "regions", "roster", "servicem8", "transcripts", "email", "push"]);
+    expect(keys).toEqual(["twilio", "regions", "roster", "divert_caller_id", "servicem8", "transcripts", "email", "push"]);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
@@ -176,5 +177,25 @@ describe("test email", () => {
     const res = await handleTestEmail(baseEnv(), ADMIN);
     expect(res.status).toBe(502);
     expect((await res.json<{ error: string }>()).error).toContain("Email failed");
+  });
+
+  // The divert fallback is invisible by design -- the phone still rings -- so a rejected caller ID
+  // is only ever reported here.
+  it("reports a rejected divert caller ID rather than leaving it to the logs", async () => {
+    stubFetch();
+    await env.DB.prepare("DELETE FROM settings WHERE key IN ('divert_caller_id', 'divert_caller_id_last_error')").run();
+    expect(find(await run(), "divert_caller_id").status).toBe("ok");
+
+    await recordDivertCallerIdRejection(env.DB, 400);
+    stubFetch();
+    const failed = find(await run(), "divert_caller_id");
+    expect(failed.status).toBe("fail");
+    expect(failed.detail).toContain("400");
+
+    // Switched off, a stale rejection is not a fault -- nothing is trying to use it.
+    await setDivertCallerId(env.DB, false);
+    stubFetch();
+    expect(find(await run(), "divert_caller_id").status).toBe("ok");
+    await env.DB.prepare("DELETE FROM settings WHERE key IN ('divert_caller_id', 'divert_caller_id_last_error')").run();
   });
 });

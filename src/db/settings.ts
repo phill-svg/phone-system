@@ -128,3 +128,33 @@ export async function setDivertCallerId(db: D1Database, enabled: boolean): Promi
     .bind(DIVERT_CALLER_ID_KEY, JSON.stringify(enabled))
     .run();
 }
+
+// The last time Twilio refused to let a divert leg present the customer's number, so Admin > Health
+// Checks can say the feature is silently falling back to the business number.
+//
+// Nothing else would say so. The fallback is deliberately invisible to the caller and to staff --
+// the phone still rings, the call still connects -- so without this the only evidence is a log line
+// nobody is watching. That is the shape SERVICEM8_API_KEY failed in for a day.
+const DIVERT_CALLER_ID_ERROR_KEY = "divert_caller_id_last_error";
+
+export type DivertCallerIdRejection = { at: number; status: number };
+
+export async function recordDivertCallerIdRejection(db: D1Database, status: number): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(DIVERT_CALLER_ID_ERROR_KEY, JSON.stringify({ at: Date.now(), status } satisfies DivertCallerIdRejection))
+    .run();
+}
+
+export async function getDivertCallerIdRejection(db: D1Database): Promise<DivertCallerIdRejection | null> {
+  const row = await db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .bind(DIVERT_CALLER_ID_ERROR_KEY)
+    .first<{ value: string }>();
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value) as DivertCallerIdRejection;
+  } catch {
+    return null;
+  }
+}
