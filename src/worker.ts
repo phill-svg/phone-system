@@ -23,6 +23,8 @@ import {
   handlePutCallBlocklist,
   handleGetRecordingSetting,
   handlePutRecordingSetting,
+  handleGetDivertCallerIdSetting,
+  handlePutDivertCallerIdSetting,
 } from "./api/settings";
 import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
@@ -80,7 +82,7 @@ import {
 } from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
-import { getBusinessHours, getCallBlocklist, getRecordingEnabled } from "./db/settings";
+import { getBusinessHours, getCallBlocklist, getRecordingEnabled, getDivertCallerId } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { resetAvailabilityForNewDay } from "./db/staff";
 import { localDateKey } from "./ivr/businessHours";
@@ -249,6 +251,10 @@ export default {
           recordingUrl: params.RecordingUrl ?? null,
           recordingSid: params.RecordingSid ?? null,
           recordingDuration: params.RecordingDuration ?? null,
+          // Present only on the FIRST webhook of a call, and only when Twilio POSTs. The ring can
+          // happen many gathers later, so the DO stashes it -- see CallSession.handleMainWebhook.
+          // It is what lets the divert leg ring showing the customer's number (dialStaff).
+          callToken: params.CallToken ?? null,
           webhookUrl: request.url,
         }),
       });
@@ -424,6 +430,11 @@ export default {
           // Present only when the leg was dialed with MachineDetection enabled (the pstn mobile
           // leg -- see CallSession.dialStaff). Absent for softphone legs and other AMD-less legs.
           answeredBy: params.AnsweredBy,
+          // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
+          // staff member is told on pickup that an unfamiliar number is work. NOT "this leg is a
+          // mobile": a divert that fell back to the business number leaves this off, because the
+          // screen already said who it was from.
+          whisper: url.searchParams.get("whisper") === "1",
           webhookUrl: request.url,
         }),
       });
@@ -809,12 +820,24 @@ export default {
           const intelligenceJob = requestTranscript(env, params.RecordingSid, {
             staffChannel: await getTranscriptStaffChannel(env.DB),
             customerNumber,
-          }).then(async (sid) => {
-            if (!sid) return;
-            await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
-              .bind(sid, callSid)
-              .run();
-          });
+          })
+            .then(async (sid) => {
+              if (!sid) return;
+              await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
+                .bind(sid, callSid)
+                .run();
+            })
+            // requestTranscript swallows its own failures, but this D1 write does not -- and an
+            // unhandled rejection inside waitUntil is recorded as a Worker EXCEPTION, not a log
+            // line. Every job on the cron is already `.catch`ed for exactly this reason; this one
+            // was the only new one that was not. Losing the sid means the sweep never collects that
+            // transcript, which costs a label, not the call.
+            .catch((e) => {
+              console.log(
+                "INTELLIGENCE_PENDING_WRITE_FAILED",
+                JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) })
+              );
+            });
           if (ctx) ctx.waitUntil(intelligenceJob);
           else await intelligenceJob;
         }
@@ -1032,6 +1055,11 @@ export default {
       }
       if (url.pathname === "/api/settings/recording") {
         return request.method === "PUT" ? handlePutRecordingSetting(request, env.DB, staff) : handleGetRecordingSetting(env.DB);
+      }
+      if (url.pathname === "/api/settings/divert-caller-id") {
+        return request.method === "PUT"
+          ? handlePutDivertCallerIdSetting(request, env.DB, staff)
+          : handleGetDivertCallerIdSetting(env.DB);
       }
       if (url.pathname === "/api/settings/me") {
         return request.method === "PUT"
@@ -1311,13 +1339,14 @@ export default {
       }
 
       if (url.pathname === "/admin/settings") {
-        const [schedule, blocklist, staffRoster, staffAccess] = await Promise.all([
+        const [schedule, blocklist, staffRoster, staffAccess, divertCallerId] = await Promise.all([
           getBusinessHours(env.DB),
           getCallBlocklist(env.DB),
           getStaffRoster(env.DB),
           listStaffAccess(env.DB),
+          getDivertCallerId(env.DB),
         ]);
-        const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role);
+        const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role, divertCallerId);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 

@@ -10,7 +10,8 @@ describe("settings staff access section", () => {
     const html = renderSettingsPage(
       ...leadingArgs,
       [{ email: "jake@example.com", role: "staff", hasPassword: false }],
-      "admin"
+      "admin",
+      true
     );
     expect(html).toContain("Staff access");
     expect(html).toContain("jake@example.com");
@@ -19,7 +20,7 @@ describe("settings staff access section", () => {
   });
 
   it("non-admins do not see the staff access section", () => {
-    const html = renderSettingsPage(...leadingArgs, [], "staff");
+    const html = renderSettingsPage(...leadingArgs, [], "staff", true);
     expect(html).not.toContain("Staff access");
   });
 });

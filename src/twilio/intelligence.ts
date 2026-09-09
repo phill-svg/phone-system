@@ -120,6 +120,18 @@ export async function fetchTranscriptStatus(env: IntelligenceEnv, transcriptSid:
 // worse than whole-but-unlabelled, so the pages are followed and any doubt returns [] instead.
 const MAX_SENTENCE_PAGES = 20;
 
+// A next-page URL, but only if it is still Twilio's Intelligence host. Anything else -- another
+// origin, a downgrade to http, an unparseable string -- ends the walk rather than being followed
+// with the account token in the Authorization header.
+function sameOrigin(next: string | null | undefined): string | null {
+  if (!next) return null;
+  try {
+    return new URL(next).origin === new URL(INTELLIGENCE_BASE).origin ? next : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string): Promise<Sentence[]> {
   const out: Sentence[] = [];
   let url: string | null =
@@ -132,7 +144,11 @@ export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string
       if (!res.ok) return [];
       const json = (await res.json()) as { sentences?: Sentence[]; meta?: { next_page_url?: string | null } };
       if (Array.isArray(json.sentences)) out.push(...json.sentences);
-      url = json.meta?.next_page_url ?? null;
+      // The next page is a URL the SERVER hands us, and we re-send the account token with it. Only
+      // Twilio can set it today, over a TLS-verified connection -- but "follow a URL from a response
+      // body, with credentials attached" is the shape of a credential-leak bug, and the check that
+      // it stays on Twilio's own origin costs nothing.
+      url = sameOrigin(json.meta?.next_page_url);
     }
     if (url) {
       // More pages than the cap allows: we cannot claim to have the whole call.

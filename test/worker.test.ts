@@ -306,6 +306,29 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("Content-Type")).toBe("text/xml");
     });
+
+    // The one link in the whisper chain that nothing else covers. dialStaff writing "&whisper=1" is
+    // asserted in the DO tests and handleAgentAnswer honouring `body.whisper` is asserted there too
+    // -- but between them sits this query-param read, and getting it wrong (a capitalised key, a
+    // comparison against "true") leaves every test in the suite green while no staff member ever
+    // hears the whisper, and a diverted call from an unfamiliar number gets answered as a personal
+    // one. So this goes end to end, from the query string to the rendered <Say>.
+    it("turns whisper=1 in the query into the spoken work-call announcement", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const on = await postSigned(
+        "https://example.com/webhooks/twilio/agent-answer?callSid=CA-caller-w1&whisper=1",
+        { CallSid: "CA-staff-w1" }
+      );
+      expect(await on.text()).toContain("<Say>T C B call.</Say>");
+
+      const off = await postSigned(
+        "https://example.com/webhooks/twilio/agent-answer?callSid=CA-caller-w2",
+        { CallSid: "CA-staff-w2" }
+      );
+      expect(await off.text()).not.toContain("<Say>");
+    });
   });
 
   // ---- Route 5: /webhooks/twilio/agent-status (staff leg, callSid from query) ----

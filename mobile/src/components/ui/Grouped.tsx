@@ -35,6 +35,7 @@ export function Row({
   value,
   toggle,
   onToggle,
+  toggleDisabled,
   onPress,
   chevron,
   destructive,
@@ -45,6 +46,10 @@ export function Row({
   value?: string;
   toggle?: boolean;
   onToggle?: (v: boolean) => void;
+  // For a toggle whose real value has not loaded yet. A switch defaulted to `false` while the server
+  // says `true` invites the admin to "turn it on" (a no-op) and then off again to test -- which
+  // genuinely disables it. Better to be visibly not-ready than confidently wrong.
+  toggleDisabled?: boolean;
   onPress?: () => void;
   chevron?: boolean;
   destructive?: boolean;
@@ -62,7 +67,13 @@ export function Row({
       </Text>
       {value ? <Text style={[type.body, { color: t.colors.labelSecondary }]} numberOfLines={1}>{value}</Text> : null}
       {toggle !== undefined ? (
-        <Switch value={toggle} onValueChange={onToggle} trackColor={{ true: t.colors.accent }} />
+        <Switch
+          value={toggle}
+          onValueChange={onToggle}
+          disabled={toggleDisabled}
+          trackColor={{ true: t.colors.accent }}
+          style={toggleDisabled ? { opacity: 0.4 } : undefined}
+        />
       ) : chevron ? (
         <Icon name="chevron.right" fallback="chevron-forward" size={15} color={t.colors.labelTertiary} />
       ) : null}

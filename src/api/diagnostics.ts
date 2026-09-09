@@ -1,6 +1,7 @@
 import { jsonResponse } from "./respond";
 import { listPhoneNumbers } from "../db/phoneNumbers";
 import { getStaffRoster } from "../db/staff";
+import { getDivertCallerId, getDivertCallerIdRejection } from "../db/settings";
 import { isStaffAvailable } from "../dial/presence";
 import { sendExpoPush } from "../push/expoPush";
 import { sendEmail, type SendEmailBinding } from "../email/sendgrid";
@@ -216,21 +217,59 @@ async function checkPushTokens(env: Env, staff: StaffUser): Promise<Check> {
   return { ...base, status: "ok", detail: rows.results.map((r) => `${r.n} ${r.platform}`).join(", ") + " registered." };
 }
 
+// Is a diverted call actually ringing with the customer's number on it?
+//
+// The fallback in dialStaff is deliberately invisible -- the phone still rings and the call still
+// connects, just showing the business number -- so a carrier or account rejecting the caller ID
+// would otherwise be visible only in a log line nobody is tailing. Same silence that hid
+// SERVICEM8_API_KEY for a day.
+//
+// Note what this CANNOT see: a carrier that accepts the leg from Twilio and then rewrites or drops
+// the presented number downstream. Only a real test call proves that end, which is why the ok state
+// says so rather than claiming more than it knows.
+async function checkDivertCallerId(env: Env): Promise<Check> {
+  const base = { key: "divert_caller_id", label: "Caller ID on ring-my-mobile" };
+  try {
+    const [enabled, rejection] = await Promise.all([getDivertCallerId(env.DB), getDivertCallerIdRejection(env.DB)]);
+    if (!enabled) {
+      return { ...base, status: "ok", detail: "Off — diverted calls ring from the business number." };
+    }
+    if (rejection && Date.now() - rejection.at < 7 * 24 * 60 * 60 * 1000) {
+      return {
+        ...base,
+        status: "fail",
+        detail:
+          `Twilio rejected the customer's number as caller ID (HTTP ${rejection.status}) on ` +
+          `${new Date(rejection.at).toISOString().slice(0, 16).replace("T", " ")} UTC. ` +
+          "Diverted calls are silently ringing from the business number instead.",
+      };
+    }
+    return {
+      ...base,
+      status: "ok",
+      detail: "On — diverted calls show the customer's number. Make one test divert to confirm your carrier honours it.",
+    };
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't check: ${e instanceof Error ? e.message : "error"}` };
+  }
+}
+
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {
   // The names below are POSITIONAL: each binding takes whatever the call in the same position
   // returns. Keep the two lists in the same order and the same length -- adding a call without a
   // binding silently shifts every one after it and drops the last check off the end entirely, which
   // is exactly what happened when the transcripts check was first added here.
-  const [twilio, regions, roster, servicem8, transcripts, push] = await Promise.all([
+  const [twilio, regions, roster, divert, servicem8, transcripts, push] = await Promise.all([
     checkTwilioCredentials(env),
     checkNumberRegions(env),
     checkRingRoster(env),
+    checkDivertCallerId(env),
     checkServiceM8(env),
     checkCallTranscripts(env),
     checkPushTokens(env, staff),
   ]);
   // Display order, which is deliberately not the call order.
-  return jsonResponse([twilio, regions, roster, servicem8, transcripts, checkEmail(env), push]);
+  return jsonResponse([twilio, regions, roster, divert, servicem8, transcripts, checkEmail(env), push]);
 }
 
 // End-to-end push: the only proof that the whole chain works is a phone buzzing. Deliberately sent

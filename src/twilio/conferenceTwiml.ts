@@ -22,18 +22,34 @@ export function renderListenConference(opts: { conferenceName: string }): string
   );
 }
 
+// Spoken to the answering staff member ONLY, before they are bridged, when their screen showed the
+// customer's number rather than the business one. Without it a divert is indistinguishable from a
+// personal call until someone speaks, which is how a customer gets answered with "hello?".
+//
+// Letter-spaced because TTS reads "TCB" as a word, and as short as it can be while still being a
+// sentence. The customer is ALREADY in the conference by this point -- handleAgentAnswer redirects
+// them in before returning this document -- so every syllable is one they spend still hearing
+// ringback after the phone was picked up. That is the same class of defect as the synchronous-AMD
+// bug (CLAUDE.md: "the caller keeps hearing ringback for 2-4s after staff answer"), which is why
+// this is ~1s and not a fuller announcement naming the caller. Never grow it.
+const WORK_CALL_WHISPER = "T C B call.";
+
 export function renderDialAgentIntoConference(opts: {
   conferenceName: string;
   actionUrl: string;
   recordingStatusCallbackUrl: string;
   record?: boolean;
+  whisper?: boolean;
 }): string {
   const rec =
     opts.record === false
       ? ""
       : ` record="record-from-start" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
+  // The <Say> precedes the <Dial>, so it plays on this leg alone -- the caller is in the conference
+  // and cannot hear it.
   return wrapResponse(
-    `<Dial action="${escapeXml(opts.actionUrl)}" method="POST">` +
+    (opts.whisper ? `<Say>${escapeXml(WORK_CALL_WHISPER)}</Say>` : "") +
+      `<Dial action="${escapeXml(opts.actionUrl)}" method="POST">` +
       `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}"${rec}>${escapeXml(opts.conferenceName)}</Conference>` +
       `</Dial>`
   );

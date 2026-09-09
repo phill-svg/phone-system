@@ -1,6 +1,13 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { handlePutBusinessHours, handlePutCallBlocklist, handleGetRecordingSetting, handlePutRecordingSetting } from "../../src/api/settings";
+import {
+  handlePutBusinessHours,
+  handlePutCallBlocklist,
+  handleGetRecordingSetting,
+  handlePutRecordingSetting,
+  handleGetDivertCallerIdSetting,
+  handlePutDivertCallerIdSetting,
+} from "../../src/api/settings";
 import { getCallBlocklist } from "../../src/db/settings";
 
 const STAFF: import("../../src/access/requireStaffUser").StaffUser = {
@@ -71,6 +78,28 @@ const staff = { email: "s@b.com", role: "staff" as const };
 function putRec(body: unknown) {
   return new Request("https://x/api/settings/recording", { method: "PUT", body: JSON.stringify(body) });
 }
+
+function putDivert(body: unknown) {
+  return new Request("https://x/api/settings/divert-caller-id", { method: "PUT", body: JSON.stringify(body) });
+}
+
+describe("/api/settings/divert-caller-id", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'divert_caller_id'").run();
+  });
+  // Default ON: knowing who is calling before you answer is the point of the feature.
+  it("GET returns default true", async () => {
+    expect(await (await handleGetDivertCallerIdSetting(env.DB)).json()).toEqual({ divert_caller_id: true });
+  });
+  it("admin PUT sets it; staff PUT is forbidden", async () => {
+    expect((await handlePutDivertCallerIdSetting(putDivert({ divert_caller_id: false }), env.DB, admin)).status).toBe(200);
+    expect(await (await handleGetDivertCallerIdSetting(env.DB)).json()).toEqual({ divert_caller_id: false });
+    expect((await handlePutDivertCallerIdSetting(putDivert({ divert_caller_id: true }), env.DB, staff)).status).toBe(403);
+  });
+  it("rejects a non-boolean body rather than storing it", async () => {
+    expect((await handlePutDivertCallerIdSetting(putDivert({ divert_caller_id: "yes" }), env.DB, admin)).status).toBe(400);
+  });
+});
 
 describe("/api/settings/recording", () => {
   beforeEach(async () => {

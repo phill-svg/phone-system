@@ -36,4 +36,24 @@ describe("renderDialAgentIntoConference", () => {
     const def = renderDialAgentIntoConference({ conferenceName: "CAx", actionUrl: "https://x/a", recordingStatusCallbackUrl: "https://x/r" });
     expect(def).toContain('record="record-from-start"');
   });
+
+  // The whisper is for a divert leg whose screen showed the CUSTOMER's number: without it a work
+  // call is indistinguishable from a personal one until someone speaks.
+  it("whispers that this is a work call, before the Dial, when asked", () => {
+    const xml = renderDialAgentIntoConference({
+      conferenceName: "CAx",
+      actionUrl: "https://x/a",
+      recordingStatusCallbackUrl: "https://x/r",
+      whisper: true,
+    });
+    expect(xml).toContain("<Say>T C B call.</Say>");
+    // It MUST precede the <Dial>: inside it, the customer (already in the conference) would hear it
+    // too, and after it, it would never play at all.
+    expect(xml.indexOf("<Say>")).toBeLessThan(xml.indexOf("<Dial"));
+  });
+
+  it("stays silent by default, so a softphone leg is unchanged", () => {
+    const xml = renderDialAgentIntoConference({ conferenceName: "CAx", actionUrl: "https://x/a", recordingStatusCallbackUrl: "https://x/r" });
+    expect(xml).not.toContain("<Say>");
+  });
 });

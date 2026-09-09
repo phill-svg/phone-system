@@ -19,7 +19,37 @@ export type OutboundCallOptions = {
   // asyncAmdStatusCallback instead of as `AnsweredBy` on the answer webhook.
   asyncAmd?: boolean;
   asyncAmdStatusCallback?: string;
+  // The inbound call's `CallToken`, forwarded verbatim. Twilio normally rejects a `From` that
+  // isn't a number we own or have verified; the token is what proves this leg is FORWARDING the
+  // call whose caller ID it is presenting, which is how the divert leg can ring showing the
+  // customer's number. Only meaningful alongside a `from` that isn't ours -- see
+  // CallSession.dialStaff.
+  callToken?: string;
 };
+
+// Thrown only after Twilio returned an actual HTTP response, so a caller can retry knowing NO call
+// was created. A network failure rejects with a plain Error instead, where that is not knowable and
+// a retry risks dialling the same person twice.
+export class TwilioApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string
+  ) {
+    super(`Twilio create-call failed: ${status} ${body}`);
+    this.name = "TwilioApiError";
+  }
+}
+
+// Whether a failed create-call PROVES no call was created, and so may be safely retried with a
+// different caller ID. Twilio validated the request and rejected it: 21210/21212/13224 ("'From'
+// phone number not verified" and its siblings) all land here as a 4xx.
+//
+// 429 is excluded with the 5xx range: a throttled or server-errored request may have created the
+// call before failing to report it, and a retry would leave a second leg ringing that nothing
+// tracks or cancels.
+export function isCallerIdRejection(err: TwilioApiError): boolean {
+  return err.status >= 400 && err.status < 500 && err.status !== 429;
+}
 
 // The business number -- and therefore every caller leg, conference, and agent leg we attach
 // to them -- is homed in Twilio's au1 (Australia) region. Regional resources are only visible
@@ -39,6 +69,7 @@ export async function createOutboundCall(
   if (opts.machineDetection) body.set("MachineDetection", opts.machineDetection);
   if (opts.asyncAmd) body.set("AsyncAmd", "true");
   if (opts.asyncAmdStatusCallback) body.set("AsyncAmdStatusCallback", opts.asyncAmdStatusCallback);
+  if (opts.callToken) body.set("CallToken", opts.callToken);
 
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls.json`, {
     method: "POST",
@@ -48,7 +79,7 @@ export async function createOutboundCall(
     },
     body,
   });
-  if (!res.ok) throw new Error(`Twilio create-call failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new TwilioApiError(res.status, await res.text());
   const json = await res.json<{ sid: string }>();
   return { sid: json.sid };
 }

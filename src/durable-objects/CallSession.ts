@@ -14,11 +14,11 @@ import {
   type RingPlanState,
   type RingStrategy,
 } from "../dial/ringPlan";
-import { createOutboundCall, cancelCall, redirectCall, hangupCall } from "../twilio/restClient";
+import { createOutboundCall, cancelCall, redirectCall, hangupCall, TwilioApiError, isCallerIdRejection } from "../twilio/restClient";
 import { cleanupLoneConference } from "../twilio/conferenceClient";
 import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/conferenceTwiml";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
-import { getBusinessHours, getRecordingEnabled } from "../db/settings";
+import { getBusinessHours, getRecordingEnabled, getDivertCallerId, recordDivertCallerIdRejection } from "../db/settings";
 import { resolveSendingNumber } from "../db/phoneNumbers";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { appendCallEvent, parseRecordingDuration } from "../db/calls";
@@ -69,6 +69,11 @@ type WalkResult = {
   capturedInput?: { nodeId: string; value: string };
 };
 
+// A caller ID Twilio will accept: E.164, no leading zero on the country code. Used for the
+// business number AND for the customer's number on a divert, so a withheld/"anonymous" caller can
+// never become a `From`.
+const E164 = /^\+[1-9]\d{7,14}$/;
+
 // ---- Inbound event shapes (mirror the JSON bodies worker.ts forwards) ----
 
 type MainWebhookEvent = {
@@ -80,6 +85,9 @@ type MainWebhookEvent = {
   recordingUrl: string | null;
   recordingSid: string | null;
   recordingDuration: string | null;
+  // Twilio's forwarding token for this inbound call. Only ever present on the call's FIRST
+  // webhook, which is why handleMainWebhook stashes it rather than reading it at ring time.
+  callToken?: string | null;
   webhookUrl: string;
 };
 
@@ -96,6 +104,10 @@ type AgentAnswerEvent = {
   // present when the leg was dialed with MachineDetection enabled (the pstn mobile leg -- see
   // dialStaff). Undefined for softphone legs, which never carry AMD.
   answeredBy?: string;
+  // Whether to announce "TCB call" to the answering staff member before bridging. NOT "this is a
+  // mobile leg": a divert that fell back to the business number is still a mobile leg and sets this
+  // false, because the screen already said who it was from.
+  whisper?: boolean;
 };
 type AgentStatusEvent = {
   kind: "agent_status";
@@ -171,6 +183,14 @@ export class CallSession extends DurableObject<Env> {
   private async handleMainWebhook(body: MainWebhookEvent): Promise<Response> {
     const { callSid, from, to, digits, webhookUrl } = body;
     const origin = new URL(webhookUrl).origin;
+
+    // Twilio sends CallToken on the call's FIRST webhook, but the ring can be several gather turns
+    // later -- so capture it the moment it appears and keep it for dialStaff. The `if` is the whole
+    // guard: a later webhook WITHOUT a token must not erase the stored one. A later webhook WITH one
+    // overwrites, deliberately -- the token is a signed JWT that expires, and a caller who sits
+    // through a greeting, two gathers and hold music would otherwise reach the ring node carrying a
+    // minutes-old token that Twilio rejects.
+    if (body.callToken) await this.ctx.storage.put("callToken", body.callToken);
 
     // (a) Voicemail <Record> action callback lands here on the SAME route/CallSid.
     if (body.recordingUrl) {
@@ -699,6 +719,9 @@ export class CallSession extends DurableObject<Env> {
         actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         record,
+        // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
+        // whisper appears exactly when the screen didn't already say this was work.
+        whisper: body.whisper === true,
       })
     );
   }
@@ -948,6 +971,7 @@ export class CallSession extends DurableObject<Env> {
     // Client (softphone) legs get no AMD -- undefined here means "no MachineDetection param sent".
     let machineDetection: "Enable" | undefined;
     let asyncAmdStatusCallback: string | undefined;
+    let divert: { from: string; token: string } | null = null;
     if (number.startsWith("pstn:")) {
       const rest = number.slice("pstn:".length);
       const sep = rest.indexOf("|");
@@ -958,6 +982,7 @@ export class CallSession extends DurableObject<Env> {
         `${origin}/webhooks/twilio/amd-status?callSid=${callSid}`,
         this.env.TWILIO_WEBHOOK_SECRET
       );
+      divert = await this.divertCallerId(callSid);
     } else {
       // The staff leg's `From` stays our own owned business number -- Twilio's Caller-ID-ownership
       // rules for the `From` field are murky for calls terminating at a `client:` identity (vs a real
@@ -977,33 +1002,73 @@ export class CallSession extends DurableObject<Env> {
         ? `${number}?CallerNumber=${encodeURIComponent(callerRow.caller_number.replace(/^\+/, ""))}`
         : number;
     }
-    const { sid } = await createOutboundCall(
-      this.env.TWILIO_ACCOUNT_SID,
-      this.env.TWILIO_API_KEY_SID,
-      this.env.TWILIO_API_KEY_SECRET,
-      {
-        to,
-        // The number STAFF see when their mobile rings on a divert. Resolved from the
-        // phone_numbers table like every other outbound path, not from TWILIO_FROM_NUMBER: that env
-        // var still holds the number this system was built on, and it never moved when the Canberra
-        // landline ported in and became the default caller ID. So a diverted call announced itself
-        // from the old line -- not the number staff recognise, and not the one to call back.
-        //
-        // `from` is passed by the caller, resolved ONCE per ring round rather than once per leg: a
-        // four-person simultaneous ring was otherwise four identical full-table reads, serially, in
-        // front of a caller listening to hold music.
-        from: callerId,
-        url: appendWebhookSecret(`${origin}/webhooks/twilio/agent-answer?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
-        statusCallback: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
-        statusCallbackEvent: ["completed"],
-        // Ring for the node's configured timeout (fall back to 20s) before Twilio declares the leg
-        // unanswered, so cascade/no-answer fall-through happens promptly.
-        timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : 20,
-        machineDetection,
-        asyncAmd: machineDetection ? true : undefined,
-        asyncAmdStatusCallback,
+    // One attempt at creating the leg, parameterised by which caller ID it presents. `whisper`
+    // rides along in the answer webhook's query: it is true only when the staff member's screen
+    // will show the CUSTOMER, which is exactly when they need to be told on pickup that this is a
+    // work call (see handleAgentAnswer).
+    const createLeg = (fromNumber: string, token: string | undefined, whisper: boolean) =>
+      createOutboundCall(
+        this.env.TWILIO_ACCOUNT_SID,
+        this.env.TWILIO_API_KEY_SID,
+        this.env.TWILIO_API_KEY_SECRET,
+        {
+          to,
+          // Either the CUSTOMER's number (a divert showing who is calling) or the business number.
+          // The business one is resolved from the phone_numbers table like every other outbound
+          // path, not from TWILIO_FROM_NUMBER: that env var still holds the number this system was
+          // built on and never moved when the Canberra landline ported in, so a diverted call used
+          // to announce itself from the old line -- not the number staff recognise, and not the one
+          // to call back. It is passed in, resolved ONCE per ring round rather than once per leg: a
+          // four-person simultaneous ring was otherwise four identical full-table reads, serially,
+          // in front of a caller listening to hold music.
+          from: fromNumber,
+          callToken: token,
+          url: appendWebhookSecret(
+            `${origin}/webhooks/twilio/agent-answer?callSid=${callSid}${whisper ? "&whisper=1" : ""}`,
+            this.env.TWILIO_WEBHOOK_SECRET
+          ),
+          statusCallback: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+          statusCallbackEvent: ["completed"],
+          // Ring for the node's configured timeout (fall back to 20s) before Twilio declares the leg
+          // unanswered, so cascade/no-answer fall-through happens promptly.
+          timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : 20,
+          machineDetection,
+          asyncAmd: machineDetection ? true : undefined,
+          asyncAmdStatusCallback,
+        }
+      );
+
+    // Presenting the customer's number is UNPROVEN against Australian carriers -- CallToken is
+    // documented as part of SHAKEN/STIR, which is a North American scheme -- and phone_numbers is
+    // admin-editable besides. If Twilio REJECTS it, this leg must still ring: the alternative is
+    // dialBatch cancelling and every inbound call falling to voicemail with no handset ringing,
+    // which is the exact failure the business caller ID is already shape-checked to avoid.
+    //
+    // The retry is narrow on purpose. It fires only for a 4xx that is not 429 -- the caller-ID
+    // rejections (21210 "'From' phone number not verified" and friends) this exists for, where
+    // Twilio validated the request and created NOTHING. A 5xx or a 429 may have created the call
+    // before failing to say so, and re-dialling then leaves a second leg ringing that is in no
+    // attemptSids and so is never cancelled on answer: the phone keeps ringing after the call is
+    // bridged, and if picked up joins a conference the ring plan thinks is closed. That is #63's
+    // symptom exactly, so those propagate as before.
+    let sid: string;
+    if (divert) {
+      try {
+        ({ sid } = await createLeg(divert.from, divert.token, true));
+      } catch (err) {
+        if (!(err instanceof TwilioApiError) || !isCallerIdRejection(err)) throw err;
+        console.log(
+          "DIVERT_CALLER_ID_REJECTED",
+          JSON.stringify({ callSid, from: divert.from, status: err.status, fallback: callerId })
+        );
+        // Recorded so Admin > Health Checks can say the feature is silently falling back, rather
+        // than it being visible only to whoever happens to be running `wrangler tail`.
+        await recordDivertCallerIdRejection(this.env.DB, err.status).catch(() => {});
+        ({ sid } = await createLeg(callerId, undefined, false));
       }
-    );
+    } else {
+      ({ sid } = await createLeg(callerId, undefined, false));
+    }
     // Record this leg's ownership so handlePostHold/handlePostTransfer/handlePostCompleteTransfer
     // can later verify a client-submitted CallSid actually belongs to the AUTHENTICATED staff
     // member, not just that it's someone's leg in the conference. `callSid` here is the caller's
@@ -1039,11 +1104,54 @@ export class CallSession extends DurableObject<Env> {
   // in the system.
   private async callerId(): Promise<string> {
     const resolved = await resolveSendingNumber(this.env.DB, "voice", null);
-    if (resolved && /^\+[1-9]\d{7,14}$/.test(resolved.trim())) return resolved.trim();
+    if (resolved && E164.test(resolved.trim())) return resolved.trim();
     if (resolved) {
       console.log("CALLER_ID_INVALID", JSON.stringify({ resolved, fallback: this.env.TWILIO_FROM_NUMBER }));
     }
     return this.env.TWILIO_FROM_NUMBER;
+  }
+
+  // The customer's number to present on a divert leg, or null for "ring as the business number".
+  //
+  // Memoised per DO instance -- which is per call, by construction (idFromName(callSid)) -- because
+  // dialStaff runs once per LEG. dialBatch already resolves the business caller ID once per ring
+  // round for exactly this reason: a four-person simultaneous ring was otherwise four identical
+  // full-table reads, serially, in front of a caller listening to hold music. The inputs here are
+  // all call-invariant, so reading them per leg would put that back.
+  private divertMemo?: { from: string; token: string } | null;
+
+  private async divertCallerId(callSid: string): Promise<{ from: string; token: string } | null> {
+    if (this.divertMemo !== undefined) return this.divertMemo;
+
+    // `direction = 'inbound'` is a predicate, not a comment: on an OUTBOUND call caller_number holds
+    // the BUSINESS number (CLAUDE.md), and reading it unconditionally is the documented way this
+    // codebase has already told Twilio the office landline was the customer. A divert should only
+    // ever happen on an inbound call; this makes that enforced rather than asserted.
+    const [enabled, token, callerRow] = await Promise.all([
+      getDivertCallerId(this.env.DB),
+      this.ctx.storage.get<string>("callToken"),
+      this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ? AND direction = 'inbound'")
+        .bind(callSid)
+        .first<{ caller_number: string }>(),
+    ]);
+
+    const customer = callerRow?.caller_number?.trim() ?? "";
+    // Both halves must be present: Twilio rejects a `From` we don't own UNLESS the CallToken proves
+    // this leg is forwarding the call that number belongs to.
+    if (enabled && token && E164.test(customer)) {
+      this.divertMemo = { from: customer, token };
+    } else {
+      if (enabled) {
+        // Each of these is a legitimate "can't", not a fault: a withheld caller ID has no number to
+        // show, and a call whose first webhook predates this feature has no stored token.
+        console.log(
+          "DIVERT_CALLER_ID_SKIPPED",
+          JSON.stringify({ callSid, reason: !token ? "no_call_token" : "caller_not_e164" })
+        );
+      }
+      this.divertMemo = null;
+    }
+    return this.divertMemo;
   }
 
   private async cancelStaff(sid: string): Promise<void> {

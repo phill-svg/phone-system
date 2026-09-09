@@ -6,6 +6,8 @@ import {
   setCallBlocklist,
   getRecordingEnabled,
   setRecordingEnabled,
+  getDivertCallerId,
+  setDivertCallerId,
 } from "../db/settings";
 import type { BusinessHoursSchedule, DayWindow } from "../ivr/businessHours";
 import type { StaffUser } from "../access/requireStaffUser";
@@ -101,5 +103,25 @@ export async function handlePutRecordingSetting(request: Request, db: D1Database
     return INVALID_BODY_RESPONSE();
   }
   await setRecordingEnabled(db, (body as { recording_enabled: boolean }).recording_enabled);
+  return jsonResponse({ ok: true });
+}
+
+export async function handleGetDivertCallerIdSetting(db: D1Database): Promise<Response> {
+  return jsonResponse({ divert_caller_id: await getDivertCallerId(db) });
+}
+
+export async function handlePutDivertCallerIdSetting(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
+  const forbidden = forbiddenUnlessAdmin(staff);
+  if (forbidden) return forbidden;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return INVALID_BODY_RESPONSE();
+  }
+  if (typeof body !== "object" || body === null || typeof (body as { divert_caller_id?: unknown }).divert_caller_id !== "boolean") {
+    return INVALID_BODY_RESPONSE();
+  }
+  await setDivertCallerId(db, (body as { divert_caller_id: boolean }).divert_caller_id);
   return jsonResponse({ ok: true });
 }
