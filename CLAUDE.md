@@ -286,6 +286,15 @@ is normal, not broken.
   conference — `handleAgentAnswer` redirects them in first); after it, it would never play. The flag
   travels as `whisper=1` on the agent-answer URL and is set **only** when the caller ID was actually
   swapped, so the softphone (whose screen already says who is calling) never gets it.
+- **Undo on a deleted conversation is matched by TIMESTAMP, so the stamp must be read once.**
+  `handleDeleteThread` returns `deletedAt` as the client's undo token and `restoreThread` matches
+  `deleted_at = ?` exactly. `softDeleteThread` used to call `Date.now()` a SECOND time to write the
+  rows — a different reading across the await — so whenever the millisecond ticked between them the
+  token was one behind the stored stamp, Undo matched nothing, and the conversation stayed hidden
+  behind "Nothing to restore", recoverable only from D1. The stamp is passed in now. It surfaced as
+  a one-in-many CI failure on `deletions.test.ts` (deploy #75, a docs-only commit), which is what a
+  real race looks like before anyone calls it a flake; the regression test forces the clock forward
+  on every reading so it fails every run instead of occasionally.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

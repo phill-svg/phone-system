@@ -106,10 +106,21 @@ export async function updateMessageStatus(
 
 // Hide a whole conversation. Threads are the unit people actually want gone -- a junk sender, not
 // one text -- and hiding every message in it keeps the conversation list and the thread consistent.
-export async function softDeleteThread(db: D1Database, peerNumber: string, byEmail: string): Promise<number> {
+//
+// `deletedAt` is passed IN rather than read here, and that is the whole point: it is the undo token
+// the caller hands back to the client, and restoreThread matches on it exactly. Calling Date.now()
+// in here as well meant two independent readings either side of an await -- so whenever the
+// millisecond ticked over between them, the token the client held was one behind the stamp actually
+// stored, Undo matched no rows, and the conversation stayed hidden with "Nothing to restore".
+export async function softDeleteThread(
+  db: D1Database,
+  peerNumber: string,
+  byEmail: string,
+  deletedAt: number
+): Promise<number> {
   const res = await db
     .prepare("UPDATE messages SET deleted_at = ?, deleted_by = ? WHERE peer_number = ? AND deleted_at IS NULL")
-    .bind(Date.now(), byEmail, peerNumber)
+    .bind(deletedAt, byEmail, peerNumber)
     .run();
   return res.meta.changes ?? 0;
 }
