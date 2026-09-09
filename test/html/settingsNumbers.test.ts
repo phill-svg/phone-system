@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderSettingsPage } from "../../src/html/pages/settings";
 
 const leadingArgs = [/* schedule */ {}, /* blocklist */ [], /* staffRoster */ []] as [any, any, any];
-const adminPage = () => renderSettingsPage(...leadingArgs, [], "admin");
+const adminPage = () => renderSettingsPage(...leadingArgs, [], "admin", true);
 
 describe("phone numbers region control", () => {
   it("offers a region on each row and on the add form", () => {
@@ -33,6 +33,20 @@ describe("phone numbers region control", () => {
   });
 
   it("keeps the numbers section admin-only", () => {
-    expect(renderSettingsPage(...leadingArgs, [], "staff")).not.toContain('id="num-add-region"');
+    expect(renderSettingsPage(...leadingArgs, [], "staff", true)).not.toContain('id="num-add-region"');
+  });
+});
+
+describe("divert caller ID toggle", () => {
+  it("reflects the stored value", () => {
+    expect(renderSettingsPage(...leadingArgs, [], "admin", true)).toContain('id="divert-callerid" checked');
+    expect(renderSettingsPage(...leadingArgs, [], "admin", false)).toContain('id="divert-callerid">');
+    expect(renderSettingsPage(...leadingArgs, [], "admin", false)).not.toContain('id="divert-callerid" checked');
+  });
+
+  it("saves to the settings endpoint and stays admin-only", () => {
+    const html = renderSettingsPage(...leadingArgs, [], "admin", true);
+    expect(html).toContain("'/api/settings/divert-caller-id'");
+    expect(renderSettingsPage(...leadingArgs, [], "staff", true)).not.toContain('id="divert-callerid"');
   });
 });

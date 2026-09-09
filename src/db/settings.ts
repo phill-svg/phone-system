@@ -103,3 +103,28 @@ export async function setTranscriptStaffChannel(db: D1Database, channel: 1 | 2):
     .bind(TRANSCRIPT_STAFF_CHANNEL_KEY, JSON.stringify(channel))
     .run();
 }
+
+// Whether a call diverted to a staff member's mobile shows the CUSTOMER's number rather than the
+// business one. On, the ringing screen answers "who is this?" before you pick up (and matches a
+// saved contact, so a regular customer rings by name); off, it says the business number, which is
+// what the phone's own contacts resolve to "TCB Phone".
+//
+// It is a setting because the trade is real and only Phill can judge it: with it ON, a MISSED
+// divert sits in the phone's own call log looking like an ordinary unknown number rather than a
+// work call. (The app's Recents is the authoritative missed-call list either way, and marks them
+// red.) It is also unproven against Australian carriers -- see dialStaff, which falls back to the
+// business number if Twilio rejects the caller ID rather than dropping the leg.
+const DIVERT_CALLER_ID_KEY = "divert_caller_id";
+
+export async function getDivertCallerId(db: D1Database): Promise<boolean> {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(DIVERT_CALLER_ID_KEY).first<{ value: string }>();
+  if (!row) return true; // default ON -- knowing who is calling before answering is the point
+  return JSON.parse(row.value) === true;
+}
+
+export async function setDivertCallerId(db: D1Database, enabled: boolean): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(DIVERT_CALLER_ID_KEY, JSON.stringify(enabled))
+    .run();
+}

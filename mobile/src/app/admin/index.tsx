@@ -3,7 +3,16 @@ import { ScrollView, Alert } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
 import { Group, Row } from "../../components/ui/Grouped";
-import { getAdminStaff, getBusinessHours, getCallBlocklist, getNumbers, getRecordingSetting, setRecordingSetting } from "../../lib/api";
+import {
+  getAdminStaff,
+  getBusinessHours,
+  getCallBlocklist,
+  getDivertCallerIdSetting,
+  getNumbers,
+  getRecordingSetting,
+  setDivertCallerIdSetting,
+  setRecordingSetting,
+} from "../../lib/api";
 import { describeSchedule, normalizeSchedule } from "../../lib/schedule";
 import { useTheme } from "../../theme/theme";
 
@@ -17,6 +26,7 @@ export default function AdminHomeScreen() {
   const [staffCount, setStaffCount] = useState<string>("…");
   const [numberCount, setNumberCount] = useState<string>("…");
   const [recording, setRecording] = useState<boolean | null>(null);
+  const [divertCallerId, setDivertCallerId] = useState<boolean | null>(null);
 
   // Refetch on focus so the summaries are right after editing one of the sub-screens.
   useFocusEffect(
@@ -37,6 +47,9 @@ export default function AdminHomeScreen() {
       getRecordingSetting()
         .then((v) => alive && setRecording(v))
         .catch(() => {});
+      getDivertCallerIdSetting()
+        .then((v) => alive && setDivertCallerId(v))
+        .catch(() => {});
       return () => {
         alive = false;
       };
@@ -52,6 +65,15 @@ export default function AdminHomeScreen() {
     });
   }
 
+  function onToggleDivertCallerId(next: boolean) {
+    const previous = divertCallerId;
+    setDivertCallerId(next); // optimistic
+    setDivertCallerIdSetting(next).catch(() => {
+      setDivertCallerId(previous);
+      Alert.alert("Couldn't save", "The divert caller ID didn't change. Check your connection and try again.");
+    });
+  }
+
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
@@ -64,6 +86,19 @@ export default function AdminHomeScreen() {
             onPress={() => router.push("/admin/numbers")} />
           <Row icon="record.circle" iconColor="#FF9F0A" label="Call Recording"
             toggle={recording ?? false} onToggle={onToggleRecording} />
+        </Group>
+
+        <Group
+          title="Diverted calls"
+          footer={
+            "When a call is diverted to your mobile, show the customer's number so you know who it is before you answer — " +
+            "a saved customer rings by name. You'll hear a short \u201cTCB call\u201d on pickup so a work call is never mistaken " +
+            "for a personal one. Off rings from the business number instead. Note that with this on, a MISSED divert looks " +
+            "like an ordinary unknown number in your phone's own call log — Recents here is the reliable list either way."
+          }
+        >
+          <Row icon="person.crop.circle.badge.questionmark" iconColor="#0A84FF" label="Show the customer's number"
+            toggle={divertCallerId ?? false} onToggle={onToggleDivertCallerId} />
         </Group>
 
         <Group title="Team" footer="Working hours, ring order, availability and account access for each staff member.">

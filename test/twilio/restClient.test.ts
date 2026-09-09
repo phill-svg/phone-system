@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createOutboundCall, cancelCall, redirectCall } from "../../src/twilio/restClient";
+import { createOutboundCall, cancelCall, redirectCall, TwilioApiError } from "../../src/twilio/restClient";
 
 const ACCOUNT_SID = "ACabcd1234efgh5678ijkl9012";
 const API_KEY_SID = "SKabcd1234efgh5678ijkl9012";
@@ -17,6 +17,58 @@ describe("Twilio REST client", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   describe("createOutboundCall", () => {
+    // CallToken is what lets a leg present a caller ID we do not own -- it proves the leg is
+    // forwarding the call that number belongs to. Omitted entirely when there is none, rather than
+    // sent empty.
+    it("forwards CallToken only when given one", async () => {
+      // A fresh Response per call: one instance cannot have its body read twice.
+      fetchMock.mockImplementation(async () => new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 }));
+
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
+        to: "+61412345678",
+        from: "+61402430107",
+        url: "https://example.com/twiml",
+        callToken: "CT-abc",
+      });
+      expect(new URLSearchParams(fetchMock.mock.calls[0][1].body).get("CallToken")).toBe("CT-abc");
+
+      fetchMock.mockClear();
+      await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
+        to: "+61412345678",
+        from: "+61234567890",
+        url: "https://example.com/twiml",
+      });
+      expect(new URLSearchParams(fetchMock.mock.calls[0][1].body).has("CallToken")).toBe(false);
+    });
+
+    // dialStaff retries a rejected caller ID, and may ONLY do so when it knows no call was created.
+    // An HTTP error proves that; a network failure does not, so it must stay a plain Error.
+    it("throws a TwilioApiError carrying the status when Twilio rejects the request", async () => {
+      fetchMock.mockResolvedValue(new Response("From not verified", { status: 400 }));
+
+      const err = await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
+        to: "+61412345678",
+        from: "+61402430107",
+        url: "https://example.com/twiml",
+      }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(TwilioApiError);
+      expect(err.status).toBe(400);
+      expect(err.body).toContain("From not verified");
+    });
+
+    it("lets a network failure through as a plain Error, so it is never retried", async () => {
+      fetchMock.mockRejectedValue(new Error("network down"));
+
+      const err = await createOutboundCall(ACCOUNT_SID, API_KEY_SID, API_KEY_SECRET, {
+        to: "+61412345678",
+        from: "+61402430107",
+        url: "https://example.com/twiml",
+      }).catch((e) => e);
+
+      expect(err).not.toBeInstanceOf(TwilioApiError);
+    });
+
     it("sends POST request to correct Twilio API endpoint", async () => {
       fetchMock.mockResolvedValue(
         new Response(JSON.stringify({ sid: CALL_SID }), { status: 201 })

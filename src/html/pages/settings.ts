@@ -104,7 +104,8 @@ export function renderSettingsPage(
   blocklist: string[],
   staffRoster: StaffPresenceRow[],
   staffAccess: { email: string; role: string; hasPassword: boolean }[],
-  currentRole: "admin" | "staff"
+  currentRole: "admin" | "staff",
+  divertCallerId: boolean
 ): string {
   const dayRows = renderDayRows(schedule, "hours");
 
@@ -184,7 +185,15 @@ export function renderSettingsPage(
     </form>
     ${
       currentRole === "admin"
-        ? `<section class="settings-form" id="numbers-section">
+        ? `<form class="settings-form" id="divert-callerid-form">
+      <h3>Caller ID on Ring-My-Mobile</h3>
+      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">When a call is diverted to a staff member's mobile, show the <strong>customer's number</strong> on their screen so they know who is calling before they answer — a saved customer rings by name. They hear a short “TCB call” on pickup so a work call is never mistaken for a personal one. Turn this off to ring from the business number instead, which is what the phone's own contacts show as “TCB Phone”.</p>
+      <p style="color:var(--admin-dim);font-size:0.85rem">With it on, a <em>missed</em> divert sits in the phone's own call log looking like an ordinary unknown number. The app's Recents is the reliable missed-call list either way, and marks them red.</p>
+      <label><input type="checkbox" id="divert-callerid"${divertCallerId ? " checked" : ""}> Show the customer's number</label>
+      <button type="submit">Save</button>
+      <span id="divert-callerid-status"></span>
+    </form>
+    <section class="settings-form" id="numbers-section">
       <h3>Phone Numbers</h3>
       <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">The <strong>label</strong> is the name staff see in the "Call from" / "From" pickers. Tick <em>Voice</em>/<em>SMS</em> for what a number can do, and mark the defaults. (A number must already be set up in Twilio to actually send/receive.) <strong>Region</strong> is the Twilio Inbound Processing Region that handles the number’s incoming calls — it must be <code>au1</code> for voice, because the softphone only registers in au1.</p>
       <div id="numbers-list">Loading…</div>
@@ -257,6 +266,20 @@ export function renderSettingsPage(
         });
         status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
       });
+
+      var divertForm = document.getElementById('divert-callerid-form');
+      if (divertForm) {
+        divertForm.addEventListener('submit', async function (e) {
+          e.preventDefault();
+          const status = document.getElementById('divert-callerid-status');
+          const res = await fetch('/api/settings/divert-caller-id', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ divert_caller_id: document.getElementById('divert-callerid').checked }),
+          });
+          status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
+        });
+      }
 
       document.querySelectorAll('.staff-schedule-form').forEach(function (form) {
         form.addEventListener('submit', async function (e) {

@@ -249,6 +249,31 @@ is normal, not broken.
   ignored the ported landline entirely; it now resolves the default like every other outbound path,
   shape-checked against E.164 first. Without that check a typo'd default would 400 every leg, and
   every inbound call would fall to voicemail with no handset ringing.
+- **A divert can ring showing the CUSTOMER's number, and that needs `CallToken`.** "I want to know
+  who's calling before I answer": with `divert_caller_id` on (default, `/admin/settings` and mobile
+  Admin > Diverted calls), the leg to a staff mobile presents the caller's number instead of the
+  business one. Twilio rejects a `From` you don't own (error 21210) **unless** the inbound call's
+  `CallToken` rides along to prove the leg is forwarding that call — and Twilio sends `CallToken`
+  on a call's **first** webhook only, so `handleMainWebhook` stashes it in DO storage rather than
+  reading it at ring time, several gather turns later. It is documented under SHAKEN/STIR, which is
+  a **North American** scheme, so whether Australian carriers honour it is **unverified** — hence
+  `dialStaff` retries once with the business number on a `TwilioApiError` and logs
+  `DIVERT_CALLER_ID_REJECTED`. That fallback is not optional: without it a rejected caller ID
+  throws, `dialBatch` cancels, and every inbound call falls to voicemail with no handset ringing.
+  Only a `TwilioApiError` is retried (a real HTTP response, so no call was created); a network
+  error stays fatal because it could have created one, and dialling a staff member twice is worse.
+  A withheld caller ID or a missing token logs `DIVERT_CALLER_ID_SKIPPED` and rings as the business.
+- **The trade on that setting is the MISSED call, not the answered one.** With it on, a missed
+  divert sits in the phone's own call log looking like an ordinary unknown number rather than a work
+  call — the app's Recents stays the authoritative missed-call list, and marks them red. That is why
+  it is a setting and not a constant.
+- **The answered case is covered by a whisper, and it must precede the `<Dial>`.**
+  `renderDialAgentIntoConference({ whisper: true })` prepends `<Say>T C B call.</Say>`, so a staff
+  member seeing an unfamiliar number is told it is work before they speak. Letter-spaced because TTS
+  reads "TCB" as a word. Inside the `<Dial>` the customer would hear it too (they are already in the
+  conference — `handleAgentAnswer` redirects them in first); after it, it would never play. The flag
+  travels as `pstn=1` on the agent-answer URL and is set **only** when the caller ID was actually
+  swapped, so the softphone (whose screen already says who is calling) never gets it.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

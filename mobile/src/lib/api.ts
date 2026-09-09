@@ -325,6 +325,17 @@ export async function setRecordingSetting(enabled: boolean): Promise<void> {
   await apiFetch("/api/settings/recording", { method: "PUT", body: JSON.stringify({ recording_enabled: enabled }) });
 }
 
+// ---- Caller ID shown when a call is diverted to a staff mobile (admin-editable) ----
+// On: the customer's number, so you know who is calling before you answer. Off: the business
+// number, which the phone's own contacts resolve to "TCB Phone".
+export async function getDivertCallerIdSetting(): Promise<boolean> {
+  const r = await apiFetch<{ divert_caller_id: boolean }>("/api/settings/divert-caller-id");
+  return r.divert_caller_id;
+}
+export async function setDivertCallerIdSetting(enabled: boolean): Promise<void> {
+  await apiFetch("/api/settings/divert-caller-id", { method: "PUT", body: JSON.stringify({ divert_caller_id: enabled }) });
+}
+
 // ---- Call via my mobile ----
 // Asks the server to ring this staff member's mobile and bridge the customer on answer. There is no
 // VoIP leg and no in-call screen: the native dialler owns the call once the phone rings.

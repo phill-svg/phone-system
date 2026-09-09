@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setBusinessHours } from "../../src/db/settings";
+import { setBusinessHours, setDivertCallerId } from "../../src/db/settings";
 import { setUserSettings } from "../../src/db/userSettings";
 import { createAudioAsset } from "../../src/db/audioAssets";
 import type { CallSession } from "../../src/durable-objects/CallSession";
@@ -95,7 +95,10 @@ async function seedWait(id: string, opts: { nextNodeId: string; allowCallbackSta
 }
 
 // --- event body builders (mirror the JSON worker.ts forwards) ---
-function mainEvent(callSid: string, o: Partial<{ from: string; to: string; digits: string | null }> = {}) {
+function mainEvent(
+  callSid: string,
+  o: Partial<{ from: string; to: string; digits: string | null; callToken: string | null }> = {}
+) {
   return {
     callSid,
     from: o.from ?? "+61400000000",
@@ -104,6 +107,9 @@ function mainEvent(callSid: string, o: Partial<{ from: string; to: string; digit
     recordingUrl: null,
     recordingSid: null,
     recordingDuration: null,
+    // Twilio sends this on a call's FIRST webhook only. Left absent by default so the tests that
+    // do not care about the divert caller ID exercise the "can't show the customer" path.
+    callToken: o.callToken ?? null,
     webhookUrl: `${ORIGIN}/webhooks/twilio`,
   };
 }
@@ -133,11 +139,14 @@ const queueLeft = (callSid: string, queueResult: string | null = "bridged") => (
   queueResult,
   webhookUrl: `${ORIGIN}/webhooks/twilio/queue-left`,
 });
-const agentAnswer = (callSid: string, agentCallSid: string, answeredBy?: string) => ({
+const agentAnswer = (callSid: string, agentCallSid: string, answeredBy?: string, pstn?: boolean) => ({
   kind: "agent_answer",
   callSid,
   agentCallSid,
   ...(answeredBy !== undefined ? { answeredBy } : {}),
+  // worker.ts sets this from the answer webhook's `pstn=1`, which dialStaff adds only to a divert
+  // leg that presented the customer's number.
+  ...(pstn !== undefined ? { pstn } : {}),
   webhookUrl: `${ORIGIN}/webhooks/twilio/agent-answer?callSid=${callSid}`,
 });
 const amdStatus = (callSid: string, agentCallSid: string, answeredBy: string | null) => ({
@@ -225,6 +234,10 @@ describe("CallSession", () => {
     // resolves a sending number -- pointing at the innocent test, not the guilty one.
     await env.DB.prepare("DELETE FROM phone_numbers WHERE created_at = 1").run();
     await env.DB.prepare("UPDATE phone_numbers SET is_default_voice = 1 WHERE e164 = '+61866108941'").run();
+    // `settings` is not truncated (setBusinessHours below writes into it), so an override of this
+    // key would otherwise leak into every later test -- the same trap the phone_numbers reset above
+    // exists for.
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'divert_caller_id'").run();
     await env.DB.prepare("DELETE FROM call_events").run();
     await env.DB.prepare("DELETE FROM calls").run();
     await env.DB.prepare("DELETE FROM ivr_nodes").run();
@@ -644,6 +657,37 @@ describe("CallSession", () => {
     expect(row?.ivr_path).toBe("main_ring");
   });
 
+  // The other half of the divert caller ID: if the screen showed the customer, the pickup has to
+  // say this is work, or a diverted call is answered like a personal one.
+  it("whispers on answer only for the divert leg that showed the customer", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-whisper");
+    await send(stub, mainEvent("CA-whisper"));
+    await send(stub, mainEvent("CA-whisper", { digits: "1" }));
+
+    const answer = await send(stub, agentAnswer("CA-whisper", "sid-client:phill@b.com", undefined, true));
+    expect(answer.xml).toContain("<Say>T C B call.</Say>");
+    expect(answer.xml).toContain("<Conference");
+  });
+
+  it("does not whisper on a softphone answer", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-nowhisper");
+    await send(stub, mainEvent("CA-nowhisper"));
+    await send(stub, mainEvent("CA-nowhisper", { digits: "1" }));
+
+    const answer = await send(stub, agentAnswer("CA-nowhisper", "sid-client:phill@b.com"));
+    expect(answer.xml).not.toContain("<Say>");
+  });
+
   it("cascade ring-down: first staff leg fails via agent_status, the next number is dialed, then answers", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
@@ -760,6 +804,9 @@ describe("CallSession", () => {
   // sitting in TWILIO_FROM_NUMBER -- rather than the ported landline that became the business's
   // caller ID. Not the number staff recognise, and not the one to call back.
   it("rings a staff mobile from the configured business number, not TWILIO_FROM_NUMBER", async () => {
+    // With the divert caller ID off, the mobile shows the BUSINESS number -- which is what this
+    // test is about. (No CallToken is sent here either, so it would fall back regardless.)
+    await setDivertCallerId(env.DB, false);
     await seedDefaultVoiceNumber("+61261059771");
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
@@ -774,6 +821,142 @@ describe("CallSession", () => {
     const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61400111222");
     expect(dial).toBeTruthy();
     expect(dial?.get("From")).toBe("+61261059771");
+  });
+
+  // "I want to know who's calling before I answer": on a divert the mobile now rings showing the
+  // CUSTOMER, not the business number, so the screen (and the phone's own contacts) answer that
+  // before pickup. Twilio only permits a `From` we don't own when the inbound call's CallToken
+  // rides along to prove this leg is forwarding that call.
+  it("rings a staff mobile from the customer's number, passing the inbound CallToken", async () => {
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-divert-id");
+    await send(stub, mainEvent("CA-divert-id", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-id", { digits: "1" }));
+
+    const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678");
+    expect(dial?.get("From")).toBe("+61402430107");
+    expect(dial?.get("CallToken")).toBe("CT-abc");
+    // The whisper flag rides on the answer webhook, so the staff member is told on pickup that a
+    // call from an unfamiliar number is work.
+    expect(dial?.get("Url")).toContain("pstn=1");
+  });
+
+  // The token arrives on the FIRST webhook only, but the ring is several gather turns later -- so
+  // it has to survive in DO storage. This is the case that breaks if it is read at ring time.
+  it("keeps the CallToken from the first webhook when later webhooks omit it", async () => {
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-divert-keep");
+    await send(stub, mainEvent("CA-divert-keep", { from: "+61402430107", callToken: "CT-first" }));
+    // Twilio does not resend CallToken on the gather turn that actually reaches the ring node.
+    await send(stub, mainEvent("CA-divert-keep", { digits: "1" }));
+
+    const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678");
+    expect(dial?.get("CallToken")).toBe("CT-first");
+  });
+
+  // The safety valve. Presenting someone else's number is unproven against Australian carriers, and
+  // a rejected caller ID must never cost the call: without this the leg throws, dialBatch cancels,
+  // and every inbound call falls to voicemail with no handset ringing at all.
+  it("falls back to the business number when Twilio rejects the customer's caller ID", async () => {
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const u = String(input);
+      if (u.includes("/Calls.json")) {
+        const body = new URLSearchParams((init as RequestInit).body as string);
+        // Twilio error 21210: 'From' phone number not verified.
+        if (body.get("From") === "+61402430107") {
+          return new Response(JSON.stringify({ code: 21210, message: "From not verified" }), { status: 400 });
+        }
+        return new Response(JSON.stringify({ sid: `sid-${body.get("To")}` }), { status: 201 });
+      }
+      return new Response("", { status: 200 });
+    });
+
+    const stub = stubFor("CA-divert-reject");
+    await send(stub, mainEvent("CA-divert-reject", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-reject", { digits: "1" }));
+
+    const dials = outboundDialBodies(fetchMock).filter((b) => b.get("To") === "+61412345678");
+    expect(dials).toHaveLength(2); // the rejected attempt, then the fallback
+    expect(dials[1].get("From")).toBe("+61261059771");
+    expect(dials[1].get("CallToken")).toBeNull();
+    // No whisper: the screen showed the business number after all, so there is nothing to explain.
+    expect(dials[1].get("Url")).not.toContain("pstn=1");
+  });
+
+  it("rings from the business number when the divert caller ID is switched off", async () => {
+    await setDivertCallerId(env.DB, false);
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-divert-off");
+    await send(stub, mainEvent("CA-divert-off", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-off", { digits: "1" }));
+
+    const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678");
+    expect(dial?.get("From")).toBe("+61261059771");
+    expect(dial?.get("CallToken")).toBeNull();
+    expect(dial?.get("Url")).not.toContain("pstn=1");
+  });
+
+  // A withheld caller ID has no number to present, and "anonymous" is not a valid From -- sending
+  // it would 400 every divert leg for the sake of a screen that could not have shown anything.
+  it("rings from the business number when the caller withheld their number", async () => {
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-divert-anon");
+    await send(stub, mainEvent("CA-divert-anon", { from: "anonymous", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-anon", { digits: "1" }));
+
+    const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678");
+    expect(dial?.get("From")).toBe("+61261059771");
+    expect(dial?.get("CallToken")).toBeNull();
+  });
+
+  // A softphone leg shows the caller on its own screen and is never given the customer's number as
+  // a From, so it must not get the whisper either.
+  it("never presents the customer's number on a softphone leg", async () => {
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com"); // no ring_my_mobile -> softphone leg
+
+    const stub = stubFor("CA-divert-client");
+    await send(stub, mainEvent("CA-divert-client", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-client", { digits: "1" }));
+
+    const dial = outboundDialBodies(fetchMock).find((b) => b.get("To")?.startsWith("client:"));
+    expect(dial?.get("From")).toBe("+61261059771");
+    expect(dial?.get("CallToken")).toBeNull();
+    expect(dial?.get("Url")).not.toContain("pstn=1");
   });
 
   it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {

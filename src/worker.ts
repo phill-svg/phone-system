@@ -23,6 +23,8 @@ import {
   handlePutCallBlocklist,
   handleGetRecordingSetting,
   handlePutRecordingSetting,
+  handleGetDivertCallerIdSetting,
+  handlePutDivertCallerIdSetting,
 } from "./api/settings";
 import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
@@ -80,7 +82,7 @@ import {
 } from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
-import { getBusinessHours, getCallBlocklist, getRecordingEnabled } from "./db/settings";
+import { getBusinessHours, getCallBlocklist, getRecordingEnabled, getDivertCallerId } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { resetAvailabilityForNewDay } from "./db/staff";
 import { localDateKey } from "./ivr/businessHours";
@@ -249,6 +251,10 @@ export default {
           recordingUrl: params.RecordingUrl ?? null,
           recordingSid: params.RecordingSid ?? null,
           recordingDuration: params.RecordingDuration ?? null,
+          // Present only on the FIRST webhook of a call, and only when Twilio POSTs. The ring can
+          // happen many gathers later, so the DO stashes it -- see CallSession.handleMainWebhook.
+          // It is what lets the divert leg ring showing the customer's number (dialStaff).
+          callToken: params.CallToken ?? null,
           webhookUrl: request.url,
         }),
       });
@@ -424,6 +430,9 @@ export default {
           // Present only when the leg was dialed with MachineDetection enabled (the pstn mobile
           // leg -- see CallSession.dialStaff). Absent for softphone legs and other AMD-less legs.
           answeredBy: params.AnsweredBy,
+          // Set by dialStaff on the mobile (divert) leg only. The whisper that identifies the call
+          // as a work call is for that leg -- a softphone leg already says so on its own screen.
+          pstn: url.searchParams.get("pstn") === "1",
           webhookUrl: request.url,
         }),
       });
@@ -1033,6 +1042,11 @@ export default {
       if (url.pathname === "/api/settings/recording") {
         return request.method === "PUT" ? handlePutRecordingSetting(request, env.DB, staff) : handleGetRecordingSetting(env.DB);
       }
+      if (url.pathname === "/api/settings/divert-caller-id") {
+        return request.method === "PUT"
+          ? handlePutDivertCallerIdSetting(request, env.DB, staff)
+          : handleGetDivertCallerIdSetting(env.DB);
+      }
       if (url.pathname === "/api/settings/me") {
         return request.method === "PUT"
           ? handlePutUserSettings(request, env.DB, staff)
@@ -1311,13 +1325,14 @@ export default {
       }
 
       if (url.pathname === "/admin/settings") {
-        const [schedule, blocklist, staffRoster, staffAccess] = await Promise.all([
+        const [schedule, blocklist, staffRoster, staffAccess, divertCallerId] = await Promise.all([
           getBusinessHours(env.DB),
           getCallBlocklist(env.DB),
           getStaffRoster(env.DB),
           listStaffAccess(env.DB),
+          getDivertCallerId(env.DB),
         ]);
-        const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role);
+        const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role, divertCallerId);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
