@@ -6,6 +6,9 @@ import { getCallDetail, updateCallMeta, CALL_DISPOSITIONS, type Call, type CallE
 import { RecordingPlayer } from "../../components/recording-player";
 import { Icon } from "../../components/ui/Icon";
 import { placeCall } from "../../lib/placeCall";
+import { useContactName } from "../../lib/useContactName";
+import { formatPhone } from "../../lib/phone";
+import { canSaveContactFromCall } from "../../lib/conversations";
 import { useUserSettings } from "../../lib/userSettings";
 import { haptics } from "../../theme/haptics";
 import { colors } from "../../lib/theme";
@@ -37,6 +40,10 @@ export default function CallDetailScreen() {
   });
 
   const peer = data ? (data.call.direction === "outbound" ? data.call.called_number : data.call.caller_number) : "";
+  // Resolved the same way every other screen does it, so a number already in the book shows as a
+  // name here too -- and so "Add Contact" only appears when there is actually something to add.
+  const peerName = useContactName(peer);
+  const canSave = canSaveContactFromCall({ number: peer, knownName: peerName });
 
   function callBack() {
     haptics.medium();
@@ -46,6 +53,15 @@ export default function CallDetailScreen() {
   function message() {
     haptics.tap();
     router.push({ pathname: "/thread/[number]", params: { number: peer } });
+  }
+
+  // Saving was reachable from the keypad and from a message thread, but not from here -- which is
+  // the screen you land on from Recents, and so the one place you actually look at an unknown
+  // caller. contact-edit prefills from the phone param and invalidates the contacts query on save,
+  // so the name above resolves itself when we come back.
+  function addContact() {
+    haptics.tap();
+    router.push({ pathname: "/contact-edit", params: { phone: peer } });
   }
 
   return (
@@ -70,13 +86,24 @@ export default function CallDetailScreen() {
                 </View>
                 <Text style={styles.actionLabel}>Message</Text>
               </Pressable>
+              {canSave ? (
+                <Pressable onPress={addContact} style={styles.actionBtn}>
+                  <View style={[styles.actionIcon, { backgroundColor: "#3a2f1e" }]}>
+                    <Icon name="person.crop.circle.badge.plus" fallback="person-add" size={20} color="#FF9F0A" />
+                  </View>
+                  <Text style={styles.actionLabel}>Add Contact</Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : null}
 
           <View style={styles.card}>
+            {peerName ? <Field label="Contact" value={peerName} /> : null}
             <Field label="Direction" value={data.call.direction === "outbound" ? "Outgoing" : "Incoming"} />
-            <Field label="From" value={data.call.caller_number} />
-            <Field label="To" value={data.call.called_number} />
+            {/* Every list in the app shows AU national form; this screen was the one place still
+                printing raw E.164 at you. */}
+            <Field label="From" value={formatPhone(data.call.caller_number) ?? data.call.caller_number} />
+            <Field label="To" value={formatPhone(data.call.called_number) ?? data.call.called_number} />
             <Field label="Status" value={data.call.status} />
             <Field label="Started" value={fmtWhen(data.call.started_at)} />
           </View>

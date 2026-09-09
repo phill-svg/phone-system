@@ -25,3 +25,18 @@ export function canSaveContactFromThread(opts: {
   if (opts.to.trim().length <= 2) return false;
   return !opts.knownName;
 }
+
+// Whether the Call Details screen should offer "Add Contact". Pure, for the same reason as the
+// thread rule above.
+//
+// Saving was reachable from the keypad and from a message thread, but never from Call Details --
+// the screen you land on from Recents, and so the one place you are actually looking at an unknown
+// caller. A number already in the book is not offered again (that would make a duplicate), and a
+// call with no usable peer number -- a Messenger peer, or a withheld caller ID -- has nothing to
+// save.
+export function canSaveContactFromCall(opts: { number: string; knownName: string }): boolean {
+  const n = opts.number.trim();
+  if (n.length <= 2) return false;
+  if (n.startsWith("messenger:") || n.startsWith("client:")) return false;
+  return !opts.knownName.trim();
+}
