@@ -1010,6 +1010,14 @@ export class CallSession extends DurableObject<Env> {
   //
   // So the tolerance lives here rather than at each call site, where the next one added would
   // forget it again.
+  private async cancelStaff(sid: string): Promise<void> {
+    try {
+      await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);
+    } catch (err) {
+      console.log("CANCEL_STAFF_FAILED", JSON.stringify({ sid, error: err instanceof Error ? err.message : String(err) }));
+    }
+  }
+
   // ONE missed-call push per call, however many times the ring plan gives up inside it.
   //
   // A ring node's no-answer branch can lead to another ring node, so a single caller rings the team
@@ -1031,14 +1039,6 @@ export class CallSession extends DurableObject<Env> {
       if (row?.caller_number) await notifyMissedCall(this.env.DB, row.caller_number);
     } catch {
       /* notifications are best-effort */
-    }
-  }
-
-  private async cancelStaff(sid: string): Promise<void> {
-    try {
-      await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);
-    } catch (err) {
-      console.log("CANCEL_STAFF_FAILED", JSON.stringify({ sid, error: err instanceof Error ? err.message : String(err) }));
     }
   }
 
