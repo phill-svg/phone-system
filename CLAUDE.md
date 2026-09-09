@@ -284,7 +284,7 @@ is normal, not broken.
   member seeing an unfamiliar number is told it is work before they speak. Letter-spaced because TTS
   reads "TCB" as a word. Inside the `<Dial>` the customer would hear it too (they are already in the
   conference — `handleAgentAnswer` redirects them in first); after it, it would never play. The flag
-  travels as `pstn=1` on the agent-answer URL and is set **only** when the caller ID was actually
+  travels as `whisper=1` on the agent-answer URL and is set **only** when the caller ID was actually
   swapped, so the softphone (whose screen already says who is calling) never gets it.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
