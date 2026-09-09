@@ -168,6 +168,35 @@ describe("collectPendingTranscripts", () => {
     );
   });
 
+  // We re-send the Twilio account token with each page, so the next-page URL must stay on Twilio's
+  // own origin. Following one off-origin would hand the account credentials to whoever set it.
+  it("does not follow a next-page URL to another origin", async () => {
+    await seed("CA-offsite", { sid: "GT-offsite", status: "pending" });
+    const seen: string[] = [];
+    const fetchMock = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      seen.push(url);
+      if (!url.includes("/Sentences")) return completed();
+      return new Response(
+        JSON.stringify({
+          sentences: [
+            { media_channel: 1, transcript: "Hello.", sentence_index: 0 },
+            { media_channel: 2, transcript: "Speaking.", sentence_index: 1 },
+          ],
+          meta: { next_page_url: "https://evil.example.com/v2/Transcripts/GT-offsite/Sentences?Page=2" },
+        }),
+        { status: 200 }
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await collectPendingTranscripts(ON);
+
+    expect(seen.some((u) => u.includes("evil.example.com"))).toBe(false);
+    // The pages we DID get are still stored -- refusing to follow is not the same as discarding.
+    expect((await readCall("CA-offsite"))?.call_transcript).toBe("Customer: Hello.\n\nStaff: Speaking.");
+  });
+
   it("ignores calls that never had a transcript requested", async () => {
     await seed("CA-none");
     const fetchMock = stub(() => completed());
