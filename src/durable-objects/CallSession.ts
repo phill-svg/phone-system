@@ -629,14 +629,7 @@ export class CallSession extends DurableObject<Env> {
       }
     }
     await this.logEvent(body.callSid, abandonedMidRing ? "caller_hung_up" : "no_answer");
-    try {
-      const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
-        .bind(body.callSid)
-        .first<{ caller_number: string }>();
-      if (row?.caller_number) await notifyMissedCall(this.env.DB, row.caller_number);
-    } catch {
-      /* notifications are best-effort */
-    }
+    await this.notifyMissedOnce(body.callSid);
     await this.ctx.storage.delete("activeRing");
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     return this.xml(
@@ -771,14 +764,7 @@ export class CallSession extends DurableObject<Env> {
     if (!activeRing) return this.xml(wrapResponse("<Hangup/>"));
 
     await this.logEvent(body.callSid, "no_answer", { reason: "mobile_voicemail_answered" });
-    try {
-      const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
-        .bind(body.callSid)
-        .first<{ caller_number: string }>();
-      if (row?.caller_number) await notifyMissedCall(this.env.DB, row.caller_number);
-    } catch {
-      /* notifications are best-effort */
-    }
+    await this.notifyMissedOnce(body.callSid);
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     return this.xml(
       await this.renderNoAnswerFallthrough(body.callSid, activeRing.ringConfig.noAnswerNextNodeId, isAfterHours, origin)
@@ -1024,6 +1010,30 @@ export class CallSession extends DurableObject<Env> {
   //
   // So the tolerance lives here rather than at each call site, where the next one added would
   // forget it again.
+  // ONE missed-call push per call, however many times the ring plan gives up inside it.
+  //
+  // A ring node's no-answer branch can lead to another ring node, so a single caller rings the team
+  // more than once within one call and each round ends in its own `no_answer`. Production shows it
+  // plainly -- CAebce8407 (2026-09-08 11:21) logged call_started, ring_started, no_answer,
+  // ring_started, no_answer, voicemail_left. Both rounds notified, so one missed call arrived on
+  // the handset as two, which is indistinguishable from the customer having rung twice.
+  //
+  // The flag is set BEFORE the send, so a retried or overlapping webhook cannot slip a second push
+  // out while the first is still in flight. It lives in DO storage, which is per-call by
+  // construction (idFromName(callSid)) and dies with the call.
+  private async notifyMissedOnce(callSid: string): Promise<void> {
+    if (await this.ctx.storage.get<boolean>("missedNotified")) return;
+    await this.ctx.storage.put("missedNotified", true);
+    try {
+      const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
+        .bind(callSid)
+        .first<{ caller_number: string }>();
+      if (row?.caller_number) await notifyMissedCall(this.env.DB, row.caller_number);
+    } catch {
+      /* notifications are best-effort */
+    }
+  }
+
   private async cancelStaff(sid: string): Promise<void> {
     try {
       await cancelCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_API_KEY_SID, this.env.TWILIO_API_KEY_SECRET, sid);
