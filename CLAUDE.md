@@ -380,8 +380,15 @@ is normal, not broken.
   the dot went yellow and every inbound call still rang that leg. It persists now, and it opens the
   reason box **synchronously first**: `setStatus` awaits the PUT before it highlights, and
   highlighting is what un-hides the wrapper, so focusing after the call focuses a `display:none`
-  input and does nothing. It also sends the box's current value rather than `null`, or re-opening
-  Away to edit a reason wipes it on the way in.
+  input and does nothing.
+  It also sends **no `awayReason` at all**, which is now different from sending `null`: absent means
+  "I am not talking about the reason" and preserves a stored one, `null` clears it. That matters
+  because `/api/staff` returns only `{email, role, status}` — it omits the rest deliberately so an
+  ungated softphone cannot read the team's details — so the reason box always starts EMPTY however
+  long a reason has been set, and sending its value would wipe the reason on every Away click. The
+  handset relies on the same rule: `mobile/src/lib/api.ts` sends `{status}` only. Preserving is
+  scoped to `away` — any other status clears the reason said or unsaid, so nobody is left available
+  carrying a stale "On site until 3".
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

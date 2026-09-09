@@ -122,8 +122,14 @@ longer what makes Away take effect.
       highlights, and highlighting is what un-hides the wrapper — so focusing after the call focuses
       a `display:none` input and does nothing, and a failed PUT would leave no way to type a reason
       at all.
-- [x] **Step 3:** Send the box's current value, not `null`, and prefill it from the roster in
-      `loadInitialStatus` — otherwise re-opening Away to edit a reason wipes it on the way in.
+- [x] **Step 3:** Send **no** `awayReason`, and make an absent one mean "leave it" server-side
+      (`null` still clears). The first attempt sent the box's value and prefilled the box from the
+      roster — but `/api/staff` returns only `{email, role, status}` and omits the rest on purpose,
+      so the prefill was dead code and the box always starts empty: sending its value wipes the
+      reason on every Away click, which is the bug this step exists to prevent. Caught by
+      `/security-review`, not `/code-review`. Preserving is scoped to `away`; any other status
+      clears the reason said or unsaid, so the handset (which sends `{status}` only) cannot leave
+      someone available carrying a stale one.
 
 ### Task 5: Web Recents marks the wrong calls missed
 
