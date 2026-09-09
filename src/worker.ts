@@ -820,12 +820,24 @@ export default {
           const intelligenceJob = requestTranscript(env, params.RecordingSid, {
             staffChannel: await getTranscriptStaffChannel(env.DB),
             customerNumber,
-          }).then(async (sid) => {
-            if (!sid) return;
-            await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
-              .bind(sid, callSid)
-              .run();
-          });
+          })
+            .then(async (sid) => {
+              if (!sid) return;
+              await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
+                .bind(sid, callSid)
+                .run();
+            })
+            // requestTranscript swallows its own failures, but this D1 write does not -- and an
+            // unhandled rejection inside waitUntil is recorded as a Worker EXCEPTION, not a log
+            // line. Every job on the cron is already `.catch`ed for exactly this reason; this one
+            // was the only new one that was not. Losing the sid means the sweep never collects that
+            // transcript, which costs a label, not the call.
+            .catch((e) => {
+              console.log(
+                "INTELLIGENCE_PENDING_WRITE_FAILED",
+                JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) })
+              );
+            });
           if (ctx) ctx.waitUntil(intelligenceJob);
           else await intelligenceJob;
         }
