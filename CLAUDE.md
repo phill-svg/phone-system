@@ -179,7 +179,52 @@ is normal, not broken.
   what lets us hang up instead of connecting a customer to someone's voicemail greeting. The row is
   keyed on the mobile leg's CallSid so history, the status webhook, recording and the ServiceM8
   sweep all treat it as an ordinary outbound call.
+- **Recent work (2026-09-07/08):** call-via-mobile carried `<Dial action="…/webhooks/twilio/status">`
+  and a `<Dial action>` URL must answer with TwiML — that endpoint is a status callback answering
+  the plain text `ok`, so Twilio played "an application error has occurred" on **every** such call
+  (#60). Then the **crash-loop day**: with no crash logs available anywhere (TestFlight needs an App
+  Store Connect API key that is not configured, and Play's Developer Reporting API is disabled on
+  the project), the only move was rolling the OTA back to #49 — so #61 added crash reporting the app
+  had never had. Reports are written to the device FIRST and sent on the NEXT launch, because a
+  fatal error kills the app before an HTTP request finishes; `occurred_at` and `received_at` are
+  separate columns so the gap between them identifies a crash that really took the app down. A
+  global handler chains to the previous one (observes, does not change behaviour) and an error
+  boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
+  (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
+  falling over must be able to say so whoever holds it). Handsets are on **OTA 53**.
+- **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
+  the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
+  moving it again means moving the grep in the same commit or every publish fails at "Read
+  OTA_BUILD".
+- **A voicemail is a call with a `mailbox_label`, NOT one with a transcript.** The mobile Inbox
+  filtered on `transcription`, so every message Whisper produced nothing for was invisible — which
+  is most short ones; both voicemails left on 2026-09-08 (4s and 5s) had `transcribe_attempts`
+  exhausted at 3 and `transcription` NULL while sitting playable in D1. `mailbox_label` is written
+  only by the voicemail path (`CallSession.ts`, beside the `voicemail_left` event); every recording
+  in production without one carries an `answered` event, i.e. is a recorded conversation. Fixed in
+  #61; `/admin/voicemail` (added in #60, restyled in #62) uses the same rule.
+- **`cancelStaff` must never throw, and the answer path is why.** On answer the handler cancels the
+  other ringing legs and THEN redirects the caller into the conference. Twilio's `Status=canceled`
+  only applies to a leg still queued or ringing — a sibling that just hit voicemail, was declined,
+  or answered a fraction earlier returns 400, one already torn down returns 404 — and that loop had
+  no try/catch, so one ordinary race aborted the whole handler: every leg after it kept ringing, no
+  `answered` event was written, and **the caller was never bridged**. Reported as "Android rings
+  after the call is answered"; production showed three inbound calls with two ring rounds, no
+  `answered` and only one `no_answer`. `cancelStaff` now swallows and logs `CANCEL_STAFF_FAILED`
+  (#63). Keep the tolerance inside it, not at the four call sites — two already had it and two did
+  not.
+- **Call History was removed from the web dashboard (#63).** The handset carries the same list. The
+  per-call DETAIL page `/admin/calls/:id` stays — `/admin/voicemail` links into it — but
+  `/admin/calls` 404s deliberately, and a test pins that.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
-  a live call. `reviewer@tcbpestcontrolcanberra.com.au` is a demo account sitting in the live ring
-  roster marked `available` — only a stale heartbeat keeps it from ringing.
+  a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and
+  over) was never root-caused either: it was escaped by rolling the OTA back to #49, and #53 carries
+  the same code plus crash reporting and has been clean since. If it returns, `/admin/errors` is now
+  the first place to look rather than the last.
+- `reviewer@tcbpestcontrolcanberra.com.au` is a demo account that sits in the staff table marked
+  `available`, but it is **excluded by code, not by luck**: `DEMO_ACCOUNT_EMAILS` in
+  `wrangler.jsonc` feeds `demoEmails(env)` into `resolveRingTargets`, which drops it from the roster
+  before shift or availability is even considered (and out of `/api/staff` likewise). An earlier
+  note here claimed only a stale heartbeat kept it from ringing; that was wrong. Emptying that var
+  is what would make it ring.
