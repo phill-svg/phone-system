@@ -1,4 +1,5 @@
 import { escapeHtml, renderLayout } from "../layout";
+import { formatSydney } from "../formatTime";
 import { formatAuNumber } from "../formatPhone";
 import type { CallSummary } from "../../db/calls";
 
@@ -8,10 +9,6 @@ function fmtSecs(total: number): string {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function fmtWhen(ms: number): string {
-  return new Date(ms).toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
 }
 
 // One player, moved to whichever row is playing. Six native <audio> controls stacked down a page is
@@ -61,7 +58,7 @@ export function renderVoicemailPage(
         : escapeHtml(number);
       const transcript = call.transcription?.trim();
       return `<tr>
-        <td><a href="/admin/calls/${escapeHtml(encodeURIComponent(call.id))}">${escapeHtml(fmtWhen(call.started_at))}</a>${
+        <td><a href="/admin/calls/${escapeHtml(encodeURIComponent(call.id))}">${escapeHtml(formatSydney(call.started_at))}</a>${
         call.mailbox_label ? `<div class="vm-sub">${escapeHtml(call.mailbox_label)}</div>` : ""
       }</td>
         <td>${who}</td>

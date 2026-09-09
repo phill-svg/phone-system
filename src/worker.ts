@@ -78,6 +78,7 @@ import {
   listVoicemails,
   appendCallEvent,
   getCallStats,
+  blankToNull,
   parseRecordingDuration,
 } from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
@@ -762,14 +763,23 @@ export default {
         return new Response("missing callSid", { status: 400 });
       }
 
-      // COALESCE so a later callback without RecordingDuration can never blank a length we already
-      // stored. parseRecordingDuration returns null for absent/garbage values.
+      // COALESCE all three. A later callback without RecordingDuration can never blank a length we
+      // already stored -- and the url/sid beside it needed the same guard, because a redelivery or a
+      // RecordingStatus of absent/failed carries no RecordingUrl and was writing NULL over a
+      // perfectly good recording, after which /api/calls/:id/recording 404s for a call whose audio
+      // is fine in Twilio. parseRecordingDuration returns null for absent/garbage values.
+      //
+      // `blankToNull` rather than `?? null`, because this is a form post: an omitted field and a field
+      // sent empty are the same intent, and only the first of them is undefined. COALESCE cannot
+      // save us from an empty STRING -- that is a value, and it would overwrite the url just as
+      // destructively while looking guarded.
       await env.DB.prepare(
-        "UPDATE calls SET recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration) WHERE id = ?"
+        "UPDATE calls SET recording_url = COALESCE(?, recording_url), recording_sid = COALESCE(?, recording_sid), " +
+          "recording_duration = COALESCE(?, recording_duration) WHERE id = ?"
       )
         .bind(
-          params.RecordingUrl ?? null,
-          params.RecordingSid ?? null,
+          blankToNull(params.RecordingUrl),
+          blankToNull(params.RecordingSid),
           parseRecordingDuration(params.RecordingDuration),
           callSid
         )

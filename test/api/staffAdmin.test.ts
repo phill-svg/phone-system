@@ -2,7 +2,8 @@ import { env, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession } from "../../src/access/session";
 import { issueToken } from "../../src/access/passwordTokens";
-import { handleInviteStaff, handleSendReset } from "../../src/api/staff";
+import { handleInviteStaff, handleSendReset, handleRemoveStaff } from "../../src/api/staff";
+import { setUserSettings } from "../../src/db/userSettings";
 
 // The pool authenticates every SELF.fetch as phill (admin) via AUTH_MODE=dev.
 const NEW = "invitee@example.com";
@@ -76,3 +77,40 @@ describe("staff admin API", () => {
     expect(tok?.purpose).toBe("reset");
   });
 });
+
+describe("removing a staff member", () => {
+  const GONE = "gone@example.com";
+  const ADMIN = { email: "boss@example.com", role: "admin" as const };
+
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM push_tokens WHERE staff_email = ?").bind(GONE).run();
+    await env.DB.prepare("DELETE FROM user_settings WHERE email = ?").bind(GONE).run();
+    await env.DB.prepare("DELETE FROM staff_users WHERE email IN (?, ?)").bind(GONE, ADMIN.email).run();
+    await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1)").bind(GONE).run();
+    await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES (?, 'admin', 1)").bind(ADMIN.email).run();
+  });
+
+  // getPushTokensForType selects every row in push_tokens and filters only on the owner having
+  // switched that notification type off -- it never checks the owner still exists. Leaving the row
+  // behind means a removed person's phone keeps showing inbound customer texts, sender name and
+  // all, indefinitely, with nothing anywhere saying so.
+  it("takes the departing member's handset off the notification list", async () => {
+    await env.DB
+      .prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)")
+      .bind("ExponentPushToken[gone]", GONE)
+      .run();
+    await setUserSettings(env.DB, GONE, { ring_my_mobile: true, mobile_number: "0400000000" });
+
+    expect((await handleRemoveStaff({ DB: env.DB } as never, ADMIN, GONE)).status).toBe(200);
+
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM push_tokens WHERE staff_email = ?").bind(GONE).first<{ n: number }>()
+    ).toEqual({ n: 0 });
+    // And their settings, so a re-invite does not silently restore the old mobile number onto
+    // whoever next holds that address.
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM user_settings WHERE email = ?").bind(GONE).first<{ n: number }>()
+    ).toEqual({ n: 0 });
+  });
+});
+

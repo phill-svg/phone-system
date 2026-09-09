@@ -117,7 +117,8 @@ export async function fetchTranscriptStatus(env: IntelligenceEnv, transcriptSid:
 // 1000 is Twilio's maximum page size, not a guarantee of completeness: a long site consultation runs
 // past it, and stopping at one page would store a transcript that ends mid-conversation -- no error,
 // marked completed, overwriting a COMPLETE Whisper transcript. Truncated-but-labelled is strictly
-// worse than whole-but-unlabelled, so the pages are followed and any doubt returns [] instead.
+// worse than whole-but-unlabelled, so the pages are followed and any doubt returns null instead
+// (see fetchSentences below -- null is "could not read", NOT "read and found nothing").
 const MAX_SENTENCE_PAGES = 20;
 
 // A next-page URL, but only if it is still Twilio's Intelligence host. Anything else -- another
@@ -132,7 +133,15 @@ function sameOrigin(next: string | null | undefined): string | null {
   }
 }
 
-export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string): Promise<Sentence[]> {
+// Returns NULL for "could not read the transcript", and an array for a read that succeeded --
+// including the legitimately empty one.
+//
+// The distinction is the whole point. These used to collapse into `[]`, and the sweep turns an empty
+// result into the TERMINAL status `single_channel`: the row leaves the pending query, so a transcript
+// Twilio actually holds is abandoned for good, and Admin > Health Checks counts it as mono and tells
+// you to switch on a Console setting that was never off. A transient 502 must be retried, not
+// diagnosed as a recording problem.
+export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string): Promise<Sentence[] | null> {
   const out: Sentence[] = [];
   let url: string | null =
     `${INTELLIGENCE_BASE}/Transcripts/${encodeURIComponent(transcriptSid)}/Sentences?PageSize=1000`;
@@ -141,7 +150,10 @@ export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string
       const res: Response = await fetch(url, {
         headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) },
       });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        console.log("INTELLIGENCE_SENTENCES_FAILED", JSON.stringify({ transcriptSid, status: res.status }));
+        return null;
+      }
       const json = (await res.json()) as { sentences?: Sentence[]; meta?: { next_page_url?: string | null } };
       if (Array.isArray(json.sentences)) out.push(...json.sentences);
       // The next page is a URL the SERVER hands us, and we re-send the account token with it. Only
@@ -151,13 +163,18 @@ export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string
       url = sameOrigin(json.meta?.next_page_url);
     }
     if (url) {
-      // More pages than the cap allows: we cannot claim to have the whole call.
+      // More pages than the cap allows: we cannot claim to have the whole call, and a partial
+      // transcript stored as complete is worse than none.
       console.log("INTELLIGENCE_TOO_MANY_PAGES", JSON.stringify({ transcriptSid }));
-      return [];
+      return null;
     }
     return out;
-  } catch {
-    return [];
+  } catch (err) {
+    console.log(
+      "INTELLIGENCE_SENTENCES_FAILED",
+      JSON.stringify({ transcriptSid, error: err instanceof Error ? err.message : String(err) })
+    );
+    return null;
   }
 }
 

@@ -40,12 +40,22 @@ export async function setStaffStatus(
   db: D1Database,
   email: string,
   status: StaffStatus,
-  awayReason: string | null,
+  awayReason: string | null | undefined,
   setOn: string | null = null
 ): Promise<void> {
+  // `undefined` means "say nothing about the reason", which is not the same as `null` ("clear it").
+  // Only going/staying AWAY can preserve one -- a reason belongs to being away, so any other status
+  // clears it whether the caller mentioned it or not, and an available person can never be left
+  // carrying a stale "On site until 3".
+  const preserve = awayReason === undefined && status === "away";
+  const stamp = status === "available" ? null : setOn;
   await db
-    .prepare("UPDATE staff_users SET status = ?, away_reason = ?, status_set_on = ? WHERE email = ?")
-    .bind(status, awayReason, status === "available" ? null : setOn, email)
+    .prepare(
+      preserve
+        ? "UPDATE staff_users SET status = ?, status_set_on = ? WHERE email = ?"
+        : "UPDATE staff_users SET status = ?, status_set_on = ?, away_reason = ? WHERE email = ?"
+    )
+    .bind(...(preserve ? [status, stamp, email] : [status, stamp, awayReason ?? null, email]))
     .run();
 }
 

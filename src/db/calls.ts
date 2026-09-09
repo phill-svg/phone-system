@@ -28,6 +28,15 @@ export function parseRecordingDuration(raw: string | null | undefined): number |
   return n;
 }
 
+// The same rule for the string fields beside it. Twilio posts a form, so a field it has nothing to
+// say about can arrive either absent or empty -- and only the absent one is undefined. `?? null`
+// therefore lets "" through, and "" is a VALUE: it survives COALESCE and blanks the column just as
+// destructively as NULL would have, while reading like it is guarded.
+export function blankToNull(raw: string | null | undefined): string | null {
+  const v = (raw ?? "").trim();
+  return v === "" ? null : v;
+}
+
 export type CallStats = {
   total: number;
   inbound: number;

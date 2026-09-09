@@ -1,24 +1,21 @@
 import { escapeHtml, renderLayout } from "../layout";
+import { formatSydney } from "../formatTime";
 import type { CallbackRequest } from "../../db/callbackRequests";
-
-function formatWhen(ms: number): string {
-  return new Date(ms).toLocaleString("en-AU");
-}
 
 function openRow(r: CallbackRequest): string {
   return `<tr>
     <td>${escapeHtml(r.caller_number)}</td>
-    <td>${escapeHtml(formatWhen(r.requested_at))}</td>
+    <td>${escapeHtml(formatSydney(r.requested_at))}</td>
     <td><button type="button" data-cb-id="${r.id}" data-cb-status="done">Mark done</button></td>
   </tr>`;
 }
 
 function doneRow(r: CallbackRequest): string {
   const by = r.done_by ? escapeHtml(r.done_by) : "unknown";
-  const when = r.done_at ? escapeHtml(formatWhen(r.done_at)) : "—";
+  const when = r.done_at ? escapeHtml(formatSydney(r.done_at)) : "—";
   return `<tr>
     <td>${escapeHtml(r.caller_number)}</td>
-    <td>${escapeHtml(formatWhen(r.requested_at))}</td>
+    <td>${escapeHtml(formatSydney(r.requested_at))}</td>
     <td>${by}, ${when}</td>
     <td><button type="button" data-cb-id="${r.id}" data-cb-status="open">Reopen</button></td>
   </tr>`;

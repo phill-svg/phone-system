@@ -32,6 +32,34 @@ describe("staff presence data layer", () => {
     expect(row?.awayReason).toBe("out to lunch");
   });
 
+  // undefined and null are different answers. The web Away button sets the status without saying
+  // anything about the reason (its input starts empty -- /api/staff does not carry awayReason), and
+  // the handset sends `{status}` only; either clearing a reason someone typed would be a silent
+  // data loss on a button that reads "Away".
+  it("leaves an existing away reason alone when none is given", async () => {
+    await setStaffStatus(env.DB, "a@b.com", "away", "on site until 3");
+    await setStaffStatus(env.DB, "a@b.com", "away", undefined);
+    const row = await getStaffByEmail(env.DB, "a@b.com");
+    expect(row?.status).toBe("away");
+    expect(row?.awayReason).toBe("on site until 3");
+  });
+
+  it("clears the away reason when one is explicitly null", async () => {
+    await setStaffStatus(env.DB, "a@b.com", "away", "on site until 3");
+    await setStaffStatus(env.DB, "a@b.com", "away", null);
+    expect((await getStaffByEmail(env.DB, "a@b.com"))?.awayReason).toBeNull();
+  });
+
+  // A reason belongs to being away. Coming back must never leave a stale one behind, even from a
+  // caller that said nothing about it -- which is exactly what the handset does.
+  it("clears the away reason on any other status, said or unsaid", async () => {
+    await setStaffStatus(env.DB, "a@b.com", "away", "on site until 3");
+    await setStaffStatus(env.DB, "a@b.com", "available", undefined);
+    const row = await getStaffByEmail(env.DB, "a@b.com");
+    expect(row?.status).toBe("available");
+    expect(row?.awayReason).toBeNull();
+  });
+
   it("setStaffSchedule overwrites the schedule JSON", async () => {
     const newSchedule = {
       mon: { open: "08:00", close: "16:00" }, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,

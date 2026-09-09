@@ -584,8 +584,17 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       function callDisplayNumber(c) {
         return c.direction === 'outbound' ? (c.called_number || c.caller_number) : c.caller_number;
       }
+      // The SAME rule the handset uses (mobile recents.tsx). The old one was 'not c.ivr_path', and
+      // CallSession writes ivr_path on the voicemail handoff -- so no call that reached voicemail
+      // was ever marked missed, which is precisely the set that still needs ringing back. It also
+      // went the other way: an answered call that ended before any node set ivr_path showed as
+      // missed. listCalls ships 'answered' and 'event_count' for exactly this.
+      // NOTE: no backticks in here -- this whole block is inside a template literal.
       function isMissed(c) {
-        return c.direction === 'inbound' && !c.ivr_path && c.status !== 'in_progress';
+        if (c.direction !== 'inbound') return false;
+        if (c.status === 'in_progress') return false;
+        if (c.event_count === 0) return /no.?answer|missed|busy|fail|cancel/i.test(c.status);
+        return c.answered === 0;
       }
       function humanize(s) {
         return String(s).replace(/_/g, ' ').replace(/\\b\\w/g, function (ch) { return ch.toUpperCase(); });
@@ -1330,12 +1339,17 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         }
       }
 
+      // Called with ONE argument to leave any stored away reason alone, and with two to set or
+      // clear it. The key is omitted entirely in the first case -- an absent awayReason and an
+      // explicit null mean different things to the server.
       async function setStatus(status, awayReason) {
         var statusEl = document.getElementById('status-save-status');
+        var payload = { status: status };
+        if (arguments.length > 1) payload.awayReason = awayReason || null;
         var res = await fetch('/api/softphone/presence', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: status, awayReason: awayReason || null }),
+          body: JSON.stringify(payload),
         });
         if (res.ok) {
           highlightStatusButtons(status);
@@ -1351,6 +1365,10 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           if (!res.ok) return;
           var roster = await res.json();
           var me = roster.filter(function (s) { return s.email === STAFF_EMAIL; })[0];
+          // NOT prefilling the reason box: /api/staff returns only {email, role, status}, and it
+          // omits the rest deliberately so an ungated softphone cannot read the team's details.
+          // The box therefore starts empty even when a reason is set, which is why the Away button
+          // sends no reason at all rather than this box's value.
           if (me) highlightStatusButtons(me.status);
         } catch (e) {
           // Non-fatal.
@@ -1360,8 +1378,23 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       document.getElementById('status-available-btn').addEventListener('click', function () { setStatus('available', null); });
       document.getElementById('status-offline-btn').addEventListener('click', function () { setStatus('offline', null); });
       document.getElementById('status-away-btn').addEventListener('click', function () {
+        // Open the box FIRST, synchronously. setStatus awaits the PUT before it highlights, and
+        // highlighting is what un-hides #away-reason-wrap -- so focusing after the call focuses an
+        // input whose ancestor is still display:none, which does nothing. It also means a failed
+        // PUT would leave no way to type a reason at all.
         highlightStatusButtons('away');
-        document.getElementById('away-reason-input').focus();
+        var reasonInput = document.getElementById('away-reason-input');
+        reasonInput.focus();
+        // PERSIST it. This used to highlight the button and focus the box without telling the
+        // server, so the one status that means "stop ringing me" was the only one that did nothing
+        // -- the dot went yellow and every inbound call still rang this leg. The reason box still
+        // refines it afterwards; it is no longer what makes Away take effect.
+        //
+        // No reason is SENT, rather than sending null: an absent awayReason means "I am not talking
+        // about the reason", so a reason already stored survives. Sending null here would clear it,
+        // and sending the input's value would clear it too -- /api/staff does not carry awayReason,
+        // so this box starts empty however long the reason has been set.
+        setStatus('away');
       });
       document.getElementById('away-reason-save-btn').addEventListener('click', function () {
         var reason = document.getElementById('away-reason-input').value.trim();

@@ -320,6 +320,75 @@ is normal, not broken.
   401/403 are auth (a rotated key would otherwise dial every divert leg twice for the length of the
   outage and be reported as a caller-ID fault), 404 is not-found, and 429/5xx may have created the
   call. Not an incident that happened — a hazard found by review before it could.
+- **Removing a staff member is a MULTI-TABLE cleanup, and the handset is the part people forget.**
+  `handleRemoveStaff` clears sessions, `password_tokens`, `login_attempts`, `push_tokens` and
+  `user_settings` before deleting the row. `getPushTokensForType` selects every row in `push_tokens`
+  and filters only on the owner having switched that notification type off — it never checks the
+  owner still exists — so a missed delete leaves a departed person's phone showing inbound customer
+  texts, sender name and first 240 characters, indefinitely, with nothing anywhere saying so. The
+  `user_settings` row matters for the opposite reason: without it a re-invite silently restores the
+  old mobile number and ring-my-mobile state onto whoever next holds that address.
+- **"Was this call missed?" has ONE definition, and it is `answered`/`event_count`, not `ivr_path`.**
+  `listCalls` ships both columns for this. The web softphone kept the older `!ivr_path` rule long
+  after the handset moved (#65), and `CallSession` writes `ivr_path` on the voicemail handoff — so
+  **no call that reached voicemail was ever marked missed on the web**, which is exactly the set
+  that still needs ringing back. Both surfaces now answer it identically; change them together.
+- **A completed password reset invalidates the account's OTHER tokens and its lockout.**
+  `issueToken` always INSERTs, so two clicks of "Send reset" leave two live links; consuming one
+  used to leave the other valid for the rest of its hour, and whoever held the older email could
+  set the password again afterwards and take the account. `login_attempts` is cleared in the same
+  place, or someone who hit the 8-failure lockout and then legitimately reset was still refused on
+  the next login.
+- **The client-side escapers must escape QUOTES.** `h()` in `ivrFlow.ts` and `esc()` in
+  `messages.ts` are `textContent` → `innerHTML`, which handles `& < >` and **not** `"` or `'` — and
+  their output is spliced into double-quoted attribute values. An admin-entered mailbox name with a
+  quote could close the attribute and add an event handler running in the authenticated page. Both
+  now replace the quote characters explicitly. Anything new that interpolates into an attribute
+  belongs behind the same helper.
+- **Admin pages render in `Australia/Sydney` via `formatSydney`, because Workers run UTC.** A bare
+  `toLocaleString("en-AU")` showed a 9am Canberra call as 11pm the previous day, and a callback as
+  though it came in last night. One helper in `src/html/formatTime.ts` for every SERVER-rendered
+  admin time; do not inline the option bag again. Three places deliberately stay outside it: the
+  clock code inside `phone.ts`'s template literal runs in the **browser**, which is already in
+  Canberra, and `businessHours.ts` / `dateRules.ts` keep their own `TIME_ZONE` because theirs is a
+  routing decision rather than a label — importing from `src/html/` would be the wrong direction.
+- **An empty transcript result is NOT the same as a mono recording.** `fetchSentences` returns
+  `null` for "could not read" (non-2xx, thrown fetch, past `MAX_SENTENCE_PAGES`) and an array only
+  for a real read. They used to collapse into `[]`, and the sweep turns empty into the **terminal**
+  `single_channel` — so a transient 502 abandoned a transcript Twilio still held, and Health Checks
+  counted it as mono and told you to switch on a Console setting that was never off. `null` now
+  leaves the row pending for the next tick — and **counts the attempt**, which is what bounds it:
+  not all of these are transient (a transcript past the page cap fails identically every tick), and
+  an uncounted retry would hold one of the five `BATCH` slots forever while the query, ordered
+  `started_at DESC`, starves the older calls behind it. A read that genuinely returns nothing is its
+  own terminal `no_speech` — someone rang and said nothing — so it is not reported as the Console
+  switch either. Health Checks counts `abandoned`/`failed` too: turning the wrong alarm off without
+  that would have traded it for no alarm, which is the exact silence that screen exists to break.
+- **A recording-status callback may never blank a recording it does not carry.** All three of
+  `recording_url`, `recording_sid` and `recording_duration` are COALESCEd, because a redelivery — or
+  a `RecordingStatus` of absent/failed — arrives with no `RecordingUrl` and was writing NULL over a
+  good one, after which `/api/calls/:id/recording` 404s for a call whose audio is fine in Twilio.
+  COALESCE is only half of it: this is a **form post**, so a field Twilio has nothing to say about
+  can arrive absent *or* empty, and `?? null` only catches the first — `""` is a value that survives
+  COALESCE and blanks the column just as destructively. Hence `blankToNull` beside
+  `parseRecordingDuration`, which has handled exactly this for the duration all along. It is
+  **not** first-write-wins: two different recordings legitimately post under the same `callSid` (a
+  divert into the staff member's carrier voicemail records the conference, then the caller falls to
+  business voicemail and records again), and the later real one must win. A test pins both halves.
+- **The web Away button has to POST.** It used to only highlight itself and focus the reason box, so
+  the one status that means "stop ringing me" was the only one that changed nothing on the server —
+  the dot went yellow and every inbound call still rang that leg. It persists now, and it opens the
+  reason box **synchronously first**: `setStatus` awaits the PUT before it highlights, and
+  highlighting is what un-hides the wrapper, so focusing after the call focuses a `display:none`
+  input and does nothing.
+  It also sends **no `awayReason` at all**, which is now different from sending `null`: absent means
+  "I am not talking about the reason" and preserves a stored one, `null` clears it. That matters
+  because `/api/staff` returns only `{email, role, status}` — it omits the rest deliberately so an
+  ungated softphone cannot read the team's details — so the reason box always starts EMPTY however
+  long a reason has been set, and sending its value would wipe the reason on every Away click. The
+  handset relies on the same rule: `mobile/src/lib/api.ts` sends `{status}` only. Preserving is
+  scoped to `away` — any other status clears the reason said or unsaid, so nobody is left available
+  carrying a stale "On site until 3".
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

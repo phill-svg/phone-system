@@ -49,6 +49,48 @@ describe("forgot/set password routes", () => {
     expect(row?.password_hash).toMatch(/^pbkdf2\$/);
   });
 
+  // Two clicks of "Send reset" leave two valid tokens. Consuming one used to leave the other live
+  // for the rest of its hour, so whoever held the older email could set the password again
+  // afterwards and take the account.
+  it("POST /set-password invalidates the account's OTHER outstanding tokens", async () => {
+    const first = await issueToken(env.DB, EMAIL, "reset");
+    const second = await issueToken(env.DB, EMAIL, "reset");
+    expect(first).not.toBe(second);
+
+    const ok = await SELF.fetch("https://example.com/set-password", {
+      method: "POST",
+      redirect: "manual",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: second, password: "brandnewpass10", confirm: "brandnewpass10" }).toString(),
+    });
+    expect(ok.status).toBe(302);
+
+    // The older link must no longer be usable.
+    const stale = await SELF.fetch(`https://example.com/set-password?token=${first}`);
+    expect(await stale.text()).toContain("expired");
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM password_tokens WHERE email = ?").bind(EMAIL).first<{ n: number }>()
+    ).toEqual({ n: 0 });
+  });
+
+  // Someone locked out by failed attempts who then legitimately resets their password was still
+  // told "too many attempts" on the very next login.
+  it("POST /set-password clears the login lockout", async () => {
+    const token = await issueToken(env.DB, EMAIL, "reset");
+    for (let i = 0; i < 3; i++) {
+      await env.DB.prepare("INSERT INTO login_attempts (email, attempted_at) VALUES (?, ?)").bind(EMAIL, Date.now()).run();
+    }
+    await SELF.fetch("https://example.com/set-password", {
+      method: "POST",
+      redirect: "manual",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token, password: "brandnewpass10", confirm: "brandnewpass10" }).toString(),
+    });
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM login_attempts WHERE email = ?").bind(EMAIL).first<{ n: number }>()
+    ).toEqual({ n: 0 });
+  });
+
   it("POST /set-password rejects mismatched or short passwords", async () => {
     const token = await issueToken(env.DB, EMAIL, "reset");
     const res = await SELF.fetch("https://example.com/set-password", {

@@ -64,11 +64,15 @@ export async function handlePutPresence(request: Request, db: D1Database, staff:
   }
   // Stamped with today's Canberra date: the override lasts for the rest of this local day and
   // the cron puts them back to available afterwards (see resetAvailabilityForNewDay).
+  // Passed through as `undefined` when the field was absent, NOT collapsed to null. An absent
+  // field means the caller is not talking about the reason: the web Away button sets the status
+  // without touching a reason already typed, and the handset (which sends `{status}` only) keeps
+  // one too. Sending an explicit null still clears it, which is what Available/Offline do.
   await setStaffStatus(
     db,
     staff.email,
     status,
-    (awayReason as string | null | undefined) ?? null,
+    awayReason as string | null | undefined,
     localDateKey(new Date())
   );
   return jsonResponse({ ok: true });

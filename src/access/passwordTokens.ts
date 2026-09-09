@@ -33,6 +33,17 @@ export async function peekToken(db: D1Database, token: string): Promise<{ email:
   return r ? { email: r.email, purpose: r.purpose } : null;
 }
 
+// Every outstanding link for an address, gone.
+//
+// issueToken always INSERTs, so two clicks of "Send reset" leave two live tokens and consuming one
+// says nothing about the other. Both call sites -- completing a set-password, and removing a staff
+// member -- were hand-writing this DELETE against a table they do not own, so anything
+// schema-shaped here (marking rows used instead of deleting them to keep the audit trail, or
+// scoping invalidation to a purpose) would have had to find two copies to stay correct.
+export async function invalidateTokensForEmail(db: D1Database, email: string): Promise<void> {
+  await db.prepare("DELETE FROM password_tokens WHERE email = ?").bind(email).run();
+}
+
 export async function consumeToken(db: D1Database, token: string): Promise<{ email: string; purpose: TokenPurpose } | null> {
   const r = await readValid(db, token);
   if (!r) return null;
