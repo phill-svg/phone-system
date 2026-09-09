@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createOutboundCall, cancelCall, redirectCall, TwilioApiError } from "../../src/twilio/restClient";
+import { createOutboundCall, cancelCall, redirectCall, TwilioApiError, isCallerIdRejection } from "../../src/twilio/restClient";
 
 const ACCOUNT_SID = "ACabcd1234efgh5678ijkl9012";
 const API_KEY_SID = "SKabcd1234efgh5678ijkl9012";
@@ -55,6 +55,17 @@ describe("Twilio REST client", () => {
       expect(err).toBeInstanceOf(TwilioApiError);
       expect(err.status).toBe(400);
       expect(err.body).toContain("From not verified");
+    });
+
+    // The retry exists for Twilio's caller-ID VALIDATION errors (21210 and friends), which are all
+    // 400s. It used to fire on any non-429 4xx, so a rotated API key (401) dialled every divert leg
+    // twice during an outage and was recorded as a caller-ID problem, pointing Health Checks at the
+    // wrong thing entirely.
+    it("treats only HTTP 400 as a caller-ID rejection", () => {
+      expect(isCallerIdRejection(new TwilioApiError(400, "21210 From not verified"))).toBe(true);
+      for (const status of [401, 403, 404, 429, 500, 503]) {
+        expect(isCallerIdRejection(new TwilioApiError(status, "nope"))).toBe(false);
+      }
     });
 
     it("lets a network failure through as a plain Error, so it is never retried", async () => {

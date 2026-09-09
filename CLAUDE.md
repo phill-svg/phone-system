@@ -191,7 +191,7 @@ is normal, not broken.
   global handler chains to the previous one (observes, does not change behaviour) and an error
   boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
   (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
-  falling over must be able to say so whoever holds it). Handsets are on **OTA 56**.
+  falling over must be able to say so whoever holds it). Handsets are on **OTA 57**.
 - **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
   the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
   moving it again means moving the grep in the same commit or every publish fails at "Read
@@ -260,11 +260,12 @@ is normal, not broken.
   `dialStaff` retries once with the business number on a `TwilioApiError` and logs
   `DIVERT_CALLER_ID_REJECTED`. That fallback is not optional: without it a rejected caller ID
   throws, `dialBatch` cancels, and every inbound call falls to voicemail with no handset ringing.
-  The retry is deliberately narrow: a **4xx that is not 429** only. Those are the caller-ID
-  rejections it exists for, where Twilio validated the request and created nothing. A 5xx, a 429, or
-  a network error may have created the call before failing to say so, and re-dialling then leaves a
-  second leg ringing that is in no `attemptSids` and so is never cancelled on answer — #63's symptom
-  exactly.
+  The retry is deliberately narrow: **HTTP 400 only** (see the caller-ID bullet below — it was
+  briefly any non-429 4xx, which would have double-dialled every leg on a rotated API key). Those
+  are the caller-ID rejections it exists for, where Twilio validated the request and created nothing.
+  A 5xx, a 429, or a network error may have created the call before failing to say so, and
+  re-dialling then leaves a second leg ringing that is in no `attemptSids` and so is never cancelled
+  on answer — #63's symptom exactly.
   A withheld caller ID or a missing token logs `DIVERT_CALLER_ID_SKIPPED` and rings as the business.
 - **The trade on that setting is the MISSED call, not the answered one — and it has two halves.**
   With it on, a missed divert sits in the phone's own call log looking like an ordinary unknown
@@ -303,6 +304,22 @@ is normal, not broken.
   `THREAD_DELETED` logs `deletedAt` because it IS the token and the client's copy dies with the undo
   alert. Deliberately NOT changed: `softDeleteCall` reads its own clock too, but `restoreCall`
   matches on `id`, never on the stamp, so no drift is possible there.
+- **Resolving the caller ID must never THROW on the ring path, and the rejection marker clears
+  itself.** `dialBatch` resolves the business caller ID once per ring round rather than once per leg
+  (four serial full-table reads in front of a caller on hold), which puts that call ABOVE its per-leg
+  try/catch. Every `dialStaff` failure falls the caller through to business voicemail; a throw from
+  `callerId()` instead escapes `dialBatch`, `startRing` and `handleMainWebhook` to the DO's catch-all,
+  which says "we're experiencing a technical issue" and HANGS UP on a live customer — and via
+  `performDeferredDial` does that to someone already on hold. So `callerId()` swallows a failed READ
+  the same way it already handled an invalid VALUE, falling back to `TWILIO_FROM_NUMBER`
+  (`CALLER_ID_LOOKUP_FAILED`). A test renames `phone_numbers` so the read genuinely throws; against
+  the old code it fails with the technical-issue hangup.
+  Two companions from the same review: `divert_caller_id_last_error` is cleared on the first
+  successful divert of a call, because a marker that only ever gets set pins Health Checks red for
+  seven days and teaches you to ignore it; and `isCallerIdRejection` is **HTTP 400 only**, since
+  401/403 are auth (a rotated key would otherwise dial every divert leg twice for the length of the
+  outage and be reported as a caller-ID fault), 404 is not-found, and 429/5xx may have created the
+  call. Not an incident that happened — a hazard found by review before it could.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

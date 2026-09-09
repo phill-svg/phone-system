@@ -100,7 +100,7 @@ export default function AdminHomeScreen() {
           }
         >
           <Row icon="person.crop.circle.badge.questionmark" iconColor="#0A84FF" label="Show the customer's number"
-            toggle={divertCallerId ?? false} onToggle={onToggleDivertCallerId} />
+            toggle={divertCallerId ?? false} onToggle={onToggleDivertCallerId} toggleDisabled={divertCallerId === null} />
         </Group>
 
         <Group title="Team" footer="Working hours, ring order, availability and account access for each staff member.">
