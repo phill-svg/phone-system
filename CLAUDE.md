@@ -295,6 +295,17 @@ is normal, not broken.
   a one-in-many CI failure on `deletions.test.ts` (deploy #75, a docs-only commit), which is what a
   real race looks like before anyone calls it a flake; the regression test forces the clock forward
   on every reading so it fails every run instead of occasionally.
+- **The conversation-undo token is a millisecond timestamp matched EXACTLY, which constrains two
+  things.** `handleDeleteThread` returns `deletedAt`; `restoreThread` matches `deleted_at = ?`. So
+  (1) nothing may re-read the clock — `softDeleteThread` used to call `Date.now()` a second time, and
+  whenever the millisecond ticked across the await the token drifted and Undo answered 404 "Nothing
+  to restore" (#69, found only because it turned deploy #75 red on a docs-only commit); and (2)
+  nothing may mutate hidden rows behind it — `markThreadRead` had no `deleted_at IS NULL` guard, so
+  opening a deleted thread (still reachable by number from Recents and from a call detail) marked its
+  hidden messages read and the undo restored them with the unread state destroyed. `THREAD_DELETED`
+  logs `deletedAt` because it IS the token, and the client's copy dies with the undo alert.
+  Deliberately NOT changed: `softDeleteCall` reads its own clock too, but `restoreCall` matches on
+  `id`, never on the stamp, so no drift is possible there.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

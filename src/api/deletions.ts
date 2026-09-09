@@ -44,7 +44,10 @@ export async function handleDeleteThread(db: D1Database, peerNumber: string, sta
   const deletedAt = Date.now();
   const hidden = await softDeleteThread(db, peerNumber, staff.email, deletedAt);
   if (hidden === 0) return jsonResponse({ error: "That conversation is already deleted, or doesn't exist." }, 404);
-  console.log("THREAD_DELETED", JSON.stringify({ peerNumber, messages: hidden, by: staff.email }));
+  // deletedAt is logged because it IS the undo token: if the client's copy is ever lost (the app
+  // restarted, the undo alert dismissed), this line is what makes a manual restore one UPDATE
+  // rather than guessing between the distinct deleted_at values on that peer.
+  console.log("THREAD_DELETED", JSON.stringify({ peerNumber, messages: hidden, deletedAt, by: staff.email }));
   return jsonResponse({ ok: true, messages: hidden, deletedAt });
 }
 

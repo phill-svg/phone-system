@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleDeleteCall, handleRestoreCall, handleDeleteThread, handleRestoreThread } from "../../src/api/deletions";
 import { listCalls, getCallDetail, getCallStats } from "../../src/db/calls";
-import { listConversations, listThread } from "../../src/db/messages";
+import { listConversations, listThread, markThreadRead } from "../../src/db/messages";
 
 const ADMIN = { email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" as const };
 const STAFF = { email: "mate@example.com", role: "staff" as const };
@@ -108,7 +108,15 @@ describe("deleting a conversation", () => {
   });
 
   // A second delete of the same number must not resurrect the first one's messages on undo.
+  //
+  // The clock is forced forward here for the same reason the test below does it. Two back-to-back
+  // deletes CAN land in one millisecond on a warm isolate, and then both stamps are equal: the
+  // `not.toBe` below fails, and if it did not, restoring the second stamp would also un-hide OLD
+  // and the final assertion would read ["OLD","NEW"]. That is a sibling of the bug this file just
+  // caught on master, and leaving it to timing is how it comes back.
   it("undo restores only the messages that delete hid", async () => {
+    let clock = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => ++clock);
     await seedMessage("OLD", 1000);
     const first = await handleDeleteThread(env.DB, PEER, ADMIN);
     const firstStamp = (await first.json<{ deletedAt: number }>()).deletedAt;
@@ -142,9 +150,44 @@ describe("deleting a conversation", () => {
     const res = await handleDeleteThread(env.DB, PEER, ADMIN);
     const { deletedAt } = await res.json<{ deletedAt: number }>();
 
+    // The direct pin: the token handed to the client is the value actually written to the row.
+    // Asserting only that the undo returns 200 would still pass if restoreThread ever started
+    // falling back to matching on peer alone -- i.e. the drift could return unnoticed.
+    const stored = await env.DB.prepare("SELECT deleted_at FROM messages WHERE id = 'SM1'").first<{ deleted_at: number }>();
+    expect(stored?.deleted_at).toBe(deletedAt);
+
     const undo = await handleRestoreThread(restoreReq(deletedAt), env.DB, PEER, ADMIN);
     expect(undo.status).toBe(200);
     expect(await listThread(env.DB, PEER)).toHaveLength(1);
+  });
+
+  // Hiding a thread must not mutate what it hid. A deleted conversation is still reachable by
+  // number (Recents, and Message on a call detail, both route by peer), so opening one used to mark
+  // its hidden messages read -- and the undo then restored them with the unread state destroyed.
+  it("opening a deleted thread does not mark its hidden messages read", async () => {
+    await seedMessage("SM1", 1000);
+    const res = await handleDeleteThread(env.DB, PEER, ADMIN);
+    const { deletedAt } = await res.json<{ deletedAt: number }>();
+
+    await markThreadRead(env.DB, PEER);
+
+    expect((await handleRestoreThread(restoreReq(deletedAt), env.DB, PEER, ADMIN)).status).toBe(200);
+    expect(await listThread(env.DB, PEER)).toHaveLength(1);
+    // Asserted against the row, not listThread -- that projection deliberately omits `read`, and the
+    // unread state surviving the round trip is the whole point of this test.
+    const row = await env.DB.prepare("SELECT read FROM messages WHERE id = 'SM1'").first<{ read: number }>();
+    expect(row?.read).toBe(0);
+  });
+
+  // The guard on undo was entirely uncovered: a refactor dropping `forbidden(staff)` from either
+  // restore handler would let any staff member un-hide a business-wide record the team removed.
+  it("refuses an undo from a non-admin", async () => {
+    await seedMessage("SM1", 1000);
+    const res = await handleDeleteThread(env.DB, PEER, ADMIN);
+    const { deletedAt } = await res.json<{ deletedAt: number }>();
+
+    expect((await handleRestoreThread(restoreReq(deletedAt), env.DB, PEER, STAFF)).status).toBe(403);
+    expect(await listThread(env.DB, PEER)).toHaveLength(0);
   });
 
   it("refuses an undo with no stamp rather than guessing which delete to reverse", async () => {
