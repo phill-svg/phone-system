@@ -82,8 +82,16 @@ export async function listThread(db: D1Database, peer: string, limit?: number): 
   return rows.results;
 }
 
+// `deleted_at IS NULL` matters: a hidden thread is still reachable by number (Recents, and the
+// Message action on a call detail, both route by peer rather than through the conversation list).
+// Without the guard, opening a deleted conversation marks its hidden messages read, and the undo
+// then restores them with their unread state gone -- the badge never comes back and two unanswered
+// texts read as already handled. Hiding a thread must not quietly mutate what it hid.
 export async function markThreadRead(db: D1Database, peer: string): Promise<void> {
-  await db.prepare("UPDATE messages SET read = 1 WHERE peer_number = ? AND direction = 'inbound'").bind(peer).run();
+  await db
+    .prepare("UPDATE messages SET read = 1 WHERE peer_number = ? AND direction = 'inbound' AND deleted_at IS NULL")
+    .bind(peer)
+    .run();
 }
 
 // Applies a Twilio status-callback update (e.g. queued -> delivered/failed/undelivered) to an
