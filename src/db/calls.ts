@@ -47,11 +47,32 @@ export type CallEventRow = {
   detail: string | null;
 };
 
-export async function listCalls(db: D1Database, limit = 50): Promise<CallSummary[]> {
+// A call row plus what the event timeline says about it, which `calls` alone cannot answer.
+//
+// `status` is Twilio's word for how the PHONE CALL ended, not whether a human picked up: a caller
+// who rang out and left a voicemail is `completed`, exactly like one who was answered and had a
+// conversation. Analytics has always known this and derives "answered" from the `answered` event
+// (see getCallStats) -- these two columns hand the same truth to the call list so Recents can mark
+// a missed call without re-inventing a worse rule from the status string.
+//
+// `event_count` is here so "we have no timeline for this call" stays distinguishable from "the
+// timeline says nobody answered". Rows predating the event log would otherwise every one of them
+// read as missed.
+export type CallListRow = CallSummary & { answered: number; event_count: number };
+
+export async function listCalls(db: D1Database, limit = 50): Promise<CallListRow[]> {
   const result = await db
-    .prepare("SELECT * FROM calls WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT ?")
+    .prepare(
+      `SELECT c.*,
+              EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'answered') AS answered,
+              (SELECT COUNT(*) FROM call_events e WHERE e.call_id = c.id) AS event_count
+         FROM calls c
+        WHERE c.deleted_at IS NULL
+        ORDER BY c.started_at DESC
+        LIMIT ?`
+    )
     .bind(limit)
-    .all<CallSummary>();
+    .all<CallListRow>();
   return result.results;
 }
 

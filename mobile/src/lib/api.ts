@@ -106,6 +106,11 @@ export type Call = {
   recording_sid: string | null;
   recording_url: string | null;
   recording_duration: number | null;
+  // What the event timeline says, which `status` cannot: Twilio calls a rang-out voicemail
+  // `completed` exactly like an answered conversation. `event_count` is 0 for rows predating the
+  // event log, where "nobody answered" is unknown rather than true.
+  answered: number;
+  event_count: number;
   // Set only when the caller landed in a mailbox and left a message -- this, not the presence of a
   // transcript, is what makes a call a voicemail. A short message transcribes to nothing at all.
   mailbox_label: string | null;
