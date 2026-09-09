@@ -2,7 +2,7 @@
 import { verifyPassword, getDummyHash, hashPassword } from "../access/password";
 import { createSession, destroySession, destroySessionsForEmail, parseSessionCookie, sessionCookieHeader, clearSessionCookieHeader, parseBearerToken } from "../access/session";
 import { isRateLimited, recordFailedAttempt, clearAttempts } from "../access/loginAttempts";
-import { issueToken, peekToken, consumeToken } from "../access/passwordTokens";
+import { issueToken, peekToken, consumeToken, invalidateTokensForEmail } from "../access/passwordTokens";
 import { sendEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
 import { renderLoginPage, renderForgotPasswordPage, renderSetPasswordPage, renderAuthMessagePage } from "../html/pages/login";
 import { jsonResponse } from "./respond";
@@ -126,6 +126,15 @@ export async function handleSetPasswordSubmit(request: Request, env: Env): Promi
     .run();
   // Defense in depth: a reset invalidates any existing sessions.
   await destroySessionsForEmail(env.DB, consumed.email);
+  // And every OTHER outstanding link for this address. issueToken always INSERTs a new row, so two
+  // clicks of "Send reset" leave two valid tokens; consuming one used to leave the other live for
+  // the rest of its hour, and whoever held that older email could set the password again afterwards
+  // and take the account. handleRemoveStaff already invalidated tokens for exactly this reason.
+  await invalidateTokensForEmail(env.DB, consumed.email);
+  // Clear the lockout too, through the module that owns it and that both login paths already use:
+  // someone who hit the 8-failure limit and then legitimately reset their password would otherwise
+  // still be told "too many attempts" on the very next login.
+  await clearAttempts(env.DB, consumed.email);
 
   const session = await createSession(env.DB, consumed.email);
   return new Response(null, { status: 302, headers: { Location: "/admin/live", "Set-Cookie": sessionCookieHeader(session) } });

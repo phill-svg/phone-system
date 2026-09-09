@@ -485,6 +485,100 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(row?.recording_duration).toBe(23);
     });
 
+    // The duration was COALESCEd because a stored length must survive a later callback that omits
+    // it -- otherwise the player flips back to 0:00 after a second status POST. The url and sid on
+    // the same statement were not, so a redelivery -- or a RecordingStatus of absent/failed, which
+    // carries no RecordingUrl -- wrote NULL over both, and playback then 404s for a call whose
+    // audio is sitting fine in Twilio.
+    it("does not blank an already-stored recording url/sid when a later callback omits them", async () => {
+      await env.DB
+        .prepare("INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours, status, direction) VALUES (?, '+61400000000', '+61261059771', 1, 0, 'completed', 'inbound')")
+        .bind("CA-rec-keepurl")
+        .run();
+
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-keepurl", {
+        CallSid: "CA-leg",
+        RecordingUrl: "https://api.twilio.com/REC1",
+        RecordingSid: "RE1",
+        RecordingDuration: "42",
+      });
+      // A redelivery carrying no recording fields at all.
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-keepurl", {
+        CallSid: "CA-leg",
+      });
+
+      const row = await env.DB
+        .prepare("SELECT recording_url, recording_sid, recording_duration FROM calls WHERE id = ?")
+        .bind("CA-rec-keepurl")
+        .first<{ recording_url: string | null; recording_sid: string | null; recording_duration: number | null }>();
+      expect(row?.recording_url).toBe("https://api.twilio.com/REC1");
+      expect(row?.recording_sid).toBe("RE1");
+      expect(row?.recording_duration).toBe(42);
+    });
+
+    // The same callback with the fields present but EMPTY. This is the case COALESCE alone cannot
+    // reach: "" is a value, so it overwrites the stored url exactly as NULL would have, and a
+    // `?? null` guard in front of it never fires because "" is not undefined.
+    it("treats an empty recording url/sid on a later callback as absent, not as a blank", async () => {
+      await env.DB
+        .prepare("INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours, status, direction) VALUES (?, '+61400000000', '+61261059771', 1, 0, 'completed', 'inbound')")
+        .bind("CA-rec-blank")
+        .run();
+
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-blank", {
+        CallSid: "CA-leg",
+        RecordingUrl: "https://api.twilio.com/REC2",
+        RecordingSid: "RE2",
+        RecordingDuration: "17",
+      });
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-blank", {
+        CallSid: "CA-leg",
+        RecordingUrl: "",
+        RecordingSid: "",
+        RecordingDuration: "",
+      });
+
+      const row = await env.DB
+        .prepare("SELECT recording_url, recording_sid, recording_duration FROM calls WHERE id = ?")
+        .bind("CA-rec-blank")
+        .first<{ recording_url: string | null; recording_sid: string | null; recording_duration: number | null }>();
+      expect(row?.recording_url).toBe("https://api.twilio.com/REC2");
+      expect(row?.recording_sid).toBe("RE2");
+      expect(row?.recording_duration).toBe(17);
+    });
+
+    // The COALESCE must not become first-write-wins. Two DIFFERENT recordings legitimately post
+    // here under the same callSid: a divert that hits the staff member's carrier voicemail records
+    // the conference (their greeting), and the caller then falls to business voicemail and records
+    // again -- the second is the one that matters, and it has to win.
+    it("still replaces a stored recording when a later callback carries a real one", async () => {
+      await env.DB
+        .prepare("INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours, status, direction) VALUES (?, '+61400000000', '+61261059771', 1, 0, 'completed', 'inbound')")
+        .bind("CA-rec-replace")
+        .run();
+
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-replace", {
+        CallSid: "CA-leg",
+        RecordingUrl: "https://api.twilio.com/CONF",
+        RecordingSid: "RE-conf",
+        RecordingDuration: "6",
+      });
+      await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-replace&vm=1", {
+        CallSid: "CA-leg",
+        RecordingUrl: "https://api.twilio.com/VOICEMAIL",
+        RecordingSid: "RE-vm",
+        RecordingDuration: "31",
+      });
+
+      const row = await env.DB
+        .prepare("SELECT recording_url, recording_sid, recording_duration FROM calls WHERE id = ?")
+        .bind("CA-rec-replace")
+        .first<{ recording_url: string | null; recording_sid: string | null; recording_duration: number | null }>();
+      expect(row?.recording_url).toBe("https://api.twilio.com/VOICEMAIL");
+      expect(row?.recording_sid).toBe("RE-vm");
+      expect(row?.recording_duration).toBe(31);
+    });
+
     // A duration we already stored must survive a later callback that omits it -- otherwise the
     // player would flip back to showing 0:00 after a second status POST.
     it("does not blank an already-stored duration when a later callback omits it", async () => {

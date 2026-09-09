@@ -1,5 +1,6 @@
 import { escapeHtml, renderLayout } from "../layout";
 import { formatAuNumber } from "../formatPhone";
+import { formatSydney } from "../formatTime";
 import type { CallEventRow, CallSummary } from "../../db/calls";
 
 // Recording length in m:ss. Twilio's streamed mp3 gives the native <audio> control no usable
@@ -25,12 +26,12 @@ export function renderCallDetailPage(call: CallSummary, events: CallEventRow[], 
   const eventRows = events
     .map(
       (event) =>
-        `<tr><td>${escapeHtml(new Date(event.ts).toLocaleString("en-AU"))}</td><td>${escapeHtml(formatEvent(event))}</td></tr>`
+        `<tr><td>${escapeHtml(formatSydney(event.ts))}</td><td>${escapeHtml(formatEvent(event))}</td></tr>`
     )
     .join("");
   const body = `<h2>Call ${escapeHtml(call.id)}</h2>
     <p><strong>Caller:</strong> ${escapeHtml(formatAuNumber(call.caller_number))} &rarr; ${escapeHtml(formatAuNumber(call.called_number))}</p>
-    <p><strong>Started:</strong> ${escapeHtml(new Date(call.started_at).toLocaleString("en-AU"))}</p>
+    <p><strong>Started:</strong> ${escapeHtml(formatSydney(call.started_at))}</p>
     <p><strong>Status:</strong> ${escapeHtml(call.status)}</p>
     ${call.disposition || call.notes ? `<p><strong>Disposition:</strong> ${escapeHtml(call.disposition ?? "—")}</p>${call.notes ? `<p><strong>Notes:</strong> ${escapeHtml(call.notes)}</p>` : ""}` : ""}
     <h3>Timeline</h3>

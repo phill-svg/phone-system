@@ -1,7 +1,8 @@
 import { jsonResponse } from "./respond";
 import { getStaffRoster, setStaffSchedule, setStaffPriority, setStaffStatus, createInvitedStaff, deleteStaff, listStaffAccess } from "../db/staff";
 import type { StaffUser } from "../access/requireStaffUser";
-import { issueToken } from "../access/passwordTokens";
+import { issueToken, invalidateTokensForEmail } from "../access/passwordTokens";
+import { clearAttempts } from "../access/loginAttempts";
 import { sendEmail, inviteEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
 import { destroySessionsForEmail } from "../access/session";
 
@@ -161,8 +162,16 @@ export async function handleRemoveStaff(env: StaffAdminEnv, staff: StaffUser, em
     return jsonResponse({ error: "You can't remove your own account." }, 400);
   }
   await destroySessionsForEmail(env.DB, email);
-  await env.DB.prepare("DELETE FROM password_tokens WHERE email = ?").bind(email).run();
-  await env.DB.prepare("DELETE FROM login_attempts WHERE email = ?").bind(email).run();
+  await invalidateTokensForEmail(env.DB, email);
+  await clearAttempts(env.DB, email);
+  // Their HANDSET, not just their login. getPushTokensForType selects every row in push_tokens and
+  // filters only on the owner having switched that notification type off -- it never checks the
+  // owner still exists. Leaving these behind means a removed person's phone keeps showing inbound
+  // customer texts, sender name and all, indefinitely, with nothing anywhere saying so.
+  await env.DB.prepare("DELETE FROM push_tokens WHERE staff_email = ?").bind(email).run();
+  // And their per-user settings, so a re-invite starts clean rather than silently restoring the
+  // old mobile number and ring-my-mobile state onto a new person at the same address.
+  await env.DB.prepare("DELETE FROM user_settings WHERE email = ?").bind(email).run();
   await deleteStaff(env.DB, email);
   return jsonResponse({ ok: true });
 }

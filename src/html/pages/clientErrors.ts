@@ -1,9 +1,6 @@
 import { escapeHtml, renderLayout } from "../layout";
+import { formatSydney } from "../formatTime";
 import type { ClientErrorRow } from "../../db/clientErrors";
-
-function fmtWhen(ms: number): string {
-  return new Date(ms).toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
-}
 
 // What the app reported when it fell over.
 //
@@ -23,7 +20,7 @@ export function renderClientErrorsPage(rows: ClientErrorRow[], role: "admin" | "
           <span class="ce-tag">${row.fatal ? "Crash" : "Caught"}</span>
           <strong>${escapeHtml(row.name ? `${row.name}: ${row.message}` : row.message)}</strong>
         </div>
-        <div class="ce-meta">${escapeHtml(fmtWhen(row.occurred_at))}${heldBack} &middot; ${escapeHtml(
+        <div class="ce-meta">${escapeHtml(formatSydney(row.occurred_at))}${heldBack} &middot; ${escapeHtml(
           row.platform
         )}${row.ota_build ? ` &middot; OTA #${escapeHtml(row.ota_build)}` : ""}${
         row.app_version ? ` &middot; v${escapeHtml(row.app_version)}` : ""

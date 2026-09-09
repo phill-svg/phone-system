@@ -83,22 +83,38 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
       `SELECT
          SUM(intelligence_status = 'completed')      AS done,
          SUM(intelligence_status = 'single_channel') AS mono,
-         SUM(intelligence_status = 'pending')        AS pending
+         SUM(intelligence_status = 'pending')        AS pending,
+         SUM(intelligence_status IN ('abandoned', 'failed')) AS stuck
        FROM calls
        WHERE intelligence_sid IS NOT NULL AND started_at > ?`
     )
       .bind(Date.now() - 7 * 24 * 60 * 60 * 1000)
-      .first<{ done: number | null; mono: number | null; pending: number | null }>();
+      .first<{ done: number | null; mono: number | null; pending: number | null; stuck: number | null }>();
     const done = row?.done ?? 0;
     const mono = row?.mono ?? 0;
     const pending = row?.pending ?? 0;
+    const stuck = row?.stuck ?? 0;
     // Recordings coming back on one channel is the tell that the Console's dual-channel conference
     // switch is off -- the single most likely reason this is configured but not working.
     if (mono > 0 && done === 0) {
       return {
         ...base,
         status: "fail",
-        detail: `${mono} recording(s) came back single-channel. Turn on Voice > Settings > Dual-channel Recording for Conference.`,
+        detail:
+          `${mono} recording(s) came back on one channel. Most likely Voice > Settings > ` +
+          `Dual-channel Recording for Conference is off — but a call where only one party spoke ` +
+          `looks the same, so check a recent one before changing anything.`,
+      };
+    }
+    // Every transcript giving up is the OTHER silent failure. A transcript Twilio holds but whose
+    // sentences we can never read (a sustained 5xx, or a call longer than the page cap) burns its
+    // polls and lands on `abandoned` -- which used to land on `single_channel` and at least turn
+    // this red, for the wrong reason. Counting it here is what stops "no alarm" being the trade.
+    if (stuck > 0 && done === 0) {
+      return {
+        ...base,
+        status: "fail",
+        detail: `${stuck} transcript(s) gave up before returning any text. Check the worker logs for INTELLIGENCE_.`,
       };
     }
     if (done > 0) return { ...base, status: "ok", detail: `${done} labelled transcript(s) in the last 7 days.` };

@@ -108,6 +108,48 @@ describe("collectPendingTranscripts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // A transcript Twilio HOLDS but we could not read is not a mono recording and not a failure.
+  // Collapsing the two used to abandon it permanently -- the row left the pending query on a
+  // terminal `single_channel` -- and told Health Checks a Console setting was off that never was.
+  it("leaves a transcript pending when the sentences read fails, rather than calling it mono", async () => {
+    await seed("CA-502", { sid: "GT-502", status: "pending" });
+    stub((url) => (url.includes("/Sentences") ? new Response("upstream", { status: 502 }) : completed()));
+
+    await collectPendingTranscripts(ON);
+    const row = await readCall("CA-502");
+    expect(row?.intelligence_status).toBe("pending");
+    // The Whisper transcript is untouched -- a failed read must not cost the text we already have.
+    expect(row?.call_transcript).toBe("whisper text");
+    // And the attempt is COUNTED. Not all of these are transient (a transcript past the page cap
+    // fails identically every tick), so an uncounted retry would hold a batch slot forever and
+    // starve every newer call behind it.
+    expect(row?.intelligence_polls).toBe(1);
+  });
+
+  // The bound has to actually bite: the same unreadable transcript, already at the limit.
+  it("abandons a transcript whose sentences never become readable", async () => {
+    await seed("CA-502-max", { sid: "GT-502-max", status: "pending", polls: MAX_INTELLIGENCE_POLLS - 1 });
+    stub((url) => (url.includes("/Sentences") ? new Response("upstream", { status: 502 }) : completed()));
+
+    await collectPendingTranscripts(ON);
+    expect((await readCall("CA-502-max"))?.intelligence_polls).toBe(MAX_INTELLIGENCE_POLLS);
+    await collectPendingTranscripts(ON);
+    expect((await readCall("CA-502-max"))?.intelligence_status).toBe("abandoned");
+  });
+
+  // Read fine, nothing there: a call where nobody spoke. Terminal, but it is NOT a claim about the
+  // Console's dual-channel switch -- reporting it as one puts "turn on dual-channel recording" on
+  // Health Checks because someone rang and said nothing.
+  it("does not report a silent call as a single-channel recording", async () => {
+    await seed("CA-silent", { sid: "GT-silent", status: "pending" });
+    stub((url) => (url.includes("/Sentences") ? sentences([]) : completed()));
+
+    await collectPendingTranscripts(ON);
+    const row = await readCall("CA-silent");
+    expect(row?.intelligence_status).toBe("no_speech");
+    expect(row?.call_transcript).toBe("whisper text");
+  });
+
   it("marks a failed transcript failed rather than retrying it", async () => {
     await seed("CA-failed", { sid: "GT-failed", status: "pending" });
     stub(() => new Response(JSON.stringify({ status: "failed" }), { status: 200 }));

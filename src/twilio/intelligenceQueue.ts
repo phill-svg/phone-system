@@ -69,6 +69,34 @@ export async function collectPendingTranscripts(env: QueueEnv): Promise<number> 
     }
 
     const sentences = await fetchSentences(env, row.intelligence_sid);
+    if (sentences === null) {
+      // Could not READ it -- a 502, a thrown fetch, more pages than the cap. Twilio still has the
+      // transcript, so leave the row pending and let the next tick try again. Writing a terminal
+      // status here is what used to abandon a recoverable transcript for good AND report it as a
+      // dual-channel misconfiguration.
+      //
+      // Counting the attempt is what makes "leave it pending" safe. Not every one of these is
+      // transient -- a transcript past MAX_SENTENCE_PAGES fails identically on every tick -- and an
+      // uncounted retry would keep that row pending forever. The pending query takes the FIVE
+      // NEWEST (started_at DESC), so a permanently unreadable recent call holds a slot against the
+      // OLDER ones queued behind it, on every tick, for as long as it stays pending.
+      await env.DB.prepare("UPDATE calls SET intelligence_polls = ? WHERE id = ?").bind(polls + 1, row.id).run();
+      console.log(
+        "INTELLIGENCE_FETCH_RETRY",
+        JSON.stringify({ callId: row.id, sid: row.intelligence_sid, polls: polls + 1 })
+      );
+      continue;
+    }
+    if (sentences.length === 0) {
+      // Read fine, and Twilio has nothing: a call where nobody spoke. Terminal -- re-asking will
+      // not conjure sentences -- but NOT `single_channel`, which is a claim about the Console's
+      // dual-channel switch. Collapsing the two is what would put "turn on dual-channel recording"
+      // on Health Checks because someone rang and said nothing.
+      await setStatus(env, row.id, "no_speech");
+      console.log("INTELLIGENCE_NO_SPEECH", JSON.stringify({ callId: row.id, sid: row.intelligence_sid }));
+      continue;
+    }
+
     const text = formatLabelledTranscript(sentences, await getTranscriptStaffChannel(env.DB));
     if (!text) {
       // Completed, but every sentence landed on one channel -- the recording was not dual-channel.

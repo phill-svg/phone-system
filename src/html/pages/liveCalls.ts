@@ -1,5 +1,6 @@
 import { escapeHtml, renderLayout } from "../layout";
 import { formatAuNumber } from "../formatPhone";
+import { formatSydney } from "../formatTime";
 import type { CallSummary } from "../../db/calls";
 
 export function renderLiveCallsPage(calls: CallSummary[], role: "admin" | "staff" = "admin"): string {
@@ -7,7 +8,7 @@ export function renderLiveCallsPage(calls: CallSummary[], role: "admin" | "staff
     .map(
       (call) => `<tr>
         <td>${escapeHtml(formatAuNumber(call.caller_number))}</td>
-        <td>${escapeHtml(new Date(call.started_at).toLocaleString("en-AU"))}</td>
+        <td>${escapeHtml(formatSydney(call.started_at))}</td>
         <td>${
           role === "admin"
             ? `<a class="listen-link" href="/admin/phone?listen=${escapeHtml(encodeURIComponent(call.id))}" title="Join this call muted to listen in">🎧 Listen</a>`

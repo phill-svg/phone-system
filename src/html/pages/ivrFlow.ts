@@ -95,7 +95,11 @@ export function renderIvrFlowPage(
         ["callback","Request a callback"]
       ];
       function typeLabel(t){ for(var i=0;i<TYPES.length;i++){ if(TYPES[i][0]===t) return TYPES[i][1]; } return t; }
-      function h(s){ var d=document.createElement("div"); d.textContent=(s==null?"":String(s)); return d.innerHTML; }
+      // textContent -> innerHTML escapes & < > and NOT quotes, and h() output is spliced into
+      // double-quoted attribute values (value="...", data-*="..."). An admin-entered mailbox name or
+      // forward-to number containing a quote could close the attribute and add an event handler that
+      // runs in the authenticated admin page. Escape both quote characters explicitly.
+      function h(s){ var d=document.createElement("div"); d.textContent=(s==null?"":String(s)); return d.innerHTML.replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
       function uid(){ return "n_"+Math.random().toString(36).slice(2,9); }
       function getNode(id){ for(var i=0;i<nodes.length;i++){ if(nodes[i].id===id) return nodes[i]; } return null; }
 
