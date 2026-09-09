@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleGetDiagnostics, handleTestPush, handleTestEmail, type Check } from "../../src/api/diagnostics";
-import { recordDivertCallerIdRejection, setDivertCallerId } from "../../src/db/settings";
+import { recordDivertCallerIdRejection, clearDivertCallerIdRejection, setDivertCallerId } from "../../src/db/settings";
 
 const ADMIN = { email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" as const };
 const TOKEN = "ExponentPushToken[test-device-1]";
@@ -197,5 +197,19 @@ describe("test email", () => {
     stubFetch();
     expect(find(await run(), "divert_caller_id").status).toBe("ok");
     await env.DB.prepare("DELETE FROM settings WHERE key IN ('divert_caller_id', 'divert_caller_id_last_error')").run();
+  });
+
+  // The half that matters for trust: the check has to come BACK. A marker that only ever gets set
+  // pins this red for seven days while every divert works, and a check that cannot recover is one
+  // people learn to ignore.
+  it("reports healthy again once a working divert clears the marker", async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE key IN ('divert_caller_id', 'divert_caller_id_last_error')").run();
+    await recordDivertCallerIdRejection(env.DB, 400);
+    stubFetch();
+    expect(find(await run(), "divert_caller_id").status).toBe("fail");
+
+    await clearDivertCallerIdRejection(env.DB);
+    stubFetch();
+    expect(find(await run(), "divert_caller_id").status).toBe("ok");
   });
 });

@@ -46,9 +46,9 @@ export class TwilioApiError extends Error {
 // HTTP 400 ONLY. Twilio's caller-ID rejections -- 21210 ("'From' phone number not verified"), 21212,
 // 13224 -- are all 400 validation errors: the request was parsed, judged invalid, and nothing was
 // created. Everything else is a different failure wearing the same shape:
-//   401/403  the API key was rotated or revoked. Retrying dialled every divert leg TWICE during an
-//            outage and recorded the result as a caller-ID rejection, so Admin > Health Checks
-//            blamed the divert feature instead of the credentials.
+//   401/403  the API key was rotated or revoked. Retrying would dial every divert leg TWICE for the
+//            duration of that outage and record the result as a caller-ID rejection, so Admin >
+//            Health Checks would blame the divert feature instead of the credentials.
 //   404      the resource is gone; a second call will not find it either.
 //   429      throttled, and 5xx may have created the call before failing to say so -- a retry there
 //            leaves a second leg ringing that is in no attemptSids and is never cancelled on answer.

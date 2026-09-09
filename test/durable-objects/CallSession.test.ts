@@ -1014,6 +1014,44 @@ describe("CallSession", () => {
     expect(await getDivertCallerIdRejection(env.DB)).toBeNull();
   });
 
+  // Simultaneous ring, one divert rejected and one accepted. The rejected staff member got the
+  // degraded (business-number) ring, so the successful sibling must NOT wipe the marker and let
+  // Health Checks report "diverted calls show the customer's number".
+  it("keeps a sibling leg's rejection when another leg in the same ring succeeds", async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'divert_caller_id_last_error'").run();
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { target: ["phill@b.com", "sam@b.com"], strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await setUserSettings(env.DB, "sam@b.com", { ring_my_mobile: true, mobile_number: "0499888777" });
+
+    // Phill's divert is rejected; Sam's succeeds.
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const u = String(input);
+      if (u.includes("/Calls.json")) {
+        const body = new URLSearchParams((init as RequestInit).body as string);
+        if (body.get("To") === "+61412345678" && body.get("From") === "+61402430107") {
+          return new Response(JSON.stringify({ code: 21210 }), { status: 400 });
+        }
+        return new Response(JSON.stringify({ sid: `sid-${body.get("To")}` }), { status: 201 });
+      }
+      return new Response("", { status: 200 });
+    });
+
+    const stub = stubFor("CA-divert-sibling");
+    await send(stub, mainEvent("CA-divert-sibling", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-sibling", { digits: "1" }));
+
+    // Sam rang as the customer, Phill fell back -- and the marker survives, because one leg degraded.
+    const sam = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61499888777");
+    expect(sam?.get("From")).toBe("+61402430107");
+    expect(await getDivertCallerIdRejection(env.DB)).not.toBeNull();
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'divert_caller_id_last_error'").run();
+  });
+
   it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {
     await seedEntryGather({ option1: "main_ring_emergency", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring_emergency", { target: ["phill@b.com", "sam@b.com"], noAnswerNextNodeId: "main_vm" });

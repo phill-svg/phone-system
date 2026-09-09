@@ -32,7 +32,7 @@ Expo SDK 54.
 - Modify `mobile/src/app/admin/index.tsx` + `mobile/src/lib/build.ts` — disable the toggle until
   loaded; bump OTA_BUILD.
 - Tests: `test/durable-objects/CallSession.test.ts`, `test/twilio/restClient.test.ts`,
-  `test/api/settings.test.ts`.
+  `test/api/diagnostics.test.ts`.
 
 ---
 
@@ -58,7 +58,7 @@ protects the cascade path too, which calls it separately.
 
 ### Task 2: A rejection must not pin Health Checks red for a week
 
-**Files:** Modify `src/db/settings.ts`, `src/durable-objects/CallSession.ts`; test `test/api/settings.test.ts`
+**Files:** Modify `src/db/settings.ts`, `src/durable-objects/CallSession.ts`; test `test/durable-objects/CallSession.test.ts`, `test/api/diagnostics.test.ts`
 
 `recordDivertCallerIdRejection` writes `divert_caller_id_last_error` and **nothing ever clears it**.
 One anonymous caller, or one transient 400, leaves Admin > Health Checks reporting "Diverted calls
@@ -71,6 +71,7 @@ write back into the per-leg ring hot path that #67 was fixing.
 - [x] **Step 1:** Add `clearDivertCallerIdRejection(db)`.
 - [x] **Step 2:** Call it on the first successful divert leg of a call.
 - [x] **Step 3:** Test the round trip: record, clear, check reads healthy again.
+- [x] **Step 4:** A sibling leg's rejection must survive another leg's success in the same ring.
 
 ### Task 3: An expired API key must not read as a caller-ID problem
 

@@ -568,7 +568,7 @@ export class CallSession extends DurableObject<Env> {
   // them.
   private async dialBatch(numbers: string[], callSid: string, origin: string, timeoutSeconds: number): Promise<string[] | null> {
     const attemptSids: string[] = [];
-    const from = await this.callerId();
+    const from = await this.callerId(callSid);
     for (const number of numbers) {
       try {
         attemptSids.push(await this.dialStaff(number, callSid, origin, timeoutSeconds, from));
@@ -961,7 +961,7 @@ export class CallSession extends DurableObject<Env> {
     timeoutSeconds?: number,
     from?: string
   ): Promise<string> {
-    const callerId = from ?? (await this.callerId());
+    const callerId = from ?? (await this.callerId(callSid));
     // A ring target is either a softphone identity ("client:{email}") or a personal mobile
     // ("pstn:{email}|{e164}", see resolveRingTargets). For a softphone we pass the real caller's
     // number as a custom Client param (CallerNumber); for a PSTN mobile we dial the number directly
@@ -1050,9 +1050,9 @@ export class CallSession extends DurableObject<Env> {
     // dialBatch cancelling and every inbound call falling to voicemail with no handset ringing,
     // which is the exact failure the business caller ID is already shape-checked to avoid.
     //
-    // The retry is narrow on purpose. It fires only for a 4xx that is not 429 -- the caller-ID
-    // rejections (21210 "'From' phone number not verified" and friends) this exists for, where
-    // Twilio validated the request and created NOTHING. A 5xx or a 429 may have created the call
+    // The retry is narrow on purpose. It fires only for HTTP 400 -- the caller-ID rejections
+    // (21210 "'From' phone number not verified" and friends) this exists for, where Twilio
+    // validated the request and created NOTHING. A 5xx or a 429 may have created the call
     // before failing to say so, and re-dialling then leaves a second leg ringing that is in no
     // attemptSids and so is never cancelled on answer: the phone keeps ringing after the call is
     // bridged, and if picked up joins a conference the ring plan thinks is closed. That is #63's
@@ -1062,13 +1062,27 @@ export class CallSession extends DurableObject<Env> {
       try {
         ({ sid } = await createLeg(divert.from, divert.token, true));
         // A working divert clears any recorded rejection, so Health Checks reflects now rather than
-        // the worst thing that ever happened. Once per CALL, not per leg: a four-person ring must
-        // not put a D1 write back into the hot path this was hoisted out of.
+        // the worst thing that ever happened.
+        //
+        // NOT if this call already recorded one: in a simultaneous ring, leg 1 can be rejected and
+        // fall back to the business number while leg 2 succeeds. That staff member got the degraded
+        // ring, so wiping the marker would report "diverted calls show the customer's number" while
+        // one of them demonstrably did not.
+        //
+        // Once per call, so the per-leg path the caller-ID resolve was hoisted out of stays free of
+        // writes. One DELETE per diverted call is the cost, and only on the success path.
         if (!this.divertRecoveryCleared) {
-          this.divertRecoveryCleared = true;
-          await clearDivertCallerIdRejection(this.env.DB).catch(() => {
-            /* best effort -- never cost a live leg over a diagnostics marker */
-          });
+          try {
+            await clearDivertCallerIdRejection(this.env.DB);
+            this.divertRecoveryCleared = true;
+          } catch (err) {
+            // Flag NOT set, so a later leg retries. Logged because everything else here is:
+            // swallowing DIAL_STAFF_FAILED silently once hid a credentials outage for a full day.
+            console.log(
+              "DIVERT_RECOVERY_CLEAR_FAILED",
+              JSON.stringify({ callSid, error: err instanceof Error ? err.message : String(err) })
+            );
+          }
         }
       } catch (err) {
         if (!(err instanceof TwilioApiError) || !isCallerIdRejection(err)) throw err;
@@ -1076,6 +1090,9 @@ export class CallSession extends DurableObject<Env> {
           "DIVERT_CALLER_ID_REJECTED",
           JSON.stringify({ callSid, from: divert.from, status: err.status, fallback: callerId })
         );
+        // This call has now degraded at least one leg, so a sibling leg that succeeds must not
+        // clear the marker and report the feature healthy.
+        this.divertRecoveryCleared = true;
         // Recorded so Admin > Health Checks can say the feature is silently falling back, rather
         // than it being visible only to whoever happens to be running `wrangler tail`.
         await recordDivertCallerIdRejection(this.env.DB, err.status).catch(() => {});
@@ -1125,20 +1142,31 @@ export class CallSession extends DurableObject<Env> {
   // technical issue" and hangs up on a live customer. Via performDeferredDial it does that to
   // someone already waiting on hold. A failed READ therefore falls back exactly like an invalid
   // VALUE: the env var is static and definitely owned, so the leg still rings.
-  private async callerId(): Promise<string> {
-    let resolved: string | null = null;
+  // Memoised per DO instance -- per call, by construction -- like divertCallerId beside it. dialBatch
+  // resolves it once per ring round, but the CASCADE path calls dialStaff without a `from`, so
+  // without this a five-person cascade paid four more full-table reads in front of a caller on hold.
+  private callerIdMemo?: string;
+
+  private async callerId(callSid?: string): Promise<string> {
+    if (this.callerIdMemo !== undefined) return this.callerIdMemo;
+    this.callerIdMemo = await this.resolveCallerId(callSid);
+    return this.callerIdMemo;
+  }
+
+  private async resolveCallerId(callSid?: string): Promise<string> {
+    let resolved: string | null;
     try {
       resolved = await resolveSendingNumber(this.env.DB, "voice", null);
     } catch (err) {
       console.log(
         "CALLER_ID_LOOKUP_FAILED",
-        JSON.stringify({ error: err instanceof Error ? err.message : String(err), fallback: this.env.TWILIO_FROM_NUMBER })
+        JSON.stringify({ callSid, error: err instanceof Error ? err.message : String(err), fallback: this.env.TWILIO_FROM_NUMBER })
       );
       return this.env.TWILIO_FROM_NUMBER;
     }
     if (resolved && E164.test(resolved.trim())) return resolved.trim();
     if (resolved) {
-      console.log("CALLER_ID_INVALID", JSON.stringify({ resolved, fallback: this.env.TWILIO_FROM_NUMBER }));
+      console.log("CALLER_ID_INVALID", JSON.stringify({ callSid, resolved, fallback: this.env.TWILIO_FROM_NUMBER }));
     }
     return this.env.TWILIO_FROM_NUMBER;
   }
