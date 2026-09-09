@@ -5,22 +5,7 @@ import { issueToken, invalidateTokensForEmail } from "../access/passwordTokens";
 import { clearAttempts } from "../access/loginAttempts";
 import { sendEmail, inviteEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
 import { destroySessionsForEmail } from "../access/session";
-
-const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
-const TIME_RE = /^\d{2}:\d{2}$/;
-
-function isDayWindow(value: unknown): boolean {
-  if (value === null) return true;
-  if (typeof value !== "object") return false;
-  const w = value as Record<string, unknown>;
-  return typeof w.open === "string" && TIME_RE.test(w.open) && typeof w.close === "string" && TIME_RE.test(w.close);
-}
-
-function isSchedule(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const s = value as Record<string, unknown>;
-  return DAY_KEYS.length === Object.keys(s).length && DAY_KEYS.every((d) => Object.prototype.hasOwnProperty.call(s, d) && isDayWindow(s[d]));
-}
+import { isBusinessHoursSchedule } from "../ivr/businessHours";
 
 // `excludeEmails` drops the App Review demo account: it is not a colleague, so it should not
 // appear in the softphone's transfer picker where someone could hand it a real customer's call.
@@ -61,7 +46,7 @@ export async function handlePutStaffSchedule(request: Request, db: D1Database, e
   } catch {
     return new Response("invalid request body", { status: 400 });
   }
-  if (!isSchedule(body)) return new Response("invalid request body", { status: 400 });
+  if (!isBusinessHoursSchedule(body)) return new Response("invalid request body", { status: 400 });
   await setStaffSchedule(db, email, body as any);
   return jsonResponse({ ok: true });
 }

@@ -100,15 +100,37 @@ export async function markThreadRead(db: D1Database, peer: string): Promise<void
 // asynchronously (e.g. outside the 24-hour window, or a broken Page connection -- error 63001), and
 // this callback is the only way that ever reaches the stored message status. A stray callback for
 // an unknown id is a no-op. `error` captures Twilio's ErrorCode/ErrorMessage so a failure says why.
+// Statuses a message does not come back from. Twilio's callbacks are NOT ordered -- a late `sent`
+// can land after the `failed` it preceded -- so without this a delivery failure is overwritten by
+// the very callback that came before it, taking its ErrorCode with it. The message then reads as
+// fine in the app, and it drops out of checkMessengerChannelHealth's count, so the alert that
+// exists to catch a Messenger outage goes quiet exactly when the outage is worst.
+//
+// `read` (Messenger and WhatsApp send it) earns its place by being protected FROM the non-terminal
+// callbacks, not by outranking the other terminals: terminal-to-terminal is deliberately still
+// allowed, so a late `delivered` can still land on top of it. Ordering the terminals against each
+// other would be inventing a progression Twilio does not promise.
+const TERMINAL_STATUSES = ["delivered", "failed", "undelivered", "read"];
+
 export async function updateMessageStatus(
   db: D1Database,
   id: string,
   status: string,
   error?: { code: string | null; message: string | null }
 ): Promise<void> {
+  const incomingIsTerminal = TERMINAL_STATUSES.includes(status);
   await db
-    .prepare("UPDATE messages SET status = ?, error_code = ?, error_message = ? WHERE id = ?")
-    .bind(status, error?.code ?? null, error?.message ?? null, id)
+    .prepare(
+      // COALESCE on the error fields for the same reason tier 2 put it on the recording columns: a
+      // later callback may ADD information about a message, never blank what an earlier one knew.
+      `UPDATE messages
+          SET status = ?,
+              error_code = COALESCE(?, error_code),
+              error_message = COALESCE(?, error_message)
+        WHERE id = ?
+          AND (? = 1 OR status IS NULL OR status NOT IN (${TERMINAL_STATUSES.map(() => "?").join(", ")}))`
+    )
+    .bind(status, error?.code ?? null, error?.message ?? null, id, incomingIsTerminal ? 1 : 0, ...TERMINAL_STATUSES)
     .run();
 }
 

@@ -1099,6 +1099,36 @@ describe("CallSession", () => {
     expect(row?.status).toBe("completed");
   });
 
+  // playFromConfig is the twin of flowEngine's playCommandFor, and it runs INSIDE startRing -- so a
+  // blank audioAssetId ("" survives `?? null`) throwing in resolveAudioCommands, or both fields set
+  // throwing in renderHold, escapes to the DO's catch-all and hangs up on a LIVE customer. Fixing
+  // only the engine copy would have left the dangerous half in place.
+  it("does not hang up when a wait node's play config is blank or ambiguous", async () => {
+    await seedEntryGather({ option1: "amb_wait", defaultNextNodeId: "main_vm" });
+    await seedNode({
+      id: "amb_wait",
+      type: "wait",
+      config: {
+        audioAssetId: "",
+        ttsText: "Please hold, connecting you now.",
+        allowCallbackStar: false,
+        nextNodeId: "main_ring",
+      },
+    });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-amb");
+    await send(stub, mainEvent("CA-amb"));
+    const enq = await send(stub, mainEvent("CA-amb", { digits: "1" }));
+
+    expect(enq.xml).toContain("<Enqueue");
+    // The failure this replaces: the DO catch-all answering with a hangup mid-call.
+    expect(enq.xml).not.toContain("technical issue");
+    expect(enq.xml).not.toContain("<Hangup/>");
+  });
+
   it("hold poll keeps the caller holding while dialing", async () => {
     await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
     await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });

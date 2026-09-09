@@ -1,3 +1,4 @@
+import { isBusinessHoursSchedule } from "../ivr/businessHours";
 import type { BusinessHoursSchedule } from "../ivr/businessHours";
 import type { StaffPresenceRow, StaffStatus } from "../dial/presence";
 
@@ -11,13 +12,44 @@ type StaffRow = {
   ring_priority: number | null;
 };
 
+// Nobody's schedule is worth every caller. getStaffRoster feeds resolveRingTargets, which runs
+// inside startRing -- so a JSON.parse throw here does not just lose one person's hours, it escapes
+// to the DO's catch-all and HANGS UP on a live customer (the tier 1 lesson, third instance). One
+// unreadable row therefore costs that one person their legs for this call, loudly, and everyone
+// else still rings: an empty schedule is off-shift everywhere, which is the conservative answer.
+const NO_SCHEDULE: BusinessHoursSchedule = {
+  mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+};
+
+function parseSchedule(email: string, raw: string): BusinessHoursSchedule {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.log(
+      "STAFF_SCHEDULE_UNPARSEABLE",
+      JSON.stringify({ email, error: err instanceof Error ? err.message : String(err) })
+    );
+    return NO_SCHEDULE;
+  }
+  // Catching the THROW is not enough: a column holding the literal text `null` parses perfectly
+  // well, and isWithinBusinessHours then does `schedule[dayKey]` on it and throws a TypeError --
+  // straight back into the hangup path this function exists to close. The shape has to be checked,
+  // not just the syntax.
+  if (!isBusinessHoursSchedule(parsed)) {
+    console.log("STAFF_SCHEDULE_UNPARSEABLE", JSON.stringify({ email, error: "not a schedule shape" }));
+    return NO_SCHEDULE;
+  }
+  return parsed;
+}
+
 function toPresenceRow(row: StaffRow): StaffPresenceRow {
   return {
     email: row.email,
     role: row.role,
     status: row.status,
     awayReason: row.away_reason,
-    schedule: JSON.parse(row.schedule) as BusinessHoursSchedule,
+    schedule: parseSchedule(row.email, row.schedule),
     lastHeartbeatAt: row.last_heartbeat_at,
     ringPriority: row.ring_priority ?? 100,
   };

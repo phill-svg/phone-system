@@ -925,11 +925,24 @@ export class CallSession extends DurableObject<Env> {
     });
   }
 
+  // The twin of flowEngine's playCommandFor, and it needs the same normalisation for a worse
+  // reason: this one runs INSIDE startRing. A blank audioAssetId ("" survives `?? null`) throws in
+  // resolveAudioCommands, and both fields set throws in renderHold -- either escapes to the DO's
+  // catch-all and hangs up on a live customer. Fixing only the engine copy would have left the
+  // dangerous half in place while the comment there claimed the case was handled.
   private async playFromConfig(config: Record<string, any>): Promise<FlowCommand | null> {
-    const audioAssetId = config.audioAssetId ?? null;
-    const ttsText = config.ttsText ?? null;
+    const blank = (v: unknown): string | null => {
+      const t = typeof v === "string" ? v.trim() : v == null ? "" : String(v);
+      return t === "" ? null : t;
+    };
+    const audioAssetId = blank(config.audioAssetId);
+    const ttsText = blank(config.ttsText);
     if (audioAssetId === null && ttsText === null) return null;
-    const resolved = await this.resolveAudioCommands([{ type: "PLAY", audioAssetId, ttsText }]);
+    // Recorded audio wins when a config carries both -- same rule as playCommandFor, so a flow
+    // sounds the same whether it is walked by the engine or replayed from a wait node here.
+    const command: FlowCommand =
+      audioAssetId !== null ? { type: "PLAY", audioAssetId, ttsText: null } : { type: "PLAY", audioAssetId: null, ttsText };
+    const resolved = await this.resolveAudioCommands([command]);
     return resolved[0];
   }
 
