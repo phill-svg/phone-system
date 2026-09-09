@@ -169,8 +169,17 @@ describe("handlePostTransfer", () => {
     await env.DB.exec(`DELETE FROM softphone_call_legs`);
   });
 
+  // The transferred-to staff member sees this caller ID, and it comes from phone_numbers like every
+  // other outbound leg -- NOT from TWILIO_FROM_NUMBER, which still holds the number this system was
+  // built on and stopped being the business's caller ID when the landline ported in. The env value
+  // survives only as a fallback for an empty table, which is why it is deliberately a different
+  // number here.
   it("dials the target identity into the same conference and returns the new leg's sid", async () => {
     await recordCallLeg(env.DB, "CAagent", "a@b.com", "CAcaller");
+    await env.DB.prepare("UPDATE phone_numbers SET is_default_voice = 0").run();
+    await env.DB.prepare(
+      "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, created_at) VALUES ('+61261059771', 'Landline', 1, 0, 1, 0, 'au1', 1)"
+    ).run();
     const dial = vi.fn().mockResolvedValue({ sid: "CAtransfer" });
     const findSid = vi.fn().mockResolvedValue("CFxxx");
     const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAagent" }, { callSid: "CAcaller" }]);
@@ -196,7 +205,7 @@ describe("handlePostTransfer", () => {
       "ACxxx", "SKxxx", "authtoken",
       expect.objectContaining({
         to: "client:b@b.com",
-        from: "+61800000000",
+        from: "+61261059771",
         url: "https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller",
       })
     );

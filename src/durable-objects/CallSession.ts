@@ -19,6 +19,7 @@ import { cleanupLoneConference } from "../twilio/conferenceClient";
 import { renderDialAgentIntoConference, renderJoinConference } from "../twilio/conferenceTwiml";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
 import { getBusinessHours, getRecordingEnabled } from "../db/settings";
+import { resolveSendingNumber } from "../db/phoneNumbers";
 import { createCallbackRequest } from "../db/callbackRequests";
 import { appendCallEvent, parseRecordingDuration } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
@@ -974,7 +975,14 @@ export class CallSession extends DurableObject<Env> {
       this.env.TWILIO_API_KEY_SECRET,
       {
         to,
-        from: this.env.TWILIO_FROM_NUMBER,
+        // The number STAFF see when their mobile rings on a divert. Resolved from the
+        // phone_numbers table like every other outbound path, not from TWILIO_FROM_NUMBER: that
+        // env var still holds +61866108941, the number this system was built on, and it never
+        // moved when the Canberra landline ported in and became the default caller ID. So a
+        // diverted call announced itself from the old test line -- which is not the number staff
+        // recognise, and not the one to call back. Falls back to the env var only if the table
+        // has no voice number at all.
+        from: (await resolveSendingNumber(this.env.DB, "voice", null)) ?? this.env.TWILIO_FROM_NUMBER,
         url: appendWebhookSecret(`${origin}/webhooks/twilio/agent-answer?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         statusCallback: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         statusCallbackEvent: ["completed"],
