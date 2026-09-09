@@ -89,6 +89,9 @@ import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
 import { transcribeCallRecording, backfillTranscripts } from "./transcribe";
+import { intelligenceEnabled, isDualChannelRecording, requestTranscript } from "./twilio/intelligence";
+import { collectPendingTranscripts } from "./twilio/intelligenceQueue";
+import { getTranscriptStaffChannel } from "./db/settings";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
 import { resolveSendingNumber } from "./db/phoneNumbers";
 import { getFacebookName, upsertFacebookName, noteTwilioMessengerFields } from "./db/fbContacts";
@@ -106,6 +109,9 @@ type Env = {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   TWILIO_AUTH_TOKEN_SECONDARY?: string;
+  // Conversational Intelligence service (GA...), set as a worker secret. Unset = the
+  // speaker-labelled transcript is simply off and Whisper's unlabelled one stands.
+  TWILIO_INTELLIGENCE_SERVICE_SID?: string;
   TWILIO_WEBHOOK_SECRET?: string;
   TWILIO_WEBHOOK_SECRET_SECONDARY?: string;
   TWILIO_FROM_NUMBER: string;
@@ -762,10 +768,56 @@ export default {
       // Record posts here with ?vm=1 so its transcript lands in `transcription` ("Voicemail
       // transcript"); answered-call recordings land in `call_transcript` ("Call transcript").
       if (params.RecordingUrl) {
-        const column = url.searchParams.get("vm") === "1" ? "transcription" : "call_transcript";
+        const isVoicemail = url.searchParams.get("vm") === "1";
+        const column = isVoicemail ? "transcription" : "call_transcript";
         const job = transcribeCallRecording(env, callSid, params.RecordingUrl, column);
         if (ctx) ctx.waitUntil(job);
         else await job;
+
+        // Answered calls ALSO go to Twilio, which returns the transcript split by speaker. Whisper
+        // still runs above and lands first: Twilio is asynchronous, so this is what the call shows
+        // in the meantime, and what it keeps if the labelled one never arrives.
+        //
+        // Voicemail is deliberately excluded. Only the caller is speaking, so there is nothing to
+        // label and it would be paying per minute for the same text.
+        //
+        // Only CONFERENCE recordings, which is what `RecordingChannels === "2"` identifies. A
+        // call-via-mobile leg is recorded by <Dial record="record-from-answer"> -- mono by
+        // construction, unaffected by any Console conference setting -- so every one of those
+        // transcripts would come back single-channel, be discarded, and still be billed per minute.
+        if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && !isDualChannelRecording(params.RecordingChannels)) {
+          // Say so rather than going quiet. A mono recording here almost always means the Console's
+          // dual-channel conference switch is off, which is the difference between this feature
+          // working for every call and not working at all -- and silence is how SERVICEM8_API_KEY
+          // sat inert for a day.
+          console.log(
+            "INTELLIGENCE_SKIPPED_MONO",
+            JSON.stringify({ callSid, channels: params.RecordingChannels ?? null })
+          );
+        }
+        if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && isDualChannelRecording(params.RecordingChannels)) {
+          // The CUSTOMER is whichever end is not us, and that flips with direction: both outbound
+          // paths store the business number as caller_number and the customer as called_number, so
+          // reading caller_number unconditionally told Twilio the office landline was the customer.
+          const row = await env.DB.prepare("SELECT caller_number, called_number, direction FROM calls WHERE id = ?")
+            .bind(callSid)
+            .first<{ caller_number: string; called_number: string; direction: string }>();
+          const customerNumber =
+            row === null ? null : row.direction === "outbound" ? row.called_number : row.caller_number;
+          // NOT named `request`: the fetch handler's own `request: Request` is in scope here, and
+          // shadowing it in a webhook handler is a trap for whoever next reads a header in this block.
+          const intelligenceJob = requestTranscript(env, params.RecordingSid, {
+            staffChannel: await getTranscriptStaffChannel(env.DB),
+            customerNumber,
+          }).then(async (sid) => {
+            if (!sid) return;
+            await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
+              .bind(sid, callSid)
+              .run();
+          });
+          if (ctx) ctx.waitUntil(intelligenceJob);
+          else await intelligenceJob;
+        }
       }
 
       return new Response("ok", { status: 200 });
@@ -1350,6 +1402,10 @@ export default {
     // shipped, or a dropped webhook). Bounded per tick; rows are attempt-capped so this drains
     // and then does nothing.
     ctx.waitUntil(backfillTranscripts(env).catch(() => {}));
+    // Twilio transcribes asynchronously, so the recording webhook can only ask -- this collects the
+    // finished ones and writes the speaker-labelled text over the Whisper transcript. No-ops
+    // entirely when TWILIO_INTELLIGENCE_SERVICE_SID is unset.
+    ctx.waitUntil(collectPendingTranscripts(env).catch(() => {}));
     // Messenger senders whose name lookup failed on their first message: retry them here, so the
     // inbox fills the name in by itself once the Graph API is answering again. Attempt-capped.
     ctx.waitUntil(backfillFacebookNames(env).catch(() => {}));

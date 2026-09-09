@@ -220,6 +220,11 @@ describe("CallSession", () => {
 
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM callback_requests").run();
+    // phone_numbers too: seedDefaultVoiceNumber clears migration 0020's seeded default and inserts
+    // another row, which would otherwise leak into every test after it and fail whichever one next
+    // resolves a sending number -- pointing at the innocent test, not the guilty one.
+    await env.DB.prepare("DELETE FROM phone_numbers WHERE created_at = 1").run();
+    await env.DB.prepare("UPDATE phone_numbers SET is_default_voice = 1 WHERE e164 = '+61866108941'").run();
     await env.DB.prepare("DELETE FROM call_events").run();
     await env.DB.prepare("DELETE FROM calls").run();
     await env.DB.prepare("DELETE FROM ivr_nodes").run();
@@ -267,6 +272,20 @@ describe("CallSession", () => {
       "INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at) VALUES (?, 'staff', ?, ?, ?, ?)"
     )
       .bind(email, NOW, available ? "available" : "away", STAFF_OPEN_SCHEDULE, available ? Date.now() : null)
+      .run();
+  }
+
+  // The business's caller ID, as /admin/settings records it. Every outbound leg is supposed to
+  // resolve from here rather than from TWILIO_FROM_NUMBER, which still holds the number this
+  // system was originally built on.
+  async function seedDefaultVoiceNumber(e164: string): Promise<void> {
+    // Migration 0020 seeds +61866108941 as the default voice number, so making a NEW number the
+    // default means clearing the old one -- exactly what picking a default on /admin/settings does.
+    await env.DB.prepare("UPDATE phone_numbers SET is_default_voice = 0").run();
+    await env.DB.prepare(
+      "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, created_at) VALUES (?, 'Office', 1, 0, 1, 0, 'au1', 1)"
+    )
+      .bind(e164)
       .run();
   }
 
@@ -734,6 +753,27 @@ describe("CallSession", () => {
       .bind("CA-cancelfail")
       .all<{ event_type: string }>();
     expect(events.results.map((e) => e.event_type)).toContain("answered");
+  });
+
+  // Reported as "it's forwarding from the test number not the main number": when a call diverts to
+  // a staff mobile, the phone showed +61866108941 -- the number this system was built on, still
+  // sitting in TWILIO_FROM_NUMBER -- rather than the ported landline that became the business's
+  // caller ID. Not the number staff recognise, and not the one to call back.
+  it("rings a staff mobile from the configured business number, not TWILIO_FROM_NUMBER", async () => {
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0400111222" });
+
+    const stub = stubFor("CA-callerid");
+    await send(stub, mainEvent("CA-callerid"));
+    await send(stub, mainEvent("CA-callerid", { digits: "1" }));
+
+    const dial = outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61400111222");
+    expect(dial).toBeTruthy();
+    expect(dial?.get("From")).toBe("+61261059771");
   });
 
   it("emergency ring with nobody on call skips enqueue entirely and goes straight to voicemail", async () => {

@@ -21,6 +21,7 @@ type Env = {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   SERVICEM8_API_KEY?: string;
+  TWILIO_INTELLIGENCE_SERVICE_SID?: string;
   EMAIL?: SendEmailBinding;
 };
 
@@ -58,6 +59,52 @@ async function checkServiceM8(env: Env): Promise<Check> {
     return { ...base, status: "ok", detail: "Connected. Callers are matched 3 minutes after a call ends." };
   } catch (e) {
     return { ...base, status: "fail", detail: `Couldn't reach ServiceM8: ${e instanceof Error ? e.message : "error"}` };
+  }
+}
+
+// Are speaker-labelled transcripts actually on? This needs TWO things, and either being absent looks
+// identical from the outside -- nothing happens and the transcript is simply unlabelled. So the two
+// are reported separately, and the second is inferred from what recordings actually came back rather
+// than from a setting we would only be reading back to ourselves.
+//
+// This check exists because the same shape of silence hid the ServiceM8 key for a full day.
+async function checkCallTranscripts(env: Env): Promise<Check> {
+  const base = { key: "transcripts", label: "Speaker-labelled transcripts" };
+  if (!env.TWILIO_INTELLIGENCE_SERVICE_SID) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "No Intelligence service set. Transcripts still work, but won't say who said what.",
+    };
+  }
+  try {
+    const row = await env.DB.prepare(
+      `SELECT
+         SUM(intelligence_status = 'completed')      AS done,
+         SUM(intelligence_status = 'single_channel') AS mono,
+         SUM(intelligence_status = 'pending')        AS pending
+       FROM calls
+       WHERE intelligence_sid IS NOT NULL AND started_at > ?`
+    )
+      .bind(Date.now() - 7 * 24 * 60 * 60 * 1000)
+      .first<{ done: number | null; mono: number | null; pending: number | null }>();
+    const done = row?.done ?? 0;
+    const mono = row?.mono ?? 0;
+    const pending = row?.pending ?? 0;
+    // Recordings coming back on one channel is the tell that the Console's dual-channel conference
+    // switch is off -- the single most likely reason this is configured but not working.
+    if (mono > 0 && done === 0) {
+      return {
+        ...base,
+        status: "fail",
+        detail: `${mono} recording(s) came back single-channel. Turn on Voice > Settings > Dual-channel Recording for Conference.`,
+      };
+    }
+    if (done > 0) return { ...base, status: "ok", detail: `${done} labelled transcript(s) in the last 7 days.` };
+    if (pending > 0) return { ...base, status: "ok", detail: `${pending} transcript(s) in progress.` };
+    return { ...base, status: "warn", detail: "Configured, but no answered call has been transcribed yet." };
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't check: ${e instanceof Error ? e.message : "error"}` };
   }
 }
 
@@ -170,14 +217,20 @@ async function checkPushTokens(env: Env, staff: StaffUser): Promise<Check> {
 }
 
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {
-  const [servicem8, twilio, regions, roster, push] = await Promise.all([
-    checkServiceM8(env),
+  // The names below are POSITIONAL: each binding takes whatever the call in the same position
+  // returns. Keep the two lists in the same order and the same length -- adding a call without a
+  // binding silently shifts every one after it and drops the last check off the end entirely, which
+  // is exactly what happened when the transcripts check was first added here.
+  const [twilio, regions, roster, servicem8, transcripts, push] = await Promise.all([
     checkTwilioCredentials(env),
     checkNumberRegions(env),
     checkRingRoster(env),
+    checkServiceM8(env),
+    checkCallTranscripts(env),
     checkPushTokens(env, staff),
   ]);
-  return jsonResponse([twilio, regions, roster, servicem8, checkEmail(env), push]);
+  // Display order, which is deliberately not the call order.
+  return jsonResponse([twilio, regions, roster, servicem8, transcripts, checkEmail(env), push]);
 }
 
 // End-to-end push: the only proof that the whole chain works is a phone buzzing. Deliberately sent
