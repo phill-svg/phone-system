@@ -14,8 +14,23 @@ import { getCalls, getContacts, deleteCall, restoreCall, type Call } from "../..
 import { formatPhone, contactForNumber } from "../../lib/phone";
 import { useTheme, type } from "../../theme/theme";
 
-function isMissed(c: Call): boolean {
-  return c.direction === "inbound" && /no.?answer|missed|busy|fail|cancel/i.test(c.status);
+// A missed call is an inbound one NOBODY PICKED UP -- including the ones that left a voicemail,
+// because those are exactly the calls that still need returning.
+//
+// This used to test `status`, which is Twilio's word for how the phone call ended rather than
+// whether a human answered: a caller who rang out to voicemail is `completed`, indistinguishable
+// from a real conversation. So most genuinely missed calls rendered in black as "Incoming" and the
+// red styling that was already here almost never appeared. The `answered` event is the same signal
+// analytics has always used.
+//
+// `event_count === 0` means there is no timeline for the call at all (rows predating the event
+// log), where nothing can be concluded -- those keep the old status heuristic rather than turning
+// a whole history red.
+export function isMissed(c: Call): boolean {
+  if (c.direction !== "inbound") return false;
+  if (c.status === "in_progress") return false;
+  if (c.event_count === 0) return /no.?answer|missed|busy|fail|cancel/i.test(c.status);
+  return c.answered === 0;
 }
 
 function whenLabel(ms: number): string {
@@ -107,10 +122,16 @@ export default function RecentsScreen() {
                     {title}
                   </Text>
                   <Text style={[type.footnote, { color: t.colors.labelSecondary }]} numberOfLines={1}>
-                    {item.direction === "outbound" ? "Outgoing" : missed ? "Missed" : "Incoming"} · {formatPhone(number)}
+                    {missed ? (
+                      <Text style={{ color: t.colors.danger, fontWeight: "600" }}>Missed</Text>
+                    ) : (
+                      item.direction === "outbound" ? "Outgoing" : "Incoming"
+                    )} · {formatPhone(number)}
                   </Text>
                 </View>
-                <Text style={[type.footnote, { color: t.colors.labelSecondary }]}>{whenLabel(item.started_at)}</Text>
+                <Text style={[type.footnote, { color: missed ? t.colors.danger : t.colors.labelSecondary }]}>
+                  {whenLabel(item.started_at)}
+                </Text>
                 <Icon name="info.circle" fallback="information-circle-outline" size={20} color={t.colors.accent} />
               </Pressable>
             );

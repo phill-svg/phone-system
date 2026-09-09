@@ -836,6 +836,45 @@ describe("CallSession", () => {
     expect(body).toContain("Missed call");
   });
 
+  // A ring node's no-answer branch can point at ANOTHER ring node, so one caller rings the team
+  // twice inside a single call and each round ends in its own `no_answer`. Production shows exactly
+  // this -- CAebce8407 (2026-09-08 11:21) logged call_started, ring_started, no_answer,
+  // ring_started, no_answer, voicemail_left. Both rounds used to notify, so one missed call landed
+  // on the handset as two, indistinguishable from the customer having rung twice.
+  it("two ring rounds in one call still send exactly one missed-call push", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "cascade", noAnswerNextNodeId: "main_ring_2" });
+    await seedRing("main_ring_2", { strategy: "cascade", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedPushToken("ExponentPushToken[one-only]", "phill@b.com");
+
+    const stub = stubFor("CA-two-rounds");
+    await send(stub, mainEvent("CA-two-rounds"));
+    await send(stub, mainEvent("CA-two-rounds", { digits: "1" }));
+
+    // Round one gives up...
+    await send(stub, agentStatus("CA-two-rounds", "sid-client:phill@b.com", "no-answer"));
+    await send(stub, queueLeft("CA-two-rounds", "leave"));
+    // ...and the no-answer branch rings again.
+    await send(stub, agentStatus("CA-two-rounds", "sid-client:phill@b.com", "no-answer"));
+    const second = await send(stub, queueLeft("CA-two-rounds", "leave"));
+
+    // Both rounds really happened: two rings, and the caller ends at voicemail after the second.
+    expect(second.xml).toContain("<Record");
+    const rings = await env.DB.prepare(
+      "SELECT event_type FROM call_events WHERE call_id = ? AND event_type = 'ring_started'"
+    )
+      .bind("CA-two-rounds")
+      .all<{ event_type: string }>();
+    expect(rings.results).toHaveLength(2);
+
+    // But the customer is one missed call, not two.
+    const pushes = fetchMock.mock.calls.filter((c) => String(c[0]).includes("exp.host"));
+    const missed = pushes.filter((c) => String((c[1] as RequestInit)?.body ?? "").includes("Missed call"));
+    expect(missed).toHaveLength(1);
+  });
+
   it("simultaneous ring: both legs fail → ALL_ATTEMPTS_EXHAUSTED → queue_left falls through to voicemail", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });

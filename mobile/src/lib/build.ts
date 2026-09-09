@@ -5,4 +5,4 @@
 // constant the handset displays, or the two can disagree.
 //
 // The publish workflow greps this file's value, so keep the literal on one line.
-export const OTA_BUILD = "53";
+export const OTA_BUILD = "54";

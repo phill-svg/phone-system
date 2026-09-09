@@ -34,6 +34,25 @@ describe("db/calls", () => {
     expect(result.map((c) => c.id)).toEqual(["CA-3", "CA-2"]);
   });
 
+  // Recents marks a missed call from these two columns, because `status` cannot answer it: Twilio
+  // reports a call that rang out to voicemail as `completed`, exactly like an answered one.
+  it("listCalls reports whether each call was answered, and how much timeline it has", async () => {
+    await seedCall("CA-answered", { startedAt: 3000, status: "completed" });
+    await seedCall("CA-rangout", { startedAt: 2000, status: "completed" });
+    await seedCall("CA-notimeline", { startedAt: 1000, status: "completed" });
+    await appendCallEvent(env.DB, "CA-answered", "ring_started");
+    await appendCallEvent(env.DB, "CA-answered", "answered");
+    await appendCallEvent(env.DB, "CA-rangout", "ring_started");
+    await appendCallEvent(env.DB, "CA-rangout", "voicemail_left");
+
+    const byId = new Map((await listCalls(env.DB)).map((c) => [c.id, c]));
+    expect(byId.get("CA-answered")).toMatchObject({ answered: 1, event_count: 2 });
+    // Rang out to voicemail: completed, but nobody picked up.
+    expect(byId.get("CA-rangout")).toMatchObject({ answered: 0, event_count: 2 });
+    // No timeline at all -- "unknown", which the app must not read as "missed".
+    expect(byId.get("CA-notimeline")).toMatchObject({ answered: 0, event_count: 0 });
+  });
+
   it("listLiveCalls returns only in_progress calls", async () => {
     await seedCall("CA-live", { status: "in_progress" });
     await seedCall("CA-done", { status: "completed" });
