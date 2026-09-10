@@ -6,9 +6,9 @@ checkout to a build sitting on a Play track.
 
 This **cannot be automated from CI here** — it needs a Google Play Console account, a Google Cloud
 service account key, and an `eas` login. Run it from a machine signed in to both. (iOS submission
-is not the same: `.github/workflows/submit-ios.yml` uploads to TestFlight from the Actions tab,
-because that team has no Mac. The same shape would work for Play if the service-account JSON were
-ever put in a repository secret.)
+is not the same: `mobile/.eas/workflows/submit-ios.yml` uploads to TestFlight from the EAS
+dashboard, using credentials EAS holds. Play could work the same way once EAS holds the
+service-account key.)
 
 Everything below runs from `mobile/`.
 

@@ -1,0 +1,40 @@
+# Uploads a finished EAS build to TestFlight, run from the EAS dashboard — which is how iOS ships
+# here, because there is no Mac in this business and often no terminal in reach either.
+#
+# This runs on EAS's own infrastructure with the App Store Connect credentials EAS holds, so it
+# needs nothing locally: no .p8 on disk, no keys in a CI secret. `eas.json` still carries
+# `ascApiKeyPath` for a submit run from a machine that has the key; this path does not read it.
+#
+# Deliberately manual: there is no `on:` trigger beyond dispatch. A build number can NEVER be
+# reused, so a submission is a decision someone makes, not a side effect of merging.
+#
+#   Dashboard → Workflows → Submit iOS to TestFlight → Run
+#   or: cd mobile && npx eas workflow:run .eas/workflows/submit-ios.yml
+#
+# Leave build_id blank to take the latest finished iOS build, which is the usual case. Apple takes
+# roughly 5–15 minutes to process the upload; internal testers skip Beta App Review, so it lands on
+# the handset straight after that.
+#
+# On the phone afterwards: Settings → Check for Updates. The **b** half of the version (`#60 · b5`)
+# is what says a NATIVE build actually landed — the OTA number alone shows on the old binary too.
+name: Submit iOS to TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        type: string
+        required: false
+        description: EAS build ID to submit. Blank submits the latest finished iOS build.
+
+jobs:
+  submit_ios:
+    name: Submit to TestFlight
+    type: submit
+    # Matches the production build profile, so this resolves the same submit config the installed
+    # binary was built against.
+    environment: production
+    params:
+      build_id: ${{ inputs.build_id }}
+      platform: ios
+      profile: production
