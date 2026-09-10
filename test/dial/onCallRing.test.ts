@@ -135,12 +135,31 @@ describe("resolveRingTargets: on_call", () => {
   // getUserSettings.
   it("never throws when the overrides table is unreadable", async () => {
     await insertStaff("tech@x.com");
+    await setUserSettings(env.DB, "tech@x.com", { mobile_number: "0412345678" });
     await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
     await env.DB.exec("ALTER TABLE on_call_overrides RENAME TO on_call_overrides_hidden");
     try {
-      expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual([]);
+      // And it must still RING. Overrides are empty 51 weeks a year, so one unreadable override
+      // read used to throw away a perfectly good rotation and drop the whole rota -- the 2am caller
+      // reaching voicemail while settings.on_call_rotation sat intact in D1 naming a reachable
+      // tech. The two reads are guarded separately now: a failed override read degrades to "no swap
+      // this week", which is the state it normally holds anyway.
+      expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:tech@x.com|+61412345678"]);
     } finally {
       await env.DB.exec("ALTER TABLE on_call_overrides_hidden RENAME TO on_call_overrides");
+    }
+  });
+
+  // The rotation is the half that cannot be degraded around: unreadable means nobody is on call,
+  // which falls through to the after-hours voicemail that was there before this feature existed.
+  it("rings nobody, without throwing, when the rotation itself is unreadable", async () => {
+    await insertStaff("tech@x.com");
+    await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
+    await env.DB.exec("ALTER TABLE settings RENAME TO settings_hidden");
+    try {
+      expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual([]);
+    } finally {
+      await env.DB.exec("ALTER TABLE settings_hidden RENAME TO settings");
     }
   });
 });

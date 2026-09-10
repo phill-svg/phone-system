@@ -124,6 +124,120 @@ describe("admin diagnostics", () => {
     expect(registered.status).toBe("ok");
     expect(registered.detail).toContain("ios");
   });
+
+  describe("after-hours on call", () => {
+    const CLOSED = JSON.stringify({ mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null });
+
+    beforeEach(async () => {
+      await env.DB.exec("DELETE FROM on_call_overrides");
+      await env.DB.prepare("DELETE FROM settings WHERE key = 'on_call_rotation'").run();
+      await env.DB.prepare("DELETE FROM staff_users WHERE email LIKE '%@oncall.test'").run();
+      await env.DB.exec("DELETE FROM user_settings");
+      await env.DB.exec("DELETE FROM ivr_nodes");
+    });
+
+    // A ring step that actually targets the rotation. Without one the rota is wired to nothing and
+    // the check must say so -- which is the whole point of it, so most cases here seed it.
+    async function wireIvrToOnCall() {
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_ring', 'main', 1, 'ring', ?, 1, 1)")
+        .bind(JSON.stringify({ target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" }))
+        .run();
+    }
+
+    async function addTech(email: string) {
+      await env.DB
+        .prepare("INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', 1, 'available', ?, NULL, 100)")
+        .bind(email, CLOSED)
+        .run();
+    }
+
+    async function setRotation(members: string[]) {
+      await env.DB
+        .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(JSON.stringify({ members, anchorWeekStart: "2026-09-07" }))
+        .run();
+    }
+
+    it("warns when nobody is on call at all", async () => {
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("straight to voicemail");
+    });
+
+    it("fails when the rotation names someone who has left", async () => {
+      await setRotation(["departed@oncall.test"]);
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("departed@oncall.test");
+    });
+
+    // Still rings, but only the softphone -- the leg that depends on a backgrounded app waking up,
+    // at the hour nobody is watching it.
+    it("warns when the on-call tech has no mobile saved", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("no mobile number");
+    });
+
+    it("names who is on call and the number that will ring", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await wireIvrToOnCall();
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("tech");
+      expect(check.detail).toContain("+61412345678");
+    });
+
+    // The rota shipped INERT: main's closed branch was a voicemail node and nothing referenced
+    // on_call at all. Without this the screen reports "tech is on call, ringing +61..." over a
+    // feature wired to nothing, every after-hours caller keeps reaching voicemail, and the one
+    // screen built to break that silence is the thing producing it.
+    it("fails when no step of the phone menu rings the on-call person", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("no step of the phone menu");
+    });
+
+    // A ring node that targets everyone is not the same as one targeting the rotation, and must
+    // not satisfy the check.
+    it("is not satisfied by a ring step that targets everyone", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_all', 'main', 1, 'ring', ?, 1, 1)")
+        .bind(JSON.stringify({ target: "all", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" }))
+        .run();
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("fail");
+    });
+
+    // "Nobody is set" and "the stored rotation could not be read" both arrive as null. Sending
+    // someone to a Settings screen that already shows a full rota is the wrong instruction.
+    it("distinguishes a corrupt rotation from an unset one", async () => {
+      await env.DB
+        .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind("not json at all")
+        .run();
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("Nobody is on call");
+    });
+});
 });
 
 describe("test push", () => {
@@ -162,7 +276,10 @@ describe("test push", () => {
     const left = await env.DB.prepare("SELECT COUNT(*) AS n FROM push_tokens WHERE token = ?").bind(TOKEN).first<{ n: number }>();
     expect(left?.n).toBe(0);
   });
-});
+  // The rota's failure modes are ALL silent from the outside -- an empty rotation, a departed tech,
+  // a missing mobile -- and every one of them ends with the after-hours caller hearing voicemail,
+  // which is indistinguishable from having no rota at all. That is the state this feature exists to
+  // end, so it is reported here rather than discovered in a month.
 
 describe("test email", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -214,70 +331,6 @@ describe("test email", () => {
     expect(find(await run(), "divert_caller_id").status).toBe("ok");
   });
 
-  // The rota's failure modes are ALL silent from the outside -- an empty rotation, a departed tech,
-  // a missing mobile -- and every one of them ends with the after-hours caller hearing voicemail,
-  // which is indistinguishable from having no rota at all. That is the state this feature exists to
-  // end, so it is reported here rather than discovered in a month.
-  describe("after-hours on call", () => {
-    const CLOSED = JSON.stringify({ mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null });
-
-    beforeEach(async () => {
-      await env.DB.exec("DELETE FROM on_call_overrides");
-      await env.DB.prepare("DELETE FROM settings WHERE key = 'on_call_rotation'").run();
-      await env.DB.prepare("DELETE FROM staff_users WHERE email LIKE '%@oncall.test'").run();
-      await env.DB.exec("DELETE FROM user_settings");
-    });
-
-    async function addTech(email: string) {
-      await env.DB
-        .prepare("INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', 1, 'available', ?, NULL, 100)")
-        .bind(email, CLOSED)
-        .run();
-    }
-
-    async function setRotation(members: string[]) {
-      await env.DB
-        .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(JSON.stringify({ members, anchorWeekStart: "2026-09-07" }))
-        .run();
-    }
-
-    it("warns when nobody is on call at all", async () => {
-      stubFetch();
-      const check = find(await run(), "on_call");
-      expect(check.status).toBe("warn");
-      expect(check.detail).toContain("straight to voicemail");
-    });
-
-    it("fails when the rotation names someone who has left", async () => {
-      await setRotation(["departed@oncall.test"]);
-      stubFetch();
-      const check = find(await run(), "on_call");
-      expect(check.status).toBe("fail");
-      expect(check.detail).toContain("departed@oncall.test");
-    });
-
-    // Still rings, but only the softphone -- the leg that depends on a backgrounded app waking up,
-    // at the hour nobody is watching it.
-    it("warns when the on-call tech has no mobile saved", async () => {
-      await addTech("tech@oncall.test");
-      await setRotation(["tech@oncall.test"]);
-      stubFetch();
-      const check = find(await run(), "on_call");
-      expect(check.status).toBe("warn");
-      expect(check.detail).toContain("no mobile number");
-    });
-
-    it("names who is on call and the number that will ring", async () => {
-      await addTech("tech@oncall.test");
-      await setRotation(["tech@oncall.test"]);
-      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
-      stubFetch();
-      const check = find(await run(), "on_call");
-      expect(check.status).toBe("ok");
-      expect(check.detail).toContain("tech");
-      expect(check.detail).toContain("+61412345678");
-    });
   });
 
 });

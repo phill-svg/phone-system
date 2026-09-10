@@ -9,6 +9,7 @@ const ADMIN: import("../../src/access/requireStaffUser").StaffUser = {
 };
 
 const CLOSED = JSON.stringify({ mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null });
+const DEMO = ["reviewer@x.com"];
 
 async function insertStaff(email: string) {
   await env.DB.prepare(
@@ -145,5 +146,66 @@ describe("previewWeeks", () => {
   it("says nobody rather than inventing a name when the rotation is empty", () => {
     const weeks = previewWeeks({ members: [], anchorWeekStart: "" }, new Map(), "2026-09-07", 2);
     expect(weeks.every((w) => w.email === null && w.source === "nobody")).toBe(true);
+  });
+});
+
+// The demo account is dropped by resolveRingTargets before shift or availability is considered, so
+// a rotation naming it resolves to nobody and every after-hours caller hears voicemail -- while
+// Health Checks reports it as fine, having read the same unfiltered roster. The exclusion has to
+// happen where the name is CHOSEN, not only where it is dialled.
+describe("demo accounts are not selectable for on call", () => {
+  beforeEach(async () => {
+    await env.DB.exec("DELETE FROM staff_users");
+    await env.DB.exec("DELETE FROM on_call_overrides");
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'on_call_rotation'").run();
+    await insertStaff("a@x.com");
+    await insertStaff("reviewer@x.com");
+  });
+
+  it("is never offered in the pickers", async () => {
+    const body = await (await handleGetOnCall(env.DB, DEMO)).json<{ staff: string[] }>();
+    expect(body.staff).toEqual(["a@x.com"]);
+  });
+
+  it("is refused in a rotation", async () => {
+    const res = await handlePutOnCall(put({ members: ["reviewer@x.com"] }), env.DB, ADMIN, DEMO);
+    expect(res.status).toBe(400);
+    expect((await getOnCallRotation(env.DB)).members).toEqual([]);
+  });
+
+  it("is refused as a week override", async () => {
+    const res = await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "reviewer@x.com" }), env.DB, ADMIN, DEMO);
+    expect(res.status).toBe(400);
+    expect(await getOnCallOverride(env.DB, "2026-09-07")).toBeNull();
+  });
+});
+
+// staff_users only ever holds lowercase (invites lowercase on write), and both admin UIs compare
+// stored rotation entries against it with strict equality. A stored "Tech@X.com" passed the
+// case-insensitive validation and then showed the person as rostered AND not-rostered at once,
+// with the duplicate impossible to remove.
+describe("addresses are normalised on write", () => {
+  beforeEach(async () => {
+    await env.DB.exec("DELETE FROM staff_users");
+    await env.DB.exec("DELETE FROM on_call_overrides");
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'on_call_rotation'").run();
+    await insertStaff("tech@x.com");
+  });
+
+  it("lowercases a rotation member", async () => {
+    const res = await handlePutOnCall(put({ members: ["  Tech@X.com "] }), env.DB, ADMIN);
+    expect(res.status).toBe(200);
+    expect((await getOnCallRotation(env.DB)).members).toEqual(["tech@x.com"]);
+  });
+
+  it("lowercases an override", async () => {
+    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "Tech@X.com" }), env.DB, ADMIN);
+    expect(await getOnCallOverride(env.DB, "2026-09-07")).toBe("tech@x.com");
+  });
+
+  it("still catches a duplicate that differs only by case", async () => {
+    const res = await handlePutOnCall(put({ members: ["tech@x.com", "TECH@x.com"] }), env.DB, ADMIN);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("twice");
   });
 });

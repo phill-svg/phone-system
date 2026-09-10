@@ -1,4 +1,5 @@
 import { getStaffRoster } from "../db/staff";
+import type { StaffPresenceRow } from "../dial/presence";
 import {
   clearOnCallOverride,
   getOnCallRotation,
@@ -10,6 +11,25 @@ import { isWeekStartKey, rotationMemberFor, weekStartKey, type OnCallRotation } 
 import type { StaffUser } from "../access/requireStaffUser";
 
 const PREVIEW_WEEKS = 8;
+
+// The roster these endpoints may offer and accept.
+//
+// `resolveRingTargets` drops the demo account before anything else is considered, so a rotation
+// naming it resolves to nobody and every after-hours caller hears voicemail -- while Health Checks
+// reports "ok, reviewer is on call, ringing +61...", because it read the same unfiltered list. The
+// exclusion has to happen where the name is CHOSEN, not only where it is dialled. `/api/staff` is
+// already passed demoEmails(env) for exactly this reason.
+async function selectableRoster(db: D1Database, exclude: string[]): Promise<StaffPresenceRow[]> {
+  const excluded = new Set(exclude.map((e) => e.trim().toLowerCase()));
+  const roster = await getStaffRoster(db);
+  return roster.filter((s) => !excluded.has(s.email.toLowerCase()));
+}
+
+// Stored addresses are compared against `staff_users`, which only ever holds lowercase (invites
+// lowercase on write). Storing "Tech@X.com" passes the case-insensitive validation below and then
+// fails every strict comparison the two admin UIs make -- the person shows up as both rostered and
+// not-rostered at once, and the duplicate cannot be removed. Normalise once, here.
+const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -49,12 +69,12 @@ export function previewWeeks(
   return weeks;
 }
 
-export async function handleGetOnCall(db: D1Database): Promise<Response> {
+export async function handleGetOnCall(db: D1Database, excludeEmails: string[] = []): Promise<Response> {
   const thisWeek = weekStartKey(new Date());
   const [rotation, overrideRows, roster] = await Promise.all([
     getOnCallRotation(db),
     listOnCallOverrides(db, thisWeek),
-    getStaffRoster(db),
+    selectableRoster(db, excludeEmails),
   ]);
   const overrides = new Map(overrideRows.map((r) => [r.week_start, r.staff_email]));
   const weeks = previewWeeks(rotation, overrides, thisWeek, PREVIEW_WEEKS);
@@ -71,7 +91,12 @@ export async function handleGetOnCall(db: D1Database): Promise<Response> {
   });
 }
 
-export async function handlePutOnCall(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
+export async function handlePutOnCall(
+  request: Request,
+  db: D1Database,
+  staff: StaffUser,
+  excludeEmails: string[] = []
+): Promise<Response> {
   let body: unknown;
   try {
     body = await request.json();
@@ -83,22 +108,21 @@ export async function handlePutOnCall(request: Request, db: D1Database, staff: S
   if (!Array.isArray(members) || !members.every((m) => typeof m === "string")) {
     return badRequest("members must be a list of staff emails");
   }
-  const cleaned = members.map((m) => m.trim()).filter((m) => m !== "");
+  const cleaned = members.map(normalizeEmail).filter((m) => m !== "");
 
   // A duplicate does not fail loudly at ring time -- it just gives that person two weeks in the
   // cycle, which reads as a mysteriously unfair rota months later.
   const seen = new Set<string>();
   for (const m of cleaned) {
-    const key = m.toLowerCase();
-    if (seen.has(key)) return badRequest(`${m} is in the rotation twice`);
-    seen.add(key);
+    if (seen.has(m)) return badRequest(`${m} is in the rotation twice`);
+    seen.add(m);
   }
 
   // Validated against the real roster because the failure mode of a typo is silence: the week comes
   // round, nobody is found, and the caller hears voicemail exactly as though no rota existed.
-  const roster = await getStaffRoster(db);
+  const roster = await selectableRoster(db, excludeEmails);
   const known = new Set(roster.map((s) => s.email.toLowerCase()));
-  const unknown = cleaned.filter((m) => !known.has(m.toLowerCase()));
+  const unknown = cleaned.filter((m) => !known.has(m));
   if (unknown.length > 0) return badRequest(`not staff members: ${unknown.join(", ")}`);
 
   let anchor = typeof anchorWeekStart === "string" && anchorWeekStart !== "" ? anchorWeekStart : weekStartKey(new Date());
@@ -111,7 +135,12 @@ export async function handlePutOnCall(request: Request, db: D1Database, staff: S
   return jsonResponse({ ok: true, rotation });
 }
 
-export async function handlePutOnCallOverride(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
+export async function handlePutOnCallOverride(
+  request: Request,
+  db: D1Database,
+  staff: StaffUser,
+  excludeEmails: string[] = []
+): Promise<Response> {
   let body: unknown;
   try {
     body = await request.json();
@@ -129,11 +158,12 @@ export async function handlePutOnCallOverride(request: Request, db: D1Database, 
     return jsonResponse({ ok: true });
   }
   if (typeof email !== "string") return badRequest("email must be a staff email, or null to clear");
-  const roster = await getStaffRoster(db);
-  if (!roster.some((s) => s.email.toLowerCase() === email.trim().toLowerCase())) {
+  const wanted = normalizeEmail(email);
+  const roster = await selectableRoster(db, excludeEmails);
+  if (!roster.some((s) => s.email.toLowerCase() === wanted)) {
     return badRequest(`not a staff member: ${email}`);
   }
-  await setOnCallOverride(db, weekStart, email.trim(), staff.email);
-  console.log("ON_CALL_OVERRIDE_SET", JSON.stringify({ by: staff.email, weekStart, email: email.trim() }));
+  await setOnCallOverride(db, weekStart, wanted, staff.email);
+  console.log("ON_CALL_OVERRIDE_SET", JSON.stringify({ by: staff.email, weekStart, email: wanted }));
   return jsonResponse({ ok: true });
 }
