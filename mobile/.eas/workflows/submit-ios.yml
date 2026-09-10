@@ -11,21 +11,21 @@
 #   Dashboard → Workflows → Submit iOS to TestFlight → Run
 #   or: cd mobile && npx eas workflow:run .eas/workflows/submit-ios.yml
 #
-# Leave build_id blank to take the latest finished iOS build, which is the usual case. Apple takes
-# roughly 5–15 minutes to process the upload; internal testers skip Beta App Review, so it lands on
-# the handset straight after that.
+# It always submits the LATEST finished iOS build. There is deliberately no build_id input: an
+# empty one fails validation ("[params.build_id]: Invalid input"), and EAS workflows have no way to
+# omit a param conditionally, so the choice is a required id every time or none at all. None is
+# right -- the latest build is what you want in every real case, and a specific older build can
+# still be submitted from its own page on the EAS dashboard.
+#
+# Apple takes roughly 5–15 minutes to process the upload; internal testers skip Beta App Review, so
+# it lands on the handset straight after that.
 #
 # On the phone afterwards: Settings → Check for Updates. The **b** half of the version (`#60 · b5`)
 # is what says a NATIVE build actually landed — the OTA number alone shows on the old binary too.
 name: Submit iOS to TestFlight
 
 on:
-  workflow_dispatch:
-    inputs:
-      build_id:
-        type: string
-        required: false
-        description: EAS build ID to submit. Blank submits the latest finished iOS build.
+  workflow_dispatch: {}
 
 jobs:
   submit_ios:
@@ -35,6 +35,5 @@ jobs:
     # binary was built against.
     environment: production
     params:
-      build_id: ${{ inputs.build_id }}
       platform: ios
       profile: production
