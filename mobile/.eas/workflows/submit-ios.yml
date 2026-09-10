@@ -1,9 +1,21 @@
 # Uploads the latest finished iOS build to TestFlight, run from the EAS dashboard — which is how
 # iOS ships here, because there is no Mac in this business and often no terminal in reach either.
+# `eas submit` was never the Mac-only part: it runs on macOS, Linux and Windows, and here it runs
+# on EAS's own infrastructure.
 #
-# It runs on EAS's own infrastructure with the App Store Connect credentials EAS holds, so nothing
-# is needed locally: no .p8 on disk, no key in a CI secret. `eas.json` still carries
-# `ascApiKeyPath` for a submit run from a machine that has the key; this path does not read it.
+# CREDENTIALS. This authenticates with the App Store Connect API key **EAS holds**, not with a file
+# in the checkout. `eas.json` used to name `./credentials/AuthKey_*.p8` -- a gitignored path that
+# exists on nobody's builder -- and the first real run died on it:
+#
+#   Build step "Prepare credentials" failed
+#   eas-cli failed to resolve submission config
+#
+# Those fields are gone from eas.json now; only `ascAppId` remains, which is the app record rather
+# than a credential. If a submit ever fails on credentials again, the key is missing from EAS:
+#   npx eas credentials --platform ios  →  production  →  App Store Connect: Manage your API Key
+#                                       →  Set up your project to use an API Key for EAS Submit
+# or add it in the dashboard under the project's Credentials page. EAS can create the key itself
+# from an Apple login, so a lost .p8 is not a dead end -- Apple only forbids re-DOWNLOADING one.
 #
 # Deliberately manual: there is no `on:` trigger beyond dispatch. A build number can NEVER be
 # reused, so a submission stays a decision someone makes, not a side effect of merging.
@@ -11,12 +23,14 @@
 #   Dashboard → Workflows → Submit iOS to TestFlight → Run
 #   or: cd mobile && npx eas workflow:run .eas/workflows/submit-ios.yml
 #
-# WHY TWO JOBS. A submit job's `build_id` is REQUIRED — and required at run time, not at validation
-# time, so `eas workflow:validate` passes a workflow that fails the moment it starts. Two runs died
-# on `[params.build_id]: Invalid input` before this was understood: once passing a blank input
-# (an unset optional input arrives as an empty string, not as an absent param) and once omitting it
-# altogether. `get-build` is the supported way to name a build without typing an id: it returns the
-# most recent one matching the filter, and its `build_id` output feeds the submit.
+# WHY TWO JOBS. A submit job's `build_id` is REQUIRED, and required at run time rather than at
+# validation time -- so `eas workflow:validate` passes a workflow that fails the moment it starts.
+# Two runs died on `[params.build_id]: Invalid input` before that was understood: once passing a
+# blank input (an unset optional input arrives as an empty string, not as an absent param) and once
+# omitting it altogether. `get-build` is the supported way to name a build without typing an id.
+#
+# `type: testflight` rather than `type: submit`: it is the job Expo documents for this, and it can
+# also share the build with internal and external testing groups if that is ever wanted.
 #
 # Apple takes roughly 5–15 minutes to process the upload; internal testers skip Beta App Review, so
 # it lands on the handset straight after that.
@@ -41,8 +55,12 @@ jobs:
 
   submit_ios:
     name: Submit to TestFlight
-    type: submit
+    type: testflight
     needs: [get_build]
+    env:
+      # Without this, a credentials failure prints only "eas-cli failed to resolve submission
+      # config. Add EXPO_DEBUG: 1 to the job env to see the error." Left on permanently: this job
+      # runs a handful of times a year and a legible failure is worth more than a tidy log.
+      EXPO_DEBUG: '1'
     params:
       build_id: ${{ needs.get_build.outputs.build_id }}
-      profile: production
