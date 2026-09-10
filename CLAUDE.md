@@ -491,8 +491,17 @@ is normal, not broken.
   instead of constructing one of its own.
   A few things to know before touching it. It anchors on
   `class <Name>: ExpoReactNativeFactoryDelegate` and throws at prebuild if the Expo template renames
-  that class — loud, not silent. The extension has to live in the app's own Swift module, which is
-  why this is appended to `AppDelegate.swift` rather than shipped as a local Expo module. JS still
+  that class — loud, not silent. The code has to live in the app's own Swift module, which is why
+  this patches `AppDelegate.swift` rather than shipping a local Expo module — and the method
+  specifically must go in that class's **BODY**, not an extension. It is an `override`
+  (`extraModulesForBridge:` is an `@optional` `RCTBridgeDelegate` requirement, and Swift treats the
+  adopted requirement as an inherited declaration), and Swift permits an overriding declaration in
+  a class body and nowhere else. **Build 5 died on exactly that** — `overriding declaration
+  requires an 'override' keyword`, where adding the keyword is illegal too — so
+  `TwilioEarlyInit.swift` is a two-part template split on `// tcb:class-body` and
+  `// tcb:file-scope`. It also must **never call `super`**: nothing in the chain implements that
+  optional requirement (which is why React Native guards every call to it with
+  `respondsToSelector:`), so a super call would message an unimplemented selector at launch. JS still
   calls `initializePushRegistry` at module scope, and on a patched binary that **replaces** the
   native registry rather than adding to it — `initializePushRegistry` assigns a fresh
   `TwilioVoicePushRegistry` to a strong property, so the first one deallocates — leaving a

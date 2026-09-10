@@ -1,14 +1,10 @@
 import fs from "fs";
 
-import {
-  injectTwilioEarlyInit,
-  SWIFT_SOURCE,
-} from "../plugins/withTwilioEarlyInit";
+import { injectTwilioEarlyInit, SWIFT_SOURCE } from "../plugins/withTwilioEarlyInit";
 
 // A stand-in for what `expo prebuild` writes, trimmed to the parts the plugin looks at. The
-// delegate is deliberately NOT called ReactNativeDelegate: the plugin has to rewrite the token
-// in TwilioEarlyInit.swift to whatever the generated file actually declares, and a fixture using
-// the default name would pass whether it rewrote anything or not.
+// delegate is deliberately NOT called ReactNativeDelegate, so a fixture cannot pass by accident on
+// the template's default name.
 const APP_DELEGATE = `import Expo
 import React
 import ReactAppDependencyProvider
@@ -26,6 +22,8 @@ public class AppDelegate: ExpoAppDelegate {
 }
 
 class RenamedDelegate: ExpoReactNativeFactoryDelegate {
+  // Extension point for config-plugins
+
   override func bundleURL() -> URL? {
     return nil
   }
@@ -34,42 +32,61 @@ class RenamedDelegate: ExpoReactNativeFactoryDelegate {
 
 const swift = fs.readFileSync(SWIFT_SOURCE, "utf8");
 
+/** The delegate class body, which is the only place an `override` may legally live. */
+function classBodyOf(contents: string): string {
+  const start = contents.indexOf("class RenamedDelegate: ExpoReactNativeFactoryDelegate {");
+  expect(start).toBeGreaterThan(-1);
+  return contents.slice(start, contents.indexOf("\n}\n", start));
+}
+
 describe("injectTwilioEarlyInit", () => {
-  it("extends the delegate class the generated file actually declares", () => {
+  it("puts the override inside the delegate class, where Swift allows one", () => {
+    // Build 5 (2026-09-10) failed to compile because this method was emitted in an `extension`:
+    // "overriding declaration requires an 'override' keyword", and `override` is illegal there.
     const out = injectTwilioEarlyInit(APP_DELEGATE, swift);
 
-    // This is the whole fix: React Native only asks a delegate for pre-built native modules if
-    // that delegate responds to extraModulesForBridge:. Extending a class that does not exist
-    // in the file would compile into nothing being asked.
-    expect(out).toContain("extension RenamedDelegate {");
-    expect(out).toContain("func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule]");
-    expect(out).not.toContain("extension ReactNativeDelegate {");
-    // The original file survives ahead of the injection.
-    expect(out.startsWith(APP_DELEGATE.trimEnd())).toBe(true);
+    expect(classBodyOf(out)).toContain(
+      "override func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule]"
+    );
+    expect(out).not.toContain("extension RenamedDelegate");
   });
 
-  it("carries a token to rewrite, so the rewrite is not silently a no-op", () => {
-    // If TwilioEarlyInit.swift stops naming the placeholder, the substitution above lands on
-    // nothing and the extension is emitted against whatever the file happens to say.
-    expect(swift).toContain("extension ReactNativeDelegate {");
+  it("keeps the helper class at file scope, after the delegate", () => {
+    const out = injectTwilioEarlyInit(APP_DELEGATE, swift);
+
+    expect(classBodyOf(out)).not.toContain("final class TCBTwilioEarlyInit");
+    expect(out).toContain("\nfinal class TCBTwilioEarlyInit {");
+    expect(out.indexOf("final class TCBTwilioEarlyInit")).toBeGreaterThan(
+      out.indexOf("override func extraModules")
+    );
+    // The generated AppDelegate itself survives ahead of both.
+    expect(out.startsWith("import Expo\nimport React")).toBe(true);
+    expect(out).toContain("override func bundleURL() -> URL? {");
   });
 
-  it("replaces the previous injection rather than skipping or duplicating it", () => {
-    // Prebuild runs repeatedly over an existing ios/ tree. Skipping when already patched would
-    // pin the first copy: edit the Swift, re-run prebuild, and read the stale version while
-    // believing you tested the new one.
+  it("never calls super, because nothing in the chain implements the optional requirement", () => {
+    // extraModulesForBridge: is @optional on RCTBridgeDelegate and unimplemented all the way up --
+    // which is why React Native guards every call to it with respondsToSelector:. A super call
+    // would be a message to an unimplemented selector at launch.
+    const out = injectTwilioEarlyInit(APP_DELEGATE, swift);
+    expect(out).not.toContain("super.extraModules");
+  });
+
+  it("replaces both injections on a re-run rather than skipping or duplicating them", () => {
+    // Prebuild runs repeatedly over an existing ios/ tree. Skipping when already patched would pin
+    // the first copy: edit the Swift, re-run prebuild, and read the stale version believing it was
+    // the new one.
     const once = injectTwilioEarlyInit(APP_DELEGATE, swift);
     const edited = swift.replace(/TwilioVoiceReactNative/g, "TwilioVoiceReactNativeV2");
     const twice = injectTwilioEarlyInit(once, edited);
 
     expect(twice).toContain("TwilioVoiceReactNativeV2");
     expect(twice).not.toContain('"TwilioVoiceReactNative"');
-    // Two declarations of the same class would not compile, which is the other failure here.
-    expect(twice.match(/class TCBTwilioEarlyInit/g)).toHaveLength(1);
-    // Re-running with the same input is still a no-op in effect.
+    // Duplicates of either half would not compile.
+    expect(twice.match(/final class TCBTwilioEarlyInit/g)).toHaveLength(1);
+    expect(twice.match(/override func extraModules/g)).toHaveLength(1);
     expect(injectTwilioEarlyInit(once, swift)).toBe(once);
-    // And the generated AppDelegate itself is never eaten by the round trip.
-    expect(twice.startsWith(APP_DELEGATE.trimEnd())).toBe(true);
+    expect(twice.startsWith("import Expo\nimport React")).toBe(true);
   });
 
   it("throws when the Expo template no longer declares a factory delegate", () => {
@@ -77,13 +94,22 @@ describe("injectTwilioEarlyInit", () => {
       injectTwilioEarlyInit("import Expo\n\nclass AppDelegate: ExpoAppDelegate {}\n", swift)
     ).toThrow(/ExpoReactNativeFactoryDelegate/);
   });
+
+  it("throws when the Swift template loses a split marker", () => {
+    expect(() =>
+      injectTwilioEarlyInit(APP_DELEGATE, swift.replace(/\/\/ tcb:file-scope/g, ""))
+    ).toThrow(/tcb:file-scope/);
+    expect(() =>
+      injectTwilioEarlyInit(APP_DELEGATE, swift.replace(/\/\/ tcb:class-body/g, ""))
+    ).toThrow(/tcb:class-body/);
+  });
 });
 
 describe("app config", () => {
   it("registers the plugin, without which prebuild emits an unpatched AppDelegate", () => {
-    // Everything above tests the transformation in isolation; it runs at all only because
-    // app.json asks for it. Drop that line in a merge and the app goes back to being killed on
-    // a cold VoIP launch with every test, the typecheck and the EAS build still green.
+    // Everything above tests the transformation in isolation; it runs at all only because app.json
+    // asks for it. Drop that line in a merge and the app goes back to being killed on a cold VoIP
+    // launch with every test, the typecheck and the EAS build still green.
     const appConfig = require("../app.json");
     expect(appConfig.expo.plugins).toContain("./plugins/withTwilioEarlyInit");
   });
