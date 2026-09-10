@@ -1,45 +1,40 @@
 // TwilioEarlyInit -- the native half of the CallKit cold-launch fix, and a TEMPLATE rather than a
-// compilable file. mobile/plugins/withTwilioEarlyInit.js splits it on the two markers below and
-// injects the halves into the AppDelegate that `expo prebuild` generates. Everything above the
-// first marker describes this file and is injected nowhere.
+// compilable file. mobile/plugins/withTwilioEarlyInit.js splits it on the markers below and injects
+// the pieces into the AppDelegate that `expo prebuild` generates. Everything above the first marker
+// describes this file and is injected nowhere.
 //
-//   tcb:class-body  -> goes INSIDE the generated delegate class. It has to: the method is an
-//                      `override`, and Swift permits an overriding declaration in a class body and
-//                      nowhere else. Build 5 (2026-09-10) failed to compile for exactly that,
-//                      "overriding declaration requires an 'override' keyword", when this lived in
-//                      an `extension` -- where adding the keyword is not allowed either.
-//   tcb:file-scope  -> goes after that class, at file scope.
+//   tcb:launch-call -> one line inside `application(_:didFinishLaunchingWithOptions:)`, placed
+//                      before `startReactNative` so it runs before the React host exists.
+//   tcb:file-scope  -> the helper class, after the delegate class.
 //
-// It also names no React protocol. `RCTBridgeModule` is NOT visible to Swift from the app target:
-// `RCTBridgeModule.h` imports `"RCTBundleManager.h"` with quotes, which makes it non-modular, so
-// clang leaves it out of the `React` module that `import React` brings in -- `RCTBridge` resolves
-// and `RCTBridgeModule` does not. Build 5's second attempt died on exactly that, four times over
-// (`cannot find type 'RCTBridgeModule' in scope`). Swift imports the requirement's
-// `NSArray<id<RCTBridgeModule>> *` as `[Any]` for the same reason, which is what the override has
-// to match, and `adoptedModule()` hands back a plain `NSObject`.
+// WHY THE METHOD IS ADDED WITH THE OBJC RUNTIME RATHER THAN WRITTEN IN SWIFT. Three builds died
+// trying to declare it (2026-09-10):
 //
-// The method does NOT call super. `extraModulesForBridge:` is an @optional requirement of
-// RCTBridgeDelegate that nothing in the chain implements -- which is why React Native guards every
-// call to it with respondsToSelector: -- so Swift sees an inherited declaration to override while
-// the runtime has no implementation behind it, and a super call would be a message to an
-// unimplemented selector.
+//   1. in an `extension` -> "overriding declaration requires an 'override' keyword", and `override`
+//      is legal in a class body and nowhere else;
+//   2. in the class body returning `[any RCTBridgeModule]` -> "cannot find type 'RCTBridgeModule'
+//      in scope";
+//   3. in the class body returning `[Any]` -> "method does not override any method from its
+//      superclass".
+//
+// 2 and 3 together are a catch-22, and `RCTBridgeDelegate.h` says why: it only FORWARD-DECLARES
+// `@protocol RCTBridgeModule;`. Swift imports a forward-declared ObjC protocol as an opaque
+// placeholder -- it participates in signature matching, so `[Any]` does not match, but it cannot be
+// written down, so the matching signature cannot be spelled either. (`RCTBridgeModule.h` itself is
+// no help: it imports `"RCTBundleManager.h"` with quotes, which makes it non-modular and keeps it
+// out of the `React` module.) There is no Swift declaration that compiles.
+//
+// `class_addMethod` has no such problem. The selector, the type encoding and the block signature
+// are all plain Objective-C, and a method added this way is what `respondsToSelector:` answers --
+// which is the only thing React Native actually asks. It is also self-limiting: `class_addMethod`
+// returns false and changes nothing if the method already exists, so a future React Native that
+// implements it wins by default.
 
-// tcb:class-body
-  /// `RCTBridgeDelegate.extraModulesForBridge:` -- the list of native modules the app has
-  /// already built. React Native asks for it while the React host starts and before the JS
-  /// bundle is evaluated, which is the whole point: building the module here is what gets
-  /// CallKit and PushKit listening during native launch.
-  ///
-  /// `bridge` is nil under the New Architecture and is not used; the signature matches the
-  /// imported protocol requirement, which is what makes this an override rather than a new
-  /// method under the same selector.
-  @objc
-  override func extraModules(for bridge: RCTBridge) -> [Any] {
-    guard let module = TCBTwilioEarlyInit.adoptedModule() else {
-      return []
-    }
-    return [module]
-  }
+// tcb:launch-call
+    // Adds `extraModulesForBridge:` to the delegate before the React host is built, which is what
+    // gets the Twilio module (and its PushKit registry) alive during native launch. See
+    // mobile/plugins/TwilioEarlyInit.swift.
+    TCBTwilioEarlyInit.install(on: __TCB_DELEGATE__)
 
 // tcb:file-scope
 // TwilioEarlyInit — appended to the generated AppDelegate.swift by withTwilioEarlyInit.js.
@@ -98,9 +93,42 @@ final class TCBTwilioEarlyInit {
   private static let twilioModuleClassName = "TwilioVoiceReactNative"
   private static let initializeRegistry = "initializePushRegistry"
   private static let turboModuleProtocolName = "RCTTurboModule"
+  private static let extraModulesSelector = "extraModulesForBridge:"
 
   private static let lock = NSLock()
   private static var handedOut = false
+
+  /// Adds `extraModulesForBridge:` to the delegate's class at runtime.
+  ///
+  /// React Native asks its TurboModule delegate for modules the app has already built, and it only
+  /// asks a delegate that `respondsToSelector:` -- which is exactly what a method added here
+  /// satisfies. Returns false, changing nothing, if the class already implements it: a React Native
+  /// that grows its own implementation keeps it.
+  @discardableResult
+  static func install(on delegate: AnyObject) -> Bool {
+    guard let delegateClass: AnyClass = object_getClass(delegate) else { return false }
+
+    // `@convention(block)` with only id/NSArray types, so nothing here needs a React header.
+    let body: @convention(block) (AnyObject?, AnyObject?) -> NSArray = { _, _ in
+      guard let module = TCBTwilioEarlyInit.adoptedModule() else {
+        return NSArray()
+      }
+      return [module] as NSArray
+    }
+
+    // "@@:@" -- returns id, takes self, _cmd and one id (the bridge, nil under the New Architecture).
+    let added = class_addMethod(
+      delegateClass,
+      NSSelectorFromString(extraModulesSelector),
+      imp_implementationWithBlock(body),
+      "@@:@"
+    )
+    if !added {
+      NSLog("[TCBTwilioEarlyInit] %@ already implements %@; leaving it alone.",
+            NSStringFromClass(delegateClass), extraModulesSelector)
+    }
+    return added
+  }
 
   /// Builds the Twilio module and primes its PushKit registry, for React Native to adopt.
   /// Returns nil to mean "build it yourself, exactly as before" -- every way this can fail

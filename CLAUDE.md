@@ -489,26 +489,27 @@ is normal, not broken.
   primes its push registry. Handing back **our** instance is also what avoids the second CallKit
   provider that makes the obvious version of this fix worse than the bug: React Native adopts it
   instead of constructing one of its own.
-  A few things to know before touching it. It anchors on
-  `class <Name>: ExpoReactNativeFactoryDelegate` and throws at prebuild if the Expo template renames
-  that class — loud, not silent. The code has to live in the app's own Swift module, which is why
-  this patches `AppDelegate.swift` rather than shipping a local Expo module — and the method
-  specifically must go in that class's **BODY**, not an extension. It is an `override`
-  (`extraModulesForBridge:` is an `@optional` `RCTBridgeDelegate` requirement, and Swift treats the
-  adopted requirement as an inherited declaration), and Swift permits an overriding declaration in
-  a class body and nowhere else. **Build 5 died on exactly that** — `overriding declaration
-  requires an 'override' keyword`, where adding the keyword is illegal too — so
-  `TwilioEarlyInit.swift` is a two-part template split on `// tcb:class-body` and
-  `// tcb:file-scope`. It also must **never call `super`**: nothing in the chain implements that
-  optional requirement (which is why React Native guards every call to it with
-  `respondsToSelector:`), so a super call would message an unimplemented selector at launch. And it
-  **names no React protocol**: `RCTBridgeModule` is not visible to Swift from the app target at all,
-  because `RCTBridgeModule.h` imports `"RCTBundleManager.h"` with QUOTES, which makes the header
-  non-modular and leaves it out of the `React` module — `RCTBridge` resolves and `RCTBridgeModule`
-  does not, which is a genuinely surprising half-hour. Swift imports the requirement's
-  `NSArray<id<RCTBridgeModule>> *` as `[Any]` for the same reason, so that is what the override
-  returns. **Three builds died on this file's Swift** (an extension, then the missing keyword, then
-  this) — none of it is compiled by `npm test`, `tsc` or prebuild, so treat every edit to it as
+  **The method is added with `class_addMethod`, not written in Swift, and that is not a style
+  choice — no Swift declaration of it can compile.** Three builds died proving it: (1) in an
+  `extension` → `overriding declaration requires an 'override' keyword`, and `override` is legal in
+  a class body and nowhere else; (2) in the class body returning `[any RCTBridgeModule]` →
+  `cannot find type 'RCTBridgeModule' in scope`; (3) in the class body returning `[Any]` →
+  `method does not override any method from its superclass`. 2 and 3 are a **catch-22**, and
+  `RCTBridgeDelegate.h` says why: it only FORWARD-DECLARES `@protocol RCTBridgeModule;`. Swift
+  imports a forward-declared ObjC protocol as an **opaque placeholder** — it participates in
+  signature matching, so `[Any]` does not match, but it cannot be written down, so the matching
+  signature cannot be spelled either. (`RCTBridgeModule.h` itself is no help: it imports
+  `"RCTBundleManager.h"` with QUOTES, which makes it non-modular and keeps it out of the `React`
+  module — which is why `RCTBridge` resolves in the same signature and `RCTBridgeModule` does not.)
+  The Objective-C runtime has none of these problems: selector, type encoding `"@@:@"` and an
+  `@convention(block)` of `id`s, and `respondsToSelector:` — which is the only thing React Native
+  actually asks — answers yes for a method added that way. It is self-limiting too, since
+  `class_addMethod` changes nothing and returns false if the class already implements it.
+  So `TwilioEarlyInit.swift` is a template split on `// tcb:launch-call` (one line inside
+  `didFinishLaunchingWithOptions`, anchored on the `ExpoReactNativeFactory(delegate:)` line so it
+  lands BEFORE `startReactNative`) and `// tcb:file-scope` (the helper class), and the plugin also
+  adds `import ObjectiveC`. It throws at prebuild if those anchors move — loud, not silent.
+  **None of this Swift is compiled by `npm test`, `tsc` or prebuild**, so treat every edit to it as
   unverified until an EAS build goes green. JS still
   calls `initializePushRegistry` at module scope, and on a patched binary that **replaces** the
   native registry rather than adding to it — `initializePushRegistry` assigns a fresh
