@@ -1,0 +1,130 @@
+# Uploads a finished EAS build to TestFlight, from the Actions tab — which is how you ship iOS
+# from a phone, with no Mac and no terminal involved.
+#
+# `eas submit` was never the Mac-only part: it uploads from EAS's servers, so it runs anywhere.
+# The only thing it needs locally is the App Store Connect API key, and that is what this
+# workflow supplies from a repository secret.
+#
+# Deliberately manual: there is no `push:` trigger. A submission is visible to the whole team
+# within minutes and a build number can never be reused, so it stays a decision someone makes.
+#
+# One-time setup — two repository secrets (Settings → Secrets and variables → Actions):
+#   EXPO_TOKEN       — already set for Publish OTA; the same token works here.
+#   ASC_API_KEY_P8   — the CONTENTS of the .p8 downloaded from App Store Connect
+#                      (Users and Access → Integrations → App Store Connect API → Team Keys).
+#                      Paste the whole file, "-----BEGIN PRIVATE KEY-----" line included.
+#                      Apple lets you download a key ONCE, so if it is ever lost the only path
+#                      is to revoke it and generate another.
+#
+# The key's ID and issuer ID are NOT secrets — they are identifiers, and they already live in
+# `mobile/eas.json` under `submit.production.ios`. This workflow writes the secret to whatever
+# path that file names, so eas.json stays the single source of truth: create a new key and you
+# update those three fields there, not here.
+name: Submit iOS to TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: >-
+          EAS build ID to submit. Leave blank to submit the most recent finished iOS build,
+          which is usually what you want.
+        type: string
+        required: false
+
+# One submission at a time. Two overlapping uploads of the same build number is a confusing
+# failure at Apple's end rather than ours.
+concurrency:
+  group: submit-ios
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      # Both secrets fail deep inside eas-cli with errors that read like code faults rather than
+      # missing configuration, so say plainly which one is absent, up front.
+      - name: Check the secrets are set
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Missing repository secret EXPO_TOKEN. It is the same token Publish OTA uses — add it under Settings → Secrets and variables → Actions → Secrets tab → Repository secrets."
+            exit 1
+          fi
+          if [ -z "$ASC_API_KEY_P8" ]; then
+            echo "::error::Missing repository secret ASC_API_KEY_P8. Create an App Store Connect API key (appstoreconnect.apple.com → Users and Access → Integrations → App Store Connect API → Team Keys, role App Manager), download the .p8, and paste its entire contents as this secret. Then put the key's Key ID and Issuer ID into mobile/eas.json under submit.production.ios."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # eas.json names the path; this writes the key there rather than hardcoding it, so the two
+      # can never drift apart when the key is rotated.
+      - name: Write the App Store Connect key
+        id: key
+        env:
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          key_path=$(node -p "require('./eas.json').submit.production.ios.ascApiKeyPath")
+          if [ -z "$key_path" ] || [ "$key_path" = "undefined" ]; then
+            echo "::error::mobile/eas.json has no submit.production.ios.ascApiKeyPath. Add it back — it is what tells eas submit where to find the key."
+            exit 1
+          fi
+          mkdir -p "$(dirname "$key_path")"
+          printf '%s' "$ASC_API_KEY_P8" > "$key_path"
+          # A pasted base64 blob, or the wrong file entirely, otherwise surfaces as an
+          # authentication failure that sends you looking at Apple rather than at the secret.
+          if ! head -n 1 "$key_path" | grep -q "BEGIN PRIVATE KEY"; then
+            echo "::error::ASC_API_KEY_P8 does not look like a .p8 file — its first line is not '-----BEGIN PRIVATE KEY-----'. Paste the file's contents verbatim, not base64 and not the key ID."
+            exit 1
+          fi
+          echo "path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Install eas-cli
+        run: npm i -g eas-cli
+
+      - name: Submit
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.build_id }}" ]; then
+            target="--id ${{ inputs.build_id }}"
+          else
+            target="--latest"
+          fi
+          echo "=== eas submit --platform ios $target ==="
+          eas submit --platform ios --profile production $target --non-interactive
+
+      # The runner is ephemeral, but a key left lying about in a workspace that later steps could
+      # read is a habit worth not having.
+      - name: Remove the key
+        if: always()
+        run: rm -f "${{ steps.key.outputs.path }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Submitted to TestFlight"
+            echo ""
+            echo "- **Build:** ${{ inputs.build_id || 'latest finished iOS build' }}"
+            echo ""
+            echo "Apple takes roughly 5–15 minutes to process the upload. Internal testers skip"
+            echo "Beta App Review, so it appears on the handset straight after that."
+            echo ""
+            echo "On the phone: Settings → Check for Updates. The **b** half of the version"
+            echo "(\`#60 · b5\`) is what says the native build actually landed — the OTA number"
+            echo "alone shows on the old binary too."
+          } >> "$GITHUB_STEP_SUMMARY"

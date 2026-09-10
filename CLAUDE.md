@@ -20,10 +20,16 @@ the decisions and the hard-won gotchas. Do not rediscover them.
   - `2026-08-28-appstore-listing.md` / `2026-08-28-playstore-listing.md` — store listing copy,
     demo credentials, review notes, known review risks.
 - **`plans/`** — task-by-task implementation plans, checkbox-tracked.
-- **`runbooks/`** — the mechanical procedures, none of which run from CI here:
-  - `android-play-submit.md` — build + `eas submit` to the Play internal track
+- **`runbooks/`** — the mechanical procedures:
+  - `android-play-submit.md` — build + `eas submit` to the Play internal track (needs a machine
+    signed in to Play and EAS; not automated here)
   - `mobile-eas-first-build.md` — first EAS build setup
   - `auth-cutover.md` — moving staff onto email/password auth
+  **iOS submission is the exception and DOES run from CI**: `submit-ios.yml` uploads a finished
+  EAS build to TestFlight from the Actions tab, because there is no Mac and often no terminal in
+  reach. Its header comment carries the setup. `eas submit` was never the Mac-only part — it
+  uploads from EAS's servers; the only local requirement is the App Store Connect key, which the
+  workflow writes from the `ASC_API_KEY_P8` secret to whatever path `mobile/eas.json` names.
 
 ## Layout
 
@@ -43,9 +49,10 @@ npm run typecheck    # tsc --noEmit  (never pipe into head — a pipe swallows t
 npm run deploy       # wrangler deploy
 ```
 
-Deploys also run from `.github/workflows/deploy.yml` on push to `master` or manual dispatch.
-That is the only workflow — **pull requests do not run CI in this repo**, so a PR with no checks
-is normal, not broken.
+Deploys also run from `.github/workflows/deploy.yml` on push to `master` or manual dispatch. The
+other two — `publish-ota.yml` and `submit-ios.yml` — are **manual dispatch only**, run from the
+Actions tab. Nothing runs on a pull request: **pull requests do not run CI in this repo**, so a PR
+with no checks is normal, not broken.
 
 ## Standing constraints
 
