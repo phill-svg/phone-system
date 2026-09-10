@@ -30,6 +30,7 @@ export function Group({ title, footer, children }: { title?: string; footer?: st
 
 export function Row({
   icon,
+  iconFallback,
   iconColor,
   label,
   value,
@@ -41,6 +42,11 @@ export function Row({
   destructive,
 }: {
   icon?: SymbolViewProps["name"];
+  // Android renders Ionicons, and `Icon` falls back to a blank `ellipse-outline` for any name
+  // given without one -- so a row with no fallback is a coloured tile containing nothing on every
+  // Android handset, while looking perfect on iOS. Optional only because the existing call sites
+  // predate this; anything new should pass it.
+  iconFallback?: React.ComponentProps<typeof Icon>["fallback"];
   iconColor?: string;
   label: string;
   value?: string;
@@ -59,7 +65,7 @@ export function Row({
     <>
       {icon ? (
         <View style={[styles.iconTile, { backgroundColor: iconColor ?? t.colors.labelSecondary }]}>
-          <Icon name={icon} size={16} color="#FFFFFF" />
+          <Icon name={icon} fallback={iconFallback} size={16} color="#FFFFFF" />
         </View>
       ) : null}
       <Text style={[type.body, { color: destructive ? t.colors.danger : t.colors.label, flex: 1 }]} numberOfLines={1}>
