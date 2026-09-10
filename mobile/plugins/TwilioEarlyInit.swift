@@ -10,6 +10,14 @@
 //                      an `extension` -- where adding the keyword is not allowed either.
 //   tcb:file-scope  -> goes after that class, at file scope.
 //
+// It also names no React protocol. `RCTBridgeModule` is NOT visible to Swift from the app target:
+// `RCTBridgeModule.h` imports `"RCTBundleManager.h"` with quotes, which makes it non-modular, so
+// clang leaves it out of the `React` module that `import React` brings in -- `RCTBridge` resolves
+// and `RCTBridgeModule` does not. Build 5's second attempt died on exactly that, four times over
+// (`cannot find type 'RCTBridgeModule' in scope`). Swift imports the requirement's
+// `NSArray<id<RCTBridgeModule>> *` as `[Any]` for the same reason, which is what the override has
+// to match, and `adoptedModule()` hands back a plain `NSObject`.
+//
 // The method does NOT call super. `extraModulesForBridge:` is an @optional requirement of
 // RCTBridgeDelegate that nothing in the chain implements -- which is why React Native guards every
 // call to it with respondsToSelector: -- so Swift sees an inherited declaration to override while
@@ -26,7 +34,7 @@
   /// imported protocol requirement, which is what makes this an override rather than a new
   /// method under the same selector.
   @objc
-  override func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule] {
+  override func extraModules(for bridge: RCTBridge) -> [Any] {
     guard let module = TCBTwilioEarlyInit.adoptedModule() else {
       return []
     }
@@ -98,7 +106,7 @@ final class TCBTwilioEarlyInit {
   /// Returns nil to mean "build it yourself, exactly as before" -- every way this can fail
   /// takes that exit, because the fallback is the behaviour that shipped for months and a
   /// half-applied version of this is worse than none.
-  static func adoptedModule() -> (any RCTBridgeModule)? {
+  static func adoptedModule() -> NSObject? {
     lock.lock()
     defer { lock.unlock() }
 
@@ -151,6 +159,6 @@ final class TCBTwilioEarlyInit {
             twilioModuleClassName, initializeRegistry)
     }
 
-    return module as? any RCTBridgeModule
+    return module
   }
 }

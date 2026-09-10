@@ -501,7 +501,15 @@ is normal, not broken.
   `TwilioEarlyInit.swift` is a two-part template split on `// tcb:class-body` and
   `// tcb:file-scope`. It also must **never call `super`**: nothing in the chain implements that
   optional requirement (which is why React Native guards every call to it with
-  `respondsToSelector:`), so a super call would message an unimplemented selector at launch. JS still
+  `respondsToSelector:`), so a super call would message an unimplemented selector at launch. And it
+  **names no React protocol**: `RCTBridgeModule` is not visible to Swift from the app target at all,
+  because `RCTBridgeModule.h` imports `"RCTBundleManager.h"` with QUOTES, which makes the header
+  non-modular and leaves it out of the `React` module — `RCTBridge` resolves and `RCTBridgeModule`
+  does not, which is a genuinely surprising half-hour. Swift imports the requirement's
+  `NSArray<id<RCTBridgeModule>> *` as `[Any]` for the same reason, so that is what the override
+  returns. **Three builds died on this file's Swift** (an extension, then the missing keyword, then
+  this) — none of it is compiled by `npm test`, `tsc` or prebuild, so treat every edit to it as
+  unverified until an EAS build goes green. JS still
   calls `initializePushRegistry` at module scope, and on a patched binary that **replaces** the
   native registry rather than adding to it — `initializePushRegistry` assigns a fresh
   `TwilioVoicePushRegistry` to a strong property, so the first one deallocates — leaving a
