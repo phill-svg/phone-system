@@ -10,12 +10,18 @@ import { RegistrationProvider } from "../lib/registration";
 import { useTheme, ThemeProvider } from "../theme/theme";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { installCrashReporter, flushCrashQueue, setCurrentScreen } from "../lib/crashReport";
+import { primePushRegistry } from "../lib/voice";
 
 const queryClient = new QueryClient();
 
 // Installed at module scope, before any component renders, so an error thrown while the tree is
 // first mounting is still caught -- that is precisely when the worst ones happen.
 installCrashReporter();
+
+// Before ANY of the tree renders, and deliberately not inside a component: a VoIP push wakes the
+// app in the background with about five seconds to report the call to CallKit before iOS kills it
+// (0xBAADCA11). Waiting for auth and navigation to settle first is what was losing that race.
+void primePushRegistry();
 
 function RootNavigator() {
   const t = useTheme();

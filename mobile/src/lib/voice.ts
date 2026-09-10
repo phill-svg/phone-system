@@ -143,6 +143,38 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Creates the PKPushRegistry, and it must happen AS EARLY AS POSSIBLE in app startup.
+//
+// This is the 0xBAADCA11 crash. When a VoIP push arrives, iOS launches the app in the background
+// and gives it roughly FIVE SECONDS to report the call to CallKit; miss that and FrontBoard SIGKILLs
+// the process ("BAADCA11" -- bad call). The crash log from 2026-09-10 is exactly that: procRole
+// "Non UI", phone locked, launched 11:38:11 and killed 11:38:18.
+//
+// The registry used to be created inside registerForIncoming, which is gated behind the JS bundle
+// booting, auth resolving from SecureStore, the tab navigator mounting, its effect firing, and a
+// microphone permission check -- and only THEN did it run, with a network round trip for the access
+// token after it. On a warm foreground app that is invisible, because the registry already exists.
+// On the cold background wake that a real incoming call actually is, it is far too late, and the
+// handset is killed instead of ringing.
+//
+// Priming it at launch is a mitigation, not the whole cure: the proper fix is for the PushKit
+// delegate to be installed in native code before JS runs at all, which needs a config plugin and a
+// new native build. This at least removes auth, navigation and a network call from the critical path.
+let pushRegistryPrimed: Promise<void> | null = null;
+
+export function primePushRegistry(): Promise<void> {
+  if (Platform.OS !== "ios") return Promise.resolve();
+  // Idempotent: registerForIncoming awaits the same promise rather than creating a second registry.
+  if (!pushRegistryPrimed) {
+    pushRegistryPrimed = voice.initializePushRegistry().catch((e: unknown) => {
+      // Never throw from app startup. A failure here means incoming calls will not arrive, which
+      // the registration status surfaces -- it must not also stop the app from opening.
+      setRegStatus("pushkit init failed: " + (e instanceof Error ? e.message : String(e)));
+    });
+  }
+  return pushRegistryPrimed;
+}
+
 // On iOS, `voice.register()` needs a PushKit device token that iOS hasn't necessarily handed
 // over yet -- on a cold launch `pushRegistry:didUpdatePushCredentials:forType:` can take up to
 // ~30s to fire, but Twilio's native code only waits 3s before rejecting with "Failed to
@@ -254,9 +286,9 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     // `register()` waits for a token that never arrives and fails with "Failed to initialize
     // PushKit device token" -- permanently, not a timing race. (No-op/throws on Android, which
     // uses FCM instead, so it's guarded to iOS.)
-    if (Platform.OS === "ios") {
-      await voice.initializePushRegistry();
-    }
+    // Already primed at app launch (see primePushRegistry). Awaited here so registration still
+    // orders correctly behind it, but it is no longer this path's job to create it.
+    await primePushRegistry();
     const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
     await registerWithRetry(token);
     // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
