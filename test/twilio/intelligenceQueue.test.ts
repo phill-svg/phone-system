@@ -39,10 +39,13 @@ describe("collectPendingTranscripts", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   // The whole feature is gated on the secret, including the sweep -- it must not even query.
+  // Says "unset" explicitly rather than leaning on the ambient test env not having it: the suite
+  // now binds a value so the worker routes can exercise the feature, and a test whose subject is
+  // "the secret is absent" must not depend on a config default to be absent.
   it("does nothing at all when no service sid is configured", async () => {
     await seed("CA-off", { sid: "GT1", status: "pending" });
     const fetchMock = stub(() => new Response("", { status: 500 }));
-    expect(await collectPendingTranscripts(env as never)).toBe(0);
+    expect(await collectPendingTranscripts({ ...env, TWILIO_INTELLIGENCE_SERVICE_SID: "" } as never)).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

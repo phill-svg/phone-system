@@ -579,6 +579,79 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(row?.recording_duration).toBe(31);
     });
 
+    // A mono CONFERENCE recording is the tell that the Console's dual-channel switch is off, and it
+    // is skipped before Twilio is ever asked -- so no `intelligence_sid` is written and Health
+    // Checks, which counted rows by that sid, could not see it. The skip is persisted now.
+    //
+    // TWILIO_INTELLIGENCE_SERVICE_SID is bound in vitest.config.ts, not here: mutating the imported
+    // `env` does NOT reach SELF.fetch (the worker holds its own), so a test that set it inline
+    // passed every assertion with the branch never running at all.
+    describe("a mono recording that should have been dual-channel", () => {
+      async function seedCall(id: string) {
+        await env.DB.prepare(
+          "INSERT INTO calls (id, caller_number, called_number, started_at, direction) VALUES (?, '+61400000000', '+61261059771', ?, 'inbound')"
+        )
+          .bind(id, Date.now())
+          .run();
+      }
+
+      const statusOf = (id: string) =>
+        env.DB.prepare("SELECT intelligence_status FROM calls WHERE id = ?")
+          .bind(id)
+          .first<{ intelligence_status: string | null }>()
+          .then((r) => r?.intelligence_status ?? null);
+
+      it("records single_channel so the health check can see it", async () => {
+        await seedCall("CA-rec-mono");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-mono&conference=1", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-mono",
+          RecordingChannels: "1",
+        });
+        expect(await statusOf("CA-rec-mono")).toBe("single_channel");
+      });
+
+      // A call-via-mobile leg is <Dial record="record-from-answer">: mono by construction and
+      // unaffected by any Console setting. Marking those would pin Health Checks red over something
+      // working exactly as designed, and a marker that is always set is one you learn to ignore.
+      it("leaves a NON-conference mono recording unmarked", async () => {
+        await seedCall("CA-rec-bridge");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-bridge", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-bridge",
+          RecordingChannels: "1",
+        });
+        expect(await statusOf("CA-rec-bridge")).toBeNull();
+      });
+
+      // Voicemail is excluded from labelling on purpose -- only the caller speaks -- so a mono
+      // voicemail recording says nothing about the Console switch.
+      it("leaves a voicemail recording unmarked", async () => {
+        await seedCall("CA-rec-vm-mono");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-vm-mono&conference=1&vm=1", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-vm-mono",
+          RecordingChannels: "1",
+        });
+        expect(await statusOf("CA-rec-vm-mono")).toBeNull();
+      });
+
+      // Twilio's callbacks are redelivered, and a recording that already produced a labelled
+      // transcript must not be relabelled as a misconfiguration by a late duplicate.
+      it("never overwrites a status that is already set", async () => {
+        await seedCall("CA-rec-mono-done");
+        await env.DB.prepare("UPDATE calls SET intelligence_status = 'completed' WHERE id = ?")
+          .bind("CA-rec-mono-done")
+          .run();
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-mono-done&conference=1", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-mono-done",
+          RecordingChannels: "1",
+        });
+        expect(await statusOf("CA-rec-mono-done")).toBe("completed");
+      });
+    });
+
     // A duration we already stored must survive a later callback that omits it -- otherwise the
     // player would flip back to showing 0:00 after a second status POST.
     it("does not blank an already-stored duration when a later callback omits it", async () => {

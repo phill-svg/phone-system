@@ -114,6 +114,58 @@ describe("admin diagnostics", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
+  // The check used to count only rows with an `intelligence_sid`. A recording that comes back mono
+  // is skipped BEFORE Twilio is asked, so it never gets one -- which made the single most likely
+  // reason this feature does nothing invisible to the one screen that exists to say so. It reported
+  // the reassuring "no answered call has been transcribed yet" instead, indefinitely.
+  describe("speaker-labelled transcripts", () => {
+    const ON = () => baseEnv({ TWILIO_INTELLIGENCE_SERVICE_SID: "GA-test" });
+
+    beforeEach(async () => {
+      await env.DB.prepare("DELETE FROM calls WHERE id LIKE 'CA-diag-tr%'").run();
+    });
+
+    async function seed(id: string, status: string | null, sid: string | null) {
+      await env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at, intelligence_status, intelligence_sid) VALUES (?, '+61400000000', '+61200000000', ?, ?, ?)"
+      )
+        .bind(id, Date.now(), status, sid)
+        .run();
+    }
+
+    it("warns, without claiming a fault, when nothing is configured", async () => {
+      stubFetch();
+      const check = find(await run(), "transcripts");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("No Intelligence service set");
+    });
+
+    it("reports the dual-channel switch from a mono recording that HAS no transcript sid", async () => {
+      // The whole point: sid NULL, status single_channel. Keyed on the sid, this row is invisible.
+      await seed("CA-diag-tr-mono", "single_channel", null);
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("Dual-channel Recording for Conference");
+    });
+
+    it("goes green again once a labelled transcript lands, without clearing the old mono rows", async () => {
+      await seed("CA-diag-tr-mono2", "single_channel", null);
+      await seed("CA-diag-tr-done", "completed", "GT1");
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("1 labelled transcript");
+    });
+
+    it("says nothing has been transcribed yet when there is genuinely nothing to report", async () => {
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("no answered call has been transcribed yet");
+    });
+  });
+
   it("tells you when no device of yours is registered for push", async () => {
     stubFetch();
     expect(find(await run(), "push").status).toBe("fail");

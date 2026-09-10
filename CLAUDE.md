@@ -286,6 +286,34 @@ before adding one, or you will duplicate a path that already works.
   unlabelled, because labelling a mono mix would be a guess presented as fact. Both states are
   reported by Admin > Health Checks, which is the answer to "is it on?" -- added precisely because
   `SERVICEM8_API_KEY` sat inert for a day with nothing saying so.
+- **A mono recording never reached Health Checks, so the transcripts alarm could not fire.** Checked
+  against live D1 on 2026-09-10 after "the transcripts isn't working": EVERY recorded call had
+  `intelligence_sid` NULL — Twilio had never been asked, not once, since the feature shipped. The
+  check counted rows `WHERE intelligence_sid IS NOT NULL`, but a recording that comes back mono is
+  skipped in the recording webhook BEFORE Twilio is asked, so it never gets a sid. Its one
+  `single_channel` branch — the headline case, the Console's dual-channel switch being off — was
+  therefore unreachable from the webhook path and could only ever be set by the sweep, from a
+  DUAL-channel recording whose sentences all landed on one channel. The screen instead said
+  "Configured, but no answered call has been transcribed yet", indefinitely, which is the exact
+  reassuring silence it was built to break. The skip is persisted as `single_channel` now and the
+  check keys on `intelligence_status`.
+  Two constraints on that marker. It is written **only for conference recordings**, flagged with
+  `&conference=1` on the three callback URLs we build ourselves (`CallSession.handleAgentAnswer`,
+  `/webhooks/twilio/transfer-answer`, `/twiml/voice-app`) — a call-via-mobile leg is
+  `<Dial record="record-from-answer">`, mono by construction and unaffected by any Console setting,
+  so marking those would pin the check red over something working exactly as designed. Inferring it
+  from Twilio's own parameters was the alternative and is worse: `<Dial>`'s documented
+  recordingStatusCallback carries no `ConferenceSid`, but that is a fact about their docs, not a
+  guarantee. And the write is guarded on `intelligence_status IS NULL`, because callbacks are
+  redelivered and a completed transcript must not be relabelled a misconfiguration by a late
+  duplicate. Note `conf=` already means a conference NAME on `/webhooks/twilio/join-conference`;
+  the boolean is deliberately spelled `conference`.
+  **`TWILIO_INTELLIGENCE_SERVICE_SID` is bound in `vitest.config.ts`**, not `wrangler.jsonc` (the
+  real one is a worker secret). Mutating the `env` imported from `cloudflare:test` does NOT reach
+  `SELF.fetch` — the worker holds its own — so the first version of these tests passed every
+  assertion with the branch never executing. A fifth instance of "a test that passes against
+  reverted code is not a test". Any test whose subject is "the secret is ABSENT" must now say so
+  explicitly rather than lean on the config default.
 - **Twilio has TWO Conversation Intelligence products and this uses the OLD one.** Searching the
   Console lands you on the new one (Conversation Orchestrator: configurations, memory stores,
   profiles, a "grouping type" field) — none of which applies. `src/twilio/intelligence.ts` POSTs one
