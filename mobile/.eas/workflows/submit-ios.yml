@@ -1,21 +1,22 @@
-# Uploads a finished EAS build to TestFlight, run from the EAS dashboard — which is how iOS ships
-# here, because there is no Mac in this business and often no terminal in reach either.
+# Uploads the latest finished iOS build to TestFlight, run from the EAS dashboard — which is how
+# iOS ships here, because there is no Mac in this business and often no terminal in reach either.
 #
-# This runs on EAS's own infrastructure with the App Store Connect credentials EAS holds, so it
-# needs nothing locally: no .p8 on disk, no keys in a CI secret. `eas.json` still carries
+# It runs on EAS's own infrastructure with the App Store Connect credentials EAS holds, so nothing
+# is needed locally: no .p8 on disk, no key in a CI secret. `eas.json` still carries
 # `ascApiKeyPath` for a submit run from a machine that has the key; this path does not read it.
 #
 # Deliberately manual: there is no `on:` trigger beyond dispatch. A build number can NEVER be
-# reused, so a submission is a decision someone makes, not a side effect of merging.
+# reused, so a submission stays a decision someone makes, not a side effect of merging.
 #
 #   Dashboard → Workflows → Submit iOS to TestFlight → Run
 #   or: cd mobile && npx eas workflow:run .eas/workflows/submit-ios.yml
 #
-# It always submits the LATEST finished iOS build. There is deliberately no build_id input: an
-# empty one fails validation ("[params.build_id]: Invalid input"), and EAS workflows have no way to
-# omit a param conditionally, so the choice is a required id every time or none at all. None is
-# right -- the latest build is what you want in every real case, and a specific older build can
-# still be submitted from its own page on the EAS dashboard.
+# WHY TWO JOBS. A submit job's `build_id` is REQUIRED — and required at run time, not at validation
+# time, so `eas workflow:validate` passes a workflow that fails the moment it starts. Two runs died
+# on `[params.build_id]: Invalid input` before this was understood: once passing a blank input
+# (an unset optional input arrives as an empty string, not as an absent param) and once omitting it
+# altogether. `get-build` is the supported way to name a build without typing an id: it returns the
+# most recent one matching the filter, and its `build_id` output feeds the submit.
 #
 # Apple takes roughly 5–15 minutes to process the upload; internal testers skip Beta App Review, so
 # it lands on the handset straight after that.
@@ -28,12 +29,20 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  get_build:
+    name: Find the latest iOS build
+    type: get-build
+    params:
+      platform: ios
+      profile: production
+      # `store` is the distribution TestFlight takes; an internal-distribution build would be
+      # matched here and then rejected by Apple.
+      distribution: store
+
   submit_ios:
     name: Submit to TestFlight
     type: submit
-    # Matches the production build profile, so this resolves the same submit config the installed
-    # binary was built against.
-    environment: production
+    needs: [get_build]
     params:
-      platform: ios
+      build_id: ${{ needs.get_build.outputs.build_id }}
       profile: production
