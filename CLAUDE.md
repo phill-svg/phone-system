@@ -501,7 +501,7 @@ is normal, not broken.
   two apart. Skipping it wrongly would silently disable incoming calls altogether, which is far
   worse than a window nothing realistically lands in. And **this ships in a native build only,
   never by OTA**: an OTA cannot change `AppDelegate.swift`, so Settings now prints the native build
-  beside the OTA number (`#59 · b5`) — that `b` half is what says whether the fix is on the handset,
+  beside the OTA number (`#60 · b5`) — that `b` half is what says whether the fix is on the handset,
   and it is the ONLY thing that does.
   Verified as far as it can be from here by running `npx expo prebuild --platform ios` and reading
   the generated file; nothing short of a device proves it works.
