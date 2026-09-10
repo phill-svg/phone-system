@@ -28,9 +28,17 @@ the decisions and the hard-won gotchas. Do not rediscover them.
   **iOS submission is the exception and runs on EAS**, not here:
   `mobile/.eas/workflows/submit-ios.yml` uploads a finished build to TestFlight from the EAS
   dashboard, because there is no Mac in this business and often no terminal in reach. It runs on
-  EAS's infrastructure with the App Store Connect credentials **EAS itself holds**, so it needs
-  nothing locally — no `.p8` on disk, no key in a CI secret. `eas.json` still carries
-  `ascApiKeyPath` for a submit run from a machine that has the key; that path is unused here.
+  EAS's infrastructure with the App Store Connect API key **EAS itself holds**, so it needs nothing
+  locally — no `.p8` on disk, no key in a CI secret. **`eas.json` must NOT name `ascApiKeyPath`**:
+  it pointed at `./credentials/AuthKey_*.p8`, correctly gitignored and therefore present on no
+  builder anywhere, and every CI submit died at `Prepare credentials` with `eas-cli failed to
+  resolve submission config`. Only `ascAppId` belongs there — the app record, not a credential.
+  The key itself is stored once with `npx eas credentials --platform ios` → production →
+  *App Store Connect: Manage your API Key* → *Set up your project to use an API Key for EAS
+  Submit*; EAS **creates** it from an Apple login, so a lost `.p8` is never a dead end (Apple only
+  forbids re-DOWNLOADING one). Until that existed the failure read `App Store Connect API Keys
+  cannot be set up in --non-interactive mode`, which is only legible because the job sets
+  `EXPO_DEBUG: '1'` — leave that on. First green submit: build 5, 2026-09-10.
   Do NOT rebuild this as a GitHub Actions job: one was written on 2026-09-10 and deleted the same
   hour, because `.eas/workflows/` already existed (`publish-update.yml`) and EAS holding the
   credentials is strictly less to go wrong than a `.p8` pasted into a repository secret.
