@@ -489,16 +489,35 @@ is normal, not broken.
   primes its push registry. Handing back **our** instance is also what avoids the second CallKit
   provider that makes the obvious version of this fix worse than the bug: React Native adopts it
   instead of constructing one of its own.
-  Four things to know before touching it. It anchors on
+  A few things to know before touching it. It anchors on
   `class <Name>: ExpoReactNativeFactoryDelegate` and throws at prebuild if the Expo template renames
   that class — loud, not silent. The extension has to live in the app's own Swift module, which is
   why this is appended to `AppDelegate.swift` rather than shipped as a local Expo module. JS still
-  calls `initializePushRegistry` at module scope, which on a patched binary builds a second,
-  identical registry (exactly what a dev reload does) — kept deliberately, because the same OTA
-  serves handsets still on the older binary, where it is the only thing there is. And **this ships
-  in a native build only, never by OTA**: an OTA cannot change `AppDelegate.swift`. Verified as far
-  as it can be from here by running `npx expo prebuild --platform ios` and reading the generated
-  file; nothing short of a device proves it works.
+  calls `initializePushRegistry` at module scope, and on a patched binary that **replaces** the
+  native registry rather than adding to it — `initializePushRegistry` assigns a fresh
+  `TwilioVoicePushRegistry` to a strong property, so the first one deallocates — leaving a
+  microsecond with no VoIP registration. Kept anyway, deliberately: the same OTA serves handsets
+  still on the older binary, where that call is the only registry there is, and JS cannot tell the
+  two apart. Skipping it wrongly would silently disable incoming calls altogether, which is far
+  worse than a window nothing realistically lands in. And **this ships in a native build only,
+  never by OTA**: an OTA cannot change `AppDelegate.swift`, so Settings now prints the native build
+  beside the OTA number (`#59 · b4`) — that `b` is what says whether the fix is on the handset.
+  Verified as far as it can be from here by running `npx expo prebuild --platform ios` and reading
+  the generated file; nothing short of a device proves it works.
+  Two more consequences. The module is handed over **once** — React Native's own contract is
+  "always return a new instance for each call, rather than returning the same instance each time
+  the bridge is reloaded", and a module carries per-JS-context state — so after the first React
+  host we stand aside and a reload gets a fresh one. And every failure path returns nil, meaning
+  "React Native, build it yourself", including the case where the SDK ever becomes a TurboModule:
+  RN silently DISCARDS a handed-back instance that conforms to `RCTTurboModule`, which would leave
+  ours alive as a second CallKit provider — the exact trap this design exists to avoid.
+- **An invite that lands before JS subscribes is never re-emitted, and that window is now real.**
+  The SDK's `sendEventWithName` is a no-op until JS calls `addListener`, so with the module alive
+  from native launch a cold VoIP wake can ring, and be answered from the CallKit screen, while JS
+  holds no `CallInvite` at all — an in-call screen driving nothing, which is the shape of the
+  unresolved "no hang-up button" report. `registerForIncoming` therefore replays
+  `voice.getCallInvites()` once its listener is attached, guarded on `pendingInvite` so an invite
+  that did arrive by event is never announced twice.
 - **`placeCall` de-duplicates by TIME, and that is deliberate.** Reported as "it rang my mobile
   twice"; `calls` held two outbound legs to one customer two seconds apart. Nothing retries — the
   app sent the request twice, because none of the five call sites guards the button and the only

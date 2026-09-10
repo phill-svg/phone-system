@@ -50,67 +50,89 @@
 // behave exactly as before" if the SDK is ever removed or renamed, instead of failing the
 // build.
 
-@objc(TCBTwilioEarlyInit)
-final class TCBTwilioEarlyInit: NSObject {
+final class TCBTwilioEarlyInit {
   private static let twilioModuleClassName = "TwilioVoiceReactNative"
   private static let initializeRegistry = "initializePushRegistry"
+  private static let turboModuleProtocolName = "RCTTurboModule"
 
   private static let lock = NSLock()
-  private static var cachedInstance: NSObject?
+  private static var handedOut = false
 
-  /// The single `TwilioVoiceReactNative` instance, created on first call and primed for
-  /// PushKit. Returns nil if the SDK is not present, in which case React Native falls back to
-  /// creating the module itself, exactly as it did before this existed.
-  @objc static func moduleInstance() -> NSObject? {
+  /// Builds the Twilio module and primes its PushKit registry, for React Native to adopt.
+  /// Returns nil to mean "build it yourself, exactly as before" -- every way this can fail
+  /// takes that exit, because the fallback is the behaviour that shipped for months and a
+  /// half-applied version of this is worse than none.
+  static func adoptedModule() -> (any RCTBridgeModule)? {
     lock.lock()
     defer { lock.unlock() }
 
-    if let cachedInstance {
-      return cachedInstance
-    }
-    guard let moduleClass = NSClassFromString(twilioModuleClassName) as? NSObject.Type else {
+    // Handed out ONCE. React Native's own contract for this method is "always return a new
+    // instance for each call, rather than returning the same instance each time the bridge is
+    // reloaded" (RCTBridgeDelegate.h), and a module carries per-JS-context state: callMap,
+    // callInviteMap, the device token, the event-emitter listener count. A reload -- an OTA
+    // install, a dev refresh -- is not a cold VoIP launch and does not need this, so after the
+    // first React host we stand aside. Set before the guards below, so a lookup that fails is
+    // remembered rather than repeated on every host.
+    if handedOut { return nil }
+    handedOut = true
+
+    guard let moduleType = NSClassFromString(twilioModuleClassName) as? NSObject.Type else {
       NSLog("[TCBTwilioEarlyInit] %@ not found; incoming calls will initialise with JS.",
             twilioModuleClassName)
       return nil
     }
 
-    // init() runs the SDK's -init: CallKit provider, notification observers, audio devices.
-    let module = moduleClass.init()
-    cachedInstance = module
+    // -init sets up CallKit, the audio session and the notification observers, which is why
+    // the module declares `requiresMainQueueSetup` YES. React Native asks for extra modules
+    // while it starts the React host, on the main thread. If that ever changes, stand down
+    // rather than either doing this work off the main queue or blocking on it: a deadlock
+    // here would hang launch, which is the failure this whole file exists to prevent.
+    guard Thread.isMainThread else {
+      NSLog("[TCBTwilioEarlyInit] not on the main thread; leaving %@ to React Native.",
+            twilioModuleClassName)
+      return nil
+    }
+
+    let module = moduleType.init()
+
+    // If the SDK ever becomes a TurboModule, React Native DISCARDS a handed-back instance that
+    // conforms to RCTTurboModule and builds its own (RCTTurboModuleManager's
+    // `isTurboModuleInstance` check) -- leaving ours alive as a second CallKit provider and a
+    // second observer of the push notification, which is the trap this design exists to avoid.
+    // The package is pinned on a caret range, so a routine install can move it. Dropping our
+    // only reference here deallocates the module, and its -dealloc removes those observers.
+    if let turboModule = NSProtocolFromString(turboModuleProtocolName), module.conforms(to: turboModule) {
+      NSLog("[TCBTwilioEarlyInit] %@ is a TurboModule now; leaving it to React Native.",
+            twilioModuleClassName)
+      return nil
+    }
 
     let selector = NSSelectorFromString(initializeRegistry)
-    guard module.responds(to: selector) else {
-      NSLog("[TCBTwilioEarlyInit] %@ has no %@; PushKit registry not primed natively.",
-            twilioModuleClassName, initializeRegistry)
-      return module
-    }
-
-    // PKPushRegistry is built on dispatch_get_main_queue() inside the SDK. React Native asks
-    // for extra modules from the thread that starts the React host, which is the main thread
-    // today; dispatching rather than asserting keeps that from mattering. Never sync -- a
-    // deadlock here would hang launch, which is the failure this whole file exists to avoid.
-    if Thread.isMainThread {
+    if module.responds(to: selector) {
       _ = module.perform(selector)
     } else {
-      DispatchQueue.main.async { _ = module.perform(selector) }
+      NSLog("[TCBTwilioEarlyInit] %@ has no %@; PushKit registry not primed natively.",
+            twilioModuleClassName, initializeRegistry)
     }
-    return module
+
+    return module as? any RCTBridgeModule
   }
 }
 
 extension ReactNativeDelegate {
-  /// `RCTBridgeDelegate.extraModulesForBridge:`, which React Native treats as the list of
-  /// legacy native modules the app has already built. Called once while the React host starts
-  /// up and before the JS bundle is evaluated, which is the whole point: creating the module
-  /// here is what gets CallKit and PushKit listening during native launch.
+  /// `RCTBridgeDelegate.extraModulesForBridge:` -- the list of native modules the app has
+  /// already built. React Native asks for it while the React host starts and before the JS
+  /// bundle is evaluated, which is the whole point: building the module here is what gets
+  /// CallKit and PushKit listening during native launch.
   ///
-  /// `bridge` is typed loosely because it is always nil under the New Architecture and typing
-  /// it would drag React's headers into this file for no gain.
-  @objc(extraModulesForBridge:)
-  func tcbExtraModulesForBridge(_ bridge: AnyObject?) -> NSArray {
-    guard let module = TCBTwilioEarlyInit.moduleInstance() else {
-      return NSArray()
+  /// The signature matches the imported optional protocol requirement exactly. It has to:
+  /// declaring the same selector with a different Swift signature is a compile error, not a
+  /// silent alternative. `bridge` is nil under the New Architecture and is not used.
+  @objc
+  func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule] {
+    guard let module = TCBTwilioEarlyInit.adoptedModule() else {
+      return []
     }
-    return [module] as NSArray
+    return [module]
   }
 }

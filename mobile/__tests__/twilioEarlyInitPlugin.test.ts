@@ -42,7 +42,7 @@ describe("injectTwilioEarlyInit", () => {
     // that delegate responds to extraModulesForBridge:. Extending a class that does not exist
     // in the file would compile into nothing being asked.
     expect(out).toContain("extension RenamedDelegate {");
-    expect(out).toContain("@objc(extraModulesForBridge:)");
+    expect(out).toContain("func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule]");
     expect(out).not.toContain("extension ReactNativeDelegate {");
     // The original file survives ahead of the injection.
     expect(out.startsWith(APP_DELEGATE.trimEnd())).toBe(true);
@@ -54,18 +54,37 @@ describe("injectTwilioEarlyInit", () => {
     expect(swift).toContain("extension ReactNativeDelegate {");
   });
 
-  it("is safe to run again over an already-patched AppDelegate", () => {
+  it("replaces the previous injection rather than skipping or duplicating it", () => {
+    // Prebuild runs repeatedly over an existing ios/ tree. Skipping when already patched would
+    // pin the first copy: edit the Swift, re-run prebuild, and read the stale version while
+    // believing you tested the new one.
     const once = injectTwilioEarlyInit(APP_DELEGATE, swift);
-    const twice = injectTwilioEarlyInit(once, swift);
+    const edited = swift.replace(/TwilioVoiceReactNative/g, "TwilioVoiceReactNativeV2");
+    const twice = injectTwilioEarlyInit(once, edited);
 
-    expect(twice).toBe(once);
-    // Two declarations of the same class would not compile, which is the failure this prevents.
+    expect(twice).toContain("TwilioVoiceReactNativeV2");
+    expect(twice).not.toContain('"TwilioVoiceReactNative"');
+    // Two declarations of the same class would not compile, which is the other failure here.
     expect(twice.match(/class TCBTwilioEarlyInit/g)).toHaveLength(1);
+    // Re-running with the same input is still a no-op in effect.
+    expect(injectTwilioEarlyInit(once, swift)).toBe(once);
+    // And the generated AppDelegate itself is never eaten by the round trip.
+    expect(twice.startsWith(APP_DELEGATE.trimEnd())).toBe(true);
   });
 
   it("throws when the Expo template no longer declares a factory delegate", () => {
     expect(() =>
       injectTwilioEarlyInit("import Expo\n\nclass AppDelegate: ExpoAppDelegate {}\n", swift)
     ).toThrow(/ExpoReactNativeFactoryDelegate/);
+  });
+});
+
+describe("app config", () => {
+  it("registers the plugin, without which prebuild emits an unpatched AppDelegate", () => {
+    // Everything above tests the transformation in isolation; it runs at all only because
+    // app.json asks for it. Drop that line in a merge and the app goes back to being killed on
+    // a cold VoIP launch with every test, the typecheck and the EAS build still green.
+    const appConfig = require("../app.json");
+    expect(appConfig.expo.plugins).toContain("./plugins/withTwilioEarlyInit");
   });
 });
