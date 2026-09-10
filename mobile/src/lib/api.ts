@@ -425,7 +425,11 @@ export async function getOnCall(): Promise<OnCallState> {
   return apiFetch<OnCallState>("/api/admin/on-call");
 }
 
-export async function setOnCallRotation(members: string[], anchorWeekStart?: string): Promise<void> {
+// The anchor is REQUIRED, not optional. Omitting it makes the server default to the current week
+// (src/api/onCall.ts), which silently re-anchors an existing rotation: whoever was on call tonight
+// changes mid-week and every future week shifts. Reordering the list on a handset must not be able
+// to do that, so the caller passes back the anchor it loaded.
+export async function setOnCallRotation(members: string[], anchorWeekStart: string): Promise<void> {
   await apiFetch("/api/admin/on-call", {
     method: "PUT",
     body: JSON.stringify(anchorWeekStart ? { members, anchorWeekStart } : { members }),

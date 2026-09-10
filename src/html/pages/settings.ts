@@ -474,7 +474,11 @@ export function renderSettingsPage(
             when.textContent = weekLabel(w.weekStart) + (i === 0 ? '  (this week)' : '');
             var sel = document.createElement('select');
             var none = document.createElement('option');
-            none.value = ''; none.textContent = w.source === 'nobody' ? 'Nobody on call' : 'Nobody';
+            // Clearing an override does NOT mean "nobody covers this week" -- it hands the week back
+            // to the rotation, which may well name someone. Labelling it "Nobody" made a
+            // rotation-covered week look settable to nobody, save cleanly, and then repaint with the
+            // rotation member still on it.
+            none.value = ''; none.textContent = w.source === 'nobody' ? 'Nobody on call' : 'Use the rotation';
             sel.appendChild(none);
             data.staff.forEach(function (email) {
               var op = document.createElement('option');

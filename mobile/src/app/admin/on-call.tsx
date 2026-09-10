@@ -17,11 +17,18 @@ export default function OnCallScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
+  // `keepEdits` is what stops a reload discarding an unsaved reorder. load() runs on every screen
+  // focus and after every week-swap, so without it: reorder, tap a week to record a swap, and the
+  // reorder is silently replaced by the server's copy with the Save button vanishing behind it.
+  const load = useCallback((keepEdits = false) => {
     getOnCall()
       .then((s) => {
         setState(s);
-        setMembers(s.rotation.members);
+        if (!keepEdits) setMembers(s.rotation.members);
+        // Cleared on success, or one flaky first load pins the error screen for the life of the
+        // component -- every later load succeeds and repaints nothing, because the error branch
+        // returns before the data branch is ever reached.
+        setError(null);
       })
       .catch(() => setError("Couldn't load the rotation."));
   }, []);
@@ -49,10 +56,11 @@ export default function OnCallScreen() {
   }
 
   async function save() {
-    if (saving) return;
+    if (saving || !state) return;
     setSaving(true);
     try {
-      await setOnCallRotation(members);
+      // The anchor the server sent us, unchanged. Dropping it re-anchors the rota to this week.
+      await setOnCallRotation(members, state.rotation.anchorWeekStart);
       load();
     } catch (e) {
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
@@ -63,6 +71,10 @@ export default function OnCallScreen() {
 
   // Tapping a week cycles to the next person on the roster, then round to nobody. A picker would be
   // a modal for a one-tap change; the list is short and the current value is always on screen.
+  // Cycling includes `null`, which CLEARS any override and hands the week back to the rotation --
+  // it does not mean "nobody covers this week". On a week the rotation covers, landing on null
+  // therefore repaints with the rotation member still there, which reads as the tap being ignored.
+  // The row labels that state "Rotation" rather than "Nobody" so the two are told apart.
   async function cycleWeek(weekStart: string, current: string | null) {
     if (!state) return;
     const options = [...state.staff, null];
@@ -70,7 +82,7 @@ export default function OnCallScreen() {
     const next = options[(at + 1) % options.length];
     try {
       await setOnCallOverride(weekStart, next);
-      load();
+      load(true);
     } catch (e) {
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
     }

@@ -16,6 +16,7 @@ import {
   setRecordingSetting,
 } from "../../lib/api";
 import { describeSchedule, normalizeSchedule } from "../../lib/schedule";
+import { shortName } from "../../lib/onCall";
 import { useTheme } from "../../theme/theme";
 
 // The mobile mirror of the web /admin/settings page: the business-wide controls, gated to admins.
@@ -60,7 +61,7 @@ export default function AdminHomeScreen() {
         .then((s) => {
           if (!alive) return;
           const now = s.weeks[0];
-          setOnCall(now && now.email ? now.email.split("@")[0] : "Nobody");
+          setOnCall(now && now.email ? shortName(now.email) : "Nobody");
         })
         .catch(() => alive && setOnCall("—"));
       getIvrFlow("main")
@@ -124,7 +125,7 @@ export default function AdminHomeScreen() {
         <Group title="Team" footer="Working hours, ring order, availability and account access for each staff member.">
           <Row icon="person.2.fill" iconColor="#5E5CE6" label="Staff" value={staffCount} chevron
             onPress={() => router.push("/admin/staff")} />
-          <Row icon="moon.fill" iconColor="#5856D6" label="After-hours On Call" value={onCall} chevron
+          <Row icon="moon.fill" iconFallback="moon" iconColor="#5856D6" label="After-hours On Call" value={onCall} chevron
             onPress={() => router.push("/admin/on-call")} />
         </Group>
 

@@ -82,3 +82,30 @@ describe("weeksBetween", () => {
     expect(weeksBetween("2026-10-12", "2026-09-28")).toBe(-2);
   });
 });
+
+describe("weekStartKey on an unrecognised weekday", () => {
+  // `?? 0` here would treat any unknown token as Monday, so every call resolved its own calendar
+  // date as a "week start" -- not a Monday, so weeksBetween returns a fraction, Math.round snaps it
+  // arbitrarily, and the rota names a semi-random person. isWeekStartKey never catches it because
+  // it only validates the ANCHOR. Throwing is caught by every caller as "nobody on call", which
+  // falls through to voicemail: wrong, but loudly and safely wrong.
+  it("throws rather than silently treating the day as Monday", () => {
+    const real = Intl.DateTimeFormat;
+    // @ts-expect-error -- deliberately returning a weekday token outside the map.
+    Intl.DateTimeFormat = function () {
+      return {
+        formatToParts: () => [
+          { type: "year", value: "2026" },
+          { type: "month", value: "09" },
+          { type: "day", value: "10" },
+          { type: "weekday", value: "Donnerstag" },
+        ],
+      };
+    };
+    try {
+      expect(() => weekStartKey(new Date("2026-09-10T00:00:00Z"))).toThrow(/unrecognised weekday/);
+    } finally {
+      Intl.DateTimeFormat = real;
+    }
+  });
+});

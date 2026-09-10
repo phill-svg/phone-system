@@ -19,8 +19,6 @@ export type OnCallRotation = {
   anchorWeekStart: string;
 };
 
-export const EMPTY_ROTATION: OnCallRotation = { members: [], anchorWeekStart: "" };
-
 const WEEK_START_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function isOnCallRotation(value: unknown): value is OnCallRotation {
@@ -58,7 +56,14 @@ export function weekStartKey(at: Date): string {
   }).formatToParts(at);
   const get = (type: string) => parts.find((p) => p.type === type)!.value;
   const weekdayShort = get("weekday").toLowerCase().slice(0, 3);
-  const offset = DAY_INDEX[weekdayShort] ?? 0;
+  const offset = DAY_INDEX[weekdayShort];
+  // `?? 0` here would treat any unrecognised weekday token as Monday, so every call would resolve
+  // its own calendar date as a "week start". That is not a Monday, so weeksBetween returns a
+  // fractional count, Math.round snaps it arbitrarily, and the rota names a semi-random person --
+  // while isWeekStartKey still passes, because it only ever validates the ANCHOR. Silent, and
+  // exactly the failure class the rest of this module exists to remove. Throw instead: every
+  // caller already treats a failure as "nobody on call", which falls through to voicemail.
+  if (offset === undefined) throw new Error(`weekStartKey: unrecognised weekday '${weekdayShort}'`);
   const midnight = Date.parse(`${get("year")}-${get("month")}-${get("day")}T00:00:00Z`);
   return new Date(midnight - offset * 86_400_000).toISOString().slice(0, 10);
 }

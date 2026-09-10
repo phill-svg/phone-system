@@ -1,5 +1,4 @@
 import {
-  EMPTY_ROTATION,
   isOnCallRotation,
   rotationMemberFor,
   weekStartKey,
@@ -8,9 +7,14 @@ import {
 
 const ON_CALL_ROTATION_KEY = "on_call_rotation";
 
+// A FRESH object on every miss, never a shared module-level constant. getOnCallRotation returns
+// this from three separate paths and handleGetOnCall serialises it, so one caller mutating what it
+// got back would corrupt the "nobody on call" default for every later read in the isolate.
+const emptyRotation = (): OnCallRotation => ({ members: [], anchorWeekStart: "" });
+
 export async function getOnCallRotation(db: D1Database): Promise<OnCallRotation> {
   const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(ON_CALL_ROTATION_KEY).first<{ value: string }>();
-  if (!row) return EMPTY_ROTATION;
+  if (!row) return emptyRotation();
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.value);
@@ -18,11 +22,11 @@ export async function getOnCallRotation(db: D1Database): Promise<OnCallRotation>
     // Same rule as every other stored-JSON read on the call path: an unreadable value is "nobody is
     // on call", never a throw. The Health Check is what makes that state visible.
     console.log("ON_CALL_ROTATION_UNPARSEABLE", JSON.stringify({ value: row.value.slice(0, 120) }));
-    return EMPTY_ROTATION;
+    return emptyRotation();
   }
   if (!isOnCallRotation(parsed)) {
     console.log("ON_CALL_ROTATION_UNPARSEABLE", JSON.stringify({ error: "not a rotation shape" }));
-    return EMPTY_ROTATION;
+    return emptyRotation();
   }
   return parsed;
 }
@@ -74,14 +78,37 @@ export async function clearOnCallOverride(db: D1Database, weekStart: string): Pr
 // logged, and every failure resolves to "nobody on call", which degrades to the pre-existing
 // after-hours voicemail rather than to a dropped call.
 export async function resolveOnCallEmail(db: D1Database, at: Date): Promise<string | null> {
+  let weekStart: string;
   try {
-    const weekStart = weekStartKey(at);
-    const override = await getOnCallOverride(db, weekStart);
-    if (override) return override;
-    const rotation = await getOnCallRotation(db);
-    return rotationMemberFor(rotation, weekStart);
+    weekStart = weekStartKey(at);
   } catch (err) {
-    console.log("ON_CALL_LOOKUP_FAILED", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+    console.log("ON_CALL_LOOKUP_FAILED", JSON.stringify({ stage: "week", error: err instanceof Error ? err.message : String(err) }));
     return null;
   }
+
+  // The two reads are guarded SEPARATELY and run in parallel, which matters on both counts.
+  //
+  // Separately, because overrides are normally empty -- a swap is rare -- and under one shared
+  // catch a transient failure reading that table threw away a perfectly good rotation and dropped
+  // the rota entirely. The 2am caller then reached voicemail while `settings.on_call_rotation` sat
+  // intact in D1 naming a reachable tech. A failed override read now degrades to "no swap this
+  // week", which is the state it holds 51 weeks a year anyway.
+  //
+  // In parallel, because this sits on the ring path with a customer already listening: two serial
+  // D1 round trips in front of them is the same avoidable wait that moved the caller-ID lookup out
+  // of the per-leg loop.
+  const [override, rotation] = await Promise.all([
+    getOnCallOverride(db, weekStart).catch((err) => {
+      console.log("ON_CALL_OVERRIDE_LOOKUP_FAILED", JSON.stringify({ weekStart, error: err instanceof Error ? err.message : String(err) }));
+      return null;
+    }),
+    getOnCallRotation(db).catch((err) => {
+      console.log("ON_CALL_LOOKUP_FAILED", JSON.stringify({ stage: "rotation", error: err instanceof Error ? err.message : String(err) }));
+      return null;
+    }),
+  ]);
+
+  if (override) return override;
+  if (!rotation) return null;
+  return rotationMemberFor(rotation, weekStart);
 }

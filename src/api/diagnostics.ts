@@ -3,7 +3,7 @@ import { listPhoneNumbers } from "../db/phoneNumbers";
 import { getStaffRoster } from "../db/staff";
 import { getDivertCallerId, getDivertCallerIdRejection } from "../db/settings";
 import { isStaffAvailable } from "../dial/presence";
-import { resolveOnCallEmail } from "../db/onCall";
+import { getOnCallRotation, resolveOnCallEmail } from "../db/onCall";
 import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 import { sendExpoPush } from "../push/expoPush";
 import { sendEmail, type SendEmailBinding } from "../email/sendgrid";
@@ -277,12 +277,37 @@ async function checkDivertCallerId(env: Env): Promise<Check> {
 // was never set, a name that left the business, or an override pointing at a departed tech. In all
 // of them the caller simply hears voicemail -- identical to having no rota at all, which is the
 // state this feature exists to end. So it is reported here rather than discovered in a month.
+// Does any step of the phone menu actually ROUTE to the rotation? Everything else about on-call
+// can be perfect and the answer still be no: the rota shipped inert, because `main`'s closed branch
+// was a voicemail node and nothing referenced `on_call` at all. Without this the screen reports
+// "phill is on call this week, ringing +61..." over a feature wired to nothing, and every
+// after-hours caller keeps reaching voicemail -- which is the precise silence this whole screen
+// exists to break.
+async function anyRingNodeTargetsOnCall(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM ivr_nodes WHERE type = 'ring' AND json_extract(config, '$.target') = 'on_call'")
+    .first<{ n: number }>();
+  return (row?.n ?? 0) > 0;
+}
+
 async function checkOnCall(env: Env): Promise<Check> {
   const base = { key: "on_call", label: "After-hours on call" };
   try {
     const now = new Date();
-    const email = await resolveOnCallEmail(env.DB, now);
+    const [email, wired] = await Promise.all([resolveOnCallEmail(env.DB, now), anyRingNodeTargetsOnCall(env.DB)]);
     if (!email) {
+      // "Nobody is set" and "the stored value could not be read" both arrive here as null, and they
+      // need different answers: the first is a thing to go and do, the second is a fault. Read the
+      // rotation directly to tell them apart rather than sending someone to a Settings screen that
+      // already shows a full rota.
+      const rotation = await getOnCallRotation(env.DB);
+      if (rotation.members.length > 0) {
+        return {
+          ...base,
+          status: "fail",
+          detail: "A rotation is saved but could not be resolved for this week — the stored value may be corrupt. Re-save it in Settings.",
+        };
+      }
       return {
         ...base,
         status: "warn",
@@ -308,6 +333,13 @@ async function checkOnCall(env: Env): Promise<Check> {
         ...base,
         status: "warn",
         detail: `${who} is on call this week but has no mobile number saved, so the call can only reach their app. Add one on their staff record.`,
+      };
+    }
+    if (!wired) {
+      return {
+        ...base,
+        status: "fail",
+        detail: `${who} is on call this week, but no step of the phone menu rings the on-call person — after-hours callers still reach voicemail. Add a ring step set to "Whoever is on call" on the closed branch.`,
       };
     }
     return { ...base, status: "ok", detail: `${who} is on call this week, ringing ${mobile}.` };
