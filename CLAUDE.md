@@ -614,6 +614,22 @@ before adding one, or you will duplicate a path that already works.
   source text is not a test** — the first version of both the crash-write test and the PushKit test
   passed with the fix fully reverted, one because the fake keychain mutated synchronously and one
   because `indexOf` matched the comment naming the function.
+- **The mobile `admin` group is a SIBLING of `(tabs)`, which strands its hub screen.** Two things
+  compound: the tab bar is not rendered under `/admin` at all (it lives inside `(tabs)`), and
+  `admin/index` is the ROOT of the nested stack in `admin/_layout.tsx`, so React Navigation draws no
+  automatic back button — there is nothing behind it *within that navigator*. The hub therefore had
+  no way out but an edge swipe, which is undiscoverable and absent on Android. Fixed with an
+  explicit `headerLeft`. The sub-screens were always fine: they are pushed inside that stack and get
+  the usual chevron. **Anything new mounted as a sibling group needs its own way out.** The button's
+  rule lives in `mobile/src/lib/nav.ts` (`leaveAdmin`) rather than inline, because a plain
+  `router.back()` is a NO-OP on an empty history — a deep link or cold start straight to `/admin` —
+  and a back button that visibly does nothing reads as the app having frozen, which is worse than
+  the missing button it replaced.
+- **`Icon` renders a blank `ellipse-outline` on Android for any name given without a `fallback`.**
+  It is SF Symbols on iOS and Ionicons everywhere else, and the fallback is not optional in
+  practice: four controls added to the on-call screen (the reorder arrows and add/remove) shipped
+  without one and would have been meaningless circles on Android, on the exact screen where the
+  arrows ARE the affordance. iOS looks perfect throughout, so nothing catches this locally.
 - **`npm test` cannot run without a Cloudflare login, and the reason is the `ai` binding.**
   Workers AI is remote-only, so vitest-pool-workers tries to open a remote proxy session at CONFIG
   PARSE time and dies with "You must be logged in to use wrangler dev in remote mode" before a

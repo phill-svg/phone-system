@@ -128,7 +128,7 @@ export default function OnCallScreen() {
                 <Text style={{ color: t.colors.labelSecondary, width: 26, ...type.body }}>{i + 1}</Text>
                 <Text style={{ color: t.colors.label, flex: 1, ...type.body }}>{email}</Text>
                 <Pressable onPress={() => move(i, -1)} disabled={i === 0} hitSlop={8} style={{ padding: 6, opacity: i === 0 ? 0.25 : 1 }}>
-                  <Icon name="chevron.up" size={16} color={t.colors.accent} />
+                  <Icon name="chevron.up" fallback="chevron-up" size={16} color={t.colors.accent} />
                 </Pressable>
                 <Pressable
                   onPress={() => move(i, 1)}
@@ -136,10 +136,10 @@ export default function OnCallScreen() {
                   hitSlop={8}
                   style={{ padding: 6, opacity: i === members.length - 1 ? 0.25 : 1 }}
                 >
-                  <Icon name="chevron.down" size={16} color={t.colors.accent} />
+                  <Icon name="chevron.down" fallback="chevron-down" size={16} color={t.colors.accent} />
                 </Pressable>
                 <Pressable onPress={() => toggleMember(email)} hitSlop={8} style={{ padding: 6 }}>
-                  <Icon name="minus.circle.fill" size={18} color={t.colors.accent} />
+                  <Icon name="minus.circle.fill" fallback="remove-circle" size={18} color={t.colors.accent} />
                 </Pressable>
               </View>
             ))
@@ -161,7 +161,7 @@ export default function OnCallScreen() {
                   borderBottomColor: t.colors.separator,
                 }}
               >
-                <Icon name="plus.circle.fill" size={18} color={t.colors.accent} />
+                <Icon name="plus.circle.fill" fallback="add-circle" size={18} color={t.colors.accent} />
                 <Text style={{ color: t.colors.label, marginLeft: 10, ...type.body }}>{email}</Text>
               </Pressable>
             ))}
