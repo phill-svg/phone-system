@@ -1,3 +1,39 @@
+// TwilioEarlyInit -- the native half of the CallKit cold-launch fix, and a TEMPLATE rather than a
+// compilable file. mobile/plugins/withTwilioEarlyInit.js splits it on the two markers below and
+// injects the halves into the AppDelegate that `expo prebuild` generates. Everything above the
+// first marker describes this file and is injected nowhere.
+//
+//   tcb:class-body  -> goes INSIDE the generated delegate class. It has to: the method is an
+//                      `override`, and Swift permits an overriding declaration in a class body and
+//                      nowhere else. Build 5 (2026-09-10) failed to compile for exactly that,
+//                      "overriding declaration requires an 'override' keyword", when this lived in
+//                      an `extension` -- where adding the keyword is not allowed either.
+//   tcb:file-scope  -> goes after that class, at file scope.
+//
+// The method does NOT call super. `extraModulesForBridge:` is an @optional requirement of
+// RCTBridgeDelegate that nothing in the chain implements -- which is why React Native guards every
+// call to it with respondsToSelector: -- so Swift sees an inherited declaration to override while
+// the runtime has no implementation behind it, and a super call would be a message to an
+// unimplemented selector.
+
+// tcb:class-body
+  /// `RCTBridgeDelegate.extraModulesForBridge:` -- the list of native modules the app has
+  /// already built. React Native asks for it while the React host starts and before the JS
+  /// bundle is evaluated, which is the whole point: building the module here is what gets
+  /// CallKit and PushKit listening during native launch.
+  ///
+  /// `bridge` is nil under the New Architecture and is not used; the signature matches the
+  /// imported protocol requirement, which is what makes this an override rather than a new
+  /// method under the same selector.
+  @objc
+  override func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule] {
+    guard let module = TCBTwilioEarlyInit.adoptedModule() else {
+      return []
+    }
+    return [module]
+  }
+
+// tcb:file-scope
 // TwilioEarlyInit — appended to the generated AppDelegate.swift by withTwilioEarlyInit.js.
 //
 // WHAT THIS FIXES (2026-09-10, two device crash logs):
@@ -116,23 +152,5 @@ final class TCBTwilioEarlyInit {
     }
 
     return module as? any RCTBridgeModule
-  }
-}
-
-extension ReactNativeDelegate {
-  /// `RCTBridgeDelegate.extraModulesForBridge:` -- the list of native modules the app has
-  /// already built. React Native asks for it while the React host starts and before the JS
-  /// bundle is evaluated, which is the whole point: building the module here is what gets
-  /// CallKit and PushKit listening during native launch.
-  ///
-  /// The signature matches the imported optional protocol requirement exactly. It has to:
-  /// declaring the same selector with a different Swift signature is a compile error, not a
-  /// silent alternative. `bridge` is nil under the New Architecture and is not used.
-  @objc
-  func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule] {
-    guard let module = TCBTwilioEarlyInit.adoptedModule() else {
-      return []
-    }
-    return [module]
   }
 }
