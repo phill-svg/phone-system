@@ -46,7 +46,7 @@ describe("injectTwilioEarlyInit", () => {
     const out = injectTwilioEarlyInit(APP_DELEGATE, swift);
 
     expect(classBodyOf(out)).toContain(
-      "override func extraModules(for bridge: RCTBridge) -> [any RCTBridgeModule]"
+      "override func extraModules(for bridge: RCTBridge) -> [Any]"
     );
     expect(out).not.toContain("extension RenamedDelegate");
   });
@@ -62,6 +62,14 @@ describe("injectTwilioEarlyInit", () => {
     // The generated AppDelegate itself survives ahead of both.
     expect(out.startsWith("import Expo\nimport React")).toBe(true);
     expect(out).toContain("override func bundleURL() -> URL? {");
+  });
+
+  it("names no React protocol, because RCTBridgeModule is not visible to Swift here", () => {
+    // RCTBridgeModule.h imports "RCTBundleManager.h" with quotes, which makes it non-modular, so
+    // it is left out of the `React` module the app target imports: RCTBridge resolves and
+    // RCTBridgeModule does not. Build 5's second attempt died on exactly that, four times over.
+    expect(swift).not.toContain("RCTBridgeModule]");
+    expect(swift).not.toContain("(any RCTBridgeModule)");
   });
 
   it("never calls super, because nothing in the chain implements the optional requirement", () => {
