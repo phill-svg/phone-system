@@ -62,7 +62,7 @@ export default function BusinessHoursScreen() {
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
         <Group
           title="Opening hours"
-          footer="Callers who ring outside these hours get the after-hours message instead of ringing the team. Times are 24-hour, Canberra time."
+          footer="Callers who ring outside these hours get the after-hours message instead of ringing the team. Type 24-hour or am/pm — times are shown 24-hour, Canberra time."
         >
           <ScheduleEditor value={draft} onChange={setDraft} disabled={saving} />
         </Group>

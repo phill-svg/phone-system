@@ -219,9 +219,9 @@ before adding one, or you will duplicate a path that already works.
   global handler chains to the previous one (observes, does not change behaviour) and an error
   boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
   (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
-  falling over must be able to say so whoever holds it). Handsets are on **OTA 60**, and the first
+  falling over must be able to say so whoever holds it). Handsets are on **OTA 66**, and the first
   binary carrying the native CallKit fix is **build 5** (2026-09-10) — Settings shows both as
-  `#60 · b5`.
+  `#66 · b5`.
 - **Recent work (2026-09-09/10):** the day the missed calls were root-caused. `0xBAADCA11` turned
   out to be the iOS CallKit watchdog rather than any JavaScript fault (see the two bullets on it
   below — most of a day went into chasing it as a JS crash, which it can never be), the cure shipped
@@ -233,7 +233,7 @@ before adding one, or you will duplicate a path that already works.
   menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than the web's node canvas,
   reversing this file's old "IVR stays web-only" line; then **#92** and **#94**, two rounds of
   `/code-review` fixes over #89 — see the review bullet below, which is the durable lesson from the
-  whole day. OTA **65** on both channels; worker deployed.
+  whole day. OTA **66** on both channels; worker deployed.
   **Still outstanding at the end of it, and almost none of it is code:**
   * Build 5 has never been proven on a device. It needs ONE locked-phone test call — lock the
     handset, leave it a few minutes so the launch is genuinely cold, then ring the business number.
@@ -627,7 +627,7 @@ before adding one, or you will duplicate a path that already works.
   two apart. Skipping it wrongly would silently disable incoming calls altogether, which is far
   worse than a window nothing realistically lands in. And **this ships in a native build only,
   never by OTA**: an OTA cannot change `AppDelegate.swift`, so Settings now prints the native build
-  beside the OTA number (`#60 · b5`) — that `b` half is what says whether the fix is on the handset,
+  beside the OTA number (`#66 · b5`) — that `b` half is what says whether the fix is on the handset,
   and it is the ONLY thing that does.
   Verified as far as it can be from here by running `npx expo prebuild --platform ios` and reading
   the generated file; nothing short of a device proves it works.
@@ -708,6 +708,30 @@ before adding one, or you will duplicate a path that already works.
   practice: four controls added to the on-call screen (the reorder arrows and add/remove) shipped
   without one and would have been meaningless circles on Android, on the exact screen where the
   arrows ARE the affordance. iOS looks perfect throughout, so nothing catches this locally.
+- **The mobile schedule editor commits a finished time ON CHANGE, and both halves of that are
+  load-bearing.** Reported as "it won't let me change business hours from 10pm", which was two
+  separate faults with the same symptom.
+  `TimeField` committed on BLUR only, and the enclosing ScrollView sets
+  `keyboardShouldPersistTaps="handled"` — so a tap on Save goes straight to the button without
+  blurring the field. The draft never changed, `dirty` stayed false, and Save sat disabled reading
+  "Saved". Nothing happened and nothing said why. And `normalizeTime` rejected `10pm`, which makes
+  the field REVERT silently, so typing the time as anyone would say it looked like a refusal.
+  Committing on change then has its own trap, caught by review before it shipped and worth more
+  than the original bug: the commit echoes back through the controlled field's re-seed effect. At
+  `17:3` the value is complete enough to parse as 17:03, the parent hands 17:03 back, the box is
+  rewritten mid-word, the final `0` makes `17:030`, and blur reverts to **17:03**. Hours would have
+  saved as closing at three minutes past five. `TimeField` keeps a `pushed` ref of what it last sent
+  up and ignores a `value` that is its own echo.
+  **"Finished" is prefix-freedom, not a shape.** A shape rule (separator, or 3-4 digits) calls
+  `17:3` and `103` finished and commits 17:03 and 01:03. The rule is: no digit can be appended to
+  make another valid time — so `930` and `17` are finished, `103`, `123` and `17:3` are not.
+- **Nothing on the mobile client checks `close > open`, and the API's rejection is opaque.**
+  `isDayWindow` refuses the whole SEVEN-DAY schedule if one window is inverted, the worker answers
+  the plain text `invalid request body`, and `apiFetch` cannot parse that as JSON — so the handset
+  shows "request failed (400)" with no clue which day is wrong. Known and not yet fixed; the useful
+  version names the offending day. An OVERNIGHT window (say 22:00-06:00) is inexpressible for the
+  same reason, and that is a real limitation rather than a bug: only `00:00` as a close means
+  midnight.
 - **RUN `/code-review` BEFORE SHIPPING, not after — and expect the FIX to need reviewing too.**
   Standing instruction from Phill, and 2026-09-10 is the case for it. The on-call rotation (#89) was
   merged and deployed unreviewed; `/code-review` then found **14** defects in it, **15** in the PR

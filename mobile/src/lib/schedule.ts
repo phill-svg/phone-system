@@ -3,12 +3,31 @@ import { DAY_KEYS, CLOSED_WEEK, type BusinessHours, type DayKey, type DayWindow 
 // A day the app opens when you tick it on -- ordinary trading hours, so the common case is one tap.
 export const DEFAULT_WINDOW: NonNullable<DayWindow> = { open: "09:00", close: "17:00" };
 
-// Accepts what someone actually types on a phone keypad -- "9", "930", "9:5", "9.30", "1700" --
-// and returns canonical "HH:MM", or null if it isn't a time. The API validates every field against
-// /^\d{2}:\d{2}$/ and rejects the WHOLE schedule if one is malformed, so a half-typed field must
-// never reach it.
+// Accepts what someone actually types on a phone keypad -- "9", "930", "9:5", "9.30", "1700",
+// "10pm" -- and returns canonical 24-hour "HH:MM", or null if it isn't a time. The API validates
+// every field against /^([01]\d|2[0-3]):([0-5]\d)$/ AND requires close > open (isDayWindow in
+// src/ivr/businessHours.ts, where a close of "00:00" means end-of-day), and it rejects the WHOLE
+// schedule -- all seven days -- if one field is wrong. So a half-typed field must never reach it.
+//
+// **am/pm is accepted**, and that is not a nicety: the field reverts to its previous value when
+// this returns null, silently, so typing "10pm" LOOKED like the app refusing to change the hours.
+// The screen's footer said only "24-hour", which nobody reads while typing a time they already
+// know; it now says both, but the parser is what actually has to be forgiving.
 export function normalizeTime(raw: string): string | null {
-  const s = raw.trim().replace(/[.\s]/g, ":");
+  let s = raw.trim().toLowerCase();
+
+  // Pull the meridiem off first so the numeric parsing below is unchanged by it. "10 p.m.",
+  // "10pm" and "10:30 PM" all reduce to the digits plus a flag. The trailing "m" is OPTIONAL
+  // because "9:30p" is written as often as "9:30pm", and every form this refuses reverts the
+  // field silently -- which is the failure this whole function exists to stop.
+  let meridiem: "am" | "pm" | null = null;
+  const withMeridiem = /^(.*?)\s*([ap])\.?\s*(?:m\.?)?$/.exec(s);
+  if (withMeridiem) {
+    s = withMeridiem[1];
+    meridiem = withMeridiem[2] === "p" ? "pm" : "am";
+  }
+
+  s = s.replace(/[.\s]/g, ":");
   let hours: number;
   let minutes: number;
   const withSeparator = /^(\d{1,2}):(\d{1,2})$/.exec(s);
@@ -25,8 +44,38 @@ export function normalizeTime(raw: string): string | null {
     return null;
   }
   if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+
+  if (meridiem) {
+    // 12-hour input, so only 1-12 is meaningful. "13pm" is a typo, not 1pm.
+    if (hours < 1 || hours > 12) return null;
+    if (meridiem === "pm" && hours !== 12) hours += 12;
+    if (meridiem === "am" && hours === 12) hours = 0;
+  }
+
   if (hours > 23 || minutes > 59) return null;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+// Is this text a COMPLETE time, as opposed to something still being typed?
+//
+// The editor commits on change as well as on blur (see ScheduleEditor), and it must not commit a
+// half-typed value: "103" parses perfectly well as 01:03, but it is what "1030" looks like one
+// keystroke from the end, so committing it stores an opening time nobody chose.
+//
+// The rule is PREFIX-FREEDOM, not a list of shapes: finished means no digit could be appended to
+// make another valid time. "930" is finished, because "9300" is not a time; "103" and "17:3" are
+// not, because "1030" and "17:30" are. A shape list was tried first and is what produced the bug
+// -- it called every 3-digit string and every "H:M" complete, so typing "17:30" committed 17:03.
+//
+// Only DIGITS are considered. A separator or a meridiem is a keystroke the user can always still
+// add, so counting those would make "17" unfinished forever and put us back to committing nothing
+// until blur -- which is the bug this whole path exists to fix.
+const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
+export function isCompleteTime(raw: string): boolean {
+  const s = raw.trim();
+  if (normalizeTime(s) === null) return false;
+  return DIGITS.every((digit) => normalizeTime(s + digit) === null);
 }
 
 // Immutably set one day's window (null = closed).
