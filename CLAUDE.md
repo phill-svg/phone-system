@@ -445,6 +445,51 @@ is normal, not broken.
   range, and the error names the offending entry. `MM-DD..MM-DD` recurring ranges now work: they are
   compared against `MM-DD`, since against `YYYY-MM-DD` `"2026-12-27" <= "12-31"` is already false on
   the first character. One that wraps the new year is two ranges under string comparison.
+- **`0xBAADCA11` is iOS killing the app for not answering a VoIP push fast enough, and it is the
+  root cause of the "crash loops" (2026-09-10).** The device crash log — Settings > Privacy &
+  Security > Analytics & Improvements > Analytics Data on the iPhone, which needs **no** App Store
+  Connect key and is the way in every time TestFlight crash logs are unavailable — reads
+  `EXC_CRASH/SIGKILL`, `termination namespace FRONTBOARD code 0xBAADCA11`, `procRole "Non UI"`,
+  `isLocked 1`, launched 11:38:11 and killed 11:38:18. `0xBAADCA11` spells "bad call": it is the
+  CallKit watchdog. A VoIP push launches the app in the **background** and iOS allows roughly
+  **five seconds** to report the call to CallKit, or FrontBoard SIGKILLs the process.
+  **No JS runs**, which is why `/admin/errors` stayed empty however hard it was searched — a JS
+  crash reporter can never see this, and chasing it as a JavaScript bug wasted most of a day.
+  The whole incoming-call → CallKit path is **native** (`reportNewIncomingCall` in
+  `TwilioVoiceReactNative+CallKit.m`, no JS involved). The only thing gating it is that the
+  `PKPushRegistry` is created by `initializePushRegistry()`, which the SDK exposes **only to JS** —
+  its `expo-module.config.json` is `"platforms": ["android"]`, so nothing wires it up natively on
+  iOS. It used to be called deep inside `registerForIncoming`, behind the bundle booting, auth,
+  the tabs mounting, a permission check and a network round trip; `primePushRegistry()` now runs at
+  module scope in the root layout instead (OTA 59). **That is a mitigation, not a cure** — the cure
+  installs the registry natively before JS runs, and the trap there is that
+  `TwilioVoiceReactNative`'s `init` also calls `initializeCallKit`, so instantiating it early from
+  an `ExpoAppDelegateSubscriber` creates a **second CallKit provider** racing the bridge's own.
+  Ruled out along the way, so do not re-check: `expo-updates` is not delaying launch
+  (`launchWaitMs` defaults to 0 — it launches straight from cache), and no native module was added
+  after the installed binary was built.
+  **The business symptom is missed calls, not a crash anyone sees.** The 10:01 call on 2026-09-10
+  rang twice and went to voicemail with `answered = 0`: the handset was not ignoring the customer,
+  the handset was being killed. Any report of "it rang but nobody could answer" starts here.
+- **`placeCall` de-duplicates by TIME, and that is deliberate.** Reported as "it rang my mobile
+  twice"; `calls` held two outbound legs to one customer two seconds apart. Nothing retries — the
+  app sent the request twice, because none of the five call sites guards the button and the only
+  feedback ("Calling your mobile") is an Alert that appears AFTER the round trip, so the tap looks
+  dead and you tap again. The guard lives in `placeCall` (the one choke point, above the
+  VoIP/carrier branch) as a 5s per-number window rather than an in-flight flag, because `apiFetch`
+  has **no timeout**: a request that never settles would pin a flag forever and dialling would stop
+  working with no way back. Same reasoning removed a latch from `crashReport.ts`. **Module state
+  plus a timeout-less fetch is a permanent wedge; prefer a window, which clears itself.**
+- **Crash reporting never recorded anything until OTA 58, and the reason is a shape worth
+  remembering.** The global handler did `void reportError(...)` — async, un-awaited — and then
+  called the previous handler, which tears the process down. On a fatal error the SecureStore write
+  raced teardown and lost, so `client_errors` was empty from the day the feature shipped
+  (2026-09-08) to 2026-09-10. The fatal path uses `expo-secure-store`'s **synchronous**
+  `setItem`/`getItem` now. Two review lessons attached: a failed prime/write must not be memoised
+  as success (it would silently disable the thing forever), and **a regression test that reads
+  source text is not a test** — the first version of both the crash-write test and the PushKit test
+  passed with the fix fully reverted, one because the fake keychain mutated synchronously and one
+  because `indexOf` matched the comment naming the function.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and
