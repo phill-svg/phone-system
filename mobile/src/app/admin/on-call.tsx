@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, View, Text, Pressable, ActivityIndicator, Alert } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
@@ -6,7 +6,7 @@ import { Group } from "../../components/ui/Grouped";
 import { PrimaryButton } from "../../components/ui/PrimaryButton";
 import { Icon } from "../../components/ui/Icon";
 import { getOnCall, setOnCallOverride, setOnCallRotation, type OnCallState } from "../../lib/api";
-import { shortName, weekLabel } from "../../lib/onCall";
+import { rotationMemberFor, shortName, weekLabel } from "../../lib/onCall";
 import { useTheme, type } from "../../theme/theme";
 
 
@@ -33,15 +33,26 @@ export default function OnCallScreen() {
       .catch(() => setError("Couldn't load the rotation."));
   }, []);
 
+  // Declared ABOVE the focus effect that reads it. useFocusEffect defers its body into a
+  // useEffect so the current order happens to work, but anything that ran the callback during
+  // render would hit the const temporal dead zone and blank the screen on mount.
+  const dirtyRef = useRef(false);
+
+  // Passing `dirty` through is the point: load() runs on every screen focus, so an Alert or a
+  // notification tap that briefly defocuses the screen would otherwise silently discard a reorder
+  // and take the Save button with it.
   useFocusEffect(
     useCallback(() => {
-      load();
+      load(dirtyRef.current);
     }, [load])
   );
 
   const dirty =
     state !== null &&
     (state.rotation.members.length !== members.length || state.rotation.members.some((m, i) => m !== members[i]));
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
 
   function move(index: number, delta: number) {
     const next = [...members];
@@ -57,6 +68,37 @@ export default function OnCallScreen() {
 
   async function save() {
     if (saving || !state) return;
+
+    // Preserving the anchor does not preserve who is on call tonight: the member COUNT re-indexes
+    // every week, so adding or removing anyone can hand the current week to someone else, mid-week,
+    // with no warning. The eight-week preview only refreshes AFTER the write, so this is the one
+    // moment it can be said before it is true.
+    // Skipped when this week is a SWAP: the override wins over the rotation, so reordering cannot
+    // change who covers it. Firing anyway named the wrong person and warned of a change that would
+    // not happen -- a destructive-styled dialog that is wrong twice teaches you to dismiss it,
+    // which costs the one moment it exists for.
+    const anchor = state.rotation.anchorWeekStart;
+    const overriddenNow = state.weeks[0]?.source === "override";
+    const before = rotationMemberFor(state.rotation.members, anchor, state.thisWeek);
+    const after = rotationMemberFor(members, anchor, state.thisWeek);
+    if (!overriddenNow && before !== after) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          "This changes who is on call now",
+          `${before ? shortName(before) : "Nobody"} is on call this week. Saving makes it ${after ? shortName(after) : "nobody"}.`,
+          [
+            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+            { text: "Save anyway", style: "destructive", onPress: () => resolve(true) },
+          ],
+          // Without this an Android back-press or outside tap fires neither handler, so the promise
+          // never settles: save() hangs, the reorder is never written, and every further tap leaks
+          // another awaiting closure while the button still looks live.
+          { cancelable: true, onDismiss: () => resolve(false) }
+        );
+      });
+      if (!confirmed) return;
+    }
+
     setSaving(true);
     try {
       // The anchor the server sent us, unchanged. Dropping it re-anchors the rota to this week.
@@ -73,8 +115,10 @@ export default function OnCallScreen() {
   // a modal for a one-tap change; the list is short and the current value is always on screen.
   // Cycling includes `null`, which CLEARS any override and hands the week back to the rotation --
   // it does not mean "nobody covers this week". On a week the rotation covers, landing on null
-  // therefore repaints with the rotation member still there, which reads as the tap being ignored.
-  // The row labels that state "Rotation" rather than "Nobody" so the two are told apart.
+  // repaints with the rotation member still there, which would read as the tap being ignored, so
+  // the row says "Rotation" for a rotation-sourced week and "Nobody" only when nobody really is on
+  // call. (An earlier version of this comment claimed the labels already did that when only the web
+  // dropdown had been changed.)
   async function cycleWeek(weekStart: string, current: string | null) {
     if (!state) return;
     const options = [...state.staff, null];
@@ -88,7 +132,10 @@ export default function OnCallScreen() {
     }
   }
 
-  if (error) {
+  // `&& !state` matters: without it a flaky reload replaces a fully loaded rota -- preview,
+  // unsaved reorder and all -- with one line of text and no way back except leaving the screen.
+  // A stale-but-present rota is far more useful than an error page.
+  if (error && !state) {
     return (
       <Screen>
         <Text style={{ color: t.colors.labelSecondary, padding: 16 }}>{error}</Text>
@@ -219,6 +266,8 @@ export default function OnCallScreen() {
               </Text>
               {w.source === "override" ? (
                 <Text style={{ color: t.colors.labelSecondary, marginLeft: 6, ...type.footnote }}>swapped</Text>
+              ) : w.source === "rotation" ? (
+                <Text style={{ color: t.colors.labelSecondary, marginLeft: 6, ...type.footnote }}>rotation</Text>
               ) : null}
             </Pressable>
           ))}

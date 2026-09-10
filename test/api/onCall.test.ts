@@ -9,7 +9,8 @@ const ADMIN: import("../../src/access/requireStaffUser").StaffUser = {
 };
 
 const CLOSED = JSON.stringify({ mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null });
-const DEMO = ["reviewer@x.com"];
+const NO_DEMO = { DEMO_ACCOUNT_EMAILS: "" };
+const DEMO = { DEMO_ACCOUNT_EMAILS: "reviewer@x.com" };
 
 async function insertStaff(email: string) {
   await env.DB.prepare(
@@ -33,7 +34,7 @@ describe("handlePutOnCall", () => {
   });
 
   it("saves an ordered rotation", async () => {
-    const res = await handlePutOnCall(put({ members: ["a@x.com", "b@x.com"], anchorWeekStart: "2026-09-07" }), env.DB, ADMIN);
+    const res = await handlePutOnCall(put({ members: ["a@x.com", "b@x.com"], anchorWeekStart: "2026-09-07" }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(200);
     expect(await getOnCallRotation(env.DB)).toEqual({ members: ["a@x.com", "b@x.com"], anchorWeekStart: "2026-09-07" });
   });
@@ -41,7 +42,7 @@ describe("handlePutOnCall", () => {
   // A typo here fails SILENTLY at 2am: the week comes round, nobody matches, and the caller hears
   // voicemail exactly as though no rota existed. Refused where somebody is looking at it.
   it("refuses an email that is not a staff member", async () => {
-    const res = await handlePutOnCall(put({ members: ["a@x.com", "typo@x.com"] }), env.DB, ADMIN);
+    const res = await handlePutOnCall(put({ members: ["a@x.com", "typo@x.com"] }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("typo@x.com");
     expect((await getOnCallRotation(env.DB)).members).toEqual([]);
@@ -50,18 +51,18 @@ describe("handlePutOnCall", () => {
   // Not an error at ring time -- just two weeks in the cycle for one person, which reads as a
   // mysteriously unfair rota some months later.
   it("refuses a rotation that lists someone twice", async () => {
-    const res = await handlePutOnCall(put({ members: ["a@x.com", "A@x.com"] }), env.DB, ADMIN);
+    const res = await handlePutOnCall(put({ members: ["a@x.com", "A@x.com"] }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("twice");
   });
 
   it("refuses an anchor that is not a Monday", async () => {
-    const res = await handlePutOnCall(put({ members: ["a@x.com"], anchorWeekStart: "2026-09-08" }), env.DB, ADMIN);
+    const res = await handlePutOnCall(put({ members: ["a@x.com"], anchorWeekStart: "2026-09-08" }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(400);
   });
 
   it("defaults the anchor to the current week when none is given", async () => {
-    await handlePutOnCall(put({ members: ["a@x.com"] }), env.DB, ADMIN);
+    await handlePutOnCall(put({ members: ["a@x.com"] }), env.DB, ADMIN, NO_DEMO);
     const saved = await getOnCallRotation(env.DB);
     expect(saved.anchorWeekStart).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(new Date(`${saved.anchorWeekStart}T00:00:00Z`).getUTCDay()).toBe(1);
@@ -69,8 +70,8 @@ describe("handlePutOnCall", () => {
 
   // Clearing the rota is a legitimate thing to do and must not be blocked by the anchor rules.
   it("accepts an empty rotation, meaning nobody is on call", async () => {
-    await handlePutOnCall(put({ members: ["a@x.com"], anchorWeekStart: "2026-09-07" }), env.DB, ADMIN);
-    const res = await handlePutOnCall(put({ members: [] }), env.DB, ADMIN);
+    await handlePutOnCall(put({ members: ["a@x.com"], anchorWeekStart: "2026-09-07" }), env.DB, ADMIN, NO_DEMO);
+    const res = await handlePutOnCall(put({ members: [] }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(200);
     expect(await getOnCallRotation(env.DB)).toEqual({ members: [], anchorWeekStart: "" });
   });
@@ -84,25 +85,25 @@ describe("handlePutOnCallOverride", () => {
   });
 
   it("sets and then clears a week's override", async () => {
-    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "a@x.com" }), env.DB, ADMIN)).status).toBe(200);
+    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "a@x.com" }), env.DB, ADMIN, NO_DEMO)).status).toBe(200);
     expect(await getOnCallOverride(env.DB, "2026-09-07")).toBe("a@x.com");
 
-    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: null }), env.DB, ADMIN)).status).toBe(200);
+    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: null }), env.DB, ADMIN, NO_DEMO)).status).toBe(200);
     expect(await getOnCallOverride(env.DB, "2026-09-07")).toBeNull();
   });
 
   it("replaces rather than duplicating when the same week is set twice", async () => {
     await insertStaff("b@x.com");
-    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "a@x.com" }), env.DB, ADMIN);
-    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "b@x.com" }), env.DB, ADMIN);
+    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "a@x.com" }), env.DB, ADMIN, NO_DEMO);
+    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "b@x.com" }), env.DB, ADMIN, NO_DEMO);
     expect(await getOnCallOverride(env.DB, "2026-09-07")).toBe("b@x.com");
     const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM on_call_overrides").first<{ n: number }>();
     expect(rows?.n).toBe(1);
   });
 
   it("refuses a week that is not a Monday, and an unknown email", async () => {
-    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-09", email: "a@x.com" }), env.DB, ADMIN)).status).toBe(400);
-    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "nope@x.com" }), env.DB, ADMIN)).status).toBe(400);
+    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-09", email: "a@x.com" }), env.DB, ADMIN, NO_DEMO)).status).toBe(400);
+    expect((await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "nope@x.com" }), env.DB, ADMIN, NO_DEMO)).status).toBe(400);
   });
 });
 
@@ -120,7 +121,7 @@ describe("handleGetOnCall", () => {
     await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?)")
       .bind(JSON.stringify({ members: ["a@x.com", "gone@x.com"], anchorWeekStart: "2026-09-07" }))
       .run();
-    const body = await (await handleGetOnCall(env.DB)).json<{ unknownMembers: string[] }>();
+    const body = await (await handleGetOnCall(env.DB, NO_DEMO)).json<{ unknownMembers: string[] }>();
     expect(body.unknownMembers).toEqual(["gone@x.com"]);
   });
 });
@@ -192,19 +193,44 @@ describe("addresses are normalised on write", () => {
     await insertStaff("tech@x.com");
   });
 
-  it("lowercases a rotation member", async () => {
-    const res = await handlePutOnCall(put({ members: ["  Tech@X.com "] }), env.DB, ADMIN);
+  // Asserted against the RAW column. Both reads now lowercase too, so going through
+  // getOnCallRotation/getOnCallOverride would pass with the write-side normalisation reverted --
+  // the read would launder it back. The stored bytes are the thing being pinned.
+  it("lowercases a rotation member in the stored row", async () => {
+    const res = await handlePutOnCall(put({ members: ["  Tech@X.com "] }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(200);
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'on_call_rotation'").first<{ value: string }>();
+    expect(JSON.parse(row!.value).members).toEqual(["tech@x.com"]);
+  });
+
+  it("lowercases an override in the stored row", async () => {
+    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "Tech@X.com" }), env.DB, ADMIN, NO_DEMO);
+    const row = await env.DB.prepare("SELECT staff_email FROM on_call_overrides WHERE week_start = '2026-09-07'").first<{ staff_email: string }>();
+    expect(row?.staff_email).toBe("tech@x.com");
+  });
+
+  // And the read side repairs what was stored before any of that existed, since there is no
+  // migration and those are exactly the rows the fix was for.
+  it("repairs a legacy mixed-case row on read", async () => {
+    await env.DB
+      .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(JSON.stringify({ members: ["Tech@X.com"], anchorWeekStart: "2026-09-07" }))
+      .run();
     expect((await getOnCallRotation(env.DB)).members).toEqual(["tech@x.com"]);
   });
 
-  it("lowercases an override", async () => {
-    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "Tech@X.com" }), env.DB, ADMIN);
-    expect(await getOnCallOverride(env.DB, "2026-09-07")).toBe("tech@x.com");
+  // Two legacy entries differing only by case collapse to one string once lowercased, which the
+  // mobile list keys on -- duplicate keys make the reorder arrows act on the wrong row.
+  it("dedupes entries that differ only by case", async () => {
+    await env.DB
+      .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(JSON.stringify({ members: ["Tech@X.com", "tech@x.com"], anchorWeekStart: "2026-09-07" }))
+      .run();
+    expect((await getOnCallRotation(env.DB)).members).toEqual(["tech@x.com"]);
   });
 
   it("still catches a duplicate that differs only by case", async () => {
-    const res = await handlePutOnCall(put({ members: ["tech@x.com", "TECH@x.com"] }), env.DB, ADMIN);
+    const res = await handlePutOnCall(put({ members: ["tech@x.com", "TECH@x.com"] }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("twice");
   });

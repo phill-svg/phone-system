@@ -8,7 +8,7 @@ describe("handleGetStaffRoster", () => {
   it("lists every staff member's email/role/status", async () => {
     await env.DB.exec("DELETE FROM staff_users");
     await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES ('a@b.com', 'staff', ?)").bind(Date.now()).run();
-    const res = await handleGetStaffRoster(env.DB);
+    const res = await handleGetStaffRoster(env.DB, []);
     const roster = await res.json<{ email: string }[]>();
     expect(roster.map((r) => r.email)).toEqual(["a@b.com"]);
   });

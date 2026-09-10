@@ -2,6 +2,7 @@ import { getStaffRoster } from "../db/staff";
 import { isStaffAvailable, isOnShift } from "./presence";
 import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 import { resolveOnCallEmail } from "../db/onCall";
+import { excludeEmails as excludeList } from "../demo";
 
 // "on_call" resolves to the single person the weekly after-hours rotation names, which is a
 // deliberately DIFFERENT question from "who is on shift" -- see resolveRingTargets below.
@@ -32,7 +33,6 @@ export async function resolveRingTargets(
   now: Date,
   excludeEmails: string[] = []
 ): Promise<string[]> {
-  const excluded = new Set(excludeEmails.map((e) => e.trim().toLowerCase()));
   // The ROSTER read needs the same guard as the per-person read below, and for the same reason: a
   // throw here escapes startRing to the DO catch-all and hangs up on a live customer. Guarding only
   // the inner read left the outer one -- a single D1 blip away from the exact failure this exists to
@@ -48,7 +48,7 @@ export async function resolveRingTargets(
     );
     return [];
   }
-  const roster = all.filter((s) => !excluded.has(s.email.toLowerCase()));
+  const roster = excludeList(all, excludeEmails);
 
   // The on-call branch answers a different question from every other target, and deliberately
   // bypasses BOTH gates that the others apply.

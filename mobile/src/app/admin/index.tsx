@@ -95,15 +95,15 @@ export default function AdminHomeScreen() {
     <Screen>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         <Group title="Business" footer="These settings apply to the whole business, not just this phone.">
-          <Row icon="clock.fill" iconColor="#0A84FF" label="Business Hours" value={hours} chevron
+          <Row icon="clock.fill" iconFallback="time" iconColor="#0A84FF" label="Business Hours" value={hours} chevron
             onPress={() => router.push("/admin/business-hours")} />
-          <Row icon="hand.raised.fill" iconColor={t.colors.accent} label="Call Blocklist" value={blocked} chevron
+          <Row icon="hand.raised.fill" iconFallback="hand-left" iconColor={t.colors.accent} label="Call Blocklist" value={blocked} chevron
             onPress={() => router.push("/admin/blocklist")} />
-          <Row icon="phone.fill" iconColor="#34C759" label="Phone Numbers" value={numberCount} chevron
+          <Row icon="phone.fill" iconFallback="call" iconColor="#34C759" label="Phone Numbers" value={numberCount} chevron
             onPress={() => router.push("/admin/numbers")} />
           <Row icon="list.bullet.indent" iconFallback="git-branch" iconColor="#FF9F0A" label="Phone Menu" value={menuSteps} chevron
             onPress={() => router.push("/admin/ivr")} />
-          <Row icon="record.circle" iconColor="#FF9F0A" label="Call Recording"
+          <Row icon="record.circle" iconFallback="radio-button-on" iconColor="#FF9F0A" label="Call Recording"
             toggle={recording ?? false} onToggle={onToggleRecording} toggleDisabled={recording === null} />
         </Group>
 
@@ -118,24 +118,24 @@ export default function AdminHomeScreen() {
             "personal number. Recents here stays the reliable list, and calling back from the app uses the business number."
           }
         >
-          <Row icon="person.crop.circle.badge.questionmark" iconColor="#0A84FF" label="Show the customer's number"
+          <Row icon="person.crop.circle.badge.questionmark" iconFallback="help-circle" iconColor="#0A84FF" label="Show the customer's number"
             toggle={divertCallerId ?? false} onToggle={onToggleDivertCallerId} toggleDisabled={divertCallerId === null} />
         </Group>
 
         <Group title="Team" footer="Working hours, ring order, availability and account access for each staff member.">
-          <Row icon="person.2.fill" iconColor="#5E5CE6" label="Staff" value={staffCount} chevron
+          <Row icon="person.2.fill" iconFallback="people" iconColor="#5E5CE6" label="Staff" value={staffCount} chevron
             onPress={() => router.push("/admin/staff")} />
           <Row icon="moon.fill" iconFallback="moon" iconColor="#5856D6" label="After-hours On Call" value={onCall} chevron
             onPress={() => router.push("/admin/on-call")} />
         </Group>
 
         <Group title="Diagnostics" footer="Whether Twilio, ServiceM8, email and push are actually working right now — and a test notification you can send to your own phone.">
-          <Row icon="stethoscope" iconColor="#FF375F" label="Health Checks" chevron
+          <Row icon="stethoscope" iconFallback="medkit" iconColor="#FF375F" label="Health Checks" chevron
             onPress={() => router.push("/admin/diagnostics")} />
         </Group>
 
         <Group footer="The analytics dashboard is still web-only — open tcbvoip.app on a computer for that. The web IVR editor also draws the menu as a diagram, which is easier for a big rearrangement.">
-          <Row icon="info.circle.fill" iconColor="#8E8E93" label="Not on mobile" value="Analytics" />
+          <Row icon="info.circle.fill" iconFallback="information-circle" iconColor="#8E8E93" label="Not on mobile" value="Analytics" />
         </Group>
       </ScrollView>
     </Screen>

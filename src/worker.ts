@@ -1168,11 +1168,11 @@ export default {
       }
       // The after-hours on-call rotation. Under /api/admin/ and therefore admin-only by construction.
       if (url.pathname === "/api/admin/on-call") {
-        if (request.method === "GET") return handleGetOnCall(env.DB, demoEmails(env));
-        if (request.method === "PUT") return handlePutOnCall(request, env.DB, staff, demoEmails(env));
+        if (request.method === "GET") return handleGetOnCall(env.DB, env);
+        if (request.method === "PUT") return handlePutOnCall(request, env.DB, staff, env);
       }
       if (url.pathname === "/api/admin/on-call/override" && request.method === "PUT") {
-        return handlePutOnCallOverride(request, env.DB, staff, demoEmails(env));
+        return handlePutOnCallOverride(request, env.DB, staff, env);
       }
       // Health checks, and the two end-to-end tests that prove a chain rather than describe it.
       if (url.pathname === "/api/admin/client-errors" && request.method === "GET") {

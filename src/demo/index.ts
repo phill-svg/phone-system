@@ -19,6 +19,24 @@ export function demoEmails(env: DemoEnv): string[] {
     .filter(Boolean);
 }
 
+// The ONE place the demo account is filtered out of a staff list.
+//
+// This existed as three byte-identical copies (the ungated roster, the ring-target resolver, and
+// the on-call pickers), and the surface that skipped it is exactly where the bug turned up: Health
+// Checks reported "reviewer is on call, ringing +61..." over a rotation that rings nobody, because
+// resolveRingTargets drops the account at dial time and the check read the unfiltered list. Four
+// copies would have meant a fourth chance to miss one.
+export function excludeDemos<T extends { email: string }>(roster: T[], env: DemoEnv): T[] {
+  return excludeEmails(roster, demoEmails(env));
+}
+
+// The list-taking primitive, for the two callers that are already handed `demoEmails(env)` from
+// higher up rather than the env itself.
+export function excludeEmails<T extends { email: string }>(roster: T[], emails: string[]): T[] {
+  const excluded = new Set(emails.map((e) => e.trim().toLowerCase()));
+  return roster.filter((s) => !excluded.has(s.email.trim().toLowerCase()));
+}
+
 export function isDemoUser(email: string, env: DemoEnv): boolean {
   const address = email.trim().toLowerCase();
   return address.length > 0 && demoEmails(env).includes(address);

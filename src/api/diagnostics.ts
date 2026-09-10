@@ -3,7 +3,9 @@ import { listPhoneNumbers } from "../db/phoneNumbers";
 import { getStaffRoster } from "../db/staff";
 import { getDivertCallerId, getDivertCallerIdRejection } from "../db/settings";
 import { isStaffAvailable } from "../dial/presence";
-import { getOnCallRotation, resolveOnCallEmail } from "../db/onCall";
+import { readOnCallRotation, resolveOnCallEmail } from "../db/onCall";
+import { excludeDemos } from "../demo";
+import { isRingNodeReachingOnCall } from "../ivr/onCallWiring";
 import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 import { sendExpoPush } from "../push/expoPush";
 import { sendEmail, type SendEmailBinding } from "../email/sendgrid";
@@ -20,6 +22,10 @@ export type CheckStatus = "ok" | "warn" | "fail";
 export type Check = { key: string; label: string; status: CheckStatus; detail: string };
 
 type Env = {
+  // Carried so checkOnCall can apply the SAME demo exclusion the ring path applies. Its absence
+  // here is why the filter was missed on this surface: the write paths were closed and the
+  // reporting path silently was not.
+  DEMO_ACCOUNT_EMAILS?: string;
   DB: D1Database;
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
@@ -277,44 +283,53 @@ async function checkDivertCallerId(env: Env): Promise<Check> {
 // was never set, a name that left the business, or an override pointing at a departed tech. In all
 // of them the caller simply hears voicemail -- identical to having no rota at all, which is the
 // state this feature exists to end. So it is reported here rather than discovered in a month.
-// Does any step of the phone menu actually ROUTE to the rotation? Everything else about on-call
-// can be perfect and the answer still be no: the rota shipped inert, because `main`'s closed branch
-// was a voicemail node and nothing referenced `on_call` at all. Without this the screen reports
-// "phill is on call this week, ringing +61..." over a feature wired to nothing, and every
-// after-hours caller keeps reaching voicemail -- which is the precise silence this whole screen
-// exists to break.
-async function anyRingNodeTargetsOnCall(db: D1Database): Promise<boolean> {
-  const row = await db
-    .prepare("SELECT COUNT(*) AS n FROM ivr_nodes WHERE type = 'ring' AND json_extract(config, '$.target') = 'on_call'")
-    .first<{ n: number }>();
-  return (row?.n ?? 0) > 0;
-}
-
 async function checkOnCall(env: Env): Promise<Check> {
   const base = { key: "on_call", label: "After-hours on call" };
   try {
     const now = new Date();
-    const [email, wired] = await Promise.all([resolveOnCallEmail(env.DB, now), anyRingNodeTargetsOnCall(env.DB)]);
+    // The wired check is caught SEPARATELY. json_extract raises on a config column that is not
+    // valid JSON, and under a shared Promise.all that one bad IVR row would take out the whole
+    // on-call check -- so "nobody is on call", "the tech has left" and "no mobile saved" would all
+    // stop being reported because of an unrelated node. `null` means "could not verify".
+    const [email, wired] = await Promise.all([
+      resolveOnCallEmail(env.DB, now),
+      isRingNodeReachingOnCall(env.DB).catch((err) => {
+        console.log("ON_CALL_WIRING_CHECK_FAILED", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        return null;
+      }),
+    ]);
     if (!email) {
       // "Nobody is set" and "the stored value could not be read" both arrive here as null, and they
       // need different answers: the first is a thing to go and do, the second is a fault. Read the
       // rotation directly to tell them apart rather than sending someone to a Settings screen that
       // already shows a full rota.
-      const rotation = await getOnCallRotation(env.DB);
-      if (rotation.members.length > 0) {
+      const read = await readOnCallRotation(env.DB);
+      if (read.status === "unreadable") {
         return {
           ...base,
           status: "fail",
-          detail: "A rotation is saved but could not be resolved for this week — the stored value may be corrupt. Re-save it in Settings.",
+          detail: "A rotation is saved but its stored value cannot be read — after-hours callers go straight to voicemail. Re-save it in Settings.",
+        };
+      }
+      if (read.rotation.members.length > 0) {
+        return {
+          ...base,
+          status: "fail",
+          detail: "A rotation is saved but no week could be resolved from it. Re-save it in Settings.",
         };
       }
       return {
         ...base,
         status: "warn",
-        detail: "Nobody is on call this week — after-hours callers go straight to voicemail. Set the rotation in Settings.",
+        detail:
+          wired === false
+            ? "Nobody is on call this week, and no step of the phone menu rings the on-call person — after-hours callers go straight to voicemail. Both need doing: set the rotation in Settings, and add a ring step set to \"Whoever is on call\" on the closed branch of the phone menu."
+            : "Nobody is on call this week — after-hours callers go straight to voicemail. Set the rotation in Settings.",
       };
     }
-    const roster = await getStaffRoster(env.DB);
+    // The SAME exclusion resolveRingTargets applies at dial time. Without it this reported
+    // "reviewer is on call, ringing +61..." over a rotation that rings nobody.
+    const roster = excludeDemos(await getStaffRoster(env.DB), env);
     const person = roster.find((s) => s.email.toLowerCase() === email.toLowerCase());
     if (!person) {
       return {
@@ -328,6 +343,17 @@ async function checkOnCall(env: Env): Promise<Check> {
     const prefs = await getUserSettings(env.DB, person.email);
     const mobile = normalizeMobileE164(prefs.mobile_number);
     const who = person.email.split("@")[0];
+    // Reported FIRST, because it is the more severe answer and it subsumes the other: with the
+    // menu unwired the call reaches neither their mobile nor their app, so "no mobile saved, the
+    // call can only reach their app" would be actively misleading. Adding a mobile and re-running
+    // is not how anyone should discover the whole feature is inert.
+    if (wired === false) {
+      return {
+        ...base,
+        status: "fail",
+        detail: `${who} is on call this week, but no step of the phone menu rings the on-call person — after-hours callers still reach voicemail. Add a ring step set to "Whoever is on call" on the closed branch.`,
+      };
+    }
     if (!mobile) {
       return {
         ...base,
@@ -335,12 +361,8 @@ async function checkOnCall(env: Env): Promise<Check> {
         detail: `${who} is on call this week but has no mobile number saved, so the call can only reach their app. Add one on their staff record.`,
       };
     }
-    if (!wired) {
-      return {
-        ...base,
-        status: "fail",
-        detail: `${who} is on call this week, but no step of the phone menu rings the on-call person — after-hours callers still reach voicemail. Add a ring step set to "Whoever is on call" on the closed branch.`,
-      };
+    if (wired === null) {
+      return { ...base, status: "warn", detail: `${who} is on call this week, ringing ${mobile} — but the phone menu could not be read to confirm a step routes to them.` };
     }
     return { ...base, status: "ok", detail: `${who} is on call this week, ringing ${mobile}.` };
   } catch (e) {
