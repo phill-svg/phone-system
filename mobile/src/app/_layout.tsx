@@ -10,12 +10,26 @@ import { RegistrationProvider } from "../lib/registration";
 import { useTheme, ThemeProvider } from "../theme/theme";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { installCrashReporter, flushCrashQueue, setCurrentScreen } from "../lib/crashReport";
+import { primePushRegistry } from "../lib/voice";
 
 const queryClient = new QueryClient();
 
 // Installed at module scope, before any component renders, so an error thrown while the tree is
 // first mounting is still caught -- that is precisely when the worst ones happen.
 installCrashReporter();
+
+// Before ANY of the tree renders, and deliberately not inside a component: a VoIP push wakes the
+// app in the background with about five seconds to report the call to CallKit before iOS kills it
+// (0xBAADCA11). Waiting for auth and navigation to settle first is what was losing that race.
+//
+// This import pulls @twilio/voice-react-native-sdk into the ROOT layout's module graph, and the SDK
+// does native lookups at import time -- outside anything the Platform guard or the catch inside
+// primePushRegistry can cover. Accepted knowingly: the framework is compiled into every build of
+// this app (TwilioVoice.framework is right there in the 2026-09-10 crash log's loaded images), so
+// there is no build on which this import can fail. If the SDK is ever made optional, this must
+// become a lazy require -- otherwise it moves an SDK-missing failure from the login screen to a
+// launch crash with no UI at all.
+void primePushRegistry();
 
 function RootNavigator() {
   const t = useTheme();
