@@ -383,6 +383,41 @@ export async function setCallBlocklist(numbers: string[]): Promise<void> {
   await apiFetch("/api/settings/call-blocklist", { method: "PUT", body: JSON.stringify(numbers) });
 }
 
+// ---- Admin: after-hours on call ----
+
+// One person per week is rung when nobody is on shift. The weeks come back already resolved by the
+// server -- overrides applied, rotation advanced -- so this screen never re-implements the rule and
+// cannot disagree with what a real call does.
+export type OnCallWeek = {
+  weekStart: string;
+  email: string | null;
+  source: "rotation" | "override" | "nobody";
+};
+
+export type OnCallState = {
+  rotation: { members: string[]; anchorWeekStart: string };
+  thisWeek: string;
+  weeks: OnCallWeek[];
+  unknownMembers: string[];
+  staff: string[];
+};
+
+export async function getOnCall(): Promise<OnCallState> {
+  return apiFetch<OnCallState>("/api/admin/on-call");
+}
+
+export async function setOnCallRotation(members: string[], anchorWeekStart?: string): Promise<void> {
+  await apiFetch("/api/admin/on-call", {
+    method: "PUT",
+    body: JSON.stringify(anchorWeekStart ? { members, anchorWeekStart } : { members }),
+  });
+}
+
+// `email: null` clears the week back to whatever the rotation says.
+export async function setOnCallOverride(weekStart: string, email: string | null): Promise<void> {
+  await apiFetch("/api/admin/on-call/override", { method: "PUT", body: JSON.stringify({ weekStart, email }) });
+}
+
 // ---- Admin: staff ----
 
 export type AdminStaff = {

@@ -3,6 +3,8 @@ import { listPhoneNumbers } from "../db/phoneNumbers";
 import { getStaffRoster } from "../db/staff";
 import { getDivertCallerId, getDivertCallerIdRejection } from "../db/settings";
 import { isStaffAvailable } from "../dial/presence";
+import { resolveOnCallEmail } from "../db/onCall";
+import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 import { sendExpoPush } from "../push/expoPush";
 import { sendEmail, type SendEmailBinding } from "../email/sendgrid";
 import type { StaffUser } from "../access/requireStaffUser";
@@ -270,22 +272,67 @@ async function checkDivertCallerId(env: Env): Promise<Check> {
   }
 }
 
+// Is anybody covering tonight? The whole point of the rota is the call that arrives when the office
+// is shut, and every way it can fail is silent from the outside: an empty rotation, an anchor that
+// was never set, a name that left the business, or an override pointing at a departed tech. In all
+// of them the caller simply hears voicemail -- identical to having no rota at all, which is the
+// state this feature exists to end. So it is reported here rather than discovered in a month.
+async function checkOnCall(env: Env): Promise<Check> {
+  const base = { key: "on_call", label: "After-hours on call" };
+  try {
+    const now = new Date();
+    const email = await resolveOnCallEmail(env.DB, now);
+    if (!email) {
+      return {
+        ...base,
+        status: "warn",
+        detail: "Nobody is on call this week — after-hours callers go straight to voicemail. Set the rotation in Settings.",
+      };
+    }
+    const roster = await getStaffRoster(env.DB);
+    const person = roster.find((s) => s.email.toLowerCase() === email.toLowerCase());
+    if (!person) {
+      return {
+        ...base,
+        status: "fail",
+        detail: `${email} is on call this week but is no longer a staff member. After-hours calls go to voicemail.`,
+      };
+    }
+    // A rotation entry with no mobile still rings, but only via the softphone -- the one leg that
+    // depends on a backgrounded app waking up, at the hour when nobody is watching it.
+    const prefs = await getUserSettings(env.DB, person.email);
+    const mobile = normalizeMobileE164(prefs.mobile_number);
+    const who = person.email.split("@")[0];
+    if (!mobile) {
+      return {
+        ...base,
+        status: "warn",
+        detail: `${who} is on call this week but has no mobile number saved, so the call can only reach their app. Add one on their staff record.`,
+      };
+    }
+    return { ...base, status: "ok", detail: `${who} is on call this week, ringing ${mobile}.` };
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't check: ${e instanceof Error ? e.message : "error"}` };
+  }
+}
+
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {
   // The names below are POSITIONAL: each binding takes whatever the call in the same position
   // returns. Keep the two lists in the same order and the same length -- adding a call without a
   // binding silently shifts every one after it and drops the last check off the end entirely, which
   // is exactly what happened when the transcripts check was first added here.
-  const [twilio, regions, roster, divert, servicem8, transcripts, push] = await Promise.all([
+  const [twilio, regions, roster, onCall, divert, servicem8, transcripts, push] = await Promise.all([
     checkTwilioCredentials(env),
     checkNumberRegions(env),
     checkRingRoster(env),
+    checkOnCall(env),
     checkDivertCallerId(env),
     checkServiceM8(env),
     checkCallTranscripts(env),
     checkPushTokens(env, staff),
   ]);
   // Display order, which is deliberately not the call order.
-  return jsonResponse([twilio, regions, roster, divert, servicem8, transcripts, checkEmail(env), push]);
+  return jsonResponse([twilio, regions, roster, onCall, divert, servicem8, transcripts, checkEmail(env), push]);
 }
 
 // End-to-end push: the only proof that the whole chain works is a phone buzzing. Deliberately sent

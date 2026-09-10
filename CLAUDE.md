@@ -355,6 +355,38 @@ before adding one, or you will duplicate a path that already works.
   after the handset moved (#65), and `CallSession` writes `ivr_path` on the voicemail handoff — so
   **no call that reached voicemail was ever marked missed on the web**, which is exactly the set
   that still needs ringing back. Both surfaces now answer it identically; change them together.
+- **After-hours calls ring an ON-CALL rotation, which is a different question from "who is on
+  shift".** Before this, the closed branch of `business_hours` went straight to the "after hours"
+  voicemail node and every call outside business hours reached a machine — not a bug in the IVR but
+  a consequence of `resolveRingTargets` only ever returning people who are on shift, which after
+  hours is nobody, by construction. The `on_call` ring target names ONE person per week and
+  deliberately bypasses **both** gates the other targets apply. The schedule is bypassed because
+  that is the entire point. `status` is bypassed for a less obvious reason: `away`/`offline` is a
+  live signal meant for the working day and it is STICKY, so someone who set Away at 4pm and went
+  home still carries it at 11pm — honouring it would let one forgotten toggle silently disable the
+  whole rota, caller hearing voicemail, nothing anywhere saying why. Being on call IS the commitment
+  to be rung; the way out is to swap the week.
+  It also **overrides ring-my-mobile** and always dials the personal mobile, which is the one place
+  this system overrides a staff preference: the softphone leg depends on a backgrounded app being
+  woken by a VoIP push, which is the weakest link at 2am and is exactly what iOS was killing on
+  2026-09-10. No mobile saved falls back to the softphone rather than to nobody.
+- **The rota does NOTHING until the IVR points at it, and as of 2026-09-10 it does not.** There is
+  no `after_hours` flow in D1 at all (only `main`), and `main`'s closed branch is `n_7lrp841`, a
+  voicemail node. The ring node has to be added on the closed branch with "Whoever is on call" as
+  its target — web-only, `/admin/ivr/main`. The recommended shape is a `gather` first ("press 1 if
+  this is urgent, otherwise leave a message") so routine after-hours enquiries still go to voicemail
+  and the rota survives past a month.
+- **Rotation weeks run Monday→Monday in Australia/Sydney, and the anchor MUST be a Monday.**
+  `weekStartKey` resolves the Sydney calendar date FIRST and only then shifts back to Monday: read
+  the UTC weekday first and Monday 09:00 in Canberra (Sunday 23:00 UTC) counts into the previous
+  week and rings last week's tech — most of every Monday morning, not an edge case. The arithmetic
+  afterwards runs in UTC on a bare calendar date so a 23-hour daylight-saving day cannot move a
+  boundary. A non-Monday anchor would shift every boundary forever and is refused on write, as is a
+  member who is not staff (a typo fails SILENTLY at 2am — the week comes round, nobody matches, the
+  caller hears voicemail exactly as though no rota existed) and a duplicate (not an error at ring
+  time, just two weeks in the cycle, which reads as a mysteriously unfair rota months later).
+  A per-week OVERRIDE covers swaps and applies to that week only — it never shifts the rotation.
+  Health Checks reports who is on call, a rotation member who has left, and a member with no mobile.
 - **A completed password reset invalidates the account's OTHER tokens and its lockout.**
   `issueToken` always INSERTs, so two clicks of "Send reset" leave two live links; consuming one
   used to leave the other valid for the rest of its hour, and whoever held the older email could
@@ -424,7 +456,9 @@ before adding one, or you will duplicate a path that already works.
   `null` parses fine and then throws in `isWithinBusinessHours`, so the SHAPE is checked with
   `isBusinessHoursSchedule`. The fourth member of this family is `playFromConfig`: a wait node with a
   blank `audioAssetId` (`""` survives `?? null`) throws in `resolveAudioCommands`, and one with both
-  fields set throws in `renderHold`. **Anything new that reads or parses inside `startRing` joins
+  fields set throws in `renderHold`. The fifth is `resolveOnCallEmail` (two D1 reads plus a
+  `JSON.parse` of the stored rotation), guarded the same way and falling back to "nobody on call",
+  which the ring node already handles. **Anything new that reads or parses inside `startRing` joins
   this list.**
 - **A Twilio status callback may not erase what an earlier one recorded.** Twilio's callbacks are
   **not ordered**, so a late `sent` landing after a `failed` used to overwrite the terminal status
@@ -580,6 +614,21 @@ before adding one, or you will duplicate a path that already works.
   source text is not a test** — the first version of both the crash-write test and the PushKit test
   passed with the fix fully reverted, one because the fake keychain mutated synchronously and one
   because `indexOf` matched the comment naming the function.
+- **`npm test` cannot run without a Cloudflare login, and the reason is the `ai` binding.**
+  Workers AI is remote-only, so vitest-pool-workers tries to open a remote proxy session at CONFIG
+  PARSE time and dies with "You must be logged in to use wrangler dev in remote mode" before a
+  single test file loads — which looks like a broken checkout rather than a missing credential. In a
+  sandbox with no `CLOUDFLARE_API_TOKEN`, copy `wrangler.jsonc` without the `"ai"` key and point a
+  throwaway vitest config at it (`--config`); every suite including `transcribe` passes, because
+  they mock the binding anyway. Delete both files afterwards — they must never be committed.
+- **`process.env.TZ` set inside a test does NOTHING, and that made a timezone test theatre.** Node
+  caches the zone, so a test that loops over timezones asserting a date renders identically passes
+  just as happily against code reading LOCAL date parts, whenever the suite itself runs in UTC —
+  which is the default here and in CI. The first version of `mobile/__tests__/onCall.test.ts`
+  passed with the fix fully reverted, the third instance of the lesson already recorded for the
+  crash-write and PushKit tests. The invariant is "never reads local parts", so that is what is
+  pinned now: spy on `Date.prototype.getDate`/`getMonth`/`getFullYear`/`getDay` and assert they were
+  never called. That version fails under any ambient timezone.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
   a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and

@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleGetDiagnostics, handleTestPush, handleTestEmail, type Check } from "../../src/api/diagnostics";
 import { recordDivertCallerIdRejection, clearDivertCallerIdRejection, setDivertCallerId } from "../../src/db/settings";
+import { setUserSettings } from "../../src/db/userSettings";
 
 const ADMIN = { email: "phill@tcbpestcontrolcanberra.com.au", role: "admin" as const };
 const TOKEN = "ExponentPushToken[test-device-1]";
@@ -109,7 +110,7 @@ describe("admin diagnostics", () => {
   it("returns every check, with no key lost or duplicated", async () => {
     stubFetch();
     const keys = (await run()).map((c) => c.key);
-    expect(keys).toEqual(["twilio", "regions", "roster", "divert_caller_id", "servicem8", "transcripts", "email", "push"]);
+    expect(keys).toEqual(["twilio", "regions", "roster", "on_call", "divert_caller_id", "servicem8", "transcripts", "email", "push"]);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
@@ -212,4 +213,71 @@ describe("test email", () => {
     stubFetch();
     expect(find(await run(), "divert_caller_id").status).toBe("ok");
   });
+
+  // The rota's failure modes are ALL silent from the outside -- an empty rotation, a departed tech,
+  // a missing mobile -- and every one of them ends with the after-hours caller hearing voicemail,
+  // which is indistinguishable from having no rota at all. That is the state this feature exists to
+  // end, so it is reported here rather than discovered in a month.
+  describe("after-hours on call", () => {
+    const CLOSED = JSON.stringify({ mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null });
+
+    beforeEach(async () => {
+      await env.DB.exec("DELETE FROM on_call_overrides");
+      await env.DB.prepare("DELETE FROM settings WHERE key = 'on_call_rotation'").run();
+      await env.DB.prepare("DELETE FROM staff_users WHERE email LIKE '%@oncall.test'").run();
+      await env.DB.exec("DELETE FROM user_settings");
+    });
+
+    async function addTech(email: string) {
+      await env.DB
+        .prepare("INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', 1, 'available', ?, NULL, 100)")
+        .bind(email, CLOSED)
+        .run();
+    }
+
+    async function setRotation(members: string[]) {
+      await env.DB
+        .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(JSON.stringify({ members, anchorWeekStart: "2026-09-07" }))
+        .run();
+    }
+
+    it("warns when nobody is on call at all", async () => {
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("straight to voicemail");
+    });
+
+    it("fails when the rotation names someone who has left", async () => {
+      await setRotation(["departed@oncall.test"]);
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("departed@oncall.test");
+    });
+
+    // Still rings, but only the softphone -- the leg that depends on a backgrounded app waking up,
+    // at the hour nobody is watching it.
+    it("warns when the on-call tech has no mobile saved", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("no mobile number");
+    });
+
+    it("names who is on call and the number that will ring", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("tech");
+      expect(check.detail).toContain("+61412345678");
+    });
+  });
+
 });

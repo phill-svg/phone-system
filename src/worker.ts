@@ -26,6 +26,7 @@ import {
   handleGetDivertCallerIdSetting,
   handlePutDivertCallerIdSetting,
 } from "./api/settings";
+import { handleGetOnCall, handlePutOnCall, handlePutOnCallOverride } from "./api/onCall";
 import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
 import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
@@ -1164,6 +1165,14 @@ export default {
       // Full staff detail for the mobile Admin screens. Gated above with the rest of /api/admin/.
       if (url.pathname === "/api/admin/staff" && request.method === "GET") {
         return handleGetStaffAdminList(env.DB);
+      }
+      // The after-hours on-call rotation. Under /api/admin/ and therefore admin-only by construction.
+      if (url.pathname === "/api/admin/on-call") {
+        if (request.method === "GET") return handleGetOnCall(env.DB);
+        if (request.method === "PUT") return handlePutOnCall(request, env.DB, staff);
+      }
+      if (url.pathname === "/api/admin/on-call/override" && request.method === "PUT") {
+        return handlePutOnCallOverride(request, env.DB, staff);
       }
       // Health checks, and the two end-to-end tests that prove a chain rather than describe it.
       if (url.pathname === "/api/admin/client-errors" && request.method === "GET") {

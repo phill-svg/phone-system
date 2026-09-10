@@ -9,6 +9,7 @@ import {
   getCallBlocklist,
   getDivertCallerIdSetting,
   getNumbers,
+  getOnCall,
   getRecordingSetting,
   setDivertCallerIdSetting,
   setRecordingSetting,
@@ -27,6 +28,7 @@ export default function AdminHomeScreen() {
   const [numberCount, setNumberCount] = useState<string>("…");
   const [recording, setRecording] = useState<boolean | null>(null);
   const [divertCallerId, setDivertCallerId] = useState<boolean | null>(null);
+  const [onCall, setOnCall] = useState<string>("…");
 
   // Refetch on focus so the summaries are right after editing one of the sub-screens.
   useFocusEffect(
@@ -50,6 +52,15 @@ export default function AdminHomeScreen() {
       getDivertCallerIdSetting()
         .then((v) => alive && setDivertCallerId(v))
         .catch(() => {});
+      // The summary answers the only question that matters at a glance -- is tonight covered -- so
+      // it names this week's person rather than counting the rotation.
+      getOnCall()
+        .then((s) => {
+          if (!alive) return;
+          const now = s.weeks[0];
+          setOnCall(now && now.email ? now.email.split("@")[0] : "Nobody");
+        })
+        .catch(() => alive && setOnCall("—"));
       return () => {
         alive = false;
       };
@@ -106,6 +117,8 @@ export default function AdminHomeScreen() {
         <Group title="Team" footer="Working hours, ring order, availability and account access for each staff member.">
           <Row icon="person.2.fill" iconColor="#5E5CE6" label="Staff" value={staffCount} chevron
             onPress={() => router.push("/admin/staff")} />
+          <Row icon="moon.fill" iconColor="#5856D6" label="After-hours On Call" value={onCall} chevron
+            onPress={() => router.push("/admin/on-call")} />
         </Group>
 
         <Group title="Diagnostics" footer="Whether Twilio, ServiceM8, email and push are actually working right now — and a test notification you can send to your own phone.">
