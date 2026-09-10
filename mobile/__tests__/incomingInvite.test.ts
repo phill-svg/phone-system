@@ -34,6 +34,10 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
     }
     async initializePushRegistry() {}
     async register() {}
+    pendingInvites = new Map<string, any>();
+    async getCallInvites() {
+      return this.pendingInvites;
+    }
   }
   const Voice: any = jest.fn().mockImplementation(() => {
     mockVoiceRef.current = new FakeVoice();
@@ -191,6 +195,45 @@ describe("incoming invite lifecycle", () => {
 
     await expect(voiceLib.acceptIncoming()).resolves.not.toBeNull();
     expect(invite.accepted).toBe(true);
+    unsub();
+  });
+
+  // The native module is built during launch now, so a cold launch from a VoIP push can ring and
+  // even be answered from CallKit before JS subscribes -- and the SDK does not re-emit an event
+  // nobody was listening for. Without this replay the app holds no invite for a call that is
+  // audibly ringing in the user's hand.
+  it("adopts an invite the native layer was already holding before JS subscribed", async () => {
+    const invite = makeInvite(CallInviteState.Pending);
+    const onInvite = jest.fn();
+
+    // Seeded BEFORE registering, which is the whole point: it arrived while JS was still booting.
+    mockVoiceRef.current.pendingInvites = new Map([["uuid-1", invite]]);
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    await new Promise((r) => setImmediate(r));
+
+    expect(voiceLib.getPendingInvite()).toBe(invite);
+    expect(onInvite).toHaveBeenCalledWith("+61400000000");
+    unsub();
+  });
+
+  it("does not announce an invite twice when the event arrived first", async () => {
+    const invite = makeInvite(CallInviteState.Pending);
+    const onInvite = jest.fn();
+
+    // Hold the replay open so the event provably lands first, which is the ordering that would
+    // otherwise ring the user twice for one call.
+    let release: (invites: Map<string, unknown>) => void = () => {};
+    mockVoiceRef.current.getCallInvites = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    mockVoiceRef.current.emit("callInvite", invite);
+    release(new Map([["uuid-1", invite]]));
+    await new Promise((r) => setImmediate(r));
+
+    expect(onInvite).toHaveBeenCalledTimes(1);
     unsub();
   });
 });

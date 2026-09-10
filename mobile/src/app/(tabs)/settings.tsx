@@ -6,7 +6,8 @@ import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { Group, Row } from "../../components/ui/Grouped";
 import { Segmented } from "../../components/ui/Segmented";
-import { OTA_BUILD } from "../../lib/build";
+import Constants from "expo-constants";
+import { OTA_BUILD, buildLabel } from "../../lib/build";
 import { BASE_URL, getRecordingSetting, setRecordingSetting, getMe, setPresence } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useRegistration, REG_META } from "../../lib/registration";
@@ -237,7 +238,7 @@ export default function SettingsScreen() {
         <Group title="About">
           <Row icon="info.circle.fill" iconColor="#8E8E93" label="Version" value="1.0.0" />
           <Row icon="wifi" iconColor="#FF9F0A" label={testing ? "Testing…" : "Test Connection"} value={lastTest ?? undefined} chevron onPress={testConnection} />
-          <Row icon="arrow.triangle.2.circlepath" iconColor="#34C759" label={checking ? "Checking…" : "Check for Updates"} value={`#${OTA_BUILD}`} chevron onPress={checkForUpdates} />
+          <Row icon="arrow.triangle.2.circlepath" iconColor="#34C759" label={checking ? "Checking…" : "Check for Updates"} value={buildLabel(Constants.nativeBuildVersion ?? null)} chevron onPress={checkForUpdates} />
           <Row icon="lifepreserver" iconColor="#0A84FF" label="Support" chevron onPress={() => Linking.openURL("mailto:phill@tcbpestcontrolcanberra.com.au")} />
           <Row icon="hand.raised.fill" iconColor="#5E5CE6" label="Privacy Policy" chevron onPress={() => Linking.openURL(`${BASE_URL}/privacy`)} />
           <Row icon="doc.text.fill" iconColor="#8E8E93" label="Terms of Service" chevron onPress={() => Linking.openURL(`${BASE_URL}/terms`)} />

@@ -294,6 +294,24 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     onInvite(invite.getFrom());
   };
   voice.on(Voice.Event.CallInvite, handler);
+  // An invite delivered BEFORE this listener existed is never re-emitted -- the SDK's
+  // sendEventWithName is a no-op until JS subscribes. That window is real now that the native
+  // module is built during launch (mobile/plugins/TwilioEarlyInit.swift): a cold launch from a
+  // VoIP push reports the call to CallKit natively and starts ringing while the bundle is still
+  // booting, so the phone can be answered from the CallKit screen with JS holding no invite at
+  // all -- an in-call screen driving nothing, which is the shape of the unresolved "no hang-up
+  // button" report. The SDK keeps pending invites, so ask for the one already in flight.
+  // Deliberately not awaited: registration must not wait on it, and a missing method (an older
+  // SDK) must degrade to today's behaviour rather than break registering entirely.
+  void Promise.resolve()
+    .then(() => voice.getCallInvites())
+    .then((invites) => {
+      // Only when nothing came through the event first, so an invite is never announced twice.
+      if (pendingInvite) return;
+      const [waiting] = Array.from(invites.values());
+      if (waiting) handler(waiting);
+    })
+    .catch(() => {});
   const onRegistered = () => setRegStatus("registered ✓");
   const onError = (e: unknown) => setRegStatus("error: " + ((e as { message?: string })?.message ?? String(e)));
   voice.on(Voice.Event.Registered, onRegistered);

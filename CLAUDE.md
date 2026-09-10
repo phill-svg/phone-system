@@ -461,16 +461,64 @@ is normal, not broken.
   its `expo-module.config.json` is `"platforms": ["android"]`, so nothing wires it up natively on
   iOS. It used to be called deep inside `registerForIncoming`, behind the bundle booting, auth,
   the tabs mounting, a permission check and a network round trip; `primePushRegistry()` now runs at
-  module scope in the root layout instead (OTA 59). **That is a mitigation, not a cure** — the cure
-  installs the registry natively before JS runs, and the trap there is that
-  `TwilioVoiceReactNative`'s `init` also calls `initializeCallKit`, so instantiating it early from
-  an `ExpoAppDelegateSubscriber` creates a **second CallKit provider** racing the bridge's own.
+  module scope in the root layout instead (OTA 59). **That is a mitigation, not a cure** — the next
+  bullet is the cure, and why moving the call earlier in JS could never have been enough here.
   Ruled out along the way, so do not re-check: `expo-updates` is not delaying launch
   (`launchWaitMs` defaults to 0 — it launches straight from cache), and no native module was added
   after the installed binary was built.
   **The business symptom is missed calls, not a crash anyone sees.** The 10:01 call on 2026-09-10
   rang twice and went to voicemail with `answered = 0`: the handset was not ignoring the customer,
   the handset was being killed. Any report of "it rang but nobody could answer" starts here.
+- **The cure is `extraModulesForBridge:`, and the New Architecture is why it has to be.** Priming
+  the registry earlier *in JS* can never be enough on this app: `newArchEnabled` defaults to true
+  (and reanimated 4 requires it, so turning it off is not on the table), and under bridgeless React
+  Native a legacy native module is built **lazily, the first time JS touches `NativeModules.X`**.
+  `TwilioVoiceReactNative` is a legacy `RCTEventEmitter`, and it is the object that observes the
+  push notification and calls `reportNewIncomingCall` — so on a cold launch from a VoIP push
+  nothing is listening until Hermes has evaluated the bundle, whichever line of JS runs first.
+  (Under the OLD architecture `RCTCxxBridge` eagerly builds every `requiresMainQueueSetup` module in
+  parallel with loading JS, which is what makes this an architecture question rather than a
+  code-ordering one.)
+  The hook that runs earlier is `RCTTurboModuleManager`'s: it asks its delegate for modules the app
+  has already built (`_legacyEagerlyInitializedModules`, populated from `extraModulesForBridge:`)
+  and consults that **before** the `[moduleClass new]` fallback, while the React host starts and
+  before the bundle loads. The chain is `RCTTurboModuleManager` → `RCTInstance` →
+  `ExpoReactNativeFactory` → the app's own `ReactNativeDelegate`, each link forwarding only if the
+  next `respondsToSelector:`. So `mobile/plugins/withTwilioEarlyInit.js` appends
+  `TwilioEarlyInit.swift` to the generated `AppDelegate.swift`, which builds the module there and
+  primes its push registry. Handing back **our** instance is also what avoids the second CallKit
+  provider that makes the obvious version of this fix worse than the bug: React Native adopts it
+  instead of constructing one of its own.
+  A few things to know before touching it. It anchors on
+  `class <Name>: ExpoReactNativeFactoryDelegate` and throws at prebuild if the Expo template renames
+  that class — loud, not silent. The extension has to live in the app's own Swift module, which is
+  why this is appended to `AppDelegate.swift` rather than shipped as a local Expo module. JS still
+  calls `initializePushRegistry` at module scope, and on a patched binary that **replaces** the
+  native registry rather than adding to it — `initializePushRegistry` assigns a fresh
+  `TwilioVoicePushRegistry` to a strong property, so the first one deallocates — leaving a
+  microsecond with no VoIP registration. Kept anyway, deliberately: the same OTA serves handsets
+  still on the older binary, where that call is the only registry there is, and JS cannot tell the
+  two apart. Skipping it wrongly would silently disable incoming calls altogether, which is far
+  worse than a window nothing realistically lands in. And **this ships in a native build only,
+  never by OTA**: an OTA cannot change `AppDelegate.swift`, so Settings now prints the native build
+  beside the OTA number (`#60 · b5`) — that `b` half is what says whether the fix is on the handset,
+  and it is the ONLY thing that does.
+  Verified as far as it can be from here by running `npx expo prebuild --platform ios` and reading
+  the generated file; nothing short of a device proves it works.
+  Two more consequences. The module is handed over **once** — React Native's own contract is
+  "always return a new instance for each call, rather than returning the same instance each time
+  the bridge is reloaded", and a module carries per-JS-context state — so after the first React
+  host we stand aside and a reload gets a fresh one. And every failure path returns nil, meaning
+  "React Native, build it yourself", including the case where the SDK ever becomes a TurboModule:
+  RN silently DISCARDS a handed-back instance that conforms to `RCTTurboModule`, which would leave
+  ours alive as a second CallKit provider — the exact trap this design exists to avoid.
+- **An invite that lands before JS subscribes is never re-emitted, and that window is now real.**
+  The SDK's `sendEventWithName` is a no-op until JS calls `addListener`, so with the module alive
+  from native launch a cold VoIP wake can ring, and be answered from the CallKit screen, while JS
+  holds no `CallInvite` at all — an in-call screen driving nothing, which is the shape of the
+  unresolved "no hang-up button" report. `registerForIncoming` therefore replays
+  `voice.getCallInvites()` once its listener is attached, guarded on `pendingInvite` so an invite
+  that did arrive by event is never announced twice.
 - **`placeCall` de-duplicates by TIME, and that is deliberate.** Reported as "it rang my mobile
   twice"; `calls` held two outbound legs to one customer two seconds apart. Nothing retries — the
   app sent the request twice, because none of the five call sites guards the button and the only
