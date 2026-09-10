@@ -4,9 +4,11 @@ Listing copy, declarations and demo credentials live in
 `../specs/2026-08-28-playstore-listing.md`. This file is the mechanical path from a clean
 checkout to a build sitting on a Play track.
 
-Like the iOS runbook, this **cannot be automated from CI here** — it needs a Google Play
-Console account, a Google Cloud service account key, and an `eas` login. Run it from a machine
-signed in to both.
+This **cannot be automated from CI here** — it needs a Google Play Console account, a Google Cloud
+service account key, and an `eas` login. Run it from a machine signed in to both. (iOS submission
+is not the same: `.github/workflows/submit-ios.yml` uploads to TestFlight from the Actions tab,
+because that team has no Mac. The same shape would work for Play if the service-account JSON were
+ever put in a repository secret.)
 
 Everything below runs from `mobile/`.
 
