@@ -21,7 +21,7 @@
         "aps-environment": "production"
       },
       "bundleIdentifier": "au.com.tcbpestcontrolcanberra.tcbphone",
-      "buildNumber": "3"
+      "buildNumber": "4"
     },
     "android": {
       "package": "au.com.tcbpestcontrolcanberra.tcbphone",
