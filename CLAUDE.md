@@ -191,7 +191,9 @@ is normal, not broken.
   global handler chains to the previous one (observes, does not change behaviour) and an error
   boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
   (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
-  falling over must be able to say so whoever holds it). Handsets are on **OTA 57**.
+  falling over must be able to say so whoever holds it). Handsets are on **OTA 60**, and the first
+  binary carrying the native CallKit fix is **build 5** (2026-09-10) — Settings shows both as
+  `#60 · b5`.
 - **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
   the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
   moving it again means moving the grep in the same commit or every publish fails at "Read
@@ -510,7 +512,9 @@ is normal, not broken.
   lands BEFORE `startReactNative`) and `// tcb:file-scope` (the helper class), and the plugin also
   adds `import ObjectiveC`. It throws at prebuild if those anchors move — loud, not silent.
   **None of this Swift is compiled by `npm test`, `tsc` or prebuild**, so treat every edit to it as
-  unverified until an EAS build goes green. JS still
+  unverified until an EAS build goes green. The `class_addMethod` version went green on the fourth
+  attempt — **build 5, 2026-09-10** — so that shape is known to compile; the three above are known
+  not to. JS still
   calls `initializePushRegistry` at module scope, and on a patched binary that **replaces** the
   native registry rather than adding to it — `initializePushRegistry` assigns a fresh
   `TwilioVoicePushRegistry` to a strong property, so the first one deallocates — leaving a
