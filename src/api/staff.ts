@@ -10,7 +10,7 @@ import { isBusinessHoursSchedule } from "../ivr/businessHours";
 
 // `excludeEmails` drops the App Review demo account: it is not a colleague, so it should not
 // appear in the softphone's transfer picker where someone could hand it a real customer's call.
-export async function handleGetStaffRoster(db: D1Database, excludeEmails: string[] = []): Promise<Response> {
+export async function handleGetStaffRoster(db: D1Database, excludeEmails: string[]): Promise<Response> {
   const roster = excludeList(await getStaffRoster(db), excludeEmails);
   return jsonResponse(roster.map((s) => ({ email: s.email, role: s.role, status: s.status })));
 }

@@ -33,6 +33,11 @@ export default function OnCallScreen() {
       .catch(() => setError("Couldn't load the rotation."));
   }, []);
 
+  // Declared ABOVE the focus effect that reads it. useFocusEffect defers its body into a
+  // useEffect so the current order happens to work, but anything that ran the callback during
+  // render would hit the const temporal dead zone and blank the screen on mount.
+  const dirtyRef = useRef(false);
+
   // Passing `dirty` through is the point: load() runs on every screen focus, so an Alert or a
   // notification tap that briefly defocuses the screen would otherwise silently discard a reorder
   // and take the Save button with it.
@@ -42,9 +47,6 @@ export default function OnCallScreen() {
     }, [load])
   );
 
-  // Mirrored into a ref so the focus effect can read it without re-subscribing on every keystroke
-  // of an edit -- the effect must not re-run just because the list changed.
-  const dirtyRef = useRef(false);
   const dirty =
     state !== null &&
     (state.rotation.members.length !== members.length || state.rotation.members.some((m, i) => m !== members[i]));
@@ -71,10 +73,15 @@ export default function OnCallScreen() {
     // every week, so adding or removing anyone can hand the current week to someone else, mid-week,
     // with no warning. The eight-week preview only refreshes AFTER the write, so this is the one
     // moment it can be said before it is true.
+    // Skipped when this week is a SWAP: the override wins over the rotation, so reordering cannot
+    // change who covers it. Firing anyway named the wrong person and warned of a change that would
+    // not happen -- a destructive-styled dialog that is wrong twice teaches you to dismiss it,
+    // which costs the one moment it exists for.
     const anchor = state.rotation.anchorWeekStart;
+    const overriddenNow = state.weeks[0]?.source === "override";
     const before = rotationMemberFor(state.rotation.members, anchor, state.thisWeek);
     const after = rotationMemberFor(members, anchor, state.thisWeek);
-    if (before !== after) {
+    if (!overriddenNow && before !== after) {
       const confirmed = await new Promise<boolean>((resolve) => {
         Alert.alert(
           "This changes who is on call now",
@@ -82,7 +89,11 @@ export default function OnCallScreen() {
           [
             { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
             { text: "Save anyway", style: "destructive", onPress: () => resolve(true) },
-          ]
+          ],
+          // Without this an Android back-press or outside tap fires neither handler, so the promise
+          // never settles: save() hangs, the reorder is never written, and every further tap leaks
+          // another awaiting closure while the button still looks live.
+          { cancelable: true, onDismiss: () => resolve(false) }
         );
       });
       if (!confirmed) return;

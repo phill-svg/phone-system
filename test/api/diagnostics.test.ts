@@ -138,6 +138,20 @@ describe("admin diagnostics", () => {
 
     // A ring step that actually targets the rotation. Without one the rota is wired to nothing and
     // the check must say so -- which is the whole point of it, so most cases here seed it.
+    // The production shape: an entry step whose CLOSED branch goes to the after-hours voicemail.
+    // An empty ivr_nodes table is not "unwired" -- it is no phone menu at all, which the check
+    // reports as unverifiable rather than blaming the rota.
+    async function seedUnwiredFlow() {
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_hours', 'main', 1, 'business_hours', ?, 1, 1)")
+        .bind(JSON.stringify({ openNextNodeId: "", closedNextNodeId: "n_vm" }))
+        .run();
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_vm', 'main', 0, 'voicemail', ?, 1, 1)")
+        .bind(JSON.stringify({ audioAssetId: null, ttsText: "", mailboxLabel: "after hours" }))
+        .run();
+    }
+
     async function wireIvrToOnCall() {
       // The ENTRY step, so the walk reaches it. A loose row would satisfy a row count and nothing
       // else, which is the bug these tests exist to hold shut.
@@ -211,6 +225,7 @@ describe("admin diagnostics", () => {
       await addTech("tech@oncall.test");
       await setRotation(["tech@oncall.test"]);
       await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await seedUnwiredFlow();
       stubFetch();
       const check = find(await run(), "on_call");
       expect(check.status).toBe("fail");
@@ -266,10 +281,7 @@ describe("admin diagnostics", () => {
     // The demo account is dropped at dial time, so a rotation naming it rings nobody. Reporting it
     // as fine was the same incident the write-path fix was supposed to close.
     it("does not report the demo account as on call", async () => {
-      await env.DB
-        .prepare("INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', 1, 'available', ?, NULL, 100)")
-        .bind("reviewer@oncall.test", CLOSED)
-        .run();
+      await addTech("reviewer@oncall.test");
       await setRotation(["reviewer@oncall.test"]);
       await setUserSettings(env.DB, "reviewer@oncall.test", { mobile_number: "0412345678" });
       await wireIvrToOnCall();
@@ -305,6 +317,74 @@ describe("admin diagnostics", () => {
     });
 
     // And the positive: once the closed branch actually points at it, the same flow reports ok.
+
+    // A ring step hung off the DAYTIME branch does not cover after hours, which is the one thing
+    // this check exists to deny. flowEngine takes closedNextNodeId and only that when isAfterHours.
+    it("is not satisfied by an on-call ring step on the open branch", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_hours', 'main', 1, 'business_hours', ?, 1, 1)")
+        .bind(JSON.stringify({ openNextNodeId: "n_ring", closedNextNodeId: "n_vm" }))
+        .run();
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_ring', 'main', 0, 'ring', ?, 1, 1)")
+        .bind(JSON.stringify({ target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" }))
+        .run();
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_vm', 'main', 0, 'voicemail', ?, 1, 1)")
+        .bind(JSON.stringify({ audioAssetId: null, ttsText: "", mailboxLabel: "after hours" }))
+        .run();
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("fail");
+    });
+
+    // Node ids are a global primary key and flowEngine's loadNodeById has no flow predicate, so a
+    // closed branch crossing into another flow is a supported shape -- and reporting that correctly
+    // wired rota as unwired would have had someone dismantle a working configuration.
+    it("follows a closed branch that crosses into another flow", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_hours', 'main', 1, 'business_hours', ?, 1, 1)")
+        .bind(JSON.stringify({ openNextNodeId: "", closedNextNodeId: "n_ah_ring" }))
+        .run();
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_ah_ring', 'after_hours', 0, 'ring', ?, 1, 1)")
+        .bind(JSON.stringify({ target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" }))
+        .run();
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("ok");
+    });
+
+    // No entry node means every inbound call already fails -- the system is down, not missing a
+    // menu step. Telling someone to add a ring step then would be the wrong emergency.
+    it("does not blame the on-call wiring when the flow has no entry node", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_orphan', 'main', 0, 'voicemail', ?, 1, 1)")
+        .bind(JSON.stringify({ audioAssetId: null, ttsText: "", mailboxLabel: "x" }))
+        .run();
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("could not be read");
+    });
+
+    // Both missing at once is the state production is actually in, and saying only half of it sends
+    // someone round the loop twice.
+    it("names both gaps when nobody is on call and nothing is wired", async () => {
+      await seedUnwiredFlow();
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.detail).toContain("Nobody is on call");
+      expect(check.detail).toContain("no step of the phone menu");
+    });
+
     it("is satisfied once the closed branch routes to the on-call ring step", async () => {
       await addTech("tech@oncall.test");
       await setRotation(["tech@oncall.test"]);
@@ -376,6 +456,11 @@ describe("test email", () => {
     expect(res.status).toBe(502);
     expect((await res.json<{ error: string }>()).error).toContain("Email failed");
   });
+
+});
+
+describe("divert caller ID", () => {
+  afterEach(() => vi.restoreAllMocks());
 
   // The divert fallback is invisible by design -- the phone still rings -- so a rejected caller ID
   // is only ever reported here.

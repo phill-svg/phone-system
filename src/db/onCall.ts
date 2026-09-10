@@ -18,36 +18,38 @@ const emptyRotation = (): OnCallRotation => ({ members: [], anchorWeekStart: "" 
 // path -- nobody on call falls through to voicemail -- but wrong for reporting: Health Checks sent
 // an admin to a Settings screen that was already showing a full rota, because "no rotation set" and
 // "the stored value is corrupt" arrived as the same empty object.
-export type RotationRead =
-  | { status: "ok"; rotation: OnCallRotation }
-  | { status: "missing"; rotation: OnCallRotation }
-  | { status: "unreadable"; rotation: OnCallRotation };
+export type RotationRead = { status: "ok"; rotation: OnCallRotation } | { status: "unreadable" };
 
 export async function readOnCallRotation(db: D1Database): Promise<RotationRead> {
   const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(ON_CALL_ROTATION_KEY).first<{ value: string }>();
-  if (!row) return { status: "missing", rotation: emptyRotation() };
+  if (!row) return { status: "ok", rotation: emptyRotation() };
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.value);
   } catch {
     console.log("ON_CALL_ROTATION_UNPARSEABLE", JSON.stringify({ value: row.value.slice(0, 120) }));
-    return { status: "unreadable", rotation: emptyRotation() };
+    return { status: "unreadable" };
   }
   if (!isOnCallRotation(parsed)) {
     console.log("ON_CALL_ROTATION_UNPARSEABLE", JSON.stringify({ error: "not a rotation shape" }));
-    return { status: "unreadable", rotation: emptyRotation() };
+    return { status: "unreadable" };
   }
   // Normalised on READ as well as on write. Lowercasing new writes does nothing for a row stored
   // before that existed -- and those are precisely the rows the fix was for. staff_users only ever
   // holds lowercase, and both admin UIs compare against it strictly, so a legacy "Tech@X.com" shows
   // the person as rostered AND not-rostered at once with the duplicate unremovable. Repairing here
   // costs one map and needs no migration.
-  return { status: "ok", rotation: { ...parsed, members: parsed.members.map((m) => m.trim().toLowerCase()) } };
+  const members = parsed.members.map((m) => m.trim().toLowerCase());
+  // Deduped after the lowercase, because two legacy entries differing only by case collapse into
+  // identical strings -- which the mobile list keys on, so React reconciles them as one row and the
+  // reorder arrows act on the wrong person.
+  return { status: "ok", rotation: { ...parsed, members: [...new Set(members)] } };
 }
 
 export async function getOnCallRotation(db: D1Database): Promise<OnCallRotation> {
-  return (await readOnCallRotation(db)).rotation;
+  const read = await readOnCallRotation(db);
+  return read.status === "ok" ? read.rotation : emptyRotation();
 }
 
 export async function setOnCallRotation(db: D1Database, rotation: OnCallRotation): Promise<void> {
@@ -72,7 +74,11 @@ export async function listOnCallOverrides(db: D1Database, fromWeekStart: string)
     .prepare("SELECT week_start, staff_email FROM on_call_overrides WHERE week_start >= ? ORDER BY week_start")
     .bind(fromWeekStart)
     .all<{ week_start: string; staff_email: string }>();
-  return rows.results;
+  // Normalised HERE because this is what the week pickers read. A legacy mixed-case row otherwise
+  // matches nothing in the lowercase staff list: the web select shows "Use the rotation" over a
+  // week that IS overridden, and on mobile `indexOf(current)` returns -1 so one tap reassigns the
+  // week to the first staff member rather than the next one.
+  return rows.results.map((r) => ({ ...r, staff_email: r.staff_email.trim().toLowerCase() }));
 }
 
 export async function setOnCallOverride(db: D1Database, weekStart: string, email: string, by: string): Promise<void> {

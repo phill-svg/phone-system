@@ -193,15 +193,40 @@ describe("addresses are normalised on write", () => {
     await insertStaff("tech@x.com");
   });
 
-  it("lowercases a rotation member", async () => {
+  // Asserted against the RAW column. Both reads now lowercase too, so going through
+  // getOnCallRotation/getOnCallOverride would pass with the write-side normalisation reverted --
+  // the read would launder it back. The stored bytes are the thing being pinned.
+  it("lowercases a rotation member in the stored row", async () => {
     const res = await handlePutOnCall(put({ members: ["  Tech@X.com "] }), env.DB, ADMIN, NO_DEMO);
     expect(res.status).toBe(200);
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'on_call_rotation'").first<{ value: string }>();
+    expect(JSON.parse(row!.value).members).toEqual(["tech@x.com"]);
+  });
+
+  it("lowercases an override in the stored row", async () => {
+    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "Tech@X.com" }), env.DB, ADMIN, NO_DEMO);
+    const row = await env.DB.prepare("SELECT staff_email FROM on_call_overrides WHERE week_start = '2026-09-07'").first<{ staff_email: string }>();
+    expect(row?.staff_email).toBe("tech@x.com");
+  });
+
+  // And the read side repairs what was stored before any of that existed, since there is no
+  // migration and those are exactly the rows the fix was for.
+  it("repairs a legacy mixed-case row on read", async () => {
+    await env.DB
+      .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(JSON.stringify({ members: ["Tech@X.com"], anchorWeekStart: "2026-09-07" }))
+      .run();
     expect((await getOnCallRotation(env.DB)).members).toEqual(["tech@x.com"]);
   });
 
-  it("lowercases an override", async () => {
-    await handlePutOnCallOverride(put({ weekStart: "2026-09-07", email: "Tech@X.com" }), env.DB, ADMIN, NO_DEMO);
-    expect(await getOnCallOverride(env.DB, "2026-09-07")).toBe("tech@x.com");
+  // Two legacy entries differing only by case collapse to one string once lowercased, which the
+  // mobile list keys on -- duplicate keys make the reorder arrows act on the wrong row.
+  it("dedupes entries that differ only by case", async () => {
+    await env.DB
+      .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(JSON.stringify({ members: ["Tech@X.com", "tech@x.com"], anchorWeekStart: "2026-09-07" }))
+      .run();
+    expect((await getOnCallRotation(env.DB)).members).toEqual(["tech@x.com"]);
   });
 
   it("still catches a duplicate that differs only by case", async () => {

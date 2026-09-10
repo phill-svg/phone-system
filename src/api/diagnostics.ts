@@ -321,7 +321,10 @@ async function checkOnCall(env: Env): Promise<Check> {
       return {
         ...base,
         status: "warn",
-        detail: "Nobody is on call this week — after-hours callers go straight to voicemail. Set the rotation in Settings.",
+        detail:
+          wired === false
+            ? "Nobody is on call this week, and no step of the phone menu rings the on-call person — after-hours callers go straight to voicemail. Both need doing: set the rotation in Settings, and add a ring step set to \"Whoever is on call\" on the closed branch of the phone menu."
+            : "Nobody is on call this week — after-hours callers go straight to voicemail. Set the rotation in Settings.",
       };
     }
     // The SAME exclusion resolveRingTargets applies at dial time. Without it this reported
