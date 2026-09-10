@@ -212,6 +212,23 @@ export function renderSettingsPage(
     </section>`
         : ""
     }
+    ${
+      currentRole === "admin"
+        ? `<section class="settings-form" id="oncall-section">
+      <h3>After-hours On Call</h3>
+      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">Outside business hours nobody is on shift, so an inbound call goes straight to voicemail. The rotation names <strong>one person per week</strong> who is rung anyway — on their <strong>mobile</strong>, regardless of their ring-my-mobile toggle or Away status, because being on call is the commitment to be reachable. Weeks run <strong>Monday to Monday</strong>, Canberra time.</p>
+      <p style="color:var(--admin-dim);font-size:0.85rem">This changes nothing on its own: the after-hours branch of the <a href="/admin/ivr/main">IVR Flow</a> must have a <em>ring</em> step set to <strong>“Whoever is on call”</strong>, or callers keep hearing the voicemail greeting.</p>
+      <label style="display:block;font-weight:600;margin-bottom:0.3rem">Rotation order — one email per line, top of the list goes first</label>
+      <textarea id="oncall-members" rows="5" placeholder="tech@tcbpestcontrolcanberra.com.au"></textarea>
+      <label style="display:block;margin-top:0.6rem">Rotation started the week of <input type="date" id="oncall-anchor"> <span style="color:var(--admin-dim);font-size:0.8rem">(a Monday)</span></label>
+      <button type="button" id="oncall-save">Save Rotation</button>
+      <span id="oncall-status" style="font-size:0.8rem;color:var(--admin-dim)"></span>
+      <h4 style="margin:1.2rem 0 0.4rem">Next eight weeks</h4>
+      <p style="color:var(--admin-dim);font-size:0.82rem;margin-top:0">Change one week to cover a swap. An override applies to that week only — it never shifts the rotation.</p>
+      <div id="oncall-weeks">Loading…</div>
+    </section>`
+        : ""
+    }
     <section class="settings-form">
       <h3>Staff Working Hours</h3>
       ${
@@ -421,6 +438,94 @@ export function renderSettingsPage(
         });
       })();
       loadNumbers();
+      // After-hours on call. Rows are built with createElement/textContent rather than spliced into
+      // an innerHTML string: the emails and week keys come back from the API, and the page's own
+      // escapers do not escape quotes (the trap recorded in CLAUDE.md). Nothing here interpolates
+      // into markup at all, so there is nothing to escape.
+      function weekLabel(key) {
+        var parts = key.split('-');
+        var d = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
+        var end = new Date(d.getTime() + 6 * 86400000);
+        var fmt = function (x) { return x.getUTCDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][x.getUTCMonth()]; };
+        return fmt(d) + ' – ' + fmt(end);
+      }
+      function loadOnCall() {
+        var wrap = document.getElementById('oncall-weeks');
+        if (!wrap) return;
+        fetch('/api/admin/on-call').then(function (r) {
+          if (!r.ok) { wrap.textContent = 'Could not load the rotation.'; return null; }
+          return r.json();
+        }).then(function (data) {
+          if (!data) return;
+          document.getElementById('oncall-members').value = data.rotation.members.join('\n');
+          document.getElementById('oncall-anchor').value = data.rotation.anchorWeekStart || '';
+          wrap.innerHTML = '';
+          if (data.unknownMembers.length > 0) {
+            var warn = document.createElement('p');
+            warn.style.cssText = 'color:var(--admin-brand);font-size:0.82rem';
+            warn.textContent = 'No longer staff, so their weeks ring nobody: ' + data.unknownMembers.join(', ');
+            wrap.appendChild(warn);
+          }
+          data.weeks.forEach(function (w, i) {
+            var row = document.createElement('div');
+            row.className = 'num-row';
+            var when = document.createElement('span');
+            when.className = 'num-e164';
+            when.textContent = weekLabel(w.weekStart) + (i === 0 ? '  (this week)' : '');
+            var sel = document.createElement('select');
+            var none = document.createElement('option');
+            none.value = ''; none.textContent = w.source === 'nobody' ? 'Nobody on call' : 'Nobody';
+            sel.appendChild(none);
+            data.staff.forEach(function (email) {
+              var op = document.createElement('option');
+              op.value = email; op.textContent = email;
+              if (w.email === email) op.selected = true;
+              sel.appendChild(op);
+            });
+            var tag = document.createElement('span');
+            tag.style.cssText = 'font-size:0.78rem;color:var(--admin-dim)';
+            tag.textContent = w.source === 'override' ? 'swapped' : '';
+            var st = document.createElement('span');
+            st.style.cssText = 'font-size:0.8rem;color:var(--admin-dim)';
+            sel.addEventListener('change', function () {
+              st.textContent = 'Saving…';
+              fetch('/api/admin/on-call/override', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ weekStart: w.weekStart, email: sel.value || null })
+              }).then(function (r) {
+                st.textContent = r.ok ? 'Saved.' : 'Failed.';
+                if (r.ok) loadOnCall();
+              }).catch(function () { st.textContent = 'Failed.'; });
+            });
+            [when, sel, tag, st].forEach(function (x) { row.appendChild(x); });
+            wrap.appendChild(row);
+          });
+        }).catch(function () { wrap.textContent = 'Could not load the rotation.'; });
+      }
+      (function () {
+        var btn = document.getElementById('oncall-save');
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+          var status = document.getElementById('oncall-status');
+          var members = document.getElementById('oncall-members').value.split('\n')
+            .map(function (x) { return x.trim(); }).filter(function (x) { return x !== ''; });
+          var anchor = document.getElementById('oncall-anchor').value;
+          status.textContent = 'Saving…';
+          fetch('/api/admin/on-call', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ members: members, anchorWeekStart: anchor || undefined })
+          }).then(function (r) {
+            return r.json().then(function (b) {
+              // The API's message names the offending entry -- a typo'd email or a duplicate --
+              // and that is the whole point of validating on write, so show it rather than "Failed".
+              status.textContent = r.ok ? 'Saved.' : (b && b.error ? b.error : 'Failed to save.');
+              if (r.ok) loadOnCall();
+            });
+          }).catch(function () { status.textContent = 'Failed to save.'; });
+        });
+      })();
+      loadOnCall();
+
     </script>`;
   return renderLayout("Settings", "settings", body);
 }

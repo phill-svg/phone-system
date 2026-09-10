@@ -65,7 +65,7 @@ function isGatherConfig(c: Record<string, unknown>): boolean {
 
 function isRingConfig(c: Record<string, unknown>): boolean {
   return (
-    (c.target === "all" || isStringArray(c.target)) &&
+    (c.target === "all" || c.target === "on_call" || isStringArray(c.target)) &&
     (c.strategy === "cascade" || c.strategy === "simultaneous") &&
     typeof c.timeoutSeconds === "number" &&
     isString(c.noAnswerNextNodeId)

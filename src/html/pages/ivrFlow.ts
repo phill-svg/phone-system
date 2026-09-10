@@ -209,8 +209,9 @@ export function renderIvrFlowPage(
           out+='<button type="button" class="ivr-link" id="pfAddOpt">+ Add key</button></div>';
           out+='<label class="pf">Retry limit (wrong keys allowed before the “No/invalid key” path)<input type="number" min="0" max="9" data-fld="retryLimit" data-num="1" value="'+h(c.retryLimit!=null?c.retryLimit:3)+'"></label>';
         } else if(n.type==="ring"){
-          out+='<label class="pf">Who to ring<select data-fld="target" data-ringtarget="1"><option value="all"'+(c.target==="all"?" selected":"")+'>Everyone available</option><option value="some"'+(c.target!=="all"?" selected":"")+'>Specific staff…</option></select></label>';
-          if(c.target!=="all"){ var sel=Array.isArray(c.target)?c.target:[]; out+='<div class="pf">Staff';
+          out+='<label class="pf">Who to ring<select data-fld="target" data-ringtarget="1"><option value="all"'+(c.target==="all"?" selected":"")+'>Everyone available</option><option value="on_call"'+(c.target==="on_call"?" selected":"")+'>Whoever is on call (after hours)</option><option value="some"'+(Array.isArray(c.target)?" selected":"")+'>Specific staff…</option></select></label>';
+          if(c.target==="on_call"){ out+='<div class="pf" style="font-weight:400;opacity:.8">Rings the one person the weekly rotation names, on their mobile, ignoring working hours and Away status. Set the rotation on Settings → After-hours on call.</div>'; }
+          if(Array.isArray(c.target)){ var sel=c.target; out+='<div class="pf">Staff';
             for(var s=0;s<staff.length;s++){ var on=sel.indexOf(staff[s])>=0; out+='<label style="font-weight:400"><input type="checkbox" data-ringstaff="'+h(staff[s])+'"'+(on?" checked":"")+'> '+h(staff[s])+'</label>'; } out+='</div>'; }
           out+='<label class="pf">Ring style<select data-fld="strategy"><option value="simultaneous"'+(c.strategy!=="cascade"?" selected":"")+'>Everyone at once</option><option value="cascade"'+(c.strategy==="cascade"?" selected":"")+'>One at a time (cascade)</option></select></label>';
           out+='<label class="pf">Ring for (seconds)<input type="number" min="5" max="120" data-fld="timeoutSeconds" data-num="1" value="'+h(c.timeoutSeconds||20)+'"></label>';
@@ -239,7 +240,7 @@ export function renderIvrFlowPage(
         n.config[fld]=t.value; syncNode(n);
       });
       panel.addEventListener("change", function(ev){ var t=ev.target, n=getNode(selId); if(!n) return;
-        if(t.getAttribute("data-ringtarget")){ n.config.target=(t.value==="all"?"all":[]); renderPanel(); return; }
+        if(t.getAttribute("data-ringtarget")){ n.config.target=(t.value==="all"?"all":(t.value==="on_call"?"on_call":[])); renderPanel(); return; }
         if(t.getAttribute("data-ringstaff")!=null){ var em=t.getAttribute("data-ringstaff"); if(!Array.isArray(n.config.target)) n.config.target=[]; var idx=n.config.target.indexOf(em); if(t.checked&&idx<0) n.config.target.push(em); if(!t.checked&&idx>=0) n.config.target.splice(idx,1); return; }
       });
       panel.addEventListener("click", function(ev){ var t=ev.target, n=getNode(selId); if(!n) return;
