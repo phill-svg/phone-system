@@ -70,7 +70,14 @@ before adding one, or you will duplicate a path that already works.
 ## Standing constraints
 
 - **Expo is pinned to SDK 54 on purpose.** Do not upgrade without a plan for how Phill runs it.
-  The reason is in `mobile/AGENTS.md`.
+  The reason is in `mobile/AGENTS.md`. Two things about that pin, established 2026-09-10 rather
+  than assumed: **Expo Observe needs SDK 55+**, so it cannot be adopted without the upgrade — and
+  it measures STARTUP PERFORMANCE, not crashes, so it would not have caught `0xBAADCA11` anyway.
+  And the pin's stated rationale (Expo Go on the App Store only serves SDK 54, and Phill tests on a
+  real iPhone without a paid Apple account) now looks **stale**: there is a paid account, a signed
+  TestFlight build, and internal testers. Re-read `mobile/AGENTS.md` and check that reasoning still
+  holds before anyone treats the pin as permanent — but treat the upgrade as real work with real
+  risk, not a version bump.
 - **Never commit credentials.** `mobile/credentials/`, `play-service-account*.json`, `*.keystore`,
   `*.jks`, `.dev.vars` are all gitignored and must stay that way.
 - **Store identifiers are permanent.** The Android package name and the iOS bundle ID
@@ -215,6 +222,38 @@ before adding one, or you will duplicate a path that already works.
   falling over must be able to say so whoever holds it). Handsets are on **OTA 60**, and the first
   binary carrying the native CallKit fix is **build 5** (2026-09-10) — Settings shows both as
   `#60 · b5`.
+- **Recent work (2026-09-09/10):** the day the missed calls were root-caused. `0xBAADCA11` turned
+  out to be the iOS CallKit watchdog rather than any JavaScript fault (see the two bullets on it
+  below — most of a day went into chasing it as a JS crash, which it can never be), the cure shipped
+  natively as **build 5**, and the TestFlight submit that carries it was finally made to work from
+  EAS with no Mac and no `.p8` anywhere. Then, in order: **#89** the after-hours **on-call
+  rotation**, migration `0035`, editable on web `/admin/settings` and mobile
+  `Admin > After-hours On Call`, with a Health Check for it; **#90** a back button on the mobile
+  **Admin hub**, which had no way out at all, plus `iconFallback` on `Row`; **#91** the **phone
+  menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than the web's node canvas,
+  reversing this file's old "IVR stays web-only" line; then **#92** and **#94**, two rounds of
+  `/code-review` fixes over #89 — see the review bullet below, which is the durable lesson from the
+  whole day. OTA **65** on both channels; worker deployed.
+  **Still outstanding at the end of it, and almost none of it is code:**
+  * Build 5 has never been proven on a device. It needs ONE locked-phone test call — lock the
+    handset, leave it a few minutes so the launch is genuinely cold, then ring the business number.
+  * **The on-call rotation is LIVE BUT EMPTY, and the IVR's after-hours branch is still not wired to
+    it**, so after-hours callers still reach voicemail. Health Checks now names both gaps in one
+    line rather than making you find them one at a time.
+  * `staff_users` holds only Phill plus the demo reviewer account, so there is nobody to rotate
+    between.
+  * Speaker-labelled transcripts: the `GA...` service SID was being set up;
+    **Dual-channel Recording for Conference** in the Twilio Console is the other half and cannot be
+    checked from here. Read one real transcript afterwards and flip `transcript_staff_channel` if
+    the labels come out reversed.
+  * **A Twilio Auth Token was exposed in chat on 2026-09-10 and needs rotating** if it has not been.
+    The ORDER matters: create a SECONDARY token in Twilio, update `TWILIO_AUTH_TOKEN` in the
+    Cloudflare dashboard (Workers & Pages > tcb-voip > Settings > Variables and Secrets), make one
+    test call in and out, and only then promote it. Killing the old token before the worker holds
+    the new one stops every inbound call, because that value both validates Twilio's webhook
+    signatures and authenticates our REST calls.
+  * The **web** `/admin/settings` on-call section and the mobile screen are separate
+    implementations of the same rota; a change to one usually needs the other.
 - **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
   the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
   moving it again means moving the grep in the same commit or every publish fails at "Read
@@ -247,6 +286,16 @@ before adding one, or you will duplicate a path that already works.
   unlabelled, because labelling a mono mix would be a guess presented as fact. Both states are
   reported by Admin > Health Checks, which is the answer to "is it on?" -- added precisely because
   `SERVICEM8_API_KEY` sat inert for a day with nothing saying so.
+- **Twilio has TWO Conversation Intelligence products and this uses the OLD one.** Searching the
+  Console lands you on the new one (Conversation Orchestrator: configurations, memory stores,
+  profiles, a "grouping type" field) — none of which applies. `src/twilio/intelligence.ts` POSTs one
+  recording to `intelligence.twilio.com/v2/Transcripts` with a `ServiceSid`, which is
+  **Conversation Intelligence (classic)** → Services, and the SID starts `GA`. No Language Operators
+  are needed; only the raw sentences and their channel numbers are read. Creating it by API avoids
+  the navigation entirely: `POST https://intelligence.twilio.com/v2/Services` with `UniqueName`.
+  Twilio's own docs confirm the channel rule this code's `transcript_staff_channel` default rests
+  on: for a CONFERENCE, channel 1 is whoever joined first, and classic CI labels channel 1 "Agent"
+  by default — our caller is redirected in first, hence the default of 2.
 - **Which audio channel is the staff member is a SETTING, not a constant** (`transcript_staff_channel`,
   default 2). Twilio gives channel 1 to whoever joins the conference first, and `handleAgentAnswer`
   awaits the caller's `redirectCall` into `/join-conference` BEFORE returning the staff leg's
@@ -659,6 +708,58 @@ before adding one, or you will duplicate a path that already works.
   practice: four controls added to the on-call screen (the reorder arrows and add/remove) shipped
   without one and would have been meaningless circles on Android, on the exact screen where the
   arrows ARE the affordance. iOS looks perfect throughout, so nothing catches this locally.
+- **RUN `/code-review` BEFORE SHIPPING, not after — and expect the FIX to need reviewing too.**
+  Standing instruction from Phill, and 2026-09-10 is the case for it. The on-call rotation (#89) was
+  merged and deployed unreviewed; `/code-review` then found **14** defects in it, **15** in the PR
+  that fixed those (#92), and **15** in the PR that fixed those (#94). The count did not fall
+  between rounds, and the new defects were consistently in the newest code — the second round
+  reopened the exact incident the first had closed, and the third found three faults in a check the
+  second had just written.
+  The three that would have caused an incident, all of the same shape (**a thing that fails without
+  saying so**): a rotation could be silently re-anchored from a handset, moving who was on call
+  TONIGHT; the demo account could be put on call, where it rings nobody while Health Checks reports
+  it as fine; and Health Checks went green over a rota wired to nothing.
+  **Mutation-test every regression test.** Four separate tests this day passed against fully
+  reverted code — the corrupt-rotation test (the branch was unreachable), the timezone test
+  (`process.env.TZ` does nothing), and both write-normalisation tests (they asserted THROUGH reads
+  that normalise too). "A test that reads through the fix is not a test" now sits beside "a test
+  that reads source text is not a test"; the fix for both is to assert the raw stored value and to
+  revert the change and watch the test fail.
+- **A defaulted exclusion list FAILS OPEN, so security-shaped parameters are required ones.**
+  `excludeEmails: string[] = []` meant a new caller — or a route refactor dropping `demoEmails(env)`
+  — compiled cleanly and silently restored the demo account to the pickers. Both the on-call
+  handlers and `/api/staff` take it required now, so omitting it is a type error. `/api/staff`
+  matters more: it is the UNGATED roster the softphone's transfer picker reads, where an App Review
+  reviewer appearing as a destination could be handed a real customer's live call.
+  The filter itself is **one function**, `excludeDemos` in `src/demo`. It existed as three
+  byte-identical copies, and the single surface that skipped it (`checkOnCall`) is exactly where
+  the bug turned up.
+- **"Is the rota wired up?" is a REACHABILITY question, and three cheaper answers are all wrong.**
+  `checkOnCall` asks whether an after-hours call can reach a ring step targeting `on_call`.
+  (1) Counting rows counts a step nothing points at — blank next-fields are legal and
+  `replaceFlowNodes` persists unreachable nodes, so a dragged-in ring step satisfied the count over
+  a rota ringing nobody. (2) Walking every branch follows the OPEN side of `business_hours`, so a
+  step on the daytime path reported the AFTER-HOURS rota as fine — the one thing the check exists to
+  deny; `flowEngine` takes `closedNextNodeId` and only that when `isAfterHours`, so the walk does
+  the same. (3) Loading one flow drops a next-id crossing into another, and node ids are a global
+  PRIMARY KEY (`nodeExistsInOtherFlow` exists because of that, `loadNodeById` has no flow
+  predicate) — so a correctly wired rota read as broken, which would have someone dismantle a
+  working setup. A flow with **no entry node** returns `null`, "could not verify": that state means
+  every inbound call already fails in `loadEntryNode`, i.e. the phone system is down, and telling
+  someone to add a menu step then is the wrong emergency.
+- **Preserving the rotation anchor does not preserve who is on call tonight.** `rotationMemberFor`
+  indexes on `weeksBetween(anchor, week) % members.length`, so the member COUNT is as load-bearing
+  as the anchor: adding a fourth tech to a three-person rota re-indexes the current week and moves
+  tonight's on-call person, mid-week, silently. The mobile screen computes before/after with a
+  client copy of the rule and asks first — skipping the question when the current week is an
+  override, because there the override wins and nothing changes. The eight-week preview only
+  reloads AFTER a save, so that dialog is the one moment it can be said before it is true.
+- **`git checkout -B <branch> origin/master` DISCARDS anything on that branch that is not merged.**
+  Used repeatedly this repo to restart the designated branch after each squash merge, which is
+  correct — but a CLAUDE.md commit that had been pushed and not yet merged was silently thrown away
+  by the next reset, and the whole memory pass had to be redone an hour later with nothing saying it
+  had gone. **Merge, or check `git log origin/master --grep=` for it, before resetting.** A pushed
+  branch is not a saved branch here, because the branch itself is the thing being reset.
 - **`npm test` cannot run without a Cloudflare login, and the reason is the `ai` binding.**
   Workers AI is remote-only, so vitest-pool-workers tries to open a remote proxy session at CONFIG
   PARSE time and dies with "You must be logged in to use wrangler dev in remote mode" before a
