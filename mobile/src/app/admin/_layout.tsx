@@ -41,6 +41,8 @@ export default function AdminLayout() {
       <Stack.Screen name="blocklist" options={{ title: "Call Blocklist" }} />
       <Stack.Screen name="numbers" options={{ title: "Phone Numbers" }} />
       <Stack.Screen name="on-call" options={{ title: "After-hours On Call" }} />
+      <Stack.Screen name="ivr/index" options={{ title: "Phone Menu" }} />
+      <Stack.Screen name="ivr/[nodeId]" options={{ title: "Step" }} />
       <Stack.Screen name="diagnostics" options={{ title: "Health Checks" }} />
       <Stack.Screen name="staff/index" options={{ title: "Staff" }} />
       <Stack.Screen name="staff/[email]" options={{ title: "Staff Member" }} />

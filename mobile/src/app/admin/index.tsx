@@ -8,6 +8,7 @@ import {
   getBusinessHours,
   getCallBlocklist,
   getDivertCallerIdSetting,
+  getIvrFlow,
   getNumbers,
   getOnCall,
   getRecordingSetting,
@@ -29,6 +30,7 @@ export default function AdminHomeScreen() {
   const [recording, setRecording] = useState<boolean | null>(null);
   const [divertCallerId, setDivertCallerId] = useState<boolean | null>(null);
   const [onCall, setOnCall] = useState<string>("…");
+  const [menuSteps, setMenuSteps] = useState<string>("…");
 
   // Refetch on focus so the summaries are right after editing one of the sub-screens.
   useFocusEffect(
@@ -61,6 +63,9 @@ export default function AdminHomeScreen() {
           setOnCall(now && now.email ? now.email.split("@")[0] : "Nobody");
         })
         .catch(() => alive && setOnCall("—"));
+      getIvrFlow("main")
+        .then((f) => alive && setMenuSteps(`${f.nodes.length} steps`))
+        .catch(() => alive && setMenuSteps("—"));
       return () => {
         alive = false;
       };
@@ -95,6 +100,8 @@ export default function AdminHomeScreen() {
             onPress={() => router.push("/admin/blocklist")} />
           <Row icon="phone.fill" iconColor="#34C759" label="Phone Numbers" value={numberCount} chevron
             onPress={() => router.push("/admin/numbers")} />
+          <Row icon="list.bullet.indent" iconFallback="git-branch" iconColor="#FF9F0A" label="Phone Menu" value={menuSteps} chevron
+            onPress={() => router.push("/admin/ivr")} />
           <Row icon="record.circle" iconColor="#FF9F0A" label="Call Recording"
             toggle={recording ?? false} onToggle={onToggleRecording} toggleDisabled={recording === null} />
         </Group>
@@ -126,8 +133,8 @@ export default function AdminHomeScreen() {
             onPress={() => router.push("/admin/diagnostics")} />
         </Group>
 
-        <Group footer="The IVR phone menu and the analytics dashboard are still web-only — open tcbvoip.app on a computer for those.">
-          <Row icon="info.circle.fill" iconColor="#8E8E93" label="Not on mobile" value="IVR · Analytics" />
+        <Group footer="The analytics dashboard is still web-only — open tcbvoip.app on a computer for that. The web IVR editor also draws the menu as a diagram, which is easier for a big rearrangement.">
+          <Row icon="info.circle.fill" iconColor="#8E8E93" label="Not on mobile" value="Analytics" />
         </Group>
       </ScrollView>
     </Screen>

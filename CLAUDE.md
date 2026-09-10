@@ -154,7 +154,8 @@ before adding one, or you will duplicate a path that already works.
   It reads `GET /api/admin/staff` — a new admin-only endpoint, because the plain roster
   (`/api/staff`) deliberately omits schedules, ring order and password state so the softphone's
   transfer picker can stay ungated. Everything under `/api/admin/` is admin-only by construction.
-  The IVR editor and Analytics stay web-only. OTA 46.
+  The IVR editor and Analytics stayed web-only at the time; the IVR is now on mobile too (see the
+  phone-menu bullet below). OTA 46.
 - **ServiceM8 needs `SERVICEM8_API_KEY` set as a worker secret, and nothing tells you if it isn't.**
   `deploy.yml` does not set it — wrangler secrets are separate (`npx wrangler secret put
   SERVICEM8_API_KEY`). Both halves of the integration (the job diary note and the auto-created
@@ -625,6 +626,34 @@ before adding one, or you will duplicate a path that already works.
   `router.back()` is a NO-OP on an empty history — a deep link or cold start straight to `/admin` —
   and a back button that visibly does nothing reads as the app having frozen, which is worse than
   the missing button it replaced.
+- **The phone menu is on mobile as a LIST, not a canvas — and that reverses an earlier decision.**
+  This file used to say the IVR editor stays web-only because "a drag-and-drop node graph is not a
+  phone job". The graph isn't, but the DATA is: `Admin > Phone Menu` renders the same flow as a list
+  of steps, each tappable, with every "go to" as a picker instead of a dragged line. The web editor
+  still exists and is still better for a big rearrangement, because it is the only place that shows
+  the shape.
+  **The list is ordered by walking the flow from the entry node, never by row order.** `SELECT *`
+  returns whatever it returns, and in the real production flow that puts the after-hours voicemail
+  ABOVE the step that greets the caller — a list that shows you the end of a call before the start
+  of it. `orderNodes` is a breadth-first walk following every next-field and every menu key, with
+  anything unreachable listed separately rather than hidden: an orphan is nearly always a
+  half-finished edit and is exactly what someone opening that screen is looking for.
+- **`PUT /api/ivr/flows/:flow` is a DELETE-AND-REINSERT, so a client must send back what it does not
+  understand.** `replaceFlowNodes` wipes the flow and re-inserts the payload, which means any field
+  the mobile editor dropped would be destroyed. The trap is `positionX`/`positionY`: they are the
+  WEB canvas coordinates, mobile never reads them, and losing them would flatten every node onto the
+  origin the next time the web editor was opened — a mess nobody would connect to an edit made on a
+  phone. They are carried on the mobile `IvrNode` type purely so they round-trip, and a test pins
+  it. Same rule for anything added to a node in future.
+  Deleting a step also has to UNLINK it (`removeNode`), or every reference to it becomes a dangling
+  id that the flow engine only fails on when a real call reaches that point, mid-call, silently.
+- **`Row`'s leading icon had no Android fallback, and still doesn't at most call sites.** `Row`
+  renders `<Icon name={icon}>` with no `fallback`, so on Android every icon tile across Settings and
+  Admin is a coloured square containing a blank `ellipse-outline`; only the trailing chevron was
+  ever given one. `Row` now accepts `iconFallback` and new rows pass it, but the EXISTING call sites
+  were deliberately left alone rather than widen an unrelated change — so that is a known,
+  outstanding Android cosmetic bug, not an oversight. iOS looks perfect, which is why it survived
+  this long.
 - **`Icon` renders a blank `ellipse-outline` on Android for any name given without a `fallback`.**
   It is SF Symbols on iOS and Ionicons everywhere else, and the fallback is not optional in
   practice: four controls added to the on-call screen (the reorder arrows and add/remove) shipped

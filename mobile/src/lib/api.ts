@@ -1,4 +1,5 @@
 import { getToken, clearToken } from "./session";
+import type { IvrFlow } from "./ivr";
 
 export const BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://tcbvoip.app").replace(/\/$/, "");
 
@@ -381,6 +382,24 @@ export async function getCallBlocklist(): Promise<string[]> {
 
 export async function setCallBlocklist(numbers: string[]): Promise<void> {
   await apiFetch("/api/settings/call-blocklist", { method: "PUT", body: JSON.stringify(numbers) });
+}
+
+// ---- Admin: IVR flow ----
+
+// The whole flow goes out in one PUT (the endpoint is a delete-and-reinsert), so a save must carry
+// every node back, positions included -- see the note on IvrNode.
+export async function getIvrFlow(flow: string): Promise<IvrFlow> {
+  return apiFetch<IvrFlow>(`/api/ivr/flows/${encodeURIComponent(flow)}`);
+}
+
+export async function putIvrFlow(flow: string, body: IvrFlow): Promise<void> {
+  await apiFetch(`/api/ivr/flows/${encodeURIComponent(flow)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export type IvrAudioAsset = { id: string; label: string };
+
+export async function getIvrAudio(): Promise<IvrAudioAsset[]> {
+  return apiFetch<IvrAudioAsset[]>("/api/ivr/audio");
 }
 
 // ---- Admin: after-hours on call ----
