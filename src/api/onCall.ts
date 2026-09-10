@@ -1,5 +1,5 @@
 import { getStaffRoster } from "../db/staff";
-import type { StaffPresenceRow } from "../dial/presence";
+import { excludeDemos } from "../demo";
 import {
   clearOnCallOverride,
   getOnCallRotation,
@@ -14,15 +14,14 @@ const PREVIEW_WEEKS = 8;
 
 // The roster these endpoints may offer and accept.
 //
-// `resolveRingTargets` drops the demo account before anything else is considered, so a rotation
-// naming it resolves to nobody and every after-hours caller hears voicemail -- while Health Checks
-// reports "ok, reviewer is on call, ringing +61...", because it read the same unfiltered list. The
-// exclusion has to happen where the name is CHOSEN, not only where it is dialled. `/api/staff` is
-// already passed demoEmails(env) for exactly this reason.
-async function selectableRoster(db: D1Database, exclude: string[]): Promise<StaffPresenceRow[]> {
-  const excluded = new Set(exclude.map((e) => e.trim().toLowerCase()));
-  const roster = await getStaffRoster(db);
-  return roster.filter((s) => !excluded.has(s.email.toLowerCase()));
+// `env` is a REQUIRED parameter, deliberately not a defaulted `excludeEmails: string[] = []`. A
+// default here fails OPEN: a new caller, or a refactor of the route registration that forgets to
+// pass it, compiles cleanly and silently restores the demo account to the pickers -- the exact bug
+// this closes. Same reasoning that made the mobile rotation anchor a required argument.
+type DemoEnv = { DEMO_ACCOUNT_EMAILS?: string };
+
+async function selectableRoster(db: D1Database, env: DemoEnv) {
+  return excludeDemos(await getStaffRoster(db), env);
 }
 
 // Stored addresses are compared against `staff_users`, which only ever holds lowercase (invites
@@ -69,12 +68,22 @@ export function previewWeeks(
   return weeks;
 }
 
-export async function handleGetOnCall(db: D1Database, excludeEmails: string[] = []): Promise<Response> {
-  const thisWeek = weekStartKey(new Date());
+export async function handleGetOnCall(db: D1Database, env: DemoEnv): Promise<Response> {
+  // weekStartKey throws on an unrecognised weekday token rather than silently calling it Monday.
+  // resolveOnCallEmail has always caught that; these admin handlers did not, so the same condition
+  // would 500 the endpoint and leave the screen stuck on "Couldn't load the rotation" with no way
+  // forward. A 503 that says what happened is the least-bad answer.
+  let thisWeek: string;
+  try {
+    thisWeek = weekStartKey(new Date());
+  } catch (err) {
+    console.log("ON_CALL_WEEK_FAILED", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+    return jsonResponse({ error: "Could not work out the current week." }, 503);
+  }
   const [rotation, overrideRows, roster] = await Promise.all([
     getOnCallRotation(db),
     listOnCallOverrides(db, thisWeek),
-    selectableRoster(db, excludeEmails),
+    selectableRoster(db, env),
   ]);
   const overrides = new Map(overrideRows.map((r) => [r.week_start, r.staff_email]));
   const weeks = previewWeeks(rotation, overrides, thisWeek, PREVIEW_WEEKS);
@@ -91,12 +100,7 @@ export async function handleGetOnCall(db: D1Database, excludeEmails: string[] = 
   });
 }
 
-export async function handlePutOnCall(
-  request: Request,
-  db: D1Database,
-  staff: StaffUser,
-  excludeEmails: string[] = []
-): Promise<Response> {
+export async function handlePutOnCall(request: Request, db: D1Database, staff: StaffUser, env: DemoEnv): Promise<Response> {
   let body: unknown;
   try {
     body = await request.json();
@@ -120,12 +124,18 @@ export async function handlePutOnCall(
 
   // Validated against the real roster because the failure mode of a typo is silence: the week comes
   // round, nobody is found, and the caller hears voicemail exactly as though no rota existed.
-  const roster = await selectableRoster(db, excludeEmails);
+  const roster = await selectableRoster(db, env);
   const known = new Set(roster.map((s) => s.email.toLowerCase()));
   const unknown = cleaned.filter((m) => !known.has(m));
   if (unknown.length > 0) return badRequest(`not staff members: ${unknown.join(", ")}`);
 
-  let anchor = typeof anchorWeekStart === "string" && anchorWeekStart !== "" ? anchorWeekStart : weekStartKey(new Date());
+  let anchor: string;
+  try {
+    anchor = typeof anchorWeekStart === "string" && anchorWeekStart !== "" ? anchorWeekStart : weekStartKey(new Date());
+  } catch (err) {
+    console.log("ON_CALL_WEEK_FAILED", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+    return jsonResponse({ error: "Could not work out the current week." }, 503);
+  }
   if (cleaned.length === 0) anchor = "";
   else if (!isWeekStartKey(anchor)) return badRequest("anchorWeekStart must be a Monday, as YYYY-MM-DD");
 
@@ -135,12 +145,7 @@ export async function handlePutOnCall(
   return jsonResponse({ ok: true, rotation });
 }
 
-export async function handlePutOnCallOverride(
-  request: Request,
-  db: D1Database,
-  staff: StaffUser,
-  excludeEmails: string[] = []
-): Promise<Response> {
+export async function handlePutOnCallOverride(request: Request, db: D1Database, staff: StaffUser, env: DemoEnv): Promise<Response> {
   let body: unknown;
   try {
     body = await request.json();
@@ -159,7 +164,7 @@ export async function handlePutOnCallOverride(
   }
   if (typeof email !== "string") return badRequest("email must be a staff email, or null to clear");
   const wanted = normalizeEmail(email);
-  const roster = await selectableRoster(db, excludeEmails);
+  const roster = await selectableRoster(db, env);
   if (!roster.some((s) => s.email.toLowerCase() === wanted)) {
     return badRequest(`not a staff member: ${email}`);
   }

@@ -1,4 +1,4 @@
-import { weekLabel, shortName } from "../src/lib/onCall";
+import { weekLabel, shortName, rotationMemberFor } from "../src/lib/onCall";
 
 describe("weekLabel", () => {
   it("renders the Monday-to-Sunday span", () => {
@@ -33,5 +33,34 @@ describe("weekLabel", () => {
 describe("shortName", () => {
   it("drops the domain so a rota row stays readable on a phone", () => {
     expect(shortName("phill@tcbpestcontrolcanberra.com.au")).toBe("phill");
+  });
+});
+
+describe("rotationMemberFor", () => {
+  const MEMBERS = ["a@x.com", "b@x.com", "c@x.com"];
+  const ANCHOR = "2026-09-07";
+
+  it("advances one person per week and wraps", () => {
+    expect(rotationMemberFor(MEMBERS, ANCHOR, "2026-09-07")).toBe("a@x.com");
+    expect(rotationMemberFor(MEMBERS, ANCHOR, "2026-09-28")).toBe("a@x.com");
+    expect(rotationMemberFor(MEMBERS, ANCHOR, "2026-09-14")).toBe("b@x.com");
+  });
+
+  it("resolves weeks before the anchor rather than returning nothing", () => {
+    expect(rotationMemberFor(MEMBERS, ANCHOR, "2026-08-31")).toBe("c@x.com");
+  });
+
+  // The whole reason this exists on the client. Preserving the anchor is not enough -- the member
+  // COUNT re-indexes every week, so adding a fourth tech silently moves tonight's on-call person.
+  // The screen compares before/after with this and asks first.
+  it("shows that adding a member reassigns the current week", () => {
+    const week = "2026-10-05"; // elapsed 4
+    expect(rotationMemberFor(MEMBERS, ANCHOR, week)).toBe("b@x.com");
+    expect(rotationMemberFor([...MEMBERS, "d@x.com"], ANCHOR, week)).toBe("a@x.com");
+  });
+
+  it("is nobody with no members or no anchor", () => {
+    expect(rotationMemberFor([], ANCHOR, "2026-09-07")).toBeNull();
+    expect(rotationMemberFor(MEMBERS, "", "2026-09-07")).toBeNull();
   });
 });

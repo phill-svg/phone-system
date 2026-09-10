@@ -1,4 +1,5 @@
 import { jsonResponse } from "./respond";
+import { excludeEmails as excludeList } from "../demo";
 import { getStaffRoster, setStaffSchedule, setStaffPriority, setStaffStatus, createInvitedStaff, deleteStaff, listStaffAccess } from "../db/staff";
 import type { StaffUser } from "../access/requireStaffUser";
 import { issueToken, invalidateTokensForEmail } from "../access/passwordTokens";
@@ -10,8 +11,7 @@ import { isBusinessHoursSchedule } from "../ivr/businessHours";
 // `excludeEmails` drops the App Review demo account: it is not a colleague, so it should not
 // appear in the softphone's transfer picker where someone could hand it a real customer's call.
 export async function handleGetStaffRoster(db: D1Database, excludeEmails: string[] = []): Promise<Response> {
-  const excluded = new Set(excludeEmails.map((e) => e.trim().toLowerCase()));
-  const roster = (await getStaffRoster(db)).filter((s) => !excluded.has(s.email.toLowerCase()));
+  const roster = excludeList(await getStaffRoster(db), excludeEmails);
   return jsonResponse(roster.map((s) => ({ email: s.email, role: s.role, status: s.status })));
 }
 

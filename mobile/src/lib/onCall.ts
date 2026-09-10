@@ -13,3 +13,18 @@ export function weekLabel(key: string): string {
 }
 
 export const shortName = (email: string): string => email.split("@")[0];
+
+// Whose turn a given week is, mirroring src/dial/onCall.ts. Duplicated deliberately and kept tiny:
+// the screen needs to answer "would saving this change who is on call TONIGHT?" BEFORE it writes,
+// and the server can only answer after. Preserving the anchor is not enough on its own -- `size` is
+// as load-bearing as the anchor, so adding a fourth tech to a three-person rota re-indexes the
+// current week and moves tonight's on-call person with no warning at all.
+export function rotationMemberFor(members: string[], anchorWeekStart: string, weekStart: string): string | null {
+  if (members.length === 0 || !anchorWeekStart) return null;
+  const from = Date.parse(`${anchorWeekStart}T00:00:00Z`);
+  const to = Date.parse(`${weekStart}T00:00:00Z`);
+  if (Number.isNaN(from) || Number.isNaN(to)) return null;
+  const elapsed = Math.round((to - from) / (7 * 86_400_000));
+  const size = members.length;
+  return members[((elapsed % size) + size) % size] ?? null;
+}

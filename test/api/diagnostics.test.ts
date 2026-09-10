@@ -139,6 +139,8 @@ describe("admin diagnostics", () => {
     // A ring step that actually targets the rotation. Without one the rota is wired to nothing and
     // the check must say so -- which is the whole point of it, so most cases here seed it.
     async function wireIvrToOnCall() {
+      // The ENTRY step, so the walk reaches it. A loose row would satisfy a row count and nothing
+      // else, which is the bug these tests exist to hold shut.
       await env.DB
         .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_ring', 'main', 1, 'ring', ?, 1, 1)")
         .bind(JSON.stringify({ target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" }))
@@ -179,6 +181,10 @@ describe("admin diagnostics", () => {
     it("warns when the on-call tech has no mobile saved", async () => {
       await addTech("tech@oncall.test");
       await setRotation(["tech@oncall.test"]);
+      // Wired, so this isolates the missing mobile. Unwired, the more severe failure reports first
+      // and rightly so: with no step routing to the rotation the call reaches neither their mobile
+      // nor their app, and "can only reach their app" would be actively wrong.
+      await wireIvrToOnCall();
       stubFetch();
       const check = find(await run(), "on_call");
       expect(check.status).toBe("warn");
@@ -225,17 +231,94 @@ describe("admin diagnostics", () => {
       expect(find(await run(), "on_call").status).toBe("fail");
     });
 
-    // "Nobody is set" and "the stored rotation could not be read" both arrive as null. Sending
-    // someone to a Settings screen that already shows a full rota is the wrong instruction.
-    it("distinguishes a corrupt rotation from an unset one", async () => {
+    // "Nobody is set" and "the stored rotation could not be read" are different instructions: one
+    // sends you to Settings to do a thing, the other says the thing you already did is broken. The
+    // first version of this test stored invalid JSON and asserted the UNDISTINGUISHED warn -- it
+    // passed with the entire branch deleted, because getOnCallRotation laundered the corruption
+    // into an empty rotation before the check ever saw it.
+    it("reports a corrupt rotation as a failure, not as 'nobody is set'", async () => {
       await env.DB
         .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .bind("not json at all")
         .run();
       stubFetch();
       const check = find(await run(), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("cannot be read");
+    });
+
+    it("reports a wrong-shaped rotation the same way", async () => {
+      await env.DB
+        .prepare("INSERT INTO settings (key, value) VALUES ('on_call_rotation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(JSON.stringify({ members: "not an array" }))
+        .run();
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("fail");
+    });
+
+    it("still says nobody is on call when nothing is stored at all", async () => {
+      stubFetch();
+      const check = find(await run(), "on_call");
       expect(check.status).toBe("warn");
       expect(check.detail).toContain("Nobody is on call");
+    });
+
+    // The demo account is dropped at dial time, so a rotation naming it rings nobody. Reporting it
+    // as fine was the same incident the write-path fix was supposed to close.
+    it("does not report the demo account as on call", async () => {
+      await env.DB
+        .prepare("INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES (?, 'staff', 1, 'available', ?, NULL, 100)")
+        .bind("reviewer@oncall.test", CLOSED)
+        .run();
+      await setRotation(["reviewer@oncall.test"]);
+      await setUserSettings(env.DB, "reviewer@oncall.test", { mobile_number: "0412345678" });
+      await wireIvrToOnCall();
+      stubFetch();
+      const check = find(await run(baseEnv({ DEMO_ACCOUNT_EMAILS: "reviewer@oncall.test" })), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("no longer a staff member");
+    });
+
+    // A ring step that EXISTS is not a ring step a call can REACH. Counting rows called this wired.
+    it("is not satisfied by a ring step nothing routes to", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      // An entry step whose closed branch still goes to voicemail, plus an orphaned on-call ring
+      // step sitting beside it -- exactly what saving a half-wired flow leaves behind.
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_hours', 'main', 1, 'business_hours', ?, 1, 1)")
+        .bind(JSON.stringify({ openNextNodeId: "", closedNextNodeId: "n_vm" }))
+        .run();
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_vm', 'main', 0, 'voicemail', ?, 1, 1)")
+        .bind(JSON.stringify({ audioAssetId: null, ttsText: "", mailboxLabel: "after hours" }))
+        .run();
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_orphan', 'main', 0, 'ring', ?, 1, 1)")
+        .bind(JSON.stringify({ target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" }))
+        .run();
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("no step of the phone menu");
+    });
+
+    // And the positive: once the closed branch actually points at it, the same flow reports ok.
+    it("is satisfied once the closed branch routes to the on-call ring step", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_hours', 'main', 1, 'business_hours', ?, 1, 1)")
+        .bind(JSON.stringify({ openNextNodeId: "", closedNextNodeId: "n_ring" }))
+        .run();
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('n_ring', 'main', 0, 'ring', ?, 1, 1)")
+        .bind(JSON.stringify({ target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" }))
+        .run();
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("ok");
     });
 });
 });
@@ -276,10 +359,7 @@ describe("test push", () => {
     const left = await env.DB.prepare("SELECT COUNT(*) AS n FROM push_tokens WHERE token = ?").bind(TOKEN).first<{ n: number }>();
     expect(left?.n).toBe(0);
   });
-  // The rota's failure modes are ALL silent from the outside -- an empty rotation, a departed tech,
-  // a missing mobile -- and every one of them ends with the after-hours caller hearing voicemail,
-  // which is indistinguishable from having no rota at all. That is the state this feature exists to
-  // end, so it is reported here rather than discovered in a month.
+});
 
 describe("test email", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -330,7 +410,4 @@ describe("test email", () => {
     stubFetch();
     expect(find(await run(), "divert_caller_id").status).toBe("ok");
   });
-
-  });
-
 });

@@ -12,23 +12,42 @@ const ON_CALL_ROTATION_KEY = "on_call_rotation";
 // got back would corrupt the "nobody on call" default for every later read in the isolate.
 const emptyRotation = (): OnCallRotation => ({ members: [], anchorWeekStart: "" });
 
-export async function getOnCallRotation(db: D1Database): Promise<OnCallRotation> {
+// The raw read, which distinguishes the three outcomes the callers actually need to tell apart.
+//
+// `getOnCallRotation` below collapses them all into an empty rotation, which is right on the ring
+// path -- nobody on call falls through to voicemail -- but wrong for reporting: Health Checks sent
+// an admin to a Settings screen that was already showing a full rota, because "no rotation set" and
+// "the stored value is corrupt" arrived as the same empty object.
+export type RotationRead =
+  | { status: "ok"; rotation: OnCallRotation }
+  | { status: "missing"; rotation: OnCallRotation }
+  | { status: "unreadable"; rotation: OnCallRotation };
+
+export async function readOnCallRotation(db: D1Database): Promise<RotationRead> {
   const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(ON_CALL_ROTATION_KEY).first<{ value: string }>();
-  if (!row) return emptyRotation();
+  if (!row) return { status: "missing", rotation: emptyRotation() };
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.value);
   } catch {
-    // Same rule as every other stored-JSON read on the call path: an unreadable value is "nobody is
-    // on call", never a throw. The Health Check is what makes that state visible.
     console.log("ON_CALL_ROTATION_UNPARSEABLE", JSON.stringify({ value: row.value.slice(0, 120) }));
-    return emptyRotation();
+    return { status: "unreadable", rotation: emptyRotation() };
   }
   if (!isOnCallRotation(parsed)) {
     console.log("ON_CALL_ROTATION_UNPARSEABLE", JSON.stringify({ error: "not a rotation shape" }));
-    return emptyRotation();
+    return { status: "unreadable", rotation: emptyRotation() };
   }
-  return parsed;
+  // Normalised on READ as well as on write. Lowercasing new writes does nothing for a row stored
+  // before that existed -- and those are precisely the rows the fix was for. staff_users only ever
+  // holds lowercase, and both admin UIs compare against it strictly, so a legacy "Tech@X.com" shows
+  // the person as rostered AND not-rostered at once with the duplicate unremovable. Repairing here
+  // costs one map and needs no migration.
+  return { status: "ok", rotation: { ...parsed, members: parsed.members.map((m) => m.trim().toLowerCase()) } };
+}
+
+export async function getOnCallRotation(db: D1Database): Promise<OnCallRotation> {
+  return (await readOnCallRotation(db)).rotation;
 }
 
 export async function setOnCallRotation(db: D1Database, rotation: OnCallRotation): Promise<void> {
@@ -43,7 +62,9 @@ export async function getOnCallOverride(db: D1Database, weekStart: string): Prom
     .prepare("SELECT staff_email FROM on_call_overrides WHERE week_start = ?")
     .bind(weekStart)
     .first<{ staff_email: string }>();
-  return row?.staff_email ?? null;
+  // Same reasoning as the rotation read: a legacy mixed-case override row would show no selection
+  // in the week picker even though the week is covered.
+  return row?.staff_email ? row.staff_email.trim().toLowerCase() : null;
 }
 
 export async function listOnCallOverrides(db: D1Database, fromWeekStart: string): Promise<{ week_start: string; staff_email: string }[]> {
