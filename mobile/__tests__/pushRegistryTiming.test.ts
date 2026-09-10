@@ -1,42 +1,96 @@
-/// <reference types="jest" />
+/**
+ * The 0xBAADCA11 crash of 2026-09-10.
+ *
+ * A VoIP push wakes the app in the BACKGROUND and iOS allows roughly five seconds to report the
+ * call to CallKit; miss it and FrontBoard SIGKILLs the process ("bad call"). The device log shows
+ * exactly that: procRole "Non UI", phone locked, launched 11:38:11 and killed 11:38:18.
+ *
+ * initializePushRegistry() used to run inside registerForIncoming -- behind the JS bundle booting,
+ * auth resolving, the tabs mounting, a permission check, and with a network round trip after it.
+ * These tests pin the BEHAVIOUR of the fix, not the shape of the source: an earlier version of this
+ * file matched text with indexOf and passed with the fix fully reverted into a useEffect, because
+ * the comment above it mentioned the call.
+ */
+import { Platform } from "react-native";
 
-// The 0xBAADCA11 crash: a VoIP push wakes the app in the background and iOS allows roughly five
-// seconds to report the call to CallKit. The PushKit registry used to be created inside
-// registerForIncoming -- behind auth, navigation, a permission check and a network round trip --
-// so on the cold wake that a real incoming call actually is, the handset was killed instead of
-// ringing. The registry must be created at launch, from module scope, touching nothing else.
+const mockRegistry = { calls: 0, fail: null as string | null };
 
-import fs from "fs";
-import path from "path";
+jest.mock("@twilio/voice-react-native-sdk", () => {
+  class FakeVoice {
+    on() { return this; }
+    off() { return this; }
+    async initializePushRegistry() {
+      mockRegistry.calls += 1;
+      if (mockRegistry.fail) throw new Error(mockRegistry.fail);
+    }
+    async register() {}
+  }
+  const Voice: any = jest.fn().mockImplementation(() => new FakeVoice());
+  Voice.Event = { CallInvite: "callInvite", Registered: "registered", Error: "error" };
+  const Call: any = {};
+  Call.Event = { Disconnected: "disconnected", ConnectFailure: "connectFailure" };
+  Call.State = {};
+  const CallInvite: any = {};
+  CallInvite.Event = { Accepted: "accepted", Rejected: "rejected", Cancelled: "cancelled" };
+  CallInvite.State = { Pending: "pending" };
+  return { Voice, Call, CallInvite, PreflightTest: {} };
+});
 
-const SRC = path.join(__dirname, "..", "src");
-const layout = fs.readFileSync(path.join(SRC, "app", "_layout.tsx"), "utf8");
-const voice = fs.readFileSync(path.join(SRC, "lib", "voice.ts"), "utf8");
+// A FRESH copy of the module per test. primePushRegistry deliberately keeps its state at module
+// scope -- that is what makes it idempotent across the whole app run -- so without this the first
+// test's successful prime makes every later one a no-op.
+function freshVoice() {
+  let mod!: typeof import("../src/lib/voice");
+  jest.isolateModules(() => {
+    mod = require("../src/lib/voice");
+  });
+  return mod;
+}
 
-describe("PushKit registry timing", () => {
-  it("primes the registry at module scope in the root layout, not inside a component", () => {
-    expect(layout).toContain("primePushRegistry");
-    // Module scope: it must appear before the first component declaration in the file.
-    const primeAt = layout.indexOf("primePushRegistry()");
-    const firstComponentAt = layout.search(/\nfunction [A-Z]|\nexport default function/);
-    expect(primeAt).toBeGreaterThan(-1);
-    expect(primeAt).toBeLessThan(firstComponentAt);
+describe("PushKit registry priming", () => {
+  beforeEach(() => {
+    mockRegistry.calls = 0;
+    mockRegistry.fail = null;
+    Platform.OS = "ios";
   });
 
-  // If registerForIncoming creates it directly again, the ordering fix is only half applied --
-  // exactly the shape of bug the tier 3 review caught on the ring path.
-  it("does not create the registry a second time inside registerForIncoming", () => {
-    const direct = voice.match(/voice\.initializePushRegistry\(\)/g) ?? [];
-    expect(direct).toHaveLength(1);
-    const primeFn = voice.indexOf("export function primePushRegistry");
-    const callAt = voice.indexOf("voice.initializePushRegistry()");
-    expect(callAt).toBeGreaterThan(primeFn);
+  it("creates the registry exactly once when primed repeatedly", async () => {
+    const { primePushRegistry } = freshVoice();
+    await primePushRegistry();
+    await primePushRegistry();
+    await primePushRegistry();
+    expect(mockRegistry.calls).toBe(1);
   });
 
-  // Startup must not be able to throw: a failure to build the registry means incoming calls will
-  // not arrive, which the registration status surfaces -- it must not also stop the app opening.
-  it("swallows a registry failure rather than throwing from app startup", () => {
-    const fn = voice.slice(voice.indexOf("export function primePushRegistry"));
-    expect(fn.slice(0, 600)).toContain(".catch(");
+  // It runs at app startup, where a throw would stop the app opening at all -- and the app failing
+  // to launch is strictly worse than incoming calls not arriving.
+  it("never rejects, even when the native call fails", async () => {
+    const { primePushRegistry, getPushRegistryError } = freshVoice();
+    mockRegistry.fail = "no pushkit for you";
+    await expect(primePushRegistry()).resolves.toBeUndefined();
+    expect(getPushRegistryError()).toBe("no pushkit for you");
+  });
+
+  // A rejection must NOT be memoised as a resolved promise. That would leave the handset silently
+  // taking no incoming calls until it was force quit -- worse than the crash being fixed, because
+  // the old code rebuilt the registry on every registerForIncoming and so recovered by itself.
+  it("retries after a failure instead of caching it as success", async () => {
+    const { primePushRegistry, getPushRegistryError } = freshVoice();
+    mockRegistry.fail = "transient";
+    await primePushRegistry();
+    expect(mockRegistry.calls).toBe(1);
+
+    mockRegistry.fail = null;
+    await primePushRegistry();
+    expect(mockRegistry.calls).toBe(2);
+    expect(getPushRegistryError()).toBeNull();
+  });
+
+  // Android uses FCM; the native call does not exist there and throws if invoked.
+  it("does nothing at all on Android", async () => {
+    Platform.OS = "android";
+    const { primePushRegistry } = freshVoice();
+    await primePushRegistry();
+    expect(mockRegistry.calls).toBe(0);
   });
 });

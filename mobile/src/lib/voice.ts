@@ -162,17 +162,38 @@ function sleep(ms: number): Promise<void> {
 // new native build. This at least removes auth, navigation and a network call from the critical path.
 let pushRegistryPrimed: Promise<void> | null = null;
 
+// A failure is REMEMBERED, not cached as success. Assigning the promise returned by `.catch()`
+// would memoise a rejection as a permanently-resolved one: every later call -- a re-login, a tab
+// remount, a second registerForIncoming -- would await that resolved promise, the registry would
+// never be built again, and the handset would silently take no incoming calls until it was force
+// quit. The old code created it on every registerForIncoming and so recovered on its own; losing
+// that would have been a worse bug than the one being fixed.
+let pushRegistryError: string | null = null;
+
 export function primePushRegistry(): Promise<void> {
   if (Platform.OS !== "ios") return Promise.resolve();
-  // Idempotent: registerForIncoming awaits the same promise rather than creating a second registry.
+  // Idempotent while in flight or successful; retryable once it has failed.
   if (!pushRegistryPrimed) {
-    pushRegistryPrimed = voice.initializePushRegistry().catch((e: unknown) => {
-      // Never throw from app startup. A failure here means incoming calls will not arrive, which
-      // the registration status surfaces -- it must not also stop the app from opening.
-      setRegStatus("pushkit init failed: " + (e instanceof Error ? e.message : String(e)));
-    });
+    pushRegistryError = null;
+    pushRegistryPrimed = voice
+      .initializePushRegistry()
+      .then(() => {
+        pushRegistryError = null;
+      })
+      .catch((e: unknown) => {
+        // Never throw from app startup: a registry that cannot be built means incoming calls will
+        // not arrive, but it must not also stop the app from opening. The reason is kept so the
+        // registration path can report THIS error rather than the misleading one it would
+        // otherwise produce, and the slot is cleared so the next attempt actually retries.
+        pushRegistryError = e instanceof Error ? e.message : String(e);
+        pushRegistryPrimed = null;
+      });
   }
   return pushRegistryPrimed;
+}
+
+export function getPushRegistryError(): string | null {
+  return pushRegistryError;
 }
 
 // On iOS, `voice.register()` needs a PushKit device token that iOS hasn't necessarily handed
@@ -289,6 +310,12 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     // Already primed at app launch (see primePushRegistry). Awaited here so registration still
     // orders correctly behind it, but it is no longer this path's job to create it.
     await primePushRegistry();
+    // Fail FAST and accurately when the registry could not be built. Without this, register()
+    // fails with "Failed to initialize PushKit device token", registerWithRetry classifies that as
+    // the cold-launch token race and burns its whole ~29s backoff, and the status ends up naming a
+    // cause that is not what happened -- while the real reason, recorded at launch, is overwritten.
+    const primeError = getPushRegistryError();
+    if (primeError !== null) throw new Error("PushKit registry unavailable: " + primeError);
     const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
     await registerWithRetry(token);
     // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
