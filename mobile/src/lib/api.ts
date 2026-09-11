@@ -1,4 +1,5 @@
 import { getToken, clearToken } from "./session";
+import { OTA_BUILD, NATIVE_BUILD } from "./build";
 import { toPutPayload, type IvrFlow } from "./ivr";
 
 export const BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://tcbvoip.app").replace(/\/$/, "");
@@ -286,9 +287,23 @@ export async function getNumbers(): Promise<PhoneNumber[]> {
 }
 
 // Register this device's Expo push token so the server can notify it of inbound SMS.
+//
+// It also reports which build this handset is running, because this is the one call every
+// signed-in handset makes on launch. `nativeBuild` is the identity of the installed BINARY and is
+// the only thing that says whether a native fix is on this phone -- the CallKit patch above all,
+// which an OTA can never deliver. Admin > Health Checks reads it, so "is the fix installed?" stops
+// being a question someone has to answer by reading their own Settings screen aloud.
 export async function registerPushToken(token: string, platform: string): Promise<boolean> {
   try {
-    await apiFetch("/api/push/register", { method: "POST", body: JSON.stringify({ token, platform }) });
+    await apiFetch("/api/push/register", {
+      method: "POST",
+      body: JSON.stringify({
+        token,
+        platform,
+        otaBuild: OTA_BUILD,
+        nativeBuild: NATIVE_BUILD,
+      }),
+    });
     return true;
   } catch {
     return false;

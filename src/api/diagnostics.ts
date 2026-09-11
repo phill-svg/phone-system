@@ -231,17 +231,110 @@ async function checkRingRoster(env: Env): Promise<Check> {
   return { ...base, status: "ok", detail: `${available.length} would ring: ${available.map((s) => s.email.split("@")[0]).join(", ")}.` };
 }
 
+// The iOS binary that first carries the native CallKit fix for 0xBAADCA11.
+//
+// Below this, a VoIP push wakes the app in the background and iOS SIGKILLs it after ~5 seconds for
+// not reporting the call to CallKit. The symptom is not a crash anyone sees -- it is the softphone
+// simply never ringing, then voicemail. The cure is in AppDelegate.swift and can NEVER arrive by
+// OTA, so an old binary on the newest OTA is exactly the state that looks fine and is not.
+const CALLKIT_FIX_IOS_BUILD = 5;
+
+// A phone nobody has opened in a month is not the phone that failed to ring. Without this bound a
+// spare handset left in a drawer -- still installed, still holding a live Expo token, still on
+// build 4 -- would pin this check red forever, which is the failure `divert_caller_id_last_error`
+// already taught us: an alarm that never clears is an alarm nobody reads.
+const DEVICE_ACTIVE_DAYS = 30;
+const DEVICE_ACTIVE_MS = DEVICE_ACTIVE_DAYS * 24 * 60 * 60 * 1000;
+
+type DeviceRow = { platform: string; ota_build: string | null; native_build: string | null; last_seen: number };
+
+// A build the handset reports is client-supplied TEXT, so it is not necessarily a number at all --
+// a dotted CFBundleVersion ("1.0.4") or any junk parses to NaN, and `NaN < 5` is false. Comparing
+// with a bare `Number()` would therefore CLEAR every handset it cannot actually judge, which is the
+// precise opposite of this check's own rule that unknown is not the same as fine. So it is parsed
+// strictly and anything unreadable falls through to the "has not reported" warn below.
+function parseBuildNumber(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number(raw.trim());
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 // Push is per-device, so this reports the caller's OWN registered devices -- the question behind it
 // is always "why didn't MY phone buzz".
+//
+// Note what it therefore CANNOT answer: whether a COLLEAGUE's handset carries the native fix. Their
+// phone is the one that did not ring, and it is invisible here. Reading the fleet would need this
+// check (and its label) to stop being per-caller.
 async function checkPushTokens(env: Env, staff: StaffUser): Promise<Check> {
   const base = { key: "push", label: "Your devices" };
-  const rows = await env.DB.prepare("SELECT platform, COUNT(*) AS n FROM push_tokens WHERE staff_email = ? GROUP BY platform")
-    .bind(staff.email)
-    .all<{ platform: string; n: number }>();
-  if (rows.results.length === 0) {
+  // Guarded like every other check in this file. `handleGetDiagnostics` runs them under one
+  // `Promise.all`, so an unguarded throw here does not fail this row -- it rejects the whole
+  // request and the screen that exists to break silence shows nothing at all.
+  let rows: DeviceRow[];
+  try {
+    const res = await env.DB.prepare(
+      "SELECT platform, ota_build, native_build, last_seen FROM push_tokens WHERE staff_email = ? ORDER BY last_seen DESC"
+    )
+      .bind(staff.email)
+      .all<DeviceRow>();
+    rows = res.results;
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't read your registered devices: ${e instanceof Error ? e.message : "error"}` };
+  }
+  if (rows.length === 0) {
     return { ...base, status: "fail", detail: "No devices registered for push. Open the app on your phone and allow notifications." };
   }
-  return { ...base, status: "ok", detail: rows.results.map((r) => `${r.n} ${r.platform}`).join(", ") + " registered." };
+
+  const describe = (r: DeviceRow) =>
+    `${r.platform} ${r.ota_build ? `#${r.ota_build}` : "#?"}${r.native_build ? ` · b${r.native_build}` : ""}`;
+  const summary = rows.map(describe).join(", ");
+
+  const active = rows.filter((r) => Date.now() - r.last_seen <= DEVICE_ACTIVE_MS);
+  if (active.length === 0) {
+    return {
+      ...base,
+      status: "warn",
+      detail:
+        `Registered, but no device here has opened the app in ${DEVICE_ACTIVE_DAYS} days, so none of what it last ` +
+        `reported is current. Open the app on the phone you answer calls on. (${summary})`,
+    };
+  }
+  const ios = active.filter((r) => r.platform === "ios");
+
+  // An iOS handset on a binary older than the fix is the single most likely reason the softphone
+  // did not ring, and it is invisible everywhere else: the OTA number looks current, the device is
+  // registered for push, and no crash is ever recorded because no JavaScript runs.
+  const stale = ios.filter((r) => {
+    const n = parseBuildNumber(r.native_build);
+    return n !== null && n < CALLKIT_FIX_IOS_BUILD;
+  });
+  if (stale.length > 0) {
+    const which = stale.map((r) => r.native_build).join(", ");
+    return {
+      ...base,
+      status: "fail",
+      detail:
+        `${stale.length === 1 ? "An iPhone here is" : `${stale.length} iPhones here are`} on build ${which}, ` +
+        `below b${CALLKIT_FIX_IOS_BUILD} — the native fix that stops iOS killing the app before it can ring. ` +
+        `Install the latest TestFlight build. (${summary})`,
+    };
+  }
+
+  // Unknown is NOT the same as fine, and saying so is the whole point: a handset that has not
+  // re-registered since build reporting shipped -- or that reported something unreadable -- cannot
+  // be cleared, and pretending otherwise is the silence this screen exists to break.
+  const unknown = ios.filter((r) => parseBuildNumber(r.native_build) === null);
+  if (unknown.length > 0) {
+    return {
+      ...base,
+      status: "warn",
+      detail:
+        `Registered, but an iPhone here has not reported which build it is running — reopen the app to refresh. ` +
+        `Until it does, there is no way to tell whether the native CallKit fix (b${CALLKIT_FIX_IOS_BUILD}) is installed. (${summary})`,
+    };
+  }
+
+  return { ...base, status: "ok", detail: `${summary}.` };
 }
 
 // Is a diverted call actually ringing with the customer's number on it?
