@@ -229,9 +229,10 @@ before adding one, or you will duplicate a path that already works.
   EAS with no Mac and no `.p8` anywhere. Then, in order: **#89** the after-hours **on-call
   rotation**, migration `0035`, editable on web `/admin/settings` and mobile
   `Admin > After-hours On Call`, with a Health Check for it; **#90** a back button on the mobile
-  **Admin hub**, which had no way out at all, plus `iconFallback` on `Row`; **#91** the **phone
-  menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than the web's node canvas,
-  reversing this file's old "IVR stays web-only" line; then **#92** and **#94**, two rounds of
+  **Admin hub**, which had no way out at all, plus the missing `Icon` fallbacks on the on-call
+  screen; **#91** the **phone menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than
+  the web's node canvas, reversing this file's old "IVR stays web-only" line — and the PR that
+  actually added `iconFallback` to `Row`, which this line used to credit to #90; then **#92** and **#94**, two rounds of
   `/code-review` fixes over #89 — see the review bullet below, which is the durable lesson from the
   whole day. OTA **66** on both channels; worker deployed.
   **Still outstanding at the end of it, and almost none of it is code:**
@@ -254,6 +255,46 @@ before adding one, or you will duplicate a path that already works.
     signatures and authenticates our REST calls.
   * The **web** `/admin/settings` on-call section and the mobile screen are separate
     implementations of the same rota; a change to one usually needs the other.
+- **READ `docs/superpowers/` BEFORE IMPLEMENTING. It is not decorative, and skipping it cost a day.**
+  This file says so at the top and it was ignored on 2026-09-11 through an entire softphone
+  investigation. `specs/2026-08-19-ios-softphone-phase1-design.md` lists, under Risks: *"APNs
+  environment mismatch (sandbox vs production push credential) is a common cause of 'no incoming
+  ring'"* and *"VoIP background mode + push entitlement must be exactly right or background ringing
+  silently fails"*. Both were written a month before the morning they explained, and both were
+  unread while the same symptom was chased through CallKit, build numbers and OTA versions instead.
+  The 24 documents in there are the cheapest reading in this repo.
+- **A missing VoIP push credential is why a softphone never rings, and NOTHING said so.**
+  `mintAccessToken` sets `push_credential_sid` only `if (opts.pushCredentialSid)` — so an unset
+  secret mints a perfectly valid access token with no push credential on it. The app registers
+  happily, presence goes green, and Twilio has no way to wake it: an inbound call rings
+  `client:{email}` for the FULL timeout and the handset never stirs. No error, no log line, no
+  crash, and `/admin/errors` stays empty because no JavaScript ever runs. That is exactly the
+  10:28 call on 2026-09-11 — 22s then 62s of ringing into a phone that was never told.
+  `TWILIO_PUSH_CREDENTIAL_SID_ANDROID` is a plain var in `wrangler.jsonc`; **the iOS one is not
+  there at all**, so it has always depended on a wrangler secret (`deploy.yml` does not set
+  secrets) that nothing verified. `Admin > Health Checks > Ringing the app` now answers it, and it
+  asks Twilio rather than trusting the var: a 404 means the SID is not on this account, and
+  `sandbox: "true"` on an APNs credential means silence on any TestFlight or App Store build,
+  because those talk to PRODUCTION APNs. Could-not-reach is a warn, never a fail — a Twilio blip
+  must not send someone rebuilding credentials that were fine.
+- **The `· b5` in Settings never rendered, on any device, ever.** It read
+  `Constants.nativeBuildVersion`, which is not a property of `Constants` in SDK 54 — only a
+  `@deprecated` comment pointing at `expo-application`. `Constants` is typed `& Record<string, any>`,
+  so it compiled clean and was `undefined` everywhere, from the day it shipped in OTA 60. This file
+  called that half "the ONLY thing that says whether the fix is on the handset"; it printed nothing.
+  It comes from `expo-application` now, through one `NATIVE_BUILD` constant that both the Settings
+  screen and push registration read. **And `expo-application` must stay in `mobile/package.json`**:
+  the first version imported it while it resolved only as a transitive dep of `expo-notifications`,
+  and its native module loads with `requireNativeModule`, which THROWS — `api.ts` is imported by
+  nearly every screen, so the day that hoist changed every handset would white-screen on launch
+  with no JS left to report it.
+- **The handset reports its build to the server now** (migration `0036`, on push registration —
+  the one call every signed-in handset makes on launch), so "is the native fix on that phone?" is a
+  Health Check rather than a question someone answers by reading their own screen aloud. An iPhone
+  below `b5` FAILS and names the fix; one that has not reported WARNS rather than passing, because
+  unknown is not the same as fine. Bounded to 30 days so a spare phone in a drawer cannot pin it
+  red forever, and the build is parsed strictly — `Number("1.0.4")` is NaN and `NaN < 5` is false,
+  which would have cleared a handset the check never actually read.
 - **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
   the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
   moving it again means moving the grep in the same commit or every publish fails at "Read
@@ -724,6 +765,95 @@ before adding one, or you will duplicate a path that already works.
   it. Same rule for anything added to a node in future.
   Deleting a step also has to UNLINK it (`removeNode`), or every reference to it becomes a dangling
   id that the flow engine only fails on when a real call reaches that point, mid-call, silently.
+- **#91 shipped two features that could never work, and both were the same shape: a client sending
+  a config the server refuses.** Found by `/code-review` after the merge (2026-09-11), which is the
+  wrong order and is exactly what the review bullet below is about.
+  (1) **"Add a step > Forward to a number" 400d every time.** `blankConfigFor("redirect")` is
+  `{number: ""}` and `isRedirectConfig` was `isNonEmptyString`. Redirect was the ONE type whose
+  blank config the endpoint refused — every "next node" field is deliberately allowed to be blank,
+  and `replaceFlowNodes` persists unreachable nodes on purpose — so the fix is the SERVER, not the
+  client: a step may exist before it is wired up. The web editor never hit it because it holds a
+  new node LOCALLY and pre-checks before saving; the handset saves the instant a type is picked, so
+  the editor can load it fresh.
+  (2) **Deleting the entry step 400d every time**, while the confirm dialog carefully explained
+  what would happen. `removeNode` returns `entryNodeId: null` and `handlePutFlow` requires a string
+  matching exactly one node. Mobile now REFUSES it and says to pick the new starting step on the
+  web — the web's own answer (re-point the entry at `nodes[0]`) silently moves where every call
+  starts, which is worse than refusing.
+  What makes the looser validator safe is **`incompleteReason`**, which marks a half-wired step on
+  the list screen. A blank next-field and a blank redirect number both throw in the flow engine,
+  and the DO catch-all then says "we're experiencing a technical issue" and hangs up on a live
+  customer — so the old dialog's "callers reaching that point will fall through" was wrong too.
+- **An "unfinished" badge covers only the types with NO server-side default, and getting that list
+  wrong makes the badge noise.** `incompleteReason`'s first version reused the EDITOR's "which types
+  show a prompt field" set, which is a different question — `wait` with a blank prompt plays the
+  Australian ringback tone (#47, the intended configuration) and `callback` speaks
+  "Thanks, we'll call you back soon." So a Hold step would have been badged permanently, inviting
+  someone to "fix" it by typing text, which replaces the ring cadence with a spoken line on every
+  hold poll. Voicemail is excluded too: a beep-only mailbox is terse but real, and the missing
+  mailbox NAME is the gap that matters there. The set is `play`, `gather`, `input` — the three
+  where a blank prompt really does leave the caller hearing nothing. A badge you have learned to
+  ignore is worse than no badge, the same lesson as `divert_caller_id_last_error` clearing itself.
+- **`/api/ivr/flows/:flow` answers a rejection with JSON now, because plain text reaches nobody.**
+  Every 400 names the offending node and field, which is the entire point of validating on write —
+  and `apiFetch` lifts a message only out of a JSON `{error}` body, falling back to "request failed
+  (400)". So the handset reported nothing useful for a mistyped closed date, and a code comment on
+  the mobile screen claimed the opposite. `jsonResponse({ error }, 400)` is what the rest of the API
+  already does. The web editor reads the JSON and falls back to body text for the routes still
+  answering in plain text (403 forbidden, 404 not found). **The same gap is still open on business
+  hours** (`isDayWindow` → `invalid request body`) — see that bullet above.
+- **A spread is not a round-trip guarantee, and a test asserting through one is not a test.**
+  The `positionX`/`positionY` test added with #91 asserted through `removeNode`'s `{ ...n }` with a
+  helper that set the positions regardless of the declared type — and TypeScript types are erased,
+  so DELETING those fields from `IvrNode`, the mutation that would actually flatten the web canvas,
+  left it green. Saves now go through **`toPutPayload`**, which names every field the server
+  persists in a RUNTIME list (`IVR_NODE_PUT_FIELDS`), so dropping one breaks a test.
+  `created_at`/`updated_at` are the only columns deliberately omitted — the server regenerates them.
+  **Testing the helper is not testing the call site**: reverting `putIvrFlow` to
+  `JSON.stringify(body)` left every test green, because nothing asserted on the bytes actually
+  sent. That is pinned in `api.test.ts` now, against a stubbed fetch.
+- **Every mobile screen that loads on FOCUS needs `keepEdits`, and the IVR step editor did not have
+  it.** `useFocusEffect` re-runs on refocus, not just mount, and an incoming call pushes
+  `/call-incoming` as a root-stack modal from anywhere in the app — so typing a new greeting, taking
+  a call and coming back replaced the draft with the server's copy, with no dirty indicator to say
+  it had gone. `on-call.tsx` already solved this; `business-hours.tsx` sidesteps it with a
+  mount-only effect. The dirty test is `configsEqual`, one level deep with a JSON compare for a
+  gather's `options`. **Any new screen on `useFocusEffect` joins this list.** Two companions from
+  the same pass: `setError(null)` on a successful load, or one failed load pins the error screen for
+  the life of the component (the error branch returns before the data branch, so every later load
+  succeeds and repaints nothing); and the step editor **re-reads the flow immediately before
+  writing**, because the endpoint is a whole-flow delete-and-reinsert with no version check and the
+  screen's snapshot is as old as the time spent typing. That narrows the window from minutes to
+  milliseconds — it does not close it. **The DELETE path needs that re-read more than the save
+  does**, and the first version of the fix missed it: `removeNode` carries `entryNodeId` forward
+  from whatever it is handed, so deleting from a stale snapshot reverts every web edit made since
+  the screen opened, entry node included, while reporting success. It also re-checks `isEntry`
+  against the fresh copy, since the entry could have MOVED to this step meanwhile. Both re-reads
+  fall back to the snapshot on a failed GET rather than refusing — the point is not to clobber
+  someone else's edit, and turning a transient failure into "you cannot save" blocks a write the
+  PUT would have accepted.
+- **A number field that cannot be cleared will ship a zero into a live call.**
+  `Number(text.replace(/\D/g, "")) || 0` straight into the draft meant backspacing the box snapped
+  it to "0", and it could never be empty. `numDigits` is passed to `<Gather>` verbatim and
+  `isInputConfig` only checks `typeof === "number"`, so clearing the field intending to retype it
+  and then tapping Save built a live Gather asking for **zero digits**. `NumberField` owns its own
+  text, commits nothing while the box is empty, and clamps to a per-field `min` — per-field because
+  zero retries is a legitimate answer and zero digits is not. It carries the same `pushed` ref as
+  the schedule editor's `TimeField`, for the same reason: without it the commit echoes back and
+  rewrites the box mid-word.
+  **That `min` must be 0 or 1, and the bound is load-bearing.** Review caught the first version
+  using 5 for `timeoutSeconds`: typing "3" committed 5 while the box still read 3, and
+  `keyboardShouldPersistTaps="handled"` means a tap on Save never blurs the field and never
+  reconciles them — so it would have saved a ring time the admin never chose. With a floor of 1
+  every digit string except a lone `"0"` is already above it, so the clamp can never fire
+  mid-typing and the divergence is unreachable.
+- **The Admin hub's back button is pinned by a test now, and the screen list is data so it can be.**
+  `leaveAdmin`'s pop-or-replace rule was tested from the day it shipped, but nothing tested the
+  `headerLeft` that CALLS it — delete that one line and every test stayed green while the hub was
+  stranded exactly as reported. `admin/_layout.tsx` exports `ADMIN_SCREENS` and the test asserts the
+  hub has a `headerLeft` and the pushed sub-screens do not. Render tests are not an option here:
+  `auth.test.tsx` sits in `testPathIgnorePatterns`, so `@testing-library/react-native` is installed
+  but effectively unused.
 - **`Row`'s leading icon had no Android fallback, and still doesn't at most call sites.** `Row`
   renders `<Icon name={icon}>` with no `fallback`, so on Android every icon tile across Settings and
   Admin is a coloured square containing a blank `ellipse-outline`; only the trailing chevron was
@@ -772,7 +902,8 @@ before adding one, or you will duplicate a path that already works.
   TONIGHT; the demo account could be put on call, where it rings nobody while Health Checks reports
   it as fine; and Health Checks went green over a rota wired to nothing.
   **Mutation-test every regression test.** Four separate tests this day passed against fully
-  reverted code — the corrupt-rotation test (the branch was unreachable), the timezone test
+  reverted code (a fifth and sixth turned up the next day — the transcripts webhook test, and #91's
+  canvas-positions test) — the corrupt-rotation test (the branch was unreachable), the timezone test
   (`process.env.TZ` does nothing), and both write-normalisation tests (they asserted THROUGH reads
   that normalise too). "A test that reads through the fix is not a test" now sits beside "a test
   that reads source text is not a test"; the fix for both is to assert the raw stored value and to

@@ -18,6 +18,24 @@ import { useTheme } from "../../theme/theme";
 // there is nothing behind it within this navigator. Between the two, the hub had no way out at all
 // except an edge swipe, which is not discoverable and does not exist on Android. Sub-screens are
 // fine: they are pushed inside this stack and get the usual chevron.
+// The screen list is DATA so a test can assert the hub still carries its own back button.
+// `leaveAdmin`'s rule was already tested, but deleting this one `headerLeft` left every test green
+// while stranding the hub exactly as before -- and this file is rewritten often enough for that to
+// be a real risk (#91 added two rows to it). A test that green-lights the reverted fix is not a
+// test, which is the lesson this repo keeps relearning.
+export const ADMIN_SCREENS: { name: string; options: { title: string; headerLeft?: () => React.ReactElement } }[] = [
+  { name: "index", options: { title: "Admin", headerLeft: () => <BackToSettings /> } },
+  { name: "business-hours", options: { title: "Business Hours" } },
+  { name: "blocklist", options: { title: "Call Blocklist" } },
+  { name: "numbers", options: { title: "Phone Numbers" } },
+  { name: "on-call", options: { title: "After-hours On Call" } },
+  { name: "ivr/index", options: { title: "Phone Menu" } },
+  { name: "ivr/[nodeId]", options: { title: "Step" } },
+  { name: "diagnostics", options: { title: "Health Checks" } },
+  { name: "staff/index", options: { title: "Staff" } },
+  { name: "staff/[email]", options: { title: "Staff Member" } },
+];
+
 export default function AdminLayout() {
   const t = useTheme();
   const { user } = useAuth();
@@ -36,16 +54,9 @@ export default function AdminLayout() {
         contentStyle: { backgroundColor: t.colors.bg },
       }}
     >
-      <Stack.Screen name="index" options={{ title: "Admin", headerLeft: () => <BackToSettings /> }} />
-      <Stack.Screen name="business-hours" options={{ title: "Business Hours" }} />
-      <Stack.Screen name="blocklist" options={{ title: "Call Blocklist" }} />
-      <Stack.Screen name="numbers" options={{ title: "Phone Numbers" }} />
-      <Stack.Screen name="on-call" options={{ title: "After-hours On Call" }} />
-      <Stack.Screen name="ivr/index" options={{ title: "Phone Menu" }} />
-      <Stack.Screen name="ivr/[nodeId]" options={{ title: "Step" }} />
-      <Stack.Screen name="diagnostics" options={{ title: "Health Checks" }} />
-      <Stack.Screen name="staff/index" options={{ title: "Staff" }} />
-      <Stack.Screen name="staff/[email]" options={{ title: "Staff Member" }} />
+      {ADMIN_SCREENS.map((screen) => (
+        <Stack.Screen key={screen.name} name={screen.name} options={screen.options} />
+      ))}
     </Stack>
   );
 }

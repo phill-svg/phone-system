@@ -12,7 +12,9 @@ function baseEnv(extra: Record<string, unknown> = {}) {
 }
 
 // Routes by host so each test only says what differs from "everything healthy".
-function stubFetch(over: { servicem8?: number; twilio?: number; region?: string | number; expo?: unknown } = {}) {
+function stubFetch(
+  over: { servicem8?: number; twilio?: number; region?: string | number; expo?: unknown; pushCred?: unknown } = {}
+) {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("servicem8.com")) return Promise.resolve(new Response("{}", { status: over.servicem8 ?? 200 }));
@@ -22,6 +24,18 @@ function stubFetch(over: { servicem8?: number; twilio?: number; region?: string 
     }
     if (url.includes("api.sydney.au1.twilio.com")) {
       return Promise.resolve(new Response(JSON.stringify({ status: "active", friendly_name: "TCB" }), { status: over.twilio ?? 200 }));
+    }
+    if (url.includes("notify.twilio.com")) {
+      // Routed by SID: the two platforms expect DIFFERENT credential types, so answering both with
+      // one body made a healthy pair look broken. `pushCred` overrides the iOS credential only --
+      // Android always answers a good fcm one, so a failure names the platform under test.
+      if (url.includes("CRdroid")) {
+        return Promise.resolve(new Response(JSON.stringify({ type: "fcm" }), { status: 200 }));
+      }
+      if (typeof over.pushCred === "number") return Promise.resolve(new Response("{}", { status: over.pushCred }));
+      return Promise.resolve(
+        new Response(JSON.stringify(over.pushCred ?? { type: "apn", sandbox: "false" }), { status: 200 })
+      );
     }
     if (url.includes("exp.host")) {
       return Promise.resolve(new Response(JSON.stringify(over.expo ?? { data: [{ status: "ok", id: "t1" }] }), { status: 200 }));
@@ -110,7 +124,7 @@ describe("admin diagnostics", () => {
   it("returns every check, with no key lost or duplicated", async () => {
     stubFetch();
     const keys = (await run()).map((c) => c.key);
-    expect(keys).toEqual(["twilio", "regions", "roster", "on_call", "divert_caller_id", "servicem8", "transcripts", "email", "push"]);
+    expect(keys).toEqual(["twilio", "regions", "roster", "on_call", "divert_caller_id", "servicem8", "transcripts", "email", "voip_push", "push"]);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
@@ -166,11 +180,156 @@ describe("admin diagnostics", () => {
     });
   });
 
+  // The native CallKit fix ships in a BINARY and can never arrive by OTA, so an old build on the
+  // newest OTA is exactly the state that looks fine and is not: push registered, OTA current, no
+  // crash recorded (no JavaScript runs when iOS kills the app), and the softphone simply never
+  // rings. Before this, the only thing that could answer "is the fix installed?" was a line in the
+  // handset's own Settings -- and that line was reading a property that does not exist.
+  describe("which build a handset is running", () => {
+    // `last_seen` is now load-bearing: a device nobody has opened in a month is not judged, so a
+    // test device has to look like it checked in today rather than at the epoch.
+    const register = (platform: string, ota: string | null, native: string | null, token = TOKEN, lastSeen = Date.now()) =>
+      env.DB.prepare(
+        "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen, ota_build, native_build) VALUES (?, ?, ?, 1, ?, ?, ?)"
+      )
+        .bind(token, platform, ADMIN.email, lastSeen, ota, native)
+        .run();
+
+    it("fails an iPhone on a binary older than the CallKit fix", async () => {
+      await register("ios", "67", "4");
+      stubFetch();
+      const check = find(await run(), "push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("build 4");
+      expect(check.detail).toContain("TestFlight");
+    });
+
+    it("passes an iPhone on the build that carries it", async () => {
+      await register("ios", "67", "5");
+      stubFetch();
+      const check = find(await run(), "push");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("b5");
+    });
+
+    // Unknown is not the same as fine. A handset that has not re-registered cannot be cleared, and
+    // reporting it as healthy is the exact silence this screen exists to break.
+    it("warns rather than passing when an iPhone has not said which build it runs", async () => {
+      await register("ios", null, null);
+      stubFetch();
+      const check = find(await run(), "push");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("has not reported");
+    });
+
+    // The rule is iOS-only: the AppDelegate patch is an iOS fix, and Android versionCodes are a
+    // different number space entirely -- comparing them against 5 would fail every Android handset.
+    it("does not judge an Android handset against the iOS build number", async () => {
+      await register("android", "67", "2");
+      stubFetch();
+      expect(find(await run(), "push").status).toBe("ok");
+    });
+
+    // A build is client-supplied text, so it is not necessarily a number. `Number("1.0.4")` is NaN
+    // and `NaN < 5` is false, so a bare comparison would silently CLEAR a handset it cannot judge --
+    // the exact opposite of the rule this check states one block later.
+    it("does not clear an iPhone whose build it cannot read", async () => {
+      await register("ios", "67", "1.0.4");
+      stubFetch();
+      const check = find(await run(), "push");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("has not reported");
+    });
+
+    // A spare handset in a drawer is still installed and still holds a live token. Judging it would
+    // pin this check red forever over a phone nobody answers calls on, and an alarm that never
+    // clears is an alarm nobody reads.
+    it("does not fail over a device nobody has opened in a month", async () => {
+      const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+      await register("ios", "60", "4", TOKEN, sixtyDaysAgo);
+      await register("ios", "67", "5", "ExponentPushToken[the-phone-in-use]");
+      stubFetch();
+      const check = find(await run(), "push");
+      expect(check.status).toBe("ok");
+      // Still listed, because hiding it would be its own kind of silence.
+      expect(check.detail).toContain("b4");
+    });
+
+    // ...but if EVERY device is that old, "ok" would be a claim about nothing. Say so instead.
+    it("warns when no device has checked in at all recently", async () => {
+      await register("ios", "60", "5", TOKEN, Date.now() - 60 * 24 * 60 * 60 * 1000);
+      stubFetch();
+      const check = find(await run(), "push");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("30 days");
+    });
+  });
+
+  // The check that was missing on 2026-09-11, when a call rang the softphone for the full 22 and 62
+  // seconds and the phone never stirred. mintAccessToken sets push_credential_sid only
+  // `if (opts.pushCredentialSid)`, so an unset secret mints a valid token with no push credential:
+  // the app registers happily and Twilio has no way to wake it. No error, no log, no crash.
+  describe("ringing the app", () => {
+    const WITH_CREDS = () =>
+      baseEnv({ TWILIO_PUSH_CREDENTIAL_SID_IOS: "CRios", TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" });
+
+    it("fails outright when no push credential is set at all", async () => {
+      stubFetch();
+      const check = find(await run(), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("never ring");
+      expect(check.detail).toContain("TWILIO_PUSH_CREDENTIAL_SID_IOS");
+    });
+
+    it("fails when only iOS is missing, and names the platform", async () => {
+      stubFetch();
+      const check = find(await run(baseEnv({ TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" })), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("iPhone");
+    });
+
+    // The phase-1 softphone design named this in its own words: "APNs environment mismatch
+    // (sandbox vs production push credential) is a common cause of 'no incoming ring'". A
+    // TestFlight build talks to PRODUCTION APNs, so a sandbox credential is pure silence.
+    it("fails a SANDBOX APNs credential, which looks identical to everything working", async () => {
+      stubFetch({ pushCred: { type: "apn", sandbox: "true" } });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("SANDBOX");
+    });
+
+    it("fails a credential Twilio has never heard of", async () => {
+      stubFetch({ pushCred: 404 });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("does not exist");
+    });
+
+    // Could-not-check is a warn, not a fail: a Twilio blip must not be reported as a broken
+    // configuration and send someone rebuilding credentials that were fine.
+    it("warns rather than failing when Twilio cannot be reached", async () => {
+      stubFetch({ pushCred: 503 });
+      expect(find(await run(WITH_CREDS()), "voip_push").status).toBe("warn");
+    });
+
+    it("passes a production APNs credential", async () => {
+      stubFetch({ pushCred: { type: "apn", sandbox: "false" } });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("production");
+    });
+  });
+
   it("tells you when no device of yours is registered for push", async () => {
     stubFetch();
     expect(find(await run(), "push").status).toBe("fail");
 
-    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)").bind(TOKEN, ADMIN.email).run();
+    // Registered WITH its build, because an iOS handset that has not reported one is deliberately a
+    // warn now rather than an ok -- see the build tests above. This half is about "a registered
+    // device is found at all", so it gives the check nothing else to complain about.
+    await env.DB.prepare(
+      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen, ota_build, native_build) VALUES (?, 'ios', ?, 1, ?, '67', '5')"
+    ).bind(TOKEN, ADMIN.email, Date.now()).run();
     stubFetch();
     const registered = find(await run(), "push");
     expect(registered.status).toBe("ok");

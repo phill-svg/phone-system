@@ -1,3 +1,5 @@
+import * as Application from "expo-application";
+
 // The OTA build number shown in Settings → Check for Updates.
 //
 // It lives here rather than in the settings screen because crash reports carry it too: "which build
@@ -5,7 +7,7 @@
 // constant the handset displays, or the two can disagree.
 //
 // The publish workflow greps this file's value, so keep the literal on one line.
-export const OTA_BUILD = "66";
+export const OTA_BUILD = "67";
 
 // What Settings shows, and the only way to tell whether a NATIVE fix is on a handset.
 //
@@ -16,6 +18,19 @@ export const OTA_BUILD = "66";
 // deliver. `nativeBuildVersion` is CFBundleVersion on iOS and versionCode on Android: the
 // identity of the installed binary. It is null in some contexts (Expo Go), where the OTA number
 // alone is all there is to show.
+//
+// It MUST come from `expo-application`, never `expo-constants`. The first version read
+// `Constants.nativeBuildVersion`, which is not a property of `Constants` at all in SDK 54 -- only a
+// @deprecated comment pointing at expo-application. `Constants` is typed `& Record<string, any>`,
+// so it compiled cleanly and was `undefined` on every device, forever: the label printed the OTA
+// number alone, and the one indicator of whether a native fix was installed never rendered once.
+// That is why nobody could say whether build 5 was on the handset on 2026-09-11.
+//
+// Read ONCE, here, so the Settings label, the push-token report and anything added later cannot
+// drift onto different sources -- which is exactly how the broken one survived: two call sites, one
+// of them wrong, and nothing comparing them.
+export const NATIVE_BUILD: string | null = Application.nativeBuildVersion;
+
 export function buildLabel(nativeBuildVersion: string | null): string {
   return nativeBuildVersion ? `#${OTA_BUILD} · b${nativeBuildVersion}` : `#${OTA_BUILD}`;
 }

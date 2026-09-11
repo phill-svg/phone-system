@@ -4,11 +4,17 @@ import { findContactByPhone } from "../db/contacts";
 import { sendExpoPush } from "../push/expoPush";
 import type { StaffUser } from "../access/requireStaffUser";
 
+// A build identifier is a short token ("67", "5"), and whatever arrives here is read back into
+// every line of Admin > Health Checks. Cap it rather than store an unbounded string a client chose:
+// this is client-supplied text on a write path, and the only bound otherwise is the request size.
+const MAX_BUILD_TAG = 32;
+const buildTag = (v: unknown): string | null => (typeof v === "string" ? v.trim().slice(0, MAX_BUILD_TAG) : null);
+
 // A device registers its Expo push token so it can be notified of inbound SMS etc.
 export async function handleRegisterPushToken(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
-  let body: { token?: unknown; platform?: unknown };
+  let body: { token?: unknown; platform?: unknown; otaBuild?: unknown; nativeBuild?: unknown };
   try {
-    body = (await request.json()) as { token?: unknown; platform?: unknown };
+    body = (await request.json()) as typeof body;
   } catch {
     return new Response("invalid request body", { status: 400 });
   }
@@ -17,7 +23,19 @@ export async function handleRegisterPushToken(request: Request, db: D1Database, 
   if (!token.startsWith("ExponentPushToken[") && !token.startsWith("ExpoPushToken[")) {
     return jsonResponse({ error: "invalid push token" }, 400);
   }
-  await upsertPushToken(db, { token, platform, staffEmail: staff.email, now: Date.now() });
+  // Which build this handset is running, recorded here because push registration is the one thing
+  // every signed-in handset does on launch. The native build is what says whether a NATIVE fix is
+  // installed -- an OTA can never deliver the CallKit AppDelegate patch, so the OTA number alone
+  // cannot answer "why didn't my phone ring?". Both are optional: an older handset simply omits
+  // them and upsertPushToken keeps whatever it already knew.
+  await upsertPushToken(db, {
+    token,
+    platform,
+    staffEmail: staff.email,
+    now: Date.now(),
+    otaBuild: buildTag(body.otaBuild),
+    nativeBuild: buildTag(body.nativeBuild),
+  });
   return jsonResponse({ ok: true });
 }
 

@@ -98,6 +98,68 @@ describe("handlePutFlow", () => {
     expect(await response.text()).toContain("invalid config shape");
   });
 
+  // Redirect was the ONE type whose blank config the endpoint refused, which made "Add a step ->
+  // Forward to a number" impossible from the handset: a new step is saved the instant its type is
+  // picked, and its number is typed on the next screen. Every other type is allowed to exist
+  // half-wired -- blank next-fields are legal by design -- so this is the inconsistency, not the
+  // rule. The handset marks it unfinished (incompleteReason) instead.
+  it("accepts a redirect node whose number has not been typed yet", async () => {
+    const response = await handlePutFlow(
+      putRequest({ entryNodeId: "n1", nodes: [{ id: "n1", type: "redirect", config: { number: "" } }] }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("still refuses a redirect whose number is not a string at all", async () => {
+    const response = await handlePutFlow(
+      putRequest({ entryNodeId: "n1", nodes: [{ id: "n1", type: "redirect", config: { number: 61400000000 } }] }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+  });
+
+  // The message names the offending node and field, and that text is the whole point of validating
+  // on write -- but it only reaches anyone if the client can read it. `apiFetch` lifts a message
+  // out of a JSON {error} body and otherwise shows "request failed (400)", so a plain-text body
+  // meant the handset reported nothing useful for a mistyped closed date or a missing menu key.
+  it("answers a rejection with a JSON error body the client can read", async () => {
+    const response = await handlePutFlow(
+      putRequest({ entryNodeId: "n1", nodes: [{ id: "n1", type: "smoke_signal", config: {} }] }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    const body = await response.json<{ error?: string }>();
+    expect(body.error).toContain("unknown type");
+  });
+
+  it("names the offending closed date in the JSON error, not just 'invalid'", async () => {
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "n1",
+        nodes: [
+          {
+            id: "n1",
+            type: "date_rule",
+            config: { closedDates: ["2026-12-25", "2026-13-01"], openNextNodeId: "", closedNextNodeId: "" },
+          },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    const body = await response.json<{ error?: string }>();
+    expect(body.error).toContain("2026-13-01");
+  });
+
   it("returns 400 when a play node's config is missing nextNodeId", async () => {
     const response = await handlePutFlow(
       putRequest({ entryNodeId: "n1", nodes: [{ id: "n1", type: "play", config: { audioAssetId: null, ttsText: "hi" } }] }),

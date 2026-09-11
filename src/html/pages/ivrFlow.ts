@@ -345,7 +345,10 @@ export function renderIvrFlowPage(
         var payload={entryNodeId:entryId, nodes:nodes.map(function(n){ return {id:n.id, type:n.type, config:n.config, positionX:Math.round(n.x||0), positionY:Math.round(n.y||0)}; })};
         status("Saving…",true);
         fetch("/api/ivr/flows/"+encodeURIComponent(flow),{method:"PUT",headers:{"Content-Type":"application/json"},credentials:"same-origin",body:JSON.stringify(payload)})
-          .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error(t||("HTTP "+r.status)); }); return r.json(); })
+          // The endpoint answers a rejection with {"error":"..."} now, so read that rather than
+          // printing the raw JSON at the admin. Falls back to the body text for anything that
+          // still answers in plain text (403 forbidden, 404 not found).
+          .then(function(r){ if(!r.ok) return r.text().then(function(t){ var m=t; try{ var j=JSON.parse(t); if(j&&j.error) m=j.error; }catch(e){} throw new Error(m||("HTTP "+r.status)); }); return r.json(); })
           .then(function(){ status("Saved ✓",true); }).catch(function(e){ status("Save failed: "+e.message,false); });
       }
 

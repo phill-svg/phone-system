@@ -113,8 +113,19 @@ function isInputConfig(c: Record<string, unknown>): boolean {
   );
 }
 
+// `isString`, not `isNonEmptyString`, and that matches the rule the rest of this validator already
+// follows: a step may exist before it is wired up. Every "next node" field is allowed to be blank
+// for exactly that reason, and `replaceFlowNodes` persists unreachable nodes deliberately. Redirect
+// was the ONE type whose blank config the endpoint refused -- which made "Add a step -> Forward to a
+// number" impossible from the handset, where a new step is saved the instant its type is picked and
+// its number is typed on the next screen. The web editor never hit it only because it holds a new
+// node locally and pre-checks before saving.
+//
+// A blank number still fails at call time, in the same way and with the same severity as the blank
+// nextNodeId beside it -- so the thing that makes this safe is saying so BEFORE a call finds out:
+// `incompleteReason` on the handset and the web editor's own pre-save check.
 function isRedirectConfig(c: Record<string, unknown>): boolean {
-  return isNonEmptyString(c.number);
+  return isString(c.number);
 }
 
 function isValidConfigForType(type: NodeType, config: unknown): config is Record<string, unknown> {
@@ -150,7 +161,14 @@ function forbiddenUnlessAdmin(staff: StaffUser): Response | null {
   return null;
 }
 
-const INVALID_BODY_RESPONSE = () => new Response("invalid request body", { status: 400 });
+// Every rejection from this endpoint names the offending node and field, and that text IS the point
+// of validating on write -- but it only reaches anyone if the client can read it. `apiFetch` lifts a
+// message out of a JSON `{error}` body and otherwise shows "request failed (400)", so a plain-text
+// body meant the handset reported nothing useful for a mistyped closed date or a missing menu key.
+// `jsonResponse({ error })` is what the rest of the API already does (see `src/api/onCall.ts`).
+const badRequest = (error: string) => jsonResponse({ error }, 400);
+
+const INVALID_BODY_RESPONSE = () => badRequest("invalid request body");
 
 export async function handleGetFlow(db: D1Database, flow: string): Promise<Response> {
   const nodes = await listNodesForFlow(db, flow);
@@ -189,7 +207,7 @@ export async function handlePutFlow(
       return INVALID_BODY_RESPONSE();
     }
     if (typeof raw.type !== "string" || !(NODE_TYPES as readonly string[]).includes(raw.type)) {
-      return new Response(`node '${raw.id}' has unknown type '${String(raw.type)}'`, { status: 400 });
+      return badRequest(`node '${raw.id}' has unknown type '${String(raw.type)}'`);
     }
     const type = raw.type as NodeType;
     // Named before the generic shape check, because "invalid config shape" sends you hunting
@@ -198,20 +216,17 @@ export async function handlePutFlow(
     if (type === "date_rule" && isPlainObject(raw.config) && isStringArray(raw.config.closedDates)) {
       const bad = raw.config.closedDates.find((d) => !isValidClosedDateEntry(d));
       if (bad !== undefined) {
-        return new Response(
-          `node '${raw.id}': closed date '${bad}' is not a date this can match. Use YYYY-MM-DD, MM-DD, or a range of either with '..'.`,
-          { status: 400 }
-        );
+        return badRequest(`node '${raw.id}': closed date '${bad}' is not a date this can match. Use YYYY-MM-DD, MM-DD, or a range of either with '..'.`);
       }
     }
     if (!isValidConfigForType(type, raw.config)) {
-      return new Response(`node '${raw.id}' has an invalid config shape for type '${type}'`, { status: 400 });
+      return badRequest(`node '${raw.id}' has an invalid config shape for type '${type}'`);
     }
     if (raw.positionX !== undefined && !isNumberOrNull(raw.positionX)) {
-      return new Response(`node '${raw.id}' has an invalid positionX`, { status: 400 });
+      return badRequest(`node '${raw.id}' has an invalid positionX`);
     }
     if (raw.positionY !== undefined && !isNumberOrNull(raw.positionY)) {
-      return new Response(`node '${raw.id}' has an invalid positionY`, { status: 400 });
+      return badRequest(`node '${raw.id}' has an invalid positionY`);
     }
     typedNodes.push({
       id: raw.id,
@@ -224,16 +239,13 @@ export async function handlePutFlow(
 
   const entryMatches = typedNodes.filter((n) => n.id === entryNodeId);
   if (entryMatches.length !== 1) {
-    return new Response(
-      `entryNodeId '${entryNodeId}' must match exactly one node in the payload (matched ${entryMatches.length})`,
-      { status: 400 }
-    );
+    return badRequest(`entryNodeId '${entryNodeId}' must match exactly one node in the payload (matched ${entryMatches.length})`);
   }
 
   const seenIds = new Set<string>();
   for (const node of typedNodes) {
     if (seenIds.has(node.id)) {
-      return new Response(`duplicate node id: ${node.id}`, { status: 400 });
+      return badRequest(`duplicate node id: ${node.id}`);
     }
     seenIds.add(node.id);
   }
@@ -245,7 +257,7 @@ export async function handlePutFlow(
   // be replaced, not collided with.
   for (const node of typedNodes) {
     if (await nodeExistsInOtherFlow(db, node.id, flow)) {
-      return new Response(`node id '${node.id}' already exists in a different flow`, { status: 400 });
+      return badRequest(`node id '${node.id}' already exists in a different flow`);
     }
   }
 

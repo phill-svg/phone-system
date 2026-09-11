@@ -1,9 +1,13 @@
 import {
+  IVR_NODE_PUT_FIELDS,
+  configsEqual,
+  incompleteReason,
   orderNodes,
   outgoingIds,
   removeNode,
   nodeSummary,
   blankConfigFor,
+  toPutPayload,
   IVR_NODE_TYPES,
   NEXT_FIELDS,
   type IvrFlow,
@@ -101,16 +105,121 @@ describe("removeNode", () => {
     expect(removeNode(FLOW, "hours").entryNodeId).toBeNull();
   });
 
-  // PUT /api/ivr/flows/:flow is a full delete-and-reinsert, so anything this app does not carry
-  // back is destroyed. positionX/positionY are the WEB editor's canvas coordinates and are never
-  // read here -- losing them would flatten every node onto the origin the next time the web editor
-  // was opened, which is a mess nobody would connect to a phone edit.
-  it("preserves the web canvas positions it never reads", () => {
-    const after = removeNode(FLOW, "cb");
-    for (const n of after.nodes) {
+});
+
+// PUT /api/ivr/flows/:flow is a full delete-and-reinsert, so anything this app does not carry back
+// is destroyed. The previous version of this test asserted through removeNode's `{ ...n }` spread
+// with a `node()` helper that set the positions regardless of the type -- so deleting
+// positionX/positionY from IvrNode, the mutation that would actually flatten the web canvas, left
+// it green. Types are erased at runtime; only a runtime field list can pin this.
+describe("toPutPayload", () => {
+  it("sends every field the server persists, and nothing else", () => {
+    // Mirrors the INSERT in src/db/ivrNodes.ts (id, flow, is_entry, type, config, position_x,
+    // position_y) minus created_at/updated_at, which the server regenerates.
+    expect([...IVR_NODE_PUT_FIELDS].sort()).toEqual(
+      ["config", "flow", "id", "isEntry", "positionX", "positionY", "type"].sort()
+    );
+  });
+
+  it("carries the web canvas positions it never reads", () => {
+    const payload = toPutPayload(FLOW);
+    for (const n of payload.nodes) {
       expect(n.positionX).toBe(10);
       expect(n.positionY).toBe(20);
     }
+    // Every node, not just the one being edited -- the endpoint wipes the flow first.
+    expect(payload.nodes).toHaveLength(FLOW.nodes.length);
+  });
+
+  it("keeps a null position null rather than coercing it", () => {
+    const withNulls: IvrFlow = {
+      entryNodeId: "a",
+      nodes: [{ id: "a", flow: "main", isEntry: true, type: "callback", config: {}, positionX: null, positionY: null }],
+    };
+    expect(toPutPayload(withNulls).nodes[0].positionX).toBeNull();
+  });
+});
+
+describe("incompleteReason", () => {
+  it("names a redirect with no number, which the handset can now create", () => {
+    // blankConfigFor("redirect") is {number: ""} and the API accepts it, so the step exists
+    // half-made on purpose. Nothing else would say so.
+    const n = node("r", "redirect", blankConfigFor("redirect"));
+    expect(incompleteReason(n)).toBe("No phone number set");
+  });
+
+  it("names a step that would say nothing to the caller", () => {
+    const n = node("p", "play", { audioAssetId: null, ttsText: "", nextNodeId: "next" });
+    expect(incompleteReason(n)).toContain("Nothing to say");
+  });
+
+  it("names an unwired next field by its label, not its key", () => {
+    const n = node("p", "play", { audioAssetId: null, ttsText: "Hi", nextNodeId: "" });
+    expect(incompleteReason(n)).toContain("goes nowhere");
+    expect(incompleteReason(n)).not.toContain("nextNodeId");
+  });
+
+  // A badge you have learned to ignore is worse than no badge, so the "nothing to say" rule covers
+  // only the types where a blank prompt really does leave the caller hearing nothing. These two
+  // have deliberate server-side defaults, and flagging them would invite someone to "fix" a working
+  // step -- typing text into a Hold step replaces the ring cadence with a spoken line on every poll.
+  it("does not flag a Hold step with no custom content, which plays the ringback tone", () => {
+    const n = node("w", "wait", { audioAssetId: null, ttsText: "", allowCallbackStar: false, nextNodeId: "ring1" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+
+  it("does not flag a callback step with no prompt, which speaks a default line", () => {
+    const n = node("cb", "callback", { audioAssetId: null, ttsText: "" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+
+  // A beep-only mailbox is terse but a real choice; the missing mailbox NAME is the gap that
+  // actually matters there, and it is checked separately.
+  it("does not flag a voicemail step for a blank prompt, only for a blank mailbox name", () => {
+    const n = node("v", "voicemail", { audioAssetId: null, ttsText: "", mailboxLabel: "After hours" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+
+  it("says nothing about a finished step", () => {
+    const n = node("p", "play", { audioAssetId: null, ttsText: "Hi", nextNodeId: "ring1" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+
+  it("counts a menu key that goes nowhere", () => {
+    const n = node("m", "gather", {
+      audioAssetId: null,
+      ttsText: "Press one",
+      options: [{ digit: "1", nextNodeId: "" }],
+      defaultNextNodeId: "vm",
+      retryLimit: 1,
+    });
+    expect(incompleteReason(n)).toBe("1 menu key(s) go nowhere");
+  });
+
+  it("treats whitespace as blank, so a space-only mailbox name is still unfinished", () => {
+    const n = node("v", "voicemail", { audioAssetId: null, ttsText: "Leave a message", mailboxLabel: "   " });
+    expect(incompleteReason(n)).toBe("No mailbox name set");
+  });
+});
+
+describe("configsEqual", () => {
+  it("is true for an untouched copy, so a refocus may re-seed the draft", () => {
+    expect(configsEqual({ ttsText: "Hi", nextNodeId: "a" }, { ttsText: "Hi", nextNodeId: "a" })).toBe(true);
+  });
+
+  it("is false once a character is typed, which is what protects the edit", () => {
+    expect(configsEqual({ ttsText: "Hi" }, { ttsText: "Hix" })).toBe(false);
+  });
+
+  it("compares a gather's options by value, not by identity", () => {
+    const a = { options: [{ digit: "1", nextNodeId: "x" }] };
+    const b = { options: [{ digit: "1", nextNodeId: "x" }] };
+    expect(configsEqual(a, b)).toBe(true);
+    expect(configsEqual(a, { options: [{ digit: "1", nextNodeId: "y" }] })).toBe(false);
+  });
+
+  it("notices a key that exists on only one side", () => {
+    expect(configsEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false);
   });
 });
 
