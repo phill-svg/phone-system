@@ -41,16 +41,43 @@ export function renderDialAgentIntoConference(opts: {
   record?: boolean;
   whisper?: boolean;
 }): string {
+  // RECORDED ON THE <Dial>, NOT THE <Conference>, and that is the difference between speaker-labelled
+  // transcripts working and not working at all.
+  //
+  // A <Conference> recording's channel count is governed by ONE account-wide Console switch
+  // ("Dual-channel Recording for Conference", Voice > Recordings > Settings). With it off every
+  // recording is mono, Conversational Intelligence has nothing to separate, and the transcript comes
+  // back unlabelled. On 2026-09-12 that switch was verified ENABLED AND SAVED and conference
+  // recordings were still arriving mono -- Twilio's own Recordings API reported `channels: 1,
+  // source: Conference` for a 143-second call answered that morning. So the switch is not something
+  // this system can rely on, whatever it says.
+  //
+  // `record-from-answer-dual` on the <Dial> is Twilio's documented alternative -- their <Dial> page
+  // carries this exact shape, "a dual-channel recording for a <Dial> with a nested <Conference>" --
+  // and it produces a DialVerb recording, which no account setting touches.
+  //
+  // It also removes a race this code used to depend on. A Conference recording puts channel 1 on
+  // whoever JOINED FIRST, which is a Twilio-side ordering we only ever inferred; a Dial recording
+  // puts channel 1 on the PARENT call. This document is the staff leg's, so channel 1 is always the
+  // staff member and channel 2 is always the conference (the caller). Hence the
+  // `transcript_staff_channel` default moved 2 -> 1 alongside this.
+  //
+  // Two deliberate consequences. Recording now starts when the staff member ANSWERS rather than at
+  // conference start, so the caller's hold music is no longer at the front of every recording --
+  // better for transcription, and the only audio lost is audio nobody wants. And the recording is
+  // `source: DialVerb` from here on, which is also what a call-via-mobile leg is; the mono-marker in
+  // the recording webhook keeps them apart by the `conference=1` flag on the callback URL we build
+  // ourselves, never by Twilio's parameters, which is exactly why it was built that way.
   const rec =
     opts.record === false
       ? ""
-      : ` record="record-from-start" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
+      : ` record="record-from-answer-dual" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
   // The <Say> precedes the <Dial>, so it plays on this leg alone -- the caller is in the conference
   // and cannot hear it.
   return wrapResponse(
     (opts.whisper ? `<Say>${escapeXml(WORK_CALL_WHISPER)}</Say>` : "") +
-      `<Dial action="${escapeXml(opts.actionUrl)}" method="POST">` +
-      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}"${rec}>${escapeXml(opts.conferenceName)}</Conference>` +
+      `<Dial action="${escapeXml(opts.actionUrl)}" method="POST"${rec}>` +
+      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}">${escapeXml(opts.conferenceName)}</Conference>` +
       `</Dial>`
   );
 }
