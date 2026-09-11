@@ -445,11 +445,18 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("SANDBOX");
     });
 
-    it("fails a credential Twilio has never heard of", async () => {
+    // A 404 is NOT proof the credential is missing. Push credentials are region-scoped and this
+    // lookup is US1, while the account is AU1 -- a credential living in au1 answers 404 exactly
+    // like one that was never created. On 2026-09-11 this check reported BOTH credentials as
+    // non-existent while the Android handset was ringing on one of them, and a red row telling
+    // someone to recreate a working credential is worse than no row at all.
+    it("does not claim a credential is missing on a 404, because the lookup is the wrong region", async () => {
       stubFetch({ pushCred: 404 });
       const check = find(await run(WITH_CREDS()), "voip_push");
-      expect(check.status).toBe("fail");
-      expect(check.detail).toContain("does not exist");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("couldn't confirm");
+      expect(check.detail).toContain("region-scoped");
+      expect(check.detail).not.toContain("does not exist");
     });
 
     // Could-not-check is a warn, not a fail: a Twilio blip must not be reported as a broken

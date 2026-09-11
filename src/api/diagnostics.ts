@@ -616,8 +616,23 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       });
       if (res.status === 404) {
-        notes.push(`${c.platform}: that credential does not exist on this Twilio account`);
-        bump("fail");
+        // NOT "it does not exist", however much it looks like it. Push credentials are
+        // REGION-SCOPED resources, and this lookup is US1 (notify.twilio.com is global, and
+        // Twilio's console for managing them "is available only in US1") while this account is
+        // AU1. A credential living in au1 is invisible here and answers 404 identically to one
+        // that was never created.
+        //
+        // Proven the hard way on 2026-09-11: this check reported BOTH credentials as not existing
+        // while the Android handset was ringing perfectly well on one of them. A red row telling
+        // someone to recreate a working credential is far worse than no row -- it invites them to
+        // break the half that still works, on the day they are already missing calls.
+        //
+        // So: warn, say plainly that it could not be confirmed, and defer to the better evidence.
+        // A handset that rings IS the credential working, and no API lookup beats that.
+        notes.push(
+          `${c.platform}: couldn't confirm — push credentials are region-scoped and this lookup is US1, but the account is AU1`
+        );
+        bump("warn");
         continue;
       }
       if (res.status === 401) {
