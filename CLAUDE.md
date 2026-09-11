@@ -744,6 +744,16 @@ before adding one, or you will duplicate a path that already works.
   the list screen. A blank next-field and a blank redirect number both throw in the flow engine,
   and the DO catch-all then says "we're experiencing a technical issue" and hangs up on a live
   customer — so the old dialog's "callers reaching that point will fall through" was wrong too.
+- **An "unfinished" badge covers only the types with NO server-side default, and getting that list
+  wrong makes the badge noise.** `incompleteReason`'s first version reused the EDITOR's "which types
+  show a prompt field" set, which is a different question — `wait` with a blank prompt plays the
+  Australian ringback tone (#47, the intended configuration) and `callback` speaks
+  "Thanks, we'll call you back soon." So a Hold step would have been badged permanently, inviting
+  someone to "fix" it by typing text, which replaces the ring cadence with a spoken line on every
+  hold poll. Voicemail is excluded too: a beep-only mailbox is terse but real, and the missing
+  mailbox NAME is the gap that matters there. The set is `play`, `gather`, `input` — the three
+  where a blank prompt really does leave the caller hearing nothing. A badge you have learned to
+  ignore is worse than no badge, the same lesson as `divert_caller_id_last_error` clearing itself.
 - **`/api/ivr/flows/:flow` answers a rejection with JSON now, because plain text reaches nobody.**
   Every 400 names the offending node and field, which is the entire point of validating on write —
   and `apiFetch` lifts a message only out of a JSON `{error}` body, falling back to "request failed
@@ -759,6 +769,9 @@ before adding one, or you will duplicate a path that already works.
   left it green. Saves now go through **`toPutPayload`**, which names every field the server
   persists in a RUNTIME list (`IVR_NODE_PUT_FIELDS`), so dropping one breaks a test.
   `created_at`/`updated_at` are the only columns deliberately omitted — the server regenerates them.
+  **Testing the helper is not testing the call site**: reverting `putIvrFlow` to
+  `JSON.stringify(body)` left every test green, because nothing asserted on the bytes actually
+  sent. That is pinned in `api.test.ts` now, against a stubbed fetch.
 - **Every mobile screen that loads on FOCUS needs `keepEdits`, and the IVR step editor did not have
   it.** `useFocusEffect` re-runs on refocus, not just mount, and an incoming call pushes
   `/call-incoming` as a root-stack modal from anywhere in the app — so typing a new greeting, taking
@@ -771,7 +784,14 @@ before adding one, or you will duplicate a path that already works.
   succeeds and repaints nothing); and the step editor **re-reads the flow immediately before
   writing**, because the endpoint is a whole-flow delete-and-reinsert with no version check and the
   screen's snapshot is as old as the time spent typing. That narrows the window from minutes to
-  milliseconds — it does not close it.
+  milliseconds — it does not close it. **The DELETE path needs that re-read more than the save
+  does**, and the first version of the fix missed it: `removeNode` carries `entryNodeId` forward
+  from whatever it is handed, so deleting from a stale snapshot reverts every web edit made since
+  the screen opened, entry node included, while reporting success. It also re-checks `isEntry`
+  against the fresh copy, since the entry could have MOVED to this step meanwhile. Both re-reads
+  fall back to the snapshot on a failed GET rather than refusing — the point is not to clobber
+  someone else's edit, and turning a transient failure into "you cannot save" blocks a write the
+  PUT would have accepted.
 - **A number field that cannot be cleared will ship a zero into a live call.**
   `Number(text.replace(/\D/g, "")) || 0` straight into the draft meant backspacing the box snapped
   it to "0", and it could never be empty. `numDigits` is passed to `<Gather>` verbatim and
@@ -781,6 +801,12 @@ before adding one, or you will duplicate a path that already works.
   zero retries is a legitimate answer and zero digits is not. It carries the same `pushed` ref as
   the schedule editor's `TimeField`, for the same reason: without it the commit echoes back and
   rewrites the box mid-word.
+  **That `min` must be 0 or 1, and the bound is load-bearing.** Review caught the first version
+  using 5 for `timeoutSeconds`: typing "3" committed 5 while the box still read 3, and
+  `keyboardShouldPersistTaps="handled"` means a tap on Save never blurs the field and never
+  reconciles them — so it would have saved a ring time the admin never chose. With a floor of 1
+  every digit string except a lone `"0"` is already above it, so the clamp can never fire
+  mid-typing and the divergence is unreachable.
 - **The Admin hub's back button is pinned by a test now, and the screen list is data so it can be.**
   `leaveAdmin`'s pop-or-replace rule was tested from the day it shipped, but nothing tested the
   `headerLeft` that CALLS it — delete that one line and every test stayed green while the hub was
