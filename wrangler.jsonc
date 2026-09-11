@@ -19,8 +19,11 @@
   "routes": [
     { "pattern": "tcbvoip.app", "custom_domain": true }
   ],
-  // The 1-minute tick exists only for the ServiceM8 sweep (src/servicem8/syncQueue.ts), which has
-  // to fire close to 3 minutes after a call ends; scheduled() keeps everything else on */5.
+  // The 1-minute tick exists only for the ServiceM8 sweep (src/servicem8/syncQueue.ts), so it fires
+  // close to SERVICEM8_SYNC_DELAY_MS after a call ends rather than up to 5 minutes late;
+  // scheduled() keeps everything else on */5. Note the delay is 15 minutes now, not the 3 this was
+  // written for, so the */5 tick alone would only stretch it to 15-20 -- if this tick ever needs
+  // justifying again, that is the number to weigh it against.
   "triggers": { "crons": ["*/5 * * * *", "* * * * *"] },
   "observability": { "enabled": true },
   "r2_buckets": [{ "binding": "AUDIO_ASSETS", "bucket_name": "tcb-voip-audio" }],

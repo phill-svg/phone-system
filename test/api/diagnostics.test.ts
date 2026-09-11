@@ -457,6 +457,19 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("couldn't confirm");
       expect(check.detail).toContain("region-scoped");
       expect(check.detail).not.toContain("does not exist");
+      // ...but it must not be a dead end either. "Couldn't confirm" with nothing to do about it is
+      // the amber row with no next step the 401 branch was written to avoid, and a 404 can equally
+      // mean the sid is wrong -- the silent never-rings condition this check exists to catch.
+      expect(check.detail).toContain("confirm the APNs one is NOT sandbox");
+    });
+
+    // The guidance names APNs specifically, so an Android-only 404 must not raise it: that sends
+    // someone to re-check the credential this very run just verified as production.
+    it("does not point at APNs when only the Android credential 404s", async () => {
+      stubFetch({ pushCredAndroid: 404, pushCred: { type: "apn", sandbox: "false" } });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("warn");
+      expect(check.detail).not.toContain("confirm the APNs one is NOT sandbox");
     });
 
     // Could-not-check is a warn, not a fail: a Twilio blip must not be reported as a broken

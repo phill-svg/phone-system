@@ -172,16 +172,24 @@ before adding one, or you will duplicate a path that already works.
   now log `SERVICEM8_DISABLED` (no key), `SERVICEM8_SEARCH_FAILED` (missing/revoked key — a 401
   looks identical to no key), `SERVICEM8_NO_MATCH`, `SERVICEM8_NO_NAME` and
   `SERVICEM8_CONTACT_CREATED`, so `wrangler tail | grep SERVICEM8_` answers "is it on?".
-- **ServiceM8 runs 3 minutes AFTER a call ends, on a cron — not from the status webhook.** Staff
+- **ServiceM8 runs 15 minutes AFTER a call ends, on a cron — not from the status webhook.** Staff
   routinely create the ServiceM8 client or job during the call or right after hanging up, so firing
   the instant it ended searched for a record that did not exist yet, found nothing, and never tried
   again — the note and the contact were both lost for that call. The status webhook now only leaves
   `calls.servicem8_synced_at` NULL (migration `0031`) and `src/servicem8/syncQueue.ts` sweeps on the
   cron. A **second cron, `* * * * *`, exists solely for this sweep** — the `*/5` tick would have
-  stretched "3 minutes" to 3–8; `scheduled()` branches on `event.cron` so everything else stays on
-  `*/5`. Each call is CLAIMED in D1 before any work, because two overlapping ticks would otherwise
-  post the diary note twice. The sweep reaches back only 2 hours, which is what stops the first tick
-  after a deploy noting every call in history, and also bounds retries.
+  stretched the original "3 minutes" to 3–8; `scheduled()` branches on `event.cron` so everything
+  else stays on `*/5`. Each call is CLAIMED in D1 before any work, because two overlapping ticks
+  would otherwise post the diary note twice. The sweep reaches back only 2 hours, which is what
+  stops the first tick after a deploy noting every call in history, and also bounds retries.
+  **Raised from 3 to 15 on 2026-09-11** (`SERVICEM8_SYNC_DELAY_MS`), after a call that ended at
+  13:03:18 was looked at at 13:06:50 and the job was created at 13:09:33 — after the only look it
+  would ever get. Two things follow. The wait still gets exactly ONE look: a `no-match` claims the
+  row permanently (only `failed` releases it), so a job written up at minute sixteen is lost exactly
+  as before — 15 minutes moves the line, it does not remove it, and the durable fix is to retry a
+  `no-match` inside the existing 2-hour window. And the caller's NAME now takes 15 minutes to appear,
+  so a new customer sits in Recents and in the thread as a bare number until then. The number is
+  quoted in Admin > Health Checks, which DERIVES it from the constant — do not retype it there.
 - **ServiceM8 search tokenizes; its OData filters do not.** `search.json?q=` matches a number
   however it is stored ("0402 430 107" matches a query of "0402430107"), but
   `jobcontact.json?$filter=mobile eq '...'` is an exact string compare, so the old name lookup

@@ -7,6 +7,7 @@ import { isStaffAvailable } from "../dial/presence";
 import { readOnCallRotation, resolveOnCallEmail } from "../db/onCall";
 import { excludeDemos } from "../demo";
 import { isRingNodeReachingOnCall } from "../ivr/onCallWiring";
+import { SERVICEM8_SYNC_DELAY_MS } from "../servicem8/syncQueue";
 import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 import { sendExpoPush } from "../push/expoPush";
 import { sendEmail, type SendEmailBinding } from "../email/sendgrid";
@@ -73,7 +74,10 @@ async function checkServiceM8(env: Env): Promise<Check> {
       return { ...base, status: "fail", detail: `API key rejected (${res.status}). It may have been revoked.` };
     }
     if (!res.ok) return { ...base, status: "warn", detail: `ServiceM8 answered ${res.status}.` };
-    return { ...base, status: "ok", detail: "Connected. Callers are matched 3 minutes after a call ends." };
+    // Derived, never retyped: this line said "3 minutes" for a while after the delay was raised to
+    // 15, on the one screen people read to find out how the thing behaves.
+    const delayMins = Math.round(SERVICEM8_SYNC_DELAY_MS / 60000);
+    return { ...base, status: "ok", detail: `Connected. Callers are matched ${delayMins} minutes after a call ends.` };
   } catch (e) {
     return { ...base, status: "fail", detail: `Couldn't reach ServiceM8: ${e instanceof Error ? e.message : "error"}` };
   }
@@ -632,6 +636,11 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
         notes.push(
           `${c.platform}: couldn't confirm — push credentials are region-scoped and this lookup is US1, but the account is AU1`
         );
+        // An unconfirmed APNs credential is the SAME dead end as an unreadable one: amber, with
+        // nothing to do about it. The 404 can equally mean the sid is wrong or the credential was
+        // deleted -- the one silent never-rings condition this whole check exists to catch -- so it
+        // has to send someone to look, exactly as the 401 branch does.
+        if (c.expect === "apn") apnsUnreadable = true;
         bump("warn");
         continue;
       }
