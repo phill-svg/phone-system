@@ -229,9 +229,10 @@ before adding one, or you will duplicate a path that already works.
   EAS with no Mac and no `.p8` anywhere. Then, in order: **#89** the after-hours **on-call
   rotation**, migration `0035`, editable on web `/admin/settings` and mobile
   `Admin > After-hours On Call`, with a Health Check for it; **#90** a back button on the mobile
-  **Admin hub**, which had no way out at all, plus `iconFallback` on `Row`; **#91** the **phone
-  menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than the web's node canvas,
-  reversing this file's old "IVR stays web-only" line; then **#92** and **#94**, two rounds of
+  **Admin hub**, which had no way out at all, plus the missing `Icon` fallbacks on the on-call
+  screen; **#91** the **phone menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than
+  the web's node canvas, reversing this file's old "IVR stays web-only" line — and the PR that
+  actually added `iconFallback` to `Row`, which this line used to credit to #90; then **#92** and **#94**, two rounds of
   `/code-review` fixes over #89 — see the review bullet below, which is the durable lesson from the
   whole day. OTA **66** on both channels; worker deployed.
   **Still outstanding at the end of it, and almost none of it is code:**
@@ -724,6 +725,69 @@ before adding one, or you will duplicate a path that already works.
   it. Same rule for anything added to a node in future.
   Deleting a step also has to UNLINK it (`removeNode`), or every reference to it becomes a dangling
   id that the flow engine only fails on when a real call reaches that point, mid-call, silently.
+- **#91 shipped two features that could never work, and both were the same shape: a client sending
+  a config the server refuses.** Found by `/code-review` after the merge (2026-09-11), which is the
+  wrong order and is exactly what the review bullet below is about.
+  (1) **"Add a step > Forward to a number" 400d every time.** `blankConfigFor("redirect")` is
+  `{number: ""}` and `isRedirectConfig` was `isNonEmptyString`. Redirect was the ONE type whose
+  blank config the endpoint refused — every "next node" field is deliberately allowed to be blank,
+  and `replaceFlowNodes` persists unreachable nodes on purpose — so the fix is the SERVER, not the
+  client: a step may exist before it is wired up. The web editor never hit it because it holds a
+  new node LOCALLY and pre-checks before saving; the handset saves the instant a type is picked, so
+  the editor can load it fresh.
+  (2) **Deleting the entry step 400d every time**, while the confirm dialog carefully explained
+  what would happen. `removeNode` returns `entryNodeId: null` and `handlePutFlow` requires a string
+  matching exactly one node. Mobile now REFUSES it and says to pick the new starting step on the
+  web — the web's own answer (re-point the entry at `nodes[0]`) silently moves where every call
+  starts, which is worse than refusing.
+  What makes the looser validator safe is **`incompleteReason`**, which marks a half-wired step on
+  the list screen. A blank next-field and a blank redirect number both throw in the flow engine,
+  and the DO catch-all then says "we're experiencing a technical issue" and hangs up on a live
+  customer — so the old dialog's "callers reaching that point will fall through" was wrong too.
+- **`/api/ivr/flows/:flow` answers a rejection with JSON now, because plain text reaches nobody.**
+  Every 400 names the offending node and field, which is the entire point of validating on write —
+  and `apiFetch` lifts a message only out of a JSON `{error}` body, falling back to "request failed
+  (400)". So the handset reported nothing useful for a mistyped closed date, and a code comment on
+  the mobile screen claimed the opposite. `jsonResponse({ error }, 400)` is what the rest of the API
+  already does. The web editor reads the JSON and falls back to body text for the routes still
+  answering in plain text (403 forbidden, 404 not found). **The same gap is still open on business
+  hours** (`isDayWindow` → `invalid request body`) — see that bullet above.
+- **A spread is not a round-trip guarantee, and a test asserting through one is not a test.**
+  The `positionX`/`positionY` test added with #91 asserted through `removeNode`'s `{ ...n }` with a
+  helper that set the positions regardless of the declared type — and TypeScript types are erased,
+  so DELETING those fields from `IvrNode`, the mutation that would actually flatten the web canvas,
+  left it green. Saves now go through **`toPutPayload`**, which names every field the server
+  persists in a RUNTIME list (`IVR_NODE_PUT_FIELDS`), so dropping one breaks a test.
+  `created_at`/`updated_at` are the only columns deliberately omitted — the server regenerates them.
+- **Every mobile screen that loads on FOCUS needs `keepEdits`, and the IVR step editor did not have
+  it.** `useFocusEffect` re-runs on refocus, not just mount, and an incoming call pushes
+  `/call-incoming` as a root-stack modal from anywhere in the app — so typing a new greeting, taking
+  a call and coming back replaced the draft with the server's copy, with no dirty indicator to say
+  it had gone. `on-call.tsx` already solved this; `business-hours.tsx` sidesteps it with a
+  mount-only effect. The dirty test is `configsEqual`, one level deep with a JSON compare for a
+  gather's `options`. **Any new screen on `useFocusEffect` joins this list.** Two companions from
+  the same pass: `setError(null)` on a successful load, or one failed load pins the error screen for
+  the life of the component (the error branch returns before the data branch, so every later load
+  succeeds and repaints nothing); and the step editor **re-reads the flow immediately before
+  writing**, because the endpoint is a whole-flow delete-and-reinsert with no version check and the
+  screen's snapshot is as old as the time spent typing. That narrows the window from minutes to
+  milliseconds — it does not close it.
+- **A number field that cannot be cleared will ship a zero into a live call.**
+  `Number(text.replace(/\D/g, "")) || 0` straight into the draft meant backspacing the box snapped
+  it to "0", and it could never be empty. `numDigits` is passed to `<Gather>` verbatim and
+  `isInputConfig` only checks `typeof === "number"`, so clearing the field intending to retype it
+  and then tapping Save built a live Gather asking for **zero digits**. `NumberField` owns its own
+  text, commits nothing while the box is empty, and clamps to a per-field `min` — per-field because
+  zero retries is a legitimate answer and zero digits is not. It carries the same `pushed` ref as
+  the schedule editor's `TimeField`, for the same reason: without it the commit echoes back and
+  rewrites the box mid-word.
+- **The Admin hub's back button is pinned by a test now, and the screen list is data so it can be.**
+  `leaveAdmin`'s pop-or-replace rule was tested from the day it shipped, but nothing tested the
+  `headerLeft` that CALLS it — delete that one line and every test stayed green while the hub was
+  stranded exactly as reported. `admin/_layout.tsx` exports `ADMIN_SCREENS` and the test asserts the
+  hub has a `headerLeft` and the pushed sub-screens do not. Render tests are not an option here:
+  `auth.test.tsx` sits in `testPathIgnorePatterns`, so `@testing-library/react-native` is installed
+  but effectively unused.
 - **`Row`'s leading icon had no Android fallback, and still doesn't at most call sites.** `Row`
   renders `<Icon name={icon}>` with no `fallback`, so on Android every icon tile across Settings and
   Admin is a coloured square containing a blank `ellipse-outline`; only the trailing chevron was
@@ -772,7 +836,8 @@ before adding one, or you will duplicate a path that already works.
   TONIGHT; the demo account could be put on call, where it rings nobody while Health Checks reports
   it as fine; and Health Checks went green over a rota wired to nothing.
   **Mutation-test every regression test.** Four separate tests this day passed against fully
-  reverted code — the corrupt-rotation test (the branch was unreachable), the timezone test
+  reverted code (a fifth and sixth turned up the next day — the transcripts webhook test, and #91's
+  canvas-positions test) — the corrupt-rotation test (the branch was unreachable), the timezone test
   (`process.env.TZ` does nothing), and both write-normalisation tests (they asserted THROUGH reads
   that normalise too). "A test that reads through the fix is not a test" now sits beside "a test
   that reads source text is not a test"; the fix for both is to assert the raw stored value and to

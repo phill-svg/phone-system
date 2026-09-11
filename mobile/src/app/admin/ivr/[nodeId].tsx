@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { ScrollView, View, Text, TextInput, Pressable, ActivityIndicator, Alert, Switch } from "react-native";
 import { router, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { Screen } from "../../../components/ui/Screen";
@@ -10,6 +10,7 @@ import {
   NEXT_FIELDS,
   NEXT_FIELD_LABELS,
   NODE_TYPE_LABELS,
+  configsEqual,
   nodePickerLabel,
   nodeTitle,
   removeNode,
@@ -24,6 +25,64 @@ const FLOW = "main";
 // list is "everything except the pure branching and routing steps".
 const HAS_PROMPT = new Set(["play", "gather", "input", "wait", "voicemail", "callback"]);
 
+// A whole-number field you can actually CLEAR.
+//
+// The old version was `Number(text.replace(/\D/g, "")) || 0` straight into the draft, so
+// backspacing the box snapped it to "0" and it could never be empty. That is not cosmetic:
+// `numDigits` is passed to <Gather> verbatim by the flow engine, and `isInputConfig` only checks
+// `typeof === "number"` -- so clearing the field intending to retype it, then tapping Save, built
+// a live Gather asking for zero digits.
+//
+// The box therefore owns its own text and the parent keeps the last valid number. While the text
+// is empty nothing is committed, which is exactly "clear it, type the new one". `min` is per-field
+// rather than a constant: zero retries is a legitimate answer, zero digits is not.
+function NumberField({
+  label,
+  placeholder,
+  min,
+  value,
+  onCommit,
+}: {
+  label: string;
+  placeholder: string;
+  min: number;
+  value: number;
+  onCommit: (n: number) => void;
+}) {
+  const t = useTheme();
+  const [text, setText] = useState(String(value));
+  // Ignore the parent echoing back what we just sent; re-seed only on a genuine outside change
+  // (a reload). Same trap as the schedule editor's TimeField: without it a commit rewrites the box
+  // mid-word.
+  const pushed = useRef(String(value));
+  if (String(value) !== pushed.current) {
+    pushed.current = String(value);
+    setText(String(value));
+  }
+
+  return (
+    <View style={{ paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: t.colors.separator }}>
+      <Text style={[type.footnote, { color: t.colors.labelSecondary }]}>{label}</Text>
+      <TextInput
+        value={text}
+        onChangeText={(v) => {
+          const digits = v.replace(/\D/g, "");
+          setText(digits);
+          if (digits === "") return;
+          const n = Math.max(min, Number(digits));
+          pushed.current = String(n);
+          onCommit(n);
+        }}
+        onBlur={() => setText(pushed.current)}
+        placeholder={placeholder}
+        placeholderTextColor={t.colors.labelTertiary}
+        keyboardType="number-pad"
+        style={[type.body, { color: t.colors.label, paddingVertical: 6 }]}
+      />
+    </View>
+  );
+}
+
 export default function IvrNodeScreen() {
   const t = useTheme();
   const { nodeId } = useLocalSearchParams<{ nodeId: string }>();
@@ -34,26 +93,49 @@ export default function IvrNodeScreen() {
   const [error, setError] = useState<string | null>(null);
   const [openPicker, setOpenPicker] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    getIvrFlow(FLOW)
-      .then((f) => {
-        const node = f.nodes.find((n) => n.id === nodeId);
-        if (!node) {
-          setError("That step no longer exists.");
-          return;
-        }
-        setFlow(f);
-        setDraft({ ...node.config });
-      })
-      .catch(() => setError("Couldn't load the phone menu."));
-    getIvrAudio()
-      .then(setAudio)
-      .catch(() => {});
-  }, [nodeId]);
-
-  useFocusEffect(useCallback(() => load(), [load]));
+  // `keepEdits` is what stops a reload discarding what you have typed. load() runs on every screen
+  // FOCUS, not just on mount, and an incoming call pushes /call-incoming as a root-stack modal from
+  // anywhere in the app -- so without this, typing a new greeting, taking a call and coming back
+  // replaced the draft with the server's copy. There is no dirty indicator here, so nothing would
+  // have said it had gone. `on-call.tsx` solved exactly this; `business-hours.tsx` sidesteps it
+  // with a mount-only effect.
+  const load = useCallback(
+    (keepEdits = false) => {
+      getIvrFlow(FLOW)
+        .then((f) => {
+          const node = f.nodes.find((n) => n.id === nodeId);
+          if (!node) {
+            setError("That step no longer exists.");
+            return;
+          }
+          // Cleared on success, or one failed load pins the error screen for the life of the
+          // component: the error branch returns before the data branch, so every later load
+          // succeeds and repaints nothing.
+          setError(null);
+          setFlow(f);
+          if (!keepEdits) setDraft({ ...node.config });
+        })
+        .catch(() => setError("Couldn't load the phone menu."));
+      getIvrAudio()
+        .then(setAudio)
+        .catch(() => {});
+    },
+    [nodeId]
+  );
 
   const node: IvrNode | undefined = flow?.nodes.find((n) => n.id === nodeId);
+
+  // Declared ABOVE the focus effect that reads it -- useFocusEffect defers its body, so the order
+  // happens to work, but anything running the callback during render would hit the temporal dead
+  // zone and blank the screen.
+  const dirtyRef = useRef(false);
+  dirtyRef.current = draft !== null && node !== undefined && !configsEqual(draft, node.config);
+
+  useFocusEffect(
+    useCallback(() => {
+      load(dirtyRef.current);
+    }, [load])
+  );
 
   function set(key: string, value: unknown) {
     setDraft((d) => (d ? { ...d, [key]: value } : d));
@@ -63,29 +145,63 @@ export default function IvrNodeScreen() {
     if (!flow || !node || !draft || saving) return;
     setSaving(true);
     try {
+      // Re-read the flow immediately before writing, and apply the draft to THAT copy. The
+      // endpoint is a whole-flow delete-and-reinsert with no version check, and this screen's
+      // snapshot is as old as the time spent typing -- so writing the snapshot back would revert
+      // anything changed in the web editor meanwhile, silently, while the phone reported success.
+      // This does not make the write atomic; it narrows the window from minutes to milliseconds.
+      const fresh = await getIvrFlow(FLOW);
+      if (!fresh.nodes.some((n) => n.id === node.id)) {
+        Alert.alert("Couldn't save", "That step has been deleted somewhere else.");
+        return;
+      }
       // The whole flow goes back, every other node byte-for-byte as it arrived -- positions
       // included. The endpoint is a delete-and-reinsert, so anything omitted is destroyed.
       await putIvrFlow(FLOW, {
-        ...flow,
-        nodes: flow.nodes.map((n) => (n.id === node.id ? { ...n, config: draft } : n)),
+        ...fresh,
+        nodes: fresh.nodes.map((n) => (n.id === node.id ? { ...n, config: draft } : n)),
       });
       router.back();
     } catch (e) {
-      // The API names the offending node and field (a bad closed date, a missing key), and that
-      // message is the whole point of validating on write -- so show it rather than "failed".
+      // The API names the offending node and field (a bad closed date, a missing key) in a JSON
+      // {error} body that apiFetch lifts out, so this really is the server's message and not
+      // "request failed (400)" -- it answered in plain text until the fixes over #91.
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
     } finally {
       setSaving(false);
     }
   }
 
+  function confirmUseText() {
+    Alert.alert(
+      "Replace the recording with text?",
+      "This step will read out typed words instead of playing the recording. Choosing a recording again is web-only, so you won't be able to undo this from your phone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Use text", style: "destructive", onPress: () => set("audioAssetId", null) },
+      ]
+    );
+  }
+
   function confirmDelete() {
     if (!flow || !node) return;
+    // The entry step cannot be deleted from here, and saying so beats the old dialog, which
+    // explained what would happen and then 400d: removeNode returns entryNodeId null, and the
+    // endpoint requires a string matching exactly one node. Choosing the replacement start is the
+    // real work and there is no "set as start" control on this screen, so it belongs on the web.
+    if (node.isEntry) {
+      Alert.alert(
+        "This is where calls start",
+        "Every call begins at this step, so it can't be deleted from here — something has to take its place first. Pick a new starting step in the web editor, then come back."
+      );
+      return;
+    }
     Alert.alert(
       "Delete this step?",
-      node.isEntry
-        ? "This is where calls start. Deleting it leaves the flow with no entry point, and no call can be routed until you set one on the web editor."
-        : "Any step pointing here will be left unwired, and callers reaching that point will fall through.",
+      // Not "fall through": a blank next-field throws in the flow engine exactly as a dangling id
+      // does, and the caller is told "we're experiencing a technical issue" and hung up on. The
+      // list screen marks the unwired steps so they are findable afterwards.
+      "Any step pointing here will be left unwired. A call reaching one of those is cut off, so check the list for steps marked unfinished afterwards.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -168,19 +284,30 @@ export default function IvrNodeScreen() {
     </View>
   );
 
-  const textField = (key: string, label: string, placeholder: string, keyboardType?: "number-pad") => (
+  const textField = (key: string, label: string, placeholder: string) => (
     <View style={{ paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: t.colors.separator }}>
       <Text style={[type.footnote, { color: t.colors.labelSecondary }]}>{label}</Text>
       <TextInput
         value={String(draft[key] ?? "")}
-        onChangeText={(v) => set(key, keyboardType === "number-pad" ? Number(v.replace(/\D/g, "")) || 0 : v)}
+        onChangeText={(v) => set(key, v)}
         placeholder={placeholder}
         placeholderTextColor={t.colors.labelTertiary}
-        keyboardType={keyboardType}
+        keyboardType={undefined}
         multiline={key === "ttsText"}
         style={[type.body, { color: t.colors.label, paddingVertical: 6 }]}
       />
     </View>
+  );
+
+  const numberField = (key: string, label: string, placeholder: string, min: number) => (
+    <NumberField
+      key={key}
+      label={label}
+      placeholder={placeholder}
+      min={min}
+      value={typeof draft[key] === "number" ? (draft[key] as number) : min}
+      onCommit={(n) => set(key, n)}
+    />
   );
 
   const options = Array.isArray(draft.options) ? (draft.options as { digit: string; nextNodeId: string }[]) : [];
@@ -208,7 +335,10 @@ export default function IvrNodeScreen() {
                 <Text style={[type.body, { color: t.colors.label, flex: 1 }]}>
                   {audio.find((a) => a.id === draft.audioAssetId)?.label ?? "Recording"}
                 </Text>
-                <Pressable onPress={() => set("audioAssetId", null)} hitSlop={8}>
+                {/* Confirmed, because this is one tap away from silencing a live step and the way
+                    back is not on this phone: uploading or re-picking a recording is web-only, and
+                    a step with neither a recording nor spoken text says NOTHING to the caller. */}
+                <Pressable onPress={confirmUseText} hitSlop={8}>
                   <Text style={[type.body, { color: t.colors.accent }]}>Use text</Text>
                 </Pressable>
               </View>
@@ -226,7 +356,7 @@ export default function IvrNodeScreen() {
 
         {node.type === "redirect" ? <Group>{textField("number", "Forward to", "+61…")}</Group> : null}
 
-        {node.type === "input" ? <Group>{textField("numDigits", "Digits to collect", "1", "number-pad")}</Group> : null}
+        {node.type === "input" ? <Group>{numberField("numDigits", "Digits to collect", "1", 1)}</Group> : null}
 
         {node.type === "ring" ? (
           <Group
@@ -257,7 +387,7 @@ export default function IvrNodeScreen() {
                 </Text>
               </View>
             ) : null}
-            {textField("timeoutSeconds", "Ring for (seconds)", "20", "number-pad")}
+            {numberField("timeoutSeconds", "Ring for (seconds)", "20", 5)}
           </Group>
         ) : null}
 
@@ -281,7 +411,7 @@ export default function IvrNodeScreen() {
                 gotoFieldForOption(opt, i)
               )
             )}
-            {textField("retryLimit", "Wrong keys allowed", "1", "number-pad")}
+            {numberField("retryLimit", "Wrong keys allowed", "1", 0)}
           </Group>
         ) : null}
 
@@ -319,6 +449,20 @@ export default function IvrNodeScreen() {
         </Pressable>
         {openPicker === key ? (
           <View style={{ backgroundColor: t.colors.bg }}>
+            {/* "Not set" belongs here as much as on the general picker. Adding and removing a key
+                is deliberately web-only, but UNWIRING one is a different thing -- without this a
+                key pointing at the wrong step could be re-pointed and never cleared. */}
+            <Pressable
+              onPress={() => {
+                const next = [...options];
+                next[index] = { ...opt, nextNodeId: "" };
+                set("options", next);
+                setOpenPicker(null);
+              }}
+              style={{ paddingHorizontal: 24, paddingVertical: 10 }}
+            >
+              <Text style={[type.body, { color: t.colors.labelSecondary }]}>Not set</Text>
+            </Pressable>
             {others.map((o) => (
               <Pressable
                 key={o.id}

@@ -197,6 +197,92 @@ export function blankConfigFor(type: IvrNodeType): Record<string, unknown> {
   }
 }
 
+// The exact payload PUT /api/ivr/flows/:flow is sent, built by naming every field the server
+// persists. Both screens save through this rather than spreading the node, and that is the point:
+// a spread quietly carries whatever happens to be there, so nothing fails when a field is dropped
+// from the type -- which is how `positionX`/`positionY` could have been lost with every test still
+// green. Here the field list is RUNTIME, so removing one breaks a test.
+//
+// The endpoint is a delete-and-reinsert: every field omitted here is destroyed on save.
+// `positionX`/`positionY` are the WEB editor's canvas coordinates, never read by this app, and
+// losing them would flatten every node onto the origin the next time the web editor was opened --
+// a mess nobody would connect to an edit made on a phone. `created_at`/`updated_at` are the only
+// columns deliberately left out, because the server regenerates them.
+export const IVR_NODE_PUT_FIELDS = ["id", "flow", "isEntry", "type", "config", "positionX", "positionY"] as const;
+
+export type IvrPutPayload = { entryNodeId: string | null; nodes: Record<string, unknown>[] };
+
+export function toPutPayload(flow: IvrFlow): IvrPutPayload {
+  return {
+    entryNodeId: flow.entryNodeId,
+    nodes: flow.nodes.map((n) => {
+      const out: Record<string, unknown> = {};
+      for (const field of IVR_NODE_PUT_FIELDS) out[field] = (n as unknown as Record<string, unknown>)[field];
+      return out;
+    }),
+  };
+}
+
+// Whether an edited config still matches the one that was loaded. One level deep is enough and is
+// deliberate: every scalar field is compared by value, and the one nested field (a gather's
+// `options`) is compared as JSON, which is exact for the plain `{digit, nextNodeId}` objects the
+// API stores. Used only to decide whether a refocus may re-seed the draft, so the failure mode of
+// being too eager is keeping edits that were already saved -- harmless -- while being too lax
+// throws away typing.
+export function configsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    const x = a[k];
+    const y = b[k];
+    if (x === y) continue;
+    if (typeof x === "object" && x !== null && typeof y === "object" && y !== null) {
+      if (JSON.stringify(x) === JSON.stringify(y)) continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// What is still missing before a call could survive this step, or null when it is finished.
+//
+// A step is deliberately allowed to exist half-wired -- blank next-fields are legal, the API
+// persists unreachable nodes, and the handset saves a new step the instant its type is picked so
+// the editor can load it fresh. The cost of that is a step nothing warns you about: a blank
+// nextNodeId and a blank redirect number BOTH throw in the flow engine, and the DO catch-all
+// answers "we're experiencing a technical issue" and hangs up on a live customer. So the list
+// screen says which steps are unfinished, which is the thing that makes the permissive save safe.
+//
+// Deliberately NOT a save-blocker. Half-finishing a step and coming back to it is the normal way
+// a menu gets built, and refusing to save would make the handset unable to do what it is for.
+export function incompleteReason(node: IvrNode): string | null {
+  const c = node.config;
+  const blank = (v: unknown) => typeof v !== "string" || v.trim() === "";
+
+  if (node.type === "redirect" && blank(c.number)) return "No phone number set";
+  if (node.type === "voicemail" && blank(c.mailboxLabel)) return "No mailbox name set";
+  // Exactly one of a recording or spoken text -- playCommandFor returns nothing for neither, so
+  // the step is silent, and the renderer throws outright when both are set.
+  if (HAS_PROMPT.has(node.type) && blank(c.audioAssetId) && blank(c.ttsText)) {
+    return "Nothing to say -- pick a recording or type the words";
+  }
+  if (node.type === "gather" && (!Array.isArray(c.options) || c.options.length === 0)) {
+    return "No menu keys set";
+  }
+  const missing = NEXT_FIELDS[node.type].filter((f) => blank(c[f]));
+  if (missing.length > 0) {
+    return missing.map((f) => `"${NEXT_FIELD_LABELS[f] ?? f}" goes nowhere`).join(", ");
+  }
+  if (node.type === "gather" && Array.isArray(c.options)) {
+    const dead = (c.options as { digit?: unknown; nextNodeId?: unknown }[]).filter((o) => blank(o.nextNodeId));
+    if (dead.length > 0) return `${dead.length} menu key(s) go nowhere`;
+  }
+  return null;
+}
+
+// The types that speak to the caller. Kept beside incompleteReason because that is what reads it;
+// the editor screen has its own copy for deciding which fields to render.
+const HAS_PROMPT = new Set<string>(["play", "gather", "input", "wait", "voicemail", "callback"]);
+
 // Ids are generated client-side because the API takes the whole flow at once; matches the web
 // editor's `n_` prefix so the two are indistinguishable afterwards.
 export function newNodeId(): string {

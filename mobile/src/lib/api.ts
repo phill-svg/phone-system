@@ -1,5 +1,5 @@
 import { getToken, clearToken } from "./session";
-import type { IvrFlow } from "./ivr";
+import { toPutPayload, type IvrFlow } from "./ivr";
 
 export const BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://tcbvoip.app").replace(/\/$/, "");
 
@@ -392,8 +392,14 @@ export async function getIvrFlow(flow: string): Promise<IvrFlow> {
   return apiFetch<IvrFlow>(`/api/ivr/flows/${encodeURIComponent(flow)}`);
 }
 
+// Serialised through toPutPayload, which names every field the server persists. The endpoint is a
+// delete-and-reinsert, so a field dropped on the way out is destroyed -- sending `body` straight
+// through would carry whatever the type happened to have, and fail silently the day it had less.
 export async function putIvrFlow(flow: string, body: IvrFlow): Promise<void> {
-  await apiFetch(`/api/ivr/flows/${encodeURIComponent(flow)}`, { method: "PUT", body: JSON.stringify(body) });
+  await apiFetch(`/api/ivr/flows/${encodeURIComponent(flow)}`, {
+    method: "PUT",
+    body: JSON.stringify(toPutPayload(body)),
+  });
 }
 
 export type IvrAudioAsset = { id: string; label: string };

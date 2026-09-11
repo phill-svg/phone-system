@@ -9,6 +9,7 @@ import {
   IVR_NODE_TYPES,
   NODE_TYPE_LABELS,
   blankConfigFor,
+  incompleteReason,
   newNodeId,
   nodeSummary,
   nodeTitle,
@@ -35,7 +36,13 @@ export default function IvrFlowScreen() {
 
   const load = useCallback(() => {
     getIvrFlow(FLOW)
-      .then(setFlow)
+      .then((f) => {
+        // Clear it on success, or a single failed load (one bar of signal) wins for the life of
+        // the screen: the error branch returns before the data branch, so a later focus reload
+        // fetches fine and repaints nothing, and backing out entirely is the only way through.
+        setError(null);
+        setFlow(f);
+      })
       .catch(() => setError("Couldn't load the phone menu."));
   }, []);
 
@@ -79,7 +86,14 @@ export default function IvrFlowScreen() {
 
   const { ordered, unreachable } = orderNodes(flow);
 
-  const stepRow = (nodeId: string, title: string, summary: string, isEntry: boolean, last: boolean) => (
+  const stepRow = (
+    nodeId: string,
+    title: string,
+    summary: string,
+    isEntry: boolean,
+    last: boolean,
+    incomplete: string | null
+  ) => (
     <Pressable
       key={nodeId}
       onPress={() => router.push(`/admin/ivr/${nodeId}`)}
@@ -98,6 +112,14 @@ export default function IvrFlowScreen() {
           {isEntry ? "  ·  calls start here" : ""}
         </Text>
         <Text style={[type.footnote, { color: t.colors.labelSecondary, marginTop: 2 }]}>{summary}</Text>
+        {/* A step is allowed to be half-wired -- that is how a menu gets built -- but a call
+            reaching an unfinished one is told "we're experiencing a technical issue" and hung up
+            on. Saying so here is what makes the permissive save safe. */}
+        {incomplete ? (
+          <Text style={[type.footnote, { color: t.colors.warning, marginTop: 2 }]}>
+            Unfinished — {incomplete}
+          </Text>
+        ) : null}
       </View>
       <Icon name="chevron.right" fallback="chevron-forward" size={16} color={t.colors.labelTertiary} />
     </Pressable>
@@ -117,7 +139,7 @@ export default function IvrFlowScreen() {
               </Text>
             </View>
           ) : (
-            ordered.map((n, i) => stepRow(n.id, nodeTitle(n), nodeSummary(n), n.isEntry, i === ordered.length - 1))
+            ordered.map((n, i) => stepRow(n.id, nodeTitle(n), nodeSummary(n), n.isEntry, i === ordered.length - 1, incompleteReason(n)))
           )}
         </Group>
 
@@ -126,7 +148,7 @@ export default function IvrFlowScreen() {
             title="Not reachable"
             footer="No step leads here, so a call can never arrive. Usually a half-finished edit — wire it up or delete it."
           >
-            {unreachable.map((n, i) => stepRow(n.id, nodeTitle(n), nodeSummary(n), false, i === unreachable.length - 1))}
+            {unreachable.map((n, i) => stepRow(n.id, nodeTitle(n), nodeSummary(n), false, i === unreachable.length - 1, incompleteReason(n)))}
           </Group>
         ) : null}
 
