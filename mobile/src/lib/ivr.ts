@@ -260,9 +260,7 @@ export function incompleteReason(node: IvrNode): string | null {
 
   if (node.type === "redirect" && blank(c.number)) return "No phone number set";
   if (node.type === "voicemail" && blank(c.mailboxLabel)) return "No mailbox name set";
-  // Exactly one of a recording or spoken text -- playCommandFor returns nothing for neither, so
-  // the step is silent, and the renderer throws outright when both are set.
-  if (HAS_PROMPT.has(node.type) && blank(c.audioAssetId) && blank(c.ttsText)) {
+  if (PROMPT_REQUIRED.has(node.type) && blank(c.audioAssetId) && blank(c.ttsText)) {
     return "Nothing to say -- pick a recording or type the words";
   }
   if (node.type === "gather" && (!Array.isArray(c.options) || c.options.length === 0)) {
@@ -279,9 +277,21 @@ export function incompleteReason(node: IvrNode): string | null {
   return null;
 }
 
-// The types that speak to the caller. Kept beside incompleteReason because that is what reads it;
-// the editor screen has its own copy for deciding which fields to render.
-const HAS_PROMPT = new Set<string>(["play", "gather", "input", "wait", "voicemail", "callback"]);
+// The types where a blank prompt means the caller genuinely hears NOTHING, which is NOT the same
+// list as the editor's "which types show a prompt field". Getting that wrong is how a badge becomes
+// noise, and a badge you have learned to ignore is worse than no badge -- the alarm-fatigue failure
+// this file keeps recording.
+//
+// Deliberately excluded, because each has a server-side default for an empty prompt:
+//   wait     -- renderHold plays the Australian ringback tone (#47) when there is no wait content,
+//               which is the INTENDED configuration, not a gap. Flagging it would invite someone to
+//               "fix" it by typing text, replacing the ring cadence with a spoken line on every
+//               hold poll.
+//   callback -- recordCallbackRequest answers renderCallbackAck("Thanks, we'll call you back
+//               soon."). The web editor says so in its own hint.
+//   voicemail -- a blank prompt is a beep-only mailbox: terse, but a real choice. The mailboxLabel
+//               check above is the gap that actually matters there.
+const PROMPT_REQUIRED = new Set<string>(["play", "gather", "input"]);
 
 // Ids are generated client-side because the API takes the whole flow at once; matches the web
 // editor's `n_` prefix so the two are indistinguishable afterwards.

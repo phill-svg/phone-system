@@ -159,6 +159,27 @@ describe("incompleteReason", () => {
     expect(incompleteReason(n)).not.toContain("nextNodeId");
   });
 
+  // A badge you have learned to ignore is worse than no badge, so the "nothing to say" rule covers
+  // only the types where a blank prompt really does leave the caller hearing nothing. These two
+  // have deliberate server-side defaults, and flagging them would invite someone to "fix" a working
+  // step -- typing text into a Hold step replaces the ring cadence with a spoken line on every poll.
+  it("does not flag a Hold step with no custom content, which plays the ringback tone", () => {
+    const n = node("w", "wait", { audioAssetId: null, ttsText: "", allowCallbackStar: false, nextNodeId: "ring1" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+
+  it("does not flag a callback step with no prompt, which speaks a default line", () => {
+    const n = node("cb", "callback", { audioAssetId: null, ttsText: "" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+
+  // A beep-only mailbox is terse but a real choice; the missing mailbox NAME is the gap that
+  // actually matters there, and it is checked separately.
+  it("does not flag a voicemail step for a blank prompt, only for a blank mailbox name", () => {
+    const n = node("v", "voicemail", { audioAssetId: null, ttsText: "", mailboxLabel: "After hours" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+
   it("says nothing about a finished step", () => {
     const n = node("p", "play", { audioAssetId: null, ttsText: "Hi", nextNodeId: "ring1" });
     expect(incompleteReason(n)).toBeNull();

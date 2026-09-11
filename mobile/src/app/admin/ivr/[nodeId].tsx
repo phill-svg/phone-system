@@ -34,8 +34,16 @@ const HAS_PROMPT = new Set(["play", "gather", "input", "wait", "voicemail", "cal
 // a live Gather asking for zero digits.
 //
 // The box therefore owns its own text and the parent keeps the last valid number. While the text
-// is empty nothing is committed, which is exactly "clear it, type the new one". `min` is per-field
-// rather than a constant: zero retries is a legitimate answer, zero digits is not.
+// is empty nothing is committed, which is exactly "clear it, type the new one".
+//
+// `min` is 0 or 1 ONLY, and that bound is load-bearing rather than incidental. A higher floor would
+// let the committed value diverge from what the box shows -- type "3" into a min-5 field and it
+// commits 5 while reading 3 -- and the enclosing ScrollView sets keyboardShouldPersistTaps="handled",
+// so a tap on Save never blurs the field and never reconciles the two. That is the same trap
+// recorded for TimeField, and the fix is to make the clamp unreachable during ordinary typing: with
+// a floor of 1, every digit string except "0" is already at or above it, so Math.max only ever fires
+// on a lone zero -- which is the one value that must not reach a live <Gather>.
+// Per-field because zero retries is a legitimate answer and zero digits is not.
 function NumberField({
   label,
   placeholder,
@@ -150,7 +158,10 @@ export default function IvrNodeScreen() {
       // snapshot is as old as the time spent typing -- so writing the snapshot back would revert
       // anything changed in the web editor meanwhile, silently, while the phone reported success.
       // This does not make the write atomic; it narrows the window from minutes to milliseconds.
-      const fresh = await getIvrFlow(FLOW);
+      // A failed re-read falls back to the snapshot rather than refusing: the point of reading is
+      // to avoid clobbering someone else's edit, and turning a transient GET failure into "you
+      // cannot save" would block a write the PUT would have accepted.
+      const fresh = await getIvrFlow(FLOW).catch(() => flow);
       if (!fresh.nodes.some((n) => n.id === node.id)) {
         Alert.alert("Couldn't save", "That step has been deleted somewhere else.");
         return;
@@ -210,7 +221,27 @@ export default function IvrNodeScreen() {
           onPress: async () => {
             setSaving(true);
             try {
-              await putIvrFlow(FLOW, removeNode(flow, node.id));
+              // Re-read for the same reason save() does, and more urgently: removeNode carries
+              // `entryNodeId` forward from whatever it is handed, so deleting from a stale snapshot
+              // reverts every web edit made since this screen opened -- entry node included --
+              // while reporting success.
+              const fresh = await getIvrFlow(FLOW).catch(() => flow);
+              const current = fresh.nodes.find((n) => n.id === node.id);
+              if (!current) {
+                router.back();
+                return;
+              }
+              // Re-checked against the FRESH copy: the entry could have moved to this step on the
+              // web since the screen opened, and deleting it then would quietly change where every
+              // call starts.
+              if (current.isEntry || fresh.entryNodeId === current.id) {
+                Alert.alert(
+                  "This is where calls start",
+                  "This step became the starting step since you opened it, so it can't be deleted from here."
+                );
+                return;
+              }
+              await putIvrFlow(FLOW, removeNode(fresh, node.id));
               router.back();
             } catch (e) {
               Alert.alert("Couldn't delete", e instanceof Error ? e.message : "Try again in a moment.");
@@ -387,7 +418,7 @@ export default function IvrNodeScreen() {
                 </Text>
               </View>
             ) : null}
-            {numberField("timeoutSeconds", "Ring for (seconds)", "20", 5)}
+            {numberField("timeoutSeconds", "Ring for (seconds)", "20", 1)}
           </Group>
         ) : null}
 
