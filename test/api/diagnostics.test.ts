@@ -32,7 +32,11 @@ function stubFetch(
     if (url.includes("api.sydney.au1.twilio.com")) {
       return Promise.resolve(new Response(JSON.stringify({ status: "active", friendly_name: "TCB" }), { status: over.twilio ?? 200 }));
     }
-    if (url.includes("notify.twilio.com")) {
+    // The au1 notify host, NOT notify.twilio.com. Matching on the full au1 hostname is the point:
+    // push credentials are region-scoped, so a check that asked the us1 host would 404 every one of
+    // this account's real credentials. Reverting the code to notify.twilio.com makes this stub throw
+    // "unexpected fetch" rather than quietly passing.
+    if (url.includes("notify.sydney.au1.twilio.com")) {
       // Routed by SID: the two platforms expect DIFFERENT credential types, so answering both with
       // one body made a healthy pair look broken. `pushCred` overrides the iOS credential only --
       // Android always answers a good fcm one, so a failure names the platform under test.
@@ -363,17 +367,19 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("+61400000001");
     });
 
-    // The point of the whole exercise: the credential that CAN read these hosts is already in this
+    // The point of the whole exercise: the credential that CAN read this host is already in this
     // worker -- `sendSms` uses it, because the Messages API is US1-only too. A check that gives up
     // while holding the key is a permanently amber row, which is the alarm nobody reads.
-    it("sends the US1 API key to the global hosts when it is configured", async () => {
+    //
+    // `routes.twilio.com` alone now, and the name says so: the push-credential lookup moved to the
+    // au1 notify host on 2026-09-12, so a `notify.twilio.com` clause here would match nothing and
+    // quietly overstate what this asserts.
+    it("sends the US1 API key to the global routes host when it is configured", async () => {
       await seedNumber("+61261059771", "au1");
       const fetchMock = stubFetch();
       await run(baseEnv({ ...US1, ...CREDS }));
       const expected = `Basic ${btoa("SKus1:shh")}`;
-      const globalCalls = fetchMock.mock.calls.filter(
-        ([input]) => String(input).includes("routes.twilio.com") || String(input).includes("notify.twilio.com")
-      );
+      const globalCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes("routes.twilio.com"));
       expect(globalCalls.length).toBeGreaterThan(0);
       for (const [, init] of globalCalls) {
         expect((init?.headers as Record<string, string>).Authorization).toBe(expected);
@@ -383,42 +389,31 @@ describe("admin diagnostics", () => {
       expect((au1Call[1]?.headers as Record<string, string>).Authorization).toBe(`Basic ${btoa("AC123:tok")}`);
     });
 
-    // A 401 while holding the US1 key is a REAL rejection -- a fumbled auth-token rotation 401s
-    // every Twilio host at once. Explaining that away as a harmless region quirk is the reassuring
-    // silence this screen exists to break.
-    it("does not blame the region split when the US1 key itself was rejected", async () => {
-      stubFetch({ pushCred: 401 });
-      const check = find(await run(baseEnv({ ...US1, ...CREDS })), "voip_push");
-      expect(check.detail).toContain("rejected the US1 API key");
-      expect(check.detail).not.toContain("AU1 auth token");
-    });
-
-    it("says the push credential is set but unreadable, and names where to look", async () => {
-      stubFetch({ pushCred: 401 });
-      const check = find(await run(baseEnv(CREDS)), "voip_push");
-      expect(check.status).toBe("warn");
-      expect(check.detail).toContain("not verifiable here");
-      expect(check.detail).toContain("Push Credentials");
-      expect(check.detail).toContain("sandbox");
-      // Not a dead end: the remedy is a secret to set, which is a step that clears.
-      expect(check.detail).toContain("TWILIO_US1_API_KEY_SID");
-    });
-
-    // The guidance says "confirm the APNs one is NOT sandbox". Appending it because the FCM
-    // credential was the unreadable one sends someone to re-check the credential this very run
-    // just verified as production.
-    it("does not point at APNs when it was the Android credential that couldn't be read", async () => {
-      stubFetch({ pushCredAndroid: 401, pushCred: { type: "apn", sandbox: "false" } });
-      const check = find(await run(baseEnv(CREDS)), "voip_push");
-      expect(check.status).toBe("warn");
-      expect(check.detail).toContain("not verifiable here");
-      expect(check.detail).not.toContain("confirm the APNs one is NOT sandbox");
+    // The push-credential check no longer uses this split at all: it asks the au1 host with the au1
+    // token, so a 401 there is a genuinely broken TWILIO_AUTH_TOKEN rather than a region artefact.
+    // It must FAIL, not warn -- that same token validates every inbound webhook signature, so the
+    // blast radius is far wider than one check, and a warn would bury it. The us1 split still
+    // governs checkNumberRegions, which really does talk to a global host.
+    it("fails loudly when the AU1 auth token itself is rejected, holding a US1 key or not", async () => {
+      for (const e of [baseEnv({ ...US1, ...CREDS }), baseEnv(CREDS)]) {
+        stubFetch({ pushCred: 401 });
+        const check = find(await run(e), "voip_push");
+        expect(check.status).toBe("fail");
+        expect(check.detail).toContain("rejected the AU1 auth token");
+        // A broken auth token is not a missing US1 key, and must not be reported as one.
+        expect(check.detail).not.toContain("TWILIO_US1_API_KEY_SID");
+        // It must not ASSERT the token is broken either. `checkTwilioCredentials` sends the same
+        // AccountSid:AuthToken to api.sydney.au1.twilio.com in this same Promise.all, so those two
+        // rows can disagree -- and the remedy this would otherwise name is the auth-token rotation,
+        // which stops every inbound call if it is fumbled. It defers to the adjacent row instead.
+        expect(check.detail).toContain("Twilio account check above");
+      }
     });
   });
 
   describe("ringing the app", () => {
-    const WITH_CREDS = () =>
-      baseEnv({ TWILIO_PUSH_CREDENTIAL_SID_IOS: "CRios", TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" });
+    const WITH_CREDS_VARS = { TWILIO_PUSH_CREDENTIAL_SID_IOS: "CRios", TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" };
+    const WITH_CREDS = () => baseEnv(WITH_CREDS_VARS);
 
     it("fails outright when no push credential is set at all", async () => {
       stubFetch();
@@ -445,34 +440,63 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("SANDBOX");
     });
 
-    // A 404 IS proof the credential is missing, and this must stay a fail. Push credentials are not
-    // region-scoped the way calls are -- Twilio supports managing them only in US1, which is the
-    // host this lookup asks, so US1 is the complete list for the account.
+    // A 404 from the AU1 host is the real never-rings condition: the access token sets twr:"au1"
+    // and Twilio requires the token's push credential to exist in the token's own region, so a sid
+    // that is absent there delivers no push whether it is a typo or a perfectly good US1 credential.
     //
-    // This assertion was briefly inverted (warn, "couldn't confirm ... region-scoped") on the theory
-    // that the real credentials lived in au1 and "the Android handset rings" outranked the API.
-    // Both were wrong: the account had NO APNs credential until 2026-09-11, and the configured
-    // Android sid named nothing either. A FOREGROUND app is rung over the Voice SDK's signalling
-    // connection with no push involved, so ringing never tested the credential at all.
-    it("fails when the credential does not exist, because a 404 from US1 is the whole account", async () => {
+    // The remedy must name the REGION. "Create it in Twilio" is what sent someone to the Console on
+    // 2026-09-11 to make a second us1 credential that could never work -- the Console manages us1
+    // only, and the au1 REST host is the one place these can be created.
+    it("fails when the credential is absent from au1, and names the region in the remedy", async () => {
       stubFetch({ pushCred: 404 });
       const check = find(await run(WITH_CREDS()), "voip_push");
       expect(check.status).toBe("fail");
-      expect(check.detail).toContain("does not exist");
-      // Naming the fix is the point of the row -- a red status with no next step is the dead end the
-      // 401 branch was written to avoid.
-      expect(check.detail).toContain("create it in US1");
-      expect(check.detail).not.toContain("region-scoped");
+      expect(check.detail).toContain("does not exist in the au1 region");
+      expect(check.detail).toContain("notify.sydney.au1.twilio.com");
+      // Steering someone to the Console is the specific wrong turn this wording exists to prevent,
+      // so it must say so explicitly rather than merely omitting it -- the Console is the obvious
+      // place to go, and that is where the unusable second credential came from.
+      expect(check.detail).toContain("NOT the Console");
     });
 
-    // The guidance names APNs specifically, so an Android-only 404 must not raise it: that sends
-    // someone to re-check the credential this very run just verified as production. Still a fail --
-    // a missing FCM credential is a silent never-rings for every Android handset.
-    it("does not point at APNs when only the Android credential 404s", async () => {
+    // The credential lookup must go to the au1 host with the au1 token. Sending the US1 API key to
+    // notify.twilio.com -- which is what this check did until 2026-09-12 -- 404s every credential
+    // this account actually owns and reports working configuration as missing.
+    it("asks the au1 notify host with the au1 auth token", async () => {
+      const fetchMock = stubFetch({ pushCred: { type: "apn", sandbox: "false" } });
+      await run(baseEnv({ ...WITH_CREDS_VARS, TWILIO_US1_API_KEY_SID: "SKus1", TWILIO_US1_API_KEY_SECRET: "shh" }));
+      const calls = fetchMock.mock.calls.filter(([input]) => String(input).includes("/v1/Credentials/"));
+      expect(calls.length).toBe(2);
+      for (const [input, init] of calls) {
+        expect(String(input)).toContain("notify.sydney.au1.twilio.com");
+        // The AU1 token even though a US1 key is present -- this host takes the regional credential.
+        expect((init?.headers as Record<string, string>).Authorization).toBe(`Basic ${btoa("AC123:tok")}`);
+      }
+    });
+
+    // Each platform's verdict must attach to THAT platform. An Android-only failure sending someone
+    // to re-check the APNs credential is the wrong turn -- this run just read it back as production.
+    // The old version of this test asserted `not.toContain("confirm the APNs one is NOT sandbox")`,
+    // a string the source no longer contains, so it could never fail: making the APNs flag
+    // unconditional left all 57 tests green. Asserted on the real, current output instead.
+    it("attributes each verdict to its own platform when only Android 404s", async () => {
       stubFetch({ pushCredAndroid: 404, pushCred: { type: "apn", sandbox: "false" } });
       const check = find(await run(WITH_CREDS()), "voip_push");
       expect(check.status).toBe("fail");
-      expect(check.detail).not.toContain("confirm the APNs one is NOT sandbox");
+      // Android is named as the broken one, and iPhone as the healthy one -- not the reverse.
+      expect(check.detail).toMatch(/Android: that credential does not exist in the au1 region/);
+      expect(check.detail).toMatch(/iPhone: apn, production/);
+      expect(check.detail).not.toMatch(/iPhone[^.]*does not exist/);
+    });
+
+    // A 401 must not carry a "now go and list them yourself with this credential" next step: the
+    // credential it would hand over is the one Twilio just rejected, so following it reproduces the
+    // 401. The 404 note already prints the host inline, so nothing needs appending there either.
+    it("appends no by-hand retry step to a rejected credential", async () => {
+      stubFetch({ pushCred: 401 });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.detail).not.toContain("List them with");
+      expect(check.detail).not.toContain("curl -u");
     });
 
     // Could-not-check is a warn, not a fail: a Twilio blip must not be reported as a broken

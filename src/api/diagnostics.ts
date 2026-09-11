@@ -47,6 +47,11 @@ type Env = {
 // the Pacific; without a bound, one of them being slow means the admin stares at a spinner.
 const CHECK_TIMEOUT_MS = 8000;
 
+// Push credentials are region-scoped and this account's Voice is au1-homed, so they live HERE and
+// nowhere else -- `notify.twilio.com` is us1 and 404s every one of them. See the block comment on
+// `checkVoipPushCredentials`. Same {product}.{edge}.{region} shape as restClient's api host.
+const AU1_NOTIFY_BASE = "https://notify.sydney.au1.twilio.com";
+
 async function withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
   return Promise.race([
     work,
@@ -577,6 +582,30 @@ async function checkOnCall(env: Env): Promise<Check> {
 // "APNs environment mismatch (sandbox vs production push credential) is a common cause of 'no
 // incoming ring'". A TestFlight or App Store build talks to PRODUCTION APNs, so a sandbox
 // credential is silence -- and it looks identical to everything working.
+//
+// THIS ASKS THE AU1 HOST WITH THE AU1 TOKEN, and that is the whole point of the check.
+// Push credentials are REGION-SCOPED like every other Twilio resource, and Twilio's Voice SDK
+// regional guide states the binding rule plainly: "The Twilio resources referred to by the Access
+// Token (the API Key, TwiML Application, and Push Credential) must exist in the Twilio Region
+// specified in the Access Token." `mintAccessToken` sets `twr: "au1"`, so a credential in US1 is
+// not merely hard to read from here -- it cannot wake a handset at all. That is error 52161, and
+// commit 8822611 hit it on Android on 2026-08-23.
+//
+// What misleads everyone is that Twilio's docs ALSO say push credential management is US1-only
+// ("Mobile push credential creation for the AU1 region is not supported"). That is true of the
+// CONSOLE and only the console: the AU1 REST host creates and reads them perfectly well, which is
+// how 8822611 made Android ring. So the US1 console list is NOT the account's full list, and a 404
+// from notify.twilio.com says nothing whatsoever about an au1-homed account.
+//
+// That confusion cost two days. On 2026-09-11 this branch was downgraded to a warn on the theory
+// that the credentials lived in au1 and were invisible here (right conclusion, and it was then
+// reverted on the opposite theory that US1 was the complete list -- wrong, and it made the check
+// assert a falsehood about a working credential). Verified against the live account on 2026-09-12:
+// the au1 host returns 200 for both au1 credentials and 404 for the us1 one.
+//
+// Hence the AU1 auth token rather than `globalAuth`. TWILIO_AUTH_TOKEN is the au1 token -- it has
+// to be, it signs api.sydney.au1.twilio.com and validates every inbound webhook -- so a 401 here
+// is a genuinely broken auth token, not a region artefact, and is reported as such.
 async function checkVoipPushCredentials(env: Env): Promise<Check> {
   const base = { key: "voip_push", label: "Ringing the app" };
   const configured = [
@@ -601,12 +630,9 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
     if (s === "fail" || (s === "warn" && worst === "ok")) worst = s;
   };
 
-  const auth = globalAuth(env);
-  // Tracked as a flag on the APNs entry, not re-read out of the notes afterwards. The guidance it
-  // gates is specifically "go and look at the APNs credential", so it has to mean "the APNs one is
-  // the credential we could not read" -- pointing someone at APNs because the FCM credential 401'd
-  // would send them to re-check the very credential this run just verified as production.
-  let apnsUnreadable = false;
+  // The AU1 token, deliberately -- see the block comment above. Not `globalAuth`, which exists for
+  // routes.twilio.com, a host that really is global.
+  const authHeader = `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`;
 
   for (const c of configured) {
     if (!c.sid) {
@@ -615,45 +641,43 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
       continue;
     }
     try {
-      const res = await fetch(`https://notify.twilio.com/v1/Credentials/${encodeURIComponent(c.sid)}`, {
-        headers: { Authorization: auth.header },
+      const res = await fetch(`${AU1_NOTIFY_BASE}/v1/Credentials/${encodeURIComponent(c.sid)}`, {
+        headers: { Authorization: authHeader },
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       });
       if (res.status === 404) {
-        // A 404 here is REAL: the sid names no credential on this account. Push credentials are
-        // NOT region-scoped the way calls and API keys are -- they exist only in US1, which is
-        // exactly what this lookup asks. Twilio, twice: "The Twilio Console interface for managing
-        // Push Credentials is available only in US1" and "REST API operations that manage Push
-        // Credentials for the Notification service are supported only in US1." So US1 IS the whole
-        // list, and this check can see every credential the account has.
+        // A 404 from the AU1 host is the exact condition that keeps the handset silent: the sid
+        // names no credential IN AU1, so the access token (twr: "au1") references a resource that
+        // does not exist in its own region and Twilio has nothing to send a VoIP push with. It is
+        // a 404 whether the sid is a typo, deleted, or -- the case that actually happened twice --
+        // a perfectly real credential sitting in US1. So the remedy names the region, because
+        // "create it in Twilio" is what sent someone to the console to make another US1 one.
         //
-        // This branch was briefly downgraded to a warn on 2026-09-11 on the opposite theory -- that
-        // the real credentials lived in au1 and were invisible here -- using "but the Android
-        // handset rings" as the evidence that beat the API. Both halves were wrong. The account had
-        // NO APNs credential at all (created 22:26 that night, which is why the iPhone had never
-        // rung), and the configured ANDROID sid names nothing either. An app in the FOREGROUND
-        // rings over the SDK's own signalling connection with no push involved, so "it rings"
-        // never was evidence about the push credential -- only a backgrounded or killed handset
-        // tests that.
-        //
-        // The lesson is the one this file keeps relearning: a true alarm silenced on a plausible
-        // story is worse than no alarm. This is the single silent never-rings condition the whole
-        // check exists to catch, so it fails loudly and names the fix.
+        // Verified live on 2026-09-12: the au1 host answers 404 for CR7b85225... (a real US1 FCM
+        // credential) and 200 for both au1 credentials. A US1 credential is not a near-miss here,
+        // it is silence.
         notes.push(
-          `${c.platform}: that credential does not exist on this Twilio account — create it in US1 and update the sid, or the softphone will never ring in the background`
+          `${c.platform}: that credential does not exist in the au1 region — create it against ${AU1_NOTIFY_BASE}/v1/Credentials (NOT the Console, which only manages US1) and update the sid, or the softphone will never ring in the background`
         );
-        if (c.expect === "apn") apnsUnreadable = true;
         bump("fail");
         continue;
       }
       if (res.status === 401) {
-        // Not a blip -- see `globalAuth`, and `regional401` for why "no US1 key" and "the US1 key
-        // was rejected" must read differently. Either way the credential is SET (we have a sid);
-        // what cannot be read is whether it is sandbox or production, which is the half that
-        // matters. Say exactly that, and where to look.
-        notes.push(`${c.platform}: set, but not verifiable here — ${regional401(auth)}`);
-        if (c.expect === "apn") apnsUnreadable = true;
-        bump("warn");
+        // This host takes the AU1 auth token, which is the same credential that validates every
+        // inbound call's webhook signature -- so a 401 here is NOT the region quirk that 401s the
+        // global hosts, and it is a fail rather than a warn.
+        //
+        // But it must not ASSERT the token is broken, because the `twilio` check in this same
+        // Promise.all hits api.sydney.au1.twilio.com with the very same AccountSid:AuthToken. If
+        // that row is green and this one is red, the token is demonstrably fine and the difference
+        // is this host -- Notify au1 was originally driven with an AU1 API KEY (8822611), so basic
+        // auth being accepted there is empirical, not guaranteed. Telling someone to rotate the
+        // auth token on that evidence is dangerous: CLAUDE.md records that a fumbled rotation stops
+        // every inbound call. So it points at the adjacent row and lets the pair say which it is.
+        notes.push(
+          `${c.platform}: set, but Twilio rejected the AU1 auth token (401) — if the Twilio account check above is green the token itself is fine and this is a Notify-host auth difference; if it is also red, TWILIO_AUTH_TOKEN is wrong and inbound calls are broken too`
+        );
+        bump("fail");
         continue;
       }
       if (!res.ok) {
@@ -683,19 +707,13 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
     }
   }
 
-  const detail = notes.join(". ") + ".";
-  // When the APNs credential is the one we could not read, say what to do rather than leaving an
-  // amber row with no next step -- a sandbox APNs credential is silence on a TestFlight build and
-  // looks identical to everything working, so that is the one to check by hand. iOS unreadable
-  // while Android answers fine is the normal case here: FCM and APNs are separate credentials and
-  // only one of them decides whether a TestFlight build rings.
-  return {
-    ...base,
-    status: worst,
-    detail: apnsUnreadable
-      ? `${detail} Open Twilio Console > Voice > Push Credentials (US1 region) and confirm the APNs one is NOT sandbox.`
-      : detail,
-  };
+  // No trailing "and now go and check X" sentence, deliberately. There used to be one, gated on the
+  // APNs credential being unreadable, and every reason for it has gone: the 404 note already names
+  // the host and the remedy inline, and appending "list them with curl -u ..." to a 401 told the
+  // operator to retry by hand with the credential Twilio had just rejected. Each note names its own
+  // platform, so an Android failure can no longer produce guidance about the APNs credential -- the
+  // property the old flag existed to protect, now structural rather than guarded.
+  return { ...base, status: worst, detail: notes.join(". ") + "." };
 }
 
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {
