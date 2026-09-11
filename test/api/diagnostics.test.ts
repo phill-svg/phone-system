@@ -12,7 +12,9 @@ function baseEnv(extra: Record<string, unknown> = {}) {
 }
 
 // Routes by host so each test only says what differs from "everything healthy".
-function stubFetch(over: { servicem8?: number; twilio?: number; region?: string | number; expo?: unknown } = {}) {
+function stubFetch(
+  over: { servicem8?: number; twilio?: number; region?: string | number; expo?: unknown; pushCred?: unknown } = {}
+) {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("servicem8.com")) return Promise.resolve(new Response("{}", { status: over.servicem8 ?? 200 }));
@@ -22,6 +24,18 @@ function stubFetch(over: { servicem8?: number; twilio?: number; region?: string 
     }
     if (url.includes("api.sydney.au1.twilio.com")) {
       return Promise.resolve(new Response(JSON.stringify({ status: "active", friendly_name: "TCB" }), { status: over.twilio ?? 200 }));
+    }
+    if (url.includes("notify.twilio.com")) {
+      // Routed by SID: the two platforms expect DIFFERENT credential types, so answering both with
+      // one body made a healthy pair look broken. `pushCred` overrides the iOS credential only --
+      // Android always answers a good fcm one, so a failure names the platform under test.
+      if (url.includes("CRdroid")) {
+        return Promise.resolve(new Response(JSON.stringify({ type: "fcm" }), { status: 200 }));
+      }
+      if (typeof over.pushCred === "number") return Promise.resolve(new Response("{}", { status: over.pushCred }));
+      return Promise.resolve(
+        new Response(JSON.stringify(over.pushCred ?? { type: "apn", sandbox: "false" }), { status: 200 })
+      );
     }
     if (url.includes("exp.host")) {
       return Promise.resolve(new Response(JSON.stringify(over.expo ?? { data: [{ status: "ok", id: "t1" }] }), { status: 200 }));
@@ -110,7 +124,7 @@ describe("admin diagnostics", () => {
   it("returns every check, with no key lost or duplicated", async () => {
     stubFetch();
     const keys = (await run()).map((c) => c.key);
-    expect(keys).toEqual(["twilio", "regions", "roster", "on_call", "divert_caller_id", "servicem8", "transcripts", "email", "push"]);
+    expect(keys).toEqual(["twilio", "regions", "roster", "on_call", "divert_caller_id", "servicem8", "transcripts", "email", "voip_push", "push"]);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
@@ -248,6 +262,61 @@ describe("admin diagnostics", () => {
       const check = find(await run(), "push");
       expect(check.status).toBe("warn");
       expect(check.detail).toContain("30 days");
+    });
+  });
+
+  // The check that was missing on 2026-09-11, when a call rang the softphone for the full 22 and 62
+  // seconds and the phone never stirred. mintAccessToken sets push_credential_sid only
+  // `if (opts.pushCredentialSid)`, so an unset secret mints a valid token with no push credential:
+  // the app registers happily and Twilio has no way to wake it. No error, no log, no crash.
+  describe("ringing the app", () => {
+    const WITH_CREDS = () =>
+      baseEnv({ TWILIO_PUSH_CREDENTIAL_SID_IOS: "CRios", TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" });
+
+    it("fails outright when no push credential is set at all", async () => {
+      stubFetch();
+      const check = find(await run(), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("never ring");
+      expect(check.detail).toContain("TWILIO_PUSH_CREDENTIAL_SID_IOS");
+    });
+
+    it("fails when only iOS is missing, and names the platform", async () => {
+      stubFetch();
+      const check = find(await run(baseEnv({ TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" })), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("iPhone");
+    });
+
+    // The phase-1 softphone design named this in its own words: "APNs environment mismatch
+    // (sandbox vs production push credential) is a common cause of 'no incoming ring'". A
+    // TestFlight build talks to PRODUCTION APNs, so a sandbox credential is pure silence.
+    it("fails a SANDBOX APNs credential, which looks identical to everything working", async () => {
+      stubFetch({ pushCred: { type: "apn", sandbox: "true" } });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("SANDBOX");
+    });
+
+    it("fails a credential Twilio has never heard of", async () => {
+      stubFetch({ pushCred: 404 });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("does not exist");
+    });
+
+    // Could-not-check is a warn, not a fail: a Twilio blip must not be reported as a broken
+    // configuration and send someone rebuilding credentials that were fine.
+    it("warns rather than failing when Twilio cannot be reached", async () => {
+      stubFetch({ pushCred: 503 });
+      expect(find(await run(WITH_CREDS()), "voip_push").status).toBe("warn");
+    });
+
+    it("passes a production APNs credential", async () => {
+      stubFetch({ pushCred: { type: "apn", sandbox: "false" } });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("production");
     });
   });
 

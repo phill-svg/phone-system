@@ -31,6 +31,8 @@ type Env = {
   TWILIO_AUTH_TOKEN: string;
   SERVICEM8_API_KEY?: string;
   TWILIO_INTELLIGENCE_SERVICE_SID?: string;
+  TWILIO_PUSH_CREDENTIAL_SID_IOS?: string;
+  TWILIO_PUSH_CREDENTIAL_SID_ANDROID?: string;
   EMAIL?: SendEmailBinding;
 };
 
@@ -466,12 +468,98 @@ async function checkOnCall(env: Env): Promise<Check> {
   }
 }
 
+// Can Twilio wake a sleeping handset at all?
+//
+// This is the check that was missing on 2026-09-11, when a call rang the softphone for the full
+// 22 and 62 seconds and the phone never stirred. `mintAccessToken` sets `push_credential_sid` only
+// `if (opts.pushCredentialSid)` -- so an unset secret mints a perfectly valid token with no push
+// credential on it, the app registers happily, and Twilio then has no way to send it a VoIP push.
+// The softphone simply never rings. No error, no log line, no crash: the same silence that hid
+// SERVICEM8_API_KEY for a day, on the one path where the cost is a missed customer.
+//
+// `deploy.yml` does not set it -- wrangler secrets are separate -- and only the ANDROID sid is in
+// wrangler.jsonc, so iOS has always depended on a secret nothing verified.
+//
+// It also reads `sandbox`, which the phase-1 softphone design named as a risk in its own words:
+// "APNs environment mismatch (sandbox vs production push credential) is a common cause of 'no
+// incoming ring'". A TestFlight or App Store build talks to PRODUCTION APNs, so a sandbox
+// credential is silence -- and it looks identical to everything working.
+async function checkVoipPushCredentials(env: Env): Promise<Check> {
+  const base = { key: "voip_push", label: "Ringing the app" };
+  const configured = [
+    { platform: "iPhone", sid: env.TWILIO_PUSH_CREDENTIAL_SID_IOS, expect: "apn" as const },
+    { platform: "Android", sid: env.TWILIO_PUSH_CREDENTIAL_SID_ANDROID, expect: "fcm" as const },
+  ];
+
+  const missing = configured.filter((c) => !c.sid);
+  if (missing.length === configured.length) {
+    return {
+      ...base,
+      status: "fail",
+      detail:
+        "No VoIP push credential is set, so Twilio cannot wake the app for an incoming call — " +
+        "the softphone will never ring. Set TWILIO_PUSH_CREDENTIAL_SID_IOS as a worker secret.",
+    };
+  }
+
+  const notes: string[] = [];
+  let worst: CheckStatus = "ok";
+  const bump = (s: CheckStatus) => {
+    if (s === "fail" || (s === "warn" && worst === "ok")) worst = s;
+  };
+
+  for (const c of configured) {
+    if (!c.sid) {
+      notes.push(`${c.platform}: not set — the softphone will never ring on it`);
+      bump("fail");
+      continue;
+    }
+    try {
+      const res = await fetch(`https://notify.twilio.com/v1/Credentials/${encodeURIComponent(c.sid)}`, {
+        headers: { Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}` },
+        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+      });
+      if (res.status === 404) {
+        notes.push(`${c.platform}: that credential does not exist on this Twilio account`);
+        bump("fail");
+        continue;
+      }
+      if (!res.ok) {
+        notes.push(`${c.platform}: couldn't check (Twilio answered ${res.status})`);
+        bump("warn");
+        continue;
+      }
+      const cred = (await res.json()) as { type?: string; sandbox?: string | boolean; friendly_name?: string };
+      // A string "true" is what the API returns; accept the boolean too rather than trusting one.
+      const sandbox = cred.sandbox === true || cred.sandbox === "true";
+      if (cred.type !== c.expect) {
+        notes.push(`${c.platform}: credential is type '${cred.type ?? "?"}', expected '${c.expect}'`);
+        bump("fail");
+        continue;
+      }
+      if (sandbox) {
+        notes.push(
+          `${c.platform}: credential is SANDBOX — a TestFlight or App Store build talks to production APNs, so it will never ring`
+        );
+        bump("fail");
+        continue;
+      }
+      notes.push(`${c.platform}: ${cred.type}${cred.type === "apn" ? ", production" : ""}`);
+    } catch {
+      notes.push(`${c.platform}: couldn't reach Twilio to check`);
+      bump("warn");
+    }
+  }
+
+  return { ...base, status: worst, detail: notes.join(". ") + "." };
+}
+
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {
   // The names below are POSITIONAL: each binding takes whatever the call in the same position
   // returns. Keep the two lists in the same order and the same length -- adding a call without a
   // binding silently shifts every one after it and drops the last check off the end entirely, which
   // is exactly what happened when the transcripts check was first added here.
-  const [twilio, regions, roster, onCall, divert, servicem8, transcripts, push] = await Promise.all([
+  const [twilio, regions, roster, onCall, divert, servicem8, transcripts, voipPush, push] = await Promise.all([
     checkTwilioCredentials(env),
     checkNumberRegions(env),
     checkRingRoster(env),
@@ -479,10 +567,11 @@ export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<
     checkDivertCallerId(env),
     checkServiceM8(env),
     checkCallTranscripts(env),
+    checkVoipPushCredentials(env),
     checkPushTokens(env, staff),
   ]);
   // Display order, which is deliberately not the call order.
-  return jsonResponse([twilio, regions, roster, onCall, divert, servicem8, transcripts, checkEmail(env), push]);
+  return jsonResponse([twilio, regions, roster, onCall, divert, servicem8, transcripts, checkEmail(env), voipPush, push]);
 }
 
 // End-to-end push: the only proof that the whole chain works is a phone buzzing. Deliberately sent

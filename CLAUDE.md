@@ -255,6 +255,46 @@ before adding one, or you will duplicate a path that already works.
     signatures and authenticates our REST calls.
   * The **web** `/admin/settings` on-call section and the mobile screen are separate
     implementations of the same rota; a change to one usually needs the other.
+- **READ `docs/superpowers/` BEFORE IMPLEMENTING. It is not decorative, and skipping it cost a day.**
+  This file says so at the top and it was ignored on 2026-09-11 through an entire softphone
+  investigation. `specs/2026-08-19-ios-softphone-phase1-design.md` lists, under Risks: *"APNs
+  environment mismatch (sandbox vs production push credential) is a common cause of 'no incoming
+  ring'"* and *"VoIP background mode + push entitlement must be exactly right or background ringing
+  silently fails"*. Both were written a month before the morning they explained, and both were
+  unread while the same symptom was chased through CallKit, build numbers and OTA versions instead.
+  The 24 documents in there are the cheapest reading in this repo.
+- **A missing VoIP push credential is why a softphone never rings, and NOTHING said so.**
+  `mintAccessToken` sets `push_credential_sid` only `if (opts.pushCredentialSid)` — so an unset
+  secret mints a perfectly valid access token with no push credential on it. The app registers
+  happily, presence goes green, and Twilio has no way to wake it: an inbound call rings
+  `client:{email}` for the FULL timeout and the handset never stirs. No error, no log line, no
+  crash, and `/admin/errors` stays empty because no JavaScript ever runs. That is exactly the
+  10:28 call on 2026-09-11 — 22s then 62s of ringing into a phone that was never told.
+  `TWILIO_PUSH_CREDENTIAL_SID_ANDROID` is a plain var in `wrangler.jsonc`; **the iOS one is not
+  there at all**, so it has always depended on a wrangler secret (`deploy.yml` does not set
+  secrets) that nothing verified. `Admin > Health Checks > Ringing the app` now answers it, and it
+  asks Twilio rather than trusting the var: a 404 means the SID is not on this account, and
+  `sandbox: "true"` on an APNs credential means silence on any TestFlight or App Store build,
+  because those talk to PRODUCTION APNs. Could-not-reach is a warn, never a fail — a Twilio blip
+  must not send someone rebuilding credentials that were fine.
+- **The `· b5` in Settings never rendered, on any device, ever.** It read
+  `Constants.nativeBuildVersion`, which is not a property of `Constants` in SDK 54 — only a
+  `@deprecated` comment pointing at `expo-application`. `Constants` is typed `& Record<string, any>`,
+  so it compiled clean and was `undefined` everywhere, from the day it shipped in OTA 60. This file
+  called that half "the ONLY thing that says whether the fix is on the handset"; it printed nothing.
+  It comes from `expo-application` now, through one `NATIVE_BUILD` constant that both the Settings
+  screen and push registration read. **And `expo-application` must stay in `mobile/package.json`**:
+  the first version imported it while it resolved only as a transitive dep of `expo-notifications`,
+  and its native module loads with `requireNativeModule`, which THROWS — `api.ts` is imported by
+  nearly every screen, so the day that hoist changed every handset would white-screen on launch
+  with no JS left to report it.
+- **The handset reports its build to the server now** (migration `0036`, on push registration —
+  the one call every signed-in handset makes on launch), so "is the native fix on that phone?" is a
+  Health Check rather than a question someone answers by reading their own screen aloud. An iPhone
+  below `b5` FAILS and names the fix; one that has not reported WARNS rather than passing, because
+  unknown is not the same as fine. Bounded to 30 days so a spare phone in a drawer cannot pin it
+  red forever, and the build is parsed strictly — `Number("1.0.4")` is NaN and `NaN < 5` is false,
+  which would have cleared a handset the check never actually read.
 - **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
   the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
   moving it again means moving the grep in the same commit or every publish fails at "Read
