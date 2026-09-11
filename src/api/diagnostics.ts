@@ -620,28 +620,30 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       });
       if (res.status === 404) {
-        // NOT "it does not exist", however much it looks like it. Push credentials are
-        // REGION-SCOPED resources, and this lookup is US1 (notify.twilio.com is global, and
-        // Twilio's console for managing them "is available only in US1") while this account is
-        // AU1. A credential living in au1 is invisible here and answers 404 identically to one
-        // that was never created.
+        // A 404 here is REAL: the sid names no credential on this account. Push credentials are
+        // NOT region-scoped the way calls and API keys are -- they exist only in US1, which is
+        // exactly what this lookup asks. Twilio, twice: "The Twilio Console interface for managing
+        // Push Credentials is available only in US1" and "REST API operations that manage Push
+        // Credentials for the Notification service are supported only in US1." So US1 IS the whole
+        // list, and this check can see every credential the account has.
         //
-        // Proven the hard way on 2026-09-11: this check reported BOTH credentials as not existing
-        // while the Android handset was ringing perfectly well on one of them. A red row telling
-        // someone to recreate a working credential is far worse than no row -- it invites them to
-        // break the half that still works, on the day they are already missing calls.
+        // This branch was briefly downgraded to a warn on 2026-09-11 on the opposite theory -- that
+        // the real credentials lived in au1 and were invisible here -- using "but the Android
+        // handset rings" as the evidence that beat the API. Both halves were wrong. The account had
+        // NO APNs credential at all (created 22:26 that night, which is why the iPhone had never
+        // rung), and the configured ANDROID sid names nothing either. An app in the FOREGROUND
+        // rings over the SDK's own signalling connection with no push involved, so "it rings"
+        // never was evidence about the push credential -- only a backgrounded or killed handset
+        // tests that.
         //
-        // So: warn, say plainly that it could not be confirmed, and defer to the better evidence.
-        // A handset that rings IS the credential working, and no API lookup beats that.
+        // The lesson is the one this file keeps relearning: a true alarm silenced on a plausible
+        // story is worse than no alarm. This is the single silent never-rings condition the whole
+        // check exists to catch, so it fails loudly and names the fix.
         notes.push(
-          `${c.platform}: couldn't confirm — push credentials are region-scoped and this lookup is US1, but the account is AU1`
+          `${c.platform}: that credential does not exist on this Twilio account — create it in US1 and update the sid, or the softphone will never ring in the background`
         );
-        // An unconfirmed APNs credential is the SAME dead end as an unreadable one: amber, with
-        // nothing to do about it. The 404 can equally mean the sid is wrong or the credential was
-        // deleted -- the one silent never-rings condition this whole check exists to catch -- so it
-        // has to send someone to look, exactly as the 401 branch does.
         if (c.expect === "apn") apnsUnreadable = true;
-        bump("warn");
+        bump("fail");
         continue;
       }
       if (res.status === 401) {

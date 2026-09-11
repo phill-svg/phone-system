@@ -33,7 +33,12 @@
     "TWILIO_FROM_NUMBER": "+61866108941",
     "TWILIO_SMS_NUMBER": "+61485034869",
     "TWILIO_TWIML_APP_SID": "AP37a6e4263508806aa37efaf19285d2ed",
-    "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CRa514b67c428755dd962c50503041de9a",
+    // The FCM push credential on this account, checked against the US1 Mobile Push Credentials list
+    // on 2026-09-11. The previous value (CRa514b67c...) named NOTHING -- Health Checks 404s it -- so
+    // no Android handset could be woken by a VoIP push, exactly as the iPhone could not. "Android
+    // rings" was never evidence otherwise: a FOREGROUND app is rung over the Voice SDK's own
+    // signalling connection and needs no push at all.
+    "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CR7b8522534d1d2afe09478d18d7c8b078",
     "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au",
     "TWILIO_MESSENGER_FROM": "messenger:626021143926639",
     "DEMO_ACCOUNT_EMAILS": "reviewer@tcbpestcontrolcanberra.com.au"
