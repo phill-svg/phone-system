@@ -13,7 +13,14 @@ function baseEnv(extra: Record<string, unknown> = {}) {
 
 // Routes by host so each test only says what differs from "everything healthy".
 function stubFetch(
-  over: { servicem8?: number; twilio?: number; region?: string | number; expo?: unknown; pushCred?: unknown } = {}
+  over: {
+    servicem8?: number;
+    twilio?: number;
+    region?: string | number;
+    expo?: unknown;
+    pushCred?: unknown;
+    pushCredAndroid?: unknown;
+  } = {}
 ) {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -30,7 +37,10 @@ function stubFetch(
       // one body made a healthy pair look broken. `pushCred` overrides the iOS credential only --
       // Android always answers a good fcm one, so a failure names the platform under test.
       if (url.includes("CRdroid")) {
-        return Promise.resolve(new Response(JSON.stringify({ type: "fcm" }), { status: 200 }));
+        if (typeof over.pushCredAndroid === "number") {
+          return Promise.resolve(new Response("{}", { status: over.pushCredAndroid }));
+        }
+        return Promise.resolve(new Response(JSON.stringify(over.pushCredAndroid ?? { type: "fcm" }), { status: 200 }));
       }
       if (typeof over.pushCred === "number") return Promise.resolve(new Response("{}", { status: over.pushCred }));
       return Promise.resolve(
@@ -269,6 +279,143 @@ describe("admin diagnostics", () => {
   // seconds and the phone never stirred. mintAccessToken sets push_credential_sid only
   // `if (opts.pushCredentialSid)`, so an unset secret mints a valid token with no push credential:
   // the app registers happily and Twilio has no way to wake it. No error, no log, no crash.
+  // Twilio issues credentials PER REGION. This account is AU1-homed, so TWILIO_AUTH_TOKEN is the
+  // AU1 token -- and routes.twilio.com and notify.twilio.com are global (implicitly US1), where
+  // that token is not a credential at all. The answer is 401 every time, forever. Reporting it as
+  // "couldn't check" implies a blip that will clear on its own; it never will, and an amber row
+  // with no next step is exactly the alarm people learn to ignore.
+  describe("the AU1 / US1 credential split", () => {
+    const US1 = { TWILIO_US1_API_KEY_SID: "SKus1", TWILIO_US1_API_KEY_SECRET: "shh" };
+    const CREDS = { TWILIO_PUSH_CREDENTIAL_SID_IOS: "CRios", TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" };
+
+    // The outer beforeEach wipes this table and seeds the landline; these tests choose their own
+    // numbers, so they clear it again rather than working around that seed.
+    beforeEach(async () => {
+      await env.DB.prepare("DELETE FROM phone_numbers").run();
+    });
+
+    async function seedNumber(e164: string, region: string | null) {
+      await env.DB
+        .prepare(
+          "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, created_at) VALUES (?, 'Line', 1, 0, 1, 0, ?, 1)"
+        )
+        .bind(e164, region)
+        .run();
+    }
+
+    it("explains a 401 on the region check instead of calling it a transient failure", async () => {
+      await seedNumber("+61261059771", "au1");
+      stubFetch({ region: 401 });
+      const check = find(await run(), "regions");
+      expect(check.detail).toContain("AU1 auth token");
+      expect(check.detail).toContain("recorded as au1");
+      expect(check.detail).not.toContain("Couldn't check:");
+      // The status is half the finding: a number we could not verify but which is RECORDED as au1
+      // is a warn, not a fail. Without this, inverting the recorded-region test leaves every other
+      // assertion here green while the row turns red over a perfectly correct number.
+      expect(check.status).toBe("warn");
+    });
+
+    // A number RECORDED as anything but au1, that we also cannot verify, is the dangerous case:
+    // inbound calls to it are handled outside au1 where the softphone cannot be connected.
+    it("fails, not warns, when the unverifiable number is recorded outside au1", async () => {
+      await seedNumber("+61485034869", "us1");
+      stubFetch({ region: 401 });
+      const check = find(await run(), "regions");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("recorded as us1");
+    });
+
+    // Unknown is not known-bad. A number nobody ever recorded a region for may be sitting in au1;
+    // failing on it would pin this row red and send someone to "fix" a Regional tab already right.
+    // Both spellings of "no region": NULL, and the empty string a hand-edited D1 row can hold.
+    // `?? null` lets "" through and "" is a value that reads as an answer -- the same trap already
+    // recorded for the recording columns, which is why this goes through `blankToNull`.
+    it.each([["null", null], ["empty", ""]])(
+      "warns, not fails, when the unverifiable number has no region recorded (%s)",
+      async (_label, region) => {
+        await seedNumber("+61400000000", region);
+        stubFetch({ region: 401 });
+        const check = find(await run(), "regions");
+        expect(check.status).toBe("warn");
+        expect(check.detail).toContain("recorded as nothing");
+      }
+    );
+
+    // First-match-wins used to drop a number entirely: once ANY number answered 401, one that had
+    // timed out went unmentioned -- and the unmentioned one could be the one sitting in us1.
+    it("mentions every number, even when they fail in different ways", async () => {
+      await seedNumber("+61261059771", "au1");
+      await seedNumber("+61400000001", "au1");
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("routes.twilio.com")) {
+          return Promise.resolve(new Response("{}", { status: url.includes("400000001") ? 503 : 401 }));
+        }
+        if (url.includes("api.sydney.au1.twilio.com")) {
+          return Promise.resolve(new Response(JSON.stringify({ status: "active" }), { status: 200 }));
+        }
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const check = find(await run(), "regions");
+      expect(check.detail).toContain("+61261059771");
+      expect(check.detail).toContain("+61400000001");
+    });
+
+    // The point of the whole exercise: the credential that CAN read these hosts is already in this
+    // worker -- `sendSms` uses it, because the Messages API is US1-only too. A check that gives up
+    // while holding the key is a permanently amber row, which is the alarm nobody reads.
+    it("sends the US1 API key to the global hosts when it is configured", async () => {
+      await seedNumber("+61261059771", "au1");
+      const fetchMock = stubFetch();
+      await run(baseEnv({ ...US1, ...CREDS }));
+      const expected = `Basic ${btoa("SKus1:shh")}`;
+      const globalCalls = fetchMock.mock.calls.filter(
+        ([input]) => String(input).includes("routes.twilio.com") || String(input).includes("notify.twilio.com")
+      );
+      expect(globalCalls.length).toBeGreaterThan(0);
+      for (const [, init] of globalCalls) {
+        expect((init?.headers as Record<string, string>).Authorization).toBe(expected);
+      }
+      // ...and the au1 host still gets the au1 token, or nothing can dial.
+      const au1Call = fetchMock.mock.calls.find(([input]) => String(input).includes("api.sydney.au1.twilio.com"))!;
+      expect((au1Call[1]?.headers as Record<string, string>).Authorization).toBe(`Basic ${btoa("AC123:tok")}`);
+    });
+
+    // A 401 while holding the US1 key is a REAL rejection -- a fumbled auth-token rotation 401s
+    // every Twilio host at once. Explaining that away as a harmless region quirk is the reassuring
+    // silence this screen exists to break.
+    it("does not blame the region split when the US1 key itself was rejected", async () => {
+      stubFetch({ pushCred: 401 });
+      const check = find(await run(baseEnv({ ...US1, ...CREDS })), "voip_push");
+      expect(check.detail).toContain("rejected the US1 API key");
+      expect(check.detail).not.toContain("AU1 auth token");
+    });
+
+    it("says the push credential is set but unreadable, and names where to look", async () => {
+      stubFetch({ pushCred: 401 });
+      const check = find(await run(baseEnv(CREDS)), "voip_push");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("not verifiable here");
+      expect(check.detail).toContain("Push Credentials");
+      expect(check.detail).toContain("sandbox");
+      // Not a dead end: the remedy is a secret to set, which is a step that clears.
+      expect(check.detail).toContain("TWILIO_US1_API_KEY_SID");
+    });
+
+    // The guidance says "confirm the APNs one is NOT sandbox". Appending it because the FCM
+    // credential was the unreadable one sends someone to re-check the credential this very run
+    // just verified as production.
+    it("does not point at APNs when it was the Android credential that couldn't be read", async () => {
+      stubFetch({ pushCredAndroid: 401, pushCred: { type: "apn", sandbox: "false" } });
+      const check = find(await run(baseEnv(CREDS)), "voip_push");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("not verifiable here");
+      expect(check.detail).not.toContain("confirm the APNs one is NOT sandbox");
+    });
+  });
+
   describe("ringing the app", () => {
     const WITH_CREDS = () =>
       baseEnv({ TWILIO_PUSH_CREDENTIAL_SID_IOS: "CRios", TWILIO_PUSH_CREDENTIAL_SID_ANDROID: "CRdroid" });
