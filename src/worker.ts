@@ -1471,8 +1471,8 @@ export default {
   // on every status webhook landing. See reconcileStaleCalls.
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     // Runs on EVERY tick, the 1-minute one included: this is the only time-sensitive job here
-    // (3 minutes after a call ends, near enough), and each call is claimed in D1 before any work,
-    // so an overlapping tick cannot post a diary note twice.
+    // (SERVICEM8_SYNC_DELAY_MS after a call ends, near enough), and each call is claimed in D1
+    // before any work, so an overlapping tick cannot post a diary note twice.
     ctx.waitUntil(syncPendingCallsToServiceM8(env).catch(() => {}));
 
     // Everything below was written for the 5-minute tick and must not run every minute. An

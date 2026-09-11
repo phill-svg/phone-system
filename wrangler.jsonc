@@ -19,8 +19,11 @@
   "routes": [
     { "pattern": "tcbvoip.app", "custom_domain": true }
   ],
-  // The 1-minute tick exists only for the ServiceM8 sweep (src/servicem8/syncQueue.ts), which has
-  // to fire close to 3 minutes after a call ends; scheduled() keeps everything else on */5.
+  // The 1-minute tick exists only for the ServiceM8 sweep (src/servicem8/syncQueue.ts), so it fires
+  // close to SERVICEM8_SYNC_DELAY_MS after a call ends rather than up to 5 minutes late;
+  // scheduled() keeps everything else on */5. Note the delay is 15 minutes now, not the 3 this was
+  // written for, so the */5 tick alone would only stretch it to 15-20 -- if this tick ever needs
+  // justifying again, that is the number to weigh it against.
   "triggers": { "crons": ["*/5 * * * *", "* * * * *"] },
   "observability": { "enabled": true },
   "r2_buckets": [{ "binding": "AUDIO_ASSETS", "bucket_name": "tcb-voip-audio" }],
@@ -30,7 +33,12 @@
     "TWILIO_FROM_NUMBER": "+61866108941",
     "TWILIO_SMS_NUMBER": "+61485034869",
     "TWILIO_TWIML_APP_SID": "AP37a6e4263508806aa37efaf19285d2ed",
-    "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CRa514b67c428755dd962c50503041de9a",
+    // The FCM push credential on this account, checked against the US1 Mobile Push Credentials list
+    // on 2026-09-11. The previous value (CRa514b67c...) named NOTHING -- Health Checks 404s it -- so
+    // no Android handset could be woken by a VoIP push, exactly as the iPhone could not. "Android
+    // rings" was never evidence otherwise: a FOREGROUND app is rung over the Voice SDK's own
+    // signalling connection and needs no push at all.
+    "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CR7b8522534d1d2afe09478d18d7c8b078",
     "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au",
     "TWILIO_MESSENGER_FROM": "messenger:626021143926639",
     "DEMO_ACCOUNT_EMAILS": "reviewer@tcbpestcontrolcanberra.com.au"

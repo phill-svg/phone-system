@@ -4,10 +4,24 @@ import { logCallAndSyncContact, type LoggableCall } from "./callLogging";
 //
 // This wait is the whole point of the queue. Staff routinely create the ServiceM8 client or job
 // DURING the call or right after hanging up, so looking the number up the instant the call ended
-// searched for a record that did not exist yet: no note, no contact, and no second attempt. Three
-// minutes is Phill's call -- long enough to finish typing them in, short enough that the name is
-// there before anyone goes looking at the call.
-export const SERVICEM8_SYNC_DELAY_MS = 3 * 60 * 1000;
+// searched for a record that did not exist yet: no note, no contact, and no second attempt.
+//
+// FIFTEEN minutes, raised from three on 2026-09-11 at Phill's request, with a real case behind it.
+// A call from a new customer ended at 13:03:18; the sweep looked at 13:06:50 and found nothing;
+// Job #985 was created at 13:09:33 -- two and a half minutes after the only look this call would
+// ever get. No diary note, no contact, and nothing anywhere saying so. Three minutes assumed the
+// record is typed in while the call is still fresh; in practice the job gets written up after the
+// customer has been dealt with, which is most of ten minutes later.
+//
+// The cost of raising it is real and worth stating: the caller's NAME does not appear in the app
+// until the sweep runs, so for fifteen minutes a new customer shows as a bare number in Recents
+// and in the message thread. That is the trade -- a name that arrives late beats one that never
+// arrives at all.
+//
+// This does NOT make the lookup retry. A `no-match` is still claimed permanently (only `failed`
+// releases the claim), so a job created at minute sixteen is lost exactly as before. Fifteen
+// minutes moves the line; it does not remove it.
+export const SERVICEM8_SYNC_DELAY_MS = 15 * 60 * 1000;
 
 // How far back the sweep will reach. Without this, the first tick after deploying would treat every
 // historical call as pending and post notes on jobs for calls from weeks ago. It also bounds

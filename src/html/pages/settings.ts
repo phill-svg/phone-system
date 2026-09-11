@@ -457,7 +457,12 @@ export function renderSettingsPage(
           return r.json();
         }).then(function (data) {
           if (!data) return;
-          document.getElementById('oncall-members').value = data.rotation.members.join('\n');
+          // The newline escape below needs a DOUBLE backslash. This is a TS template literal, so a
+          // single one emits a real newline into the page's script, making an unterminated string
+          // and a SyntaxError that kills the WHOLE block -- every listener on this page, not just
+          // this line. Do not write the single-backslash form even inside a comment: it breaks the
+          // comment the same way (that is how this very note first broke the page).
+          document.getElementById('oncall-members').value = (data.rotation && data.rotation.members ? data.rotation.members : []).join('\\n');
           document.getElementById('oncall-anchor').value = data.rotation.anchorWeekStart || '';
           wrap.innerHTML = '';
           if (data.unknownMembers.length > 0) {
@@ -511,7 +516,7 @@ export function renderSettingsPage(
         if (!btn) return;
         btn.addEventListener('click', function () {
           var status = document.getElementById('oncall-status');
-          var members = document.getElementById('oncall-members').value.split('\n')
+          var members = document.getElementById('oncall-members').value.split('\\n')
             .map(function (x) { return x.trim(); }).filter(function (x) { return x !== ''; });
           var anchor = document.getElementById('oncall-anchor').value;
           status.textContent = 'Saving…';

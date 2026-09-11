@@ -445,11 +445,34 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("SANDBOX");
     });
 
-    it("fails a credential Twilio has never heard of", async () => {
+    // A 404 IS proof the credential is missing, and this must stay a fail. Push credentials are not
+    // region-scoped the way calls are -- Twilio supports managing them only in US1, which is the
+    // host this lookup asks, so US1 is the complete list for the account.
+    //
+    // This assertion was briefly inverted (warn, "couldn't confirm ... region-scoped") on the theory
+    // that the real credentials lived in au1 and "the Android handset rings" outranked the API.
+    // Both were wrong: the account had NO APNs credential until 2026-09-11, and the configured
+    // Android sid named nothing either. A FOREGROUND app is rung over the Voice SDK's signalling
+    // connection with no push involved, so ringing never tested the credential at all.
+    it("fails when the credential does not exist, because a 404 from US1 is the whole account", async () => {
       stubFetch({ pushCred: 404 });
       const check = find(await run(WITH_CREDS()), "voip_push");
       expect(check.status).toBe("fail");
       expect(check.detail).toContain("does not exist");
+      // Naming the fix is the point of the row -- a red status with no next step is the dead end the
+      // 401 branch was written to avoid.
+      expect(check.detail).toContain("create it in US1");
+      expect(check.detail).not.toContain("region-scoped");
+    });
+
+    // The guidance names APNs specifically, so an Android-only 404 must not raise it: that sends
+    // someone to re-check the credential this very run just verified as production. Still a fail --
+    // a missing FCM credential is a silent never-rings for every Android handset.
+    it("does not point at APNs when only the Android credential 404s", async () => {
+      stubFetch({ pushCredAndroid: 404, pushCred: { type: "apn", sandbox: "false" } });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.status).toBe("fail");
+      expect(check.detail).not.toContain("confirm the APNs one is NOT sandbox");
     });
 
     // Could-not-check is a warn, not a fail: a Twilio blip must not be reported as a broken

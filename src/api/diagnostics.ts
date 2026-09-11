@@ -7,6 +7,7 @@ import { isStaffAvailable } from "../dial/presence";
 import { readOnCallRotation, resolveOnCallEmail } from "../db/onCall";
 import { excludeDemos } from "../demo";
 import { isRingNodeReachingOnCall } from "../ivr/onCallWiring";
+import { SERVICEM8_SYNC_DELAY_MS } from "../servicem8/syncQueue";
 import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 import { sendExpoPush } from "../push/expoPush";
 import { sendEmail, type SendEmailBinding } from "../email/sendgrid";
@@ -73,7 +74,10 @@ async function checkServiceM8(env: Env): Promise<Check> {
       return { ...base, status: "fail", detail: `API key rejected (${res.status}). It may have been revoked.` };
     }
     if (!res.ok) return { ...base, status: "warn", detail: `ServiceM8 answered ${res.status}.` };
-    return { ...base, status: "ok", detail: "Connected. Callers are matched 3 minutes after a call ends." };
+    // Derived, never retyped: this line said "3 minutes" for a while after the delay was raised to
+    // 15, on the one screen people read to find out how the thing behaves.
+    const delayMins = Math.round(SERVICEM8_SYNC_DELAY_MS / 60000);
+    return { ...base, status: "ok", detail: `Connected. Callers are matched ${delayMins} minutes after a call ends.` };
   } catch (e) {
     return { ...base, status: "fail", detail: `Couldn't reach ServiceM8: ${e instanceof Error ? e.message : "error"}` };
   }
@@ -616,7 +620,29 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       });
       if (res.status === 404) {
-        notes.push(`${c.platform}: that credential does not exist on this Twilio account`);
+        // A 404 here is REAL: the sid names no credential on this account. Push credentials are
+        // NOT region-scoped the way calls and API keys are -- they exist only in US1, which is
+        // exactly what this lookup asks. Twilio, twice: "The Twilio Console interface for managing
+        // Push Credentials is available only in US1" and "REST API operations that manage Push
+        // Credentials for the Notification service are supported only in US1." So US1 IS the whole
+        // list, and this check can see every credential the account has.
+        //
+        // This branch was briefly downgraded to a warn on 2026-09-11 on the opposite theory -- that
+        // the real credentials lived in au1 and were invisible here -- using "but the Android
+        // handset rings" as the evidence that beat the API. Both halves were wrong. The account had
+        // NO APNs credential at all (created 22:26 that night, which is why the iPhone had never
+        // rung), and the configured ANDROID sid names nothing either. An app in the FOREGROUND
+        // rings over the SDK's own signalling connection with no push involved, so "it rings"
+        // never was evidence about the push credential -- only a backgrounded or killed handset
+        // tests that.
+        //
+        // The lesson is the one this file keeps relearning: a true alarm silenced on a plausible
+        // story is worse than no alarm. This is the single silent never-rings condition the whole
+        // check exists to catch, so it fails loudly and names the fix.
+        notes.push(
+          `${c.platform}: that credential does not exist on this Twilio account — create it in US1 and update the sid, or the softphone will never ring in the background`
+        );
+        if (c.expect === "apn") apnsUnreadable = true;
         bump("fail");
         continue;
       }

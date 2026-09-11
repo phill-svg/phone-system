@@ -65,6 +65,19 @@ describe("syncPendingCallsToServiceM8", () => {
     expect(await syncedAt("c-fresh")).toBeNull();
   });
 
+  // The delay is FIFTEEN minutes, and the duration is the point rather than an implementation
+  // detail. Raised from three on 2026-09-11 after a real loss: a new customer's call ended at
+  // 13:03:18, the sweep looked at 13:06:50 and found nothing, and the job was created at 13:09:33 --
+  // after the only look that call would ever get, because a no-match is claimed permanently. Ten
+  // minutes is inside the old window and outside the new one, so reverting the constant fails here.
+  it("still waits at ten minutes, because the job is usually written up after the customer is dealt with", async () => {
+    await insertCall("c-ten", 10 * MINUTE);
+    const urls = stubFetch();
+    await syncPendingCallsToServiceM8(withKey);
+    expect(urls).toHaveLength(0);
+    expect(await syncedAt("c-ten")).toBeNull();
+  });
+
   it("processes a call once it is past the delay, and names the caller", async () => {
     await insertCall("c-ready", SERVICEM8_SYNC_DELAY_MS + MINUTE);
     const urls = stubFetch();
