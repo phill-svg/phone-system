@@ -367,17 +367,19 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("+61400000001");
     });
 
-    // The point of the whole exercise: the credential that CAN read these hosts is already in this
+    // The point of the whole exercise: the credential that CAN read this host is already in this
     // worker -- `sendSms` uses it, because the Messages API is US1-only too. A check that gives up
     // while holding the key is a permanently amber row, which is the alarm nobody reads.
-    it("sends the US1 API key to the global hosts when it is configured", async () => {
+    //
+    // `routes.twilio.com` alone now, and the name says so: the push-credential lookup moved to the
+    // au1 notify host on 2026-09-12, so a `notify.twilio.com` clause here would match nothing and
+    // quietly overstate what this asserts.
+    it("sends the US1 API key to the global routes host when it is configured", async () => {
       await seedNumber("+61261059771", "au1");
       const fetchMock = stubFetch();
       await run(baseEnv({ ...US1, ...CREDS }));
       const expected = `Basic ${btoa("SKus1:shh")}`;
-      const globalCalls = fetchMock.mock.calls.filter(
-        ([input]) => String(input).includes("routes.twilio.com") || String(input).includes("notify.twilio.com")
-      );
+      const globalCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes("routes.twilio.com"));
       expect(globalCalls.length).toBeGreaterThan(0);
       for (const [, init] of globalCalls) {
         expect((init?.headers as Record<string, string>).Authorization).toBe(expected);
@@ -400,6 +402,11 @@ describe("admin diagnostics", () => {
         expect(check.detail).toContain("rejected the AU1 auth token");
         // A broken auth token is not a missing US1 key, and must not be reported as one.
         expect(check.detail).not.toContain("TWILIO_US1_API_KEY_SID");
+        // It must not ASSERT the token is broken either. `checkTwilioCredentials` sends the same
+        // AccountSid:AuthToken to api.sydney.au1.twilio.com in this same Promise.all, so those two
+        // rows can disagree -- and the remedy this would otherwise name is the auth-token rotation,
+        // which stops every inbound call if it is fumbled. It defers to the adjacent row instead.
+        expect(check.detail).toContain("Twilio account check above");
       }
     });
   });
@@ -467,14 +474,29 @@ describe("admin diagnostics", () => {
       }
     });
 
-    // The guidance names APNs specifically, so an Android-only 404 must not raise it: that sends
-    // someone to re-check the credential this very run just verified as production. Still a fail --
-    // a missing FCM credential is a silent never-rings for every Android handset.
-    it("does not point at APNs when only the Android credential 404s", async () => {
+    // Each platform's verdict must attach to THAT platform. An Android-only failure sending someone
+    // to re-check the APNs credential is the wrong turn -- this run just read it back as production.
+    // The old version of this test asserted `not.toContain("confirm the APNs one is NOT sandbox")`,
+    // a string the source no longer contains, so it could never fail: making the APNs flag
+    // unconditional left all 57 tests green. Asserted on the real, current output instead.
+    it("attributes each verdict to its own platform when only Android 404s", async () => {
       stubFetch({ pushCredAndroid: 404, pushCred: { type: "apn", sandbox: "false" } });
       const check = find(await run(WITH_CREDS()), "voip_push");
       expect(check.status).toBe("fail");
-      expect(check.detail).not.toContain("confirm the APNs one is NOT sandbox");
+      // Android is named as the broken one, and iPhone as the healthy one -- not the reverse.
+      expect(check.detail).toMatch(/Android: that credential does not exist in the au1 region/);
+      expect(check.detail).toMatch(/iPhone: apn, production/);
+      expect(check.detail).not.toMatch(/iPhone[^.]*does not exist/);
+    });
+
+    // A 401 must not carry a "now go and list them yourself with this credential" next step: the
+    // credential it would hand over is the one Twilio just rejected, so following it reproduces the
+    // 401. The 404 note already prints the host inline, so nothing needs appending there either.
+    it("appends no by-hand retry step to a rejected credential", async () => {
+      stubFetch({ pushCred: 401 });
+      const check = find(await run(WITH_CREDS()), "voip_push");
+      expect(check.detail).not.toContain("List them with");
+      expect(check.detail).not.toContain("curl -u");
     });
 
     // Could-not-check is a warn, not a fail: a Twilio blip must not be reported as a broken

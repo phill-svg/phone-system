@@ -633,11 +633,6 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
   // The AU1 token, deliberately -- see the block comment above. Not `globalAuth`, which exists for
   // routes.twilio.com, a host that really is global.
   const authHeader = `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`;
-  // Tracked as a flag on the APNs entry, not re-read out of the notes afterwards. The guidance it
-  // gates is specifically "go and look at the APNs credential", so it has to mean "the APNs one is
-  // the credential we could not read" -- pointing someone at APNs because the FCM credential 401'd
-  // would send them to re-check the very credential this run just verified as production.
-  let apnsUnreadable = false;
 
   for (const c of configured) {
     if (!c.sid) {
@@ -664,19 +659,24 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
         notes.push(
           `${c.platform}: that credential does not exist in the au1 region — create it against ${AU1_NOTIFY_BASE}/v1/Credentials (NOT the Console, which only manages US1) and update the sid, or the softphone will never ring in the background`
         );
-        if (c.expect === "apn") apnsUnreadable = true;
         bump("fail");
         continue;
       }
       if (res.status === 401) {
         // This host takes the AU1 auth token, which is the same credential that validates every
         // inbound call's webhook signature -- so a 401 here is NOT the region quirk that 401s the
-        // global hosts. It means TWILIO_AUTH_TOKEN itself is wrong, which breaks far more than
-        // this check, and the auth-token rotation recorded as outstanding is the first suspect.
+        // global hosts, and it is a fail rather than a warn.
+        //
+        // But it must not ASSERT the token is broken, because the `twilio` check in this same
+        // Promise.all hits api.sydney.au1.twilio.com with the very same AccountSid:AuthToken. If
+        // that row is green and this one is red, the token is demonstrably fine and the difference
+        // is this host -- Notify au1 was originally driven with an AU1 API KEY (8822611), so basic
+        // auth being accepted there is empirical, not guaranteed. Telling someone to rotate the
+        // auth token on that evidence is dangerous: CLAUDE.md records that a fumbled rotation stops
+        // every inbound call. So it points at the adjacent row and lets the pair say which it is.
         notes.push(
-          `${c.platform}: set, but Twilio rejected the AU1 auth token (401) — TWILIO_AUTH_TOKEN is wrong or a rotation went wrong, which also breaks inbound calls`
+          `${c.platform}: set, but Twilio rejected the AU1 auth token (401) — if the Twilio account check above is green the token itself is fine and this is a Notify-host auth difference; if it is also red, TWILIO_AUTH_TOKEN is wrong and inbound calls are broken too`
         );
-        if (c.expect === "apn") apnsUnreadable = true;
         bump("fail");
         continue;
       }
@@ -707,18 +707,13 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
     }
   }
 
-  const detail = notes.join(". ") + ".";
-  // When the APNs credential is the one we could not read, say what to do rather than leaving a row
-  // with no next step. Deliberately NOT "open the Console": the Console only manages US1 push
-  // credentials, so sending someone there to fix an au1 problem is what produced a second unusable
-  // credential on 2026-09-11. The au1 host is the only place this one can be listed or created.
-  return {
-    ...base,
-    status: worst,
-    detail: apnsUnreadable
-      ? `${detail} List them with: curl -u <AccountSid>:<AU1 auth token> ${AU1_NOTIFY_BASE}/v1/Credentials`
-      : detail,
-  };
+  // No trailing "and now go and check X" sentence, deliberately. There used to be one, gated on the
+  // APNs credential being unreadable, and every reason for it has gone: the 404 note already names
+  // the host and the remedy inline, and appending "list them with curl -u ..." to a 401 told the
+  // operator to retry by hand with the credential Twilio had just rejected. Each note names its own
+  // platform, so an Android failure can no longer produce guidance about the APNs credential -- the
+  // property the old flag existed to protect, now structural rather than guarded.
+  return { ...base, status: worst, detail: notes.join(". ") + "." };
 }
 
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {
