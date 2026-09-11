@@ -256,10 +256,11 @@ before adding one, or you will duplicate a path that already works.
     line rather than making you find them one at a time.
   * `staff_users` holds only Phill plus the demo reviewer account, so there is nobody to rotate
     between.
-  * Speaker-labelled transcripts: the `GA...` service SID was being set up;
-    **Dual-channel Recording for Conference** in the Twilio Console is the other half and cannot be
-    checked from here. Read one real transcript afterwards and flip `transcript_staff_channel` if
-    the labels come out reversed.
+  * ~~Speaker-labelled transcripts need the Console's **Dual-channel Recording for Conference**
+    switch.~~ **Resolved 2026-09-12 by not depending on it**: that switch was Enabled and saved and
+    Twilio was still returning mono, so the recording moved to `record-from-answer-dual` on the
+    `<Dial>`. See the bullet on it below. Still worth reading one real transcript to confirm the
+    labels are the right way round.
   * **A Twilio Auth Token was exposed in chat on 2026-09-10 and needs rotating** if it has not been.
     The ORDER matters: create a SECONDARY token in Twilio, update `TWILIO_AUTH_TOKEN` in the
     Cloudflare dashboard (Workers & Pages > tcb-voip > Settings > Variables and Secrets), make one
@@ -411,15 +412,40 @@ before adding one, or you will duplicate a path that already works.
   **Conversation Intelligence (classic)** → Services, and the SID starts `GA`. No Language Operators
   are needed; only the raw sentences and their channel numbers are read. Creating it by API avoids
   the navigation entirely: `POST https://intelligence.twilio.com/v2/Services` with `UniqueName`.
-  Twilio's own docs confirm the channel rule this code's `transcript_staff_channel` default rests
-  on: for a CONFERENCE, channel 1 is whoever joined first, and classic CI labels channel 1 "Agent"
-  by default — our caller is redirected in first, hence the default of 2.
-- **Which audio channel is the staff member is a SETTING, not a constant** (`transcript_staff_channel`,
-  default 2). Twilio gives channel 1 to whoever joins the conference first, and `handleAgentAnswer`
-  awaits the caller's `redirectCall` into `/join-conference` BEFORE returning the staff leg's
-  `<Dial><Conference>` -- so the caller usually lands first. It is a race, not a rule: an earlier
-  version hardcoded 1 on the opposite claim and would have labelled every inbound transcript
-  backwards. Read one real transcript and flip the setting if the labels are the wrong way round.
+  The channel rule that default rests on changed on 2026-09-12 when the recording moved to the
+  `<Dial>`: a DialVerb dual recording puts channel 1 on the parent call, so staff are channel 1.
+  (For a CONFERENCE recording it was channel 1 = whoever joined first, hence the old default of 2.)
+- **The recording is on the `<Dial>`, NOT the `<Conference>`, and that is what makes labelling work
+  at all.** A `<Conference>` recording's channel count is governed by one account-wide Console
+  switch — **Dual-channel Recording for Conference**, under Voice > Recordings > Settings. On
+  2026-09-12 that switch was confirmed **Enabled and saved** and conference recordings were *still*
+  arriving mono: Twilio's own Recordings API reported `channels: 1, source: Conference` for a
+  143-second call answered that morning, and for every other recording on the account. So the
+  switch is not something this system can depend on, whatever it displays — and "the transcripts
+  aren't working" was that, twice, on two separate days.
+  `record="record-from-answer-dual"` on the `<Dial>` is Twilio's documented alternative — their
+  `<Dial>` page carries this exact shape, *"a dual-channel recording for a `<Dial>` with a nested
+  `<Conference>`"* — and it produces a **`source: DialVerb`** recording, which no account setting
+  touches. Do NOT move `record` back onto the `<Conference>` noun: a test asserts it is an attribute
+  of the `<Dial>` and absent from the `<Conference>`, because a bare substring check would pass
+  either way.
+  Two deliberate consequences. Recording starts when the staff member **answers** rather than at
+  conference start, so the caller's hold music is no longer at the front of every recording. And
+  the staff-leg recording is now `DialVerb`, the same as a call-via-mobile leg — the mono-marker in
+  the recording webhook keeps them apart by the `conference=1` flag on the callback URL we build
+  ourselves, never by Twilio's parameters, which is precisely why it was built that way.
+- **Which audio channel is the staff member is a SETTING, not a constant**
+  (`transcript_staff_channel`, **default 1** since 2026-09-12). A **Dial** dual recording puts
+  channel 1 on the **parent call**, and that document belongs to the staff leg — so staff are
+  channel 1 and the conference (the caller) is channel 2, deterministically.
+  It defaulted to **2** while this was a `<Conference>` recording, where channel 1 goes to whoever
+  joined first and `handleAgentAnswer` awaits the caller's `redirectCall` into `/join-conference`
+  BEFORE returning the staff leg's document — so the caller usually landed first. "Usually" was the
+  problem: a race, not a rule, and an even earlier version hardcoded the opposite and would have
+  labelled every inbound transcript backwards while presenting it as fact. Moving to the `<Dial>`
+  removed the race. It stays a setting anyway, because the cost of being wrong is a transcript that
+  confidently attributes the customer's words to staff, and one stored row beats a deploy. Read one
+  real transcript and flip it if the labels come out the wrong way round.
 - **Whisper and the Twilio sweep both write `call_transcript`, in the same cron tick.**
   `backfillTranscripts` can select a row with a NULL transcript, spend 10-30s in Workers AI, and land
   after the labelled text was written -- destroying it permanently, since the row is by then out of

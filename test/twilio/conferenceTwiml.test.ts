@@ -21,10 +21,32 @@ describe("renderDialAgentIntoConference", () => {
       recordingStatusCallbackUrl: "https://x/rec",
     });
     expect(xml).toContain('action="https://x/action"');
-    expect(xml).toContain('record="record-from-start"');
     expect(xml).toContain('recordingStatusCallback="https://x/rec"');
     expect(xml).toContain('<Conference region="au1"');
     expect(xml).toContain(">CAcaller</Conference>");
+  });
+
+  // The whole reason speaker labelling works. A <Conference> recording's channel count is governed by
+  // one account-wide Console switch, which on 2026-09-12 was enabled, saved, and STILL producing mono
+  // (Twilio's Recordings API: channels 1, source Conference, on a 143-second call). Recording on the
+  // <Dial> instead is a DialVerb recording, which no account setting touches.
+  //
+  // Asserted positionally, not just by substring: `record` must be an attribute of the <Dial> and
+  // must NOT appear on the <Conference>, because putting it back on the noun is exactly the
+  // regression -- and it would still satisfy a bare toContain('record="record-from-answer-dual"').
+  it("records dual-channel on the Dial, never on the Conference", () => {
+    const xml = renderDialAgentIntoConference({
+      conferenceName: "CAcaller",
+      actionUrl: "https://x/action",
+      recordingStatusCallbackUrl: "https://x/rec",
+    });
+    const dialTag = xml.slice(xml.indexOf("<Dial"), xml.indexOf(">", xml.indexOf("<Dial")) + 1);
+    const confTag = xml.slice(xml.indexOf("<Conference"), xml.indexOf(">", xml.indexOf("<Conference")) + 1);
+    expect(dialTag).toContain('record="record-from-answer-dual"');
+    expect(dialTag).toContain('recordingStatusCallback="https://x/rec"');
+    expect(confTag).not.toContain("record");
+    // Mono, or recording the conference, would both silently un-label every transcript.
+    expect(xml).not.toContain("record-from-start");
   });
 
   it("omits recording attributes when record is false", () => {
@@ -34,7 +56,7 @@ describe("renderDialAgentIntoConference", () => {
   });
   it("records by default (record omitted) and when record is true", () => {
     const def = renderDialAgentIntoConference({ conferenceName: "CAx", actionUrl: "https://x/a", recordingStatusCallbackUrl: "https://x/r" });
-    expect(def).toContain('record="record-from-start"');
+    expect(def).toContain('record="record-from-answer-dual"');
   });
 
   // The whisper is for a divert leg whose screen showed the CUSTOMER's number: without it a work

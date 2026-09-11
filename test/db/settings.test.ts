@@ -7,7 +7,40 @@ import {
   setCallBlocklist,
   getRecordingEnabled,
   setRecordingEnabled,
+  getTranscriptStaffChannel,
+  setTranscriptStaffChannel,
 } from "../../src/db/settings";
+
+// The value that decides whether every speaker-labelled transcript reads backwards, attributing the
+// customer's words to staff and presenting it as fact. It had no test at all until the recording
+// moved to the <Dial> on 2026-09-12 and the correct default inverted.
+describe("settings.transcriptStaffChannel", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM settings").run();
+  });
+
+  // 1, because `record-from-answer-dual` sits on the STAFF leg's <Dial> and a Dial recording puts
+  // channel 1 on the parent call. Not 2 -- that was right only while this was a <Conference>
+  // recording, where channel 1 goes to whoever joined first (the caller, who is redirected in
+  // before the staff leg answers).
+  it("defaults staff to channel 1, matching the Dial dual recording", async () => {
+    expect(await getTranscriptStaffChannel(env.DB)).toBe(1);
+  });
+
+  it("round-trips an explicit override in both directions", async () => {
+    await setTranscriptStaffChannel(env.DB, 2);
+    expect(await getTranscriptStaffChannel(env.DB)).toBe(2);
+    await setTranscriptStaffChannel(env.DB, 1);
+    expect(await getTranscriptStaffChannel(env.DB)).toBe(1);
+  });
+
+  // A corrupt or hand-edited row must not throw on the transcript path, and must not silently become
+  // the OTHER channel either -- falling back to the default is the only safe reading.
+  it("falls back to the default rather than throwing on a junk stored value", async () => {
+    await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('transcript_staff_channel', '7')").run();
+    expect(await getTranscriptStaffChannel(env.DB)).toBe(1);
+  });
+});
 
 describe("settings.businessHours", () => {
   beforeEach(async () => {

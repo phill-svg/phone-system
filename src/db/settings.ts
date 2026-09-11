@@ -76,25 +76,30 @@ export async function setFbChannelAlertLastSent(db: D1Database, ts: number): Pro
 
 const TRANSCRIPT_STAFF_CHANNEL_KEY = "transcript_staff_channel";
 
-// Which audio channel the STAFF member is on in a dual-channel conference recording, for labelling
+// Which audio channel the STAFF member is on in a dual-channel recording, for labelling
 // speaker-separated transcripts.
 //
-// This is a setting rather than a constant because the code cannot know it. Twilio assigns channel 1
-// to the first participant to join the conference, and our answer path awaits the caller's
-// redirectCall into /join-conference BEFORE it returns the staff leg's <Dial><Conference> -- so the
-// caller usually joins first and staff are channel 2. "Usually" is the problem: it is a race between
-// two Twilio-side joins, and an earlier version of this code hardcoded the opposite and would have
-// labelled every transcript backwards while presenting it as fact.
+// DEFAULT 1, and the reason changed on 2026-09-12. The recording moved from the <Conference> noun to
+// `record-from-answer-dual` on the <Dial> (see conferenceTwiml.ts for why -- the account-wide Console
+// switch that governs conference channel count was enabled, saved, and still producing mono). A Dial
+// recording puts channel 1 on the PARENT call, and that document belongs to the staff leg, so staff
+// are channel 1 and the conference -- the caller -- is channel 2. Deterministic.
 //
-// So: default to 2 (matching that ordering), and make it one setting to flip after reading a real
-// transcript, instead of a guess baked into a deploy.
+// Before that it defaulted to 2, because a CONFERENCE recording gives channel 1 to whoever joined
+// first and our answer path awaits the caller's redirectCall into /join-conference before returning
+// the staff leg's document. That was a race we were reading tea leaves about, not a rule -- an even
+// earlier version hardcoded the opposite and would have labelled every transcript backwards while
+// presenting it as fact. This is now a property of which leg owns the <Dial>, which is not a race.
+//
+// It stays a SETTING regardless, because the cost of being wrong is a transcript that confidently
+// attributes the customer's words to staff, and one stored row beats a deploy.
 export async function getTranscriptStaffChannel(db: D1Database): Promise<1 | 2> {
   const row = await db
     .prepare("SELECT value FROM settings WHERE key = ?")
     .bind(TRANSCRIPT_STAFF_CHANNEL_KEY)
     .first<{ value: string }>();
-  if (!row) return 2;
-  return JSON.parse(row.value) === 1 ? 1 : 2;
+  if (!row) return 1;
+  return JSON.parse(row.value) === 2 ? 2 : 1;
 }
 
 export async function setTranscriptStaffChannel(db: D1Database, channel: 1 | 2): Promise<void> {
