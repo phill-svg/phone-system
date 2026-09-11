@@ -11,7 +11,7 @@ declare global {
 
 jest.mock("../src/lib/session");
 import * as session from "../src/lib/session";
-import { apiFetch, login, ApiError, setUnauthorizedHandler, putIvrFlow } from "../src/lib/api";
+import { apiFetch, login, logout, ApiError, setUnauthorizedHandler, putIvrFlow } from "../src/lib/api";
 import { IVR_NODE_PUT_FIELDS } from "../src/lib/ivr";
 
 const okJson = (body: unknown, status = 200) =>
@@ -35,6 +35,24 @@ describe("api client", () => {
     await apiFetch("/api/me");
     const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
+  });
+
+  // Sign-out awaits this, and `apiFetch` has no timeout: an unbounded logout is a wedge in front of
+  // someone trying to leave the app, which is the same hazard the Twilio unregister races a
+  // deadline to avoid one step earlier. Aborting is what bounds it, so the signal has to be sent.
+  it("bounds the logout request so sign-out cannot hang behind it", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okJson({ ok: true }));
+    (global as any).fetch = fetchMock as any;
+    await logout();
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal!.aborted).toBe(false);
+  });
+
+  // And it must not reject: a failed logout still has to let the caller clear the session.
+  it("swallows a logout failure rather than blocking sign-out", async () => {
+    (global as any).fetch = jest.fn().mockRejectedValue(new Error("network down")) as any;
+    await expect(logout()).resolves.toBeUndefined();
   });
 
   it("on 401 clears the token, fires the unauthorized handler, and throws ApiError(401)", async () => {

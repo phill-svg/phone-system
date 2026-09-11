@@ -16,6 +16,18 @@ Notifications.setNotificationHandler({
 
 let registered = false;
 
+// The latch above is per app RUN, not per user, so signing out has to clear it.
+//
+// Without this, a second staff member signing in on the same handset never re-registers:
+// `registerForPushNotifications` returns at the first line, the Expo token stays bound to the
+// PREVIOUS user server-side (`upsertPushToken` is keyed on the token, so only a fresh call rebinds
+// it), and the result is silent in both directions -- the new owner receives none of their own
+// notifications, while the previous owner's inbound customer texts keep arriving on a phone they
+// no longer hold, sender name and first 240 characters included.
+export function resetPushRegistration(): void {
+  registered = false;
+}
+
 // Ask for permission, grab the Expo push token, and hand it to the server. Safe to call repeatedly;
 // only does the work once per app run. Never throws — push is best-effort.
 export async function registerForPushNotifications(): Promise<void> {

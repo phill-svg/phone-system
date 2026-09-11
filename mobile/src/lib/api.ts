@@ -77,10 +77,19 @@ export async function getMe(): Promise<Me> {
   return apiFetch<Me>("/api/me");
 }
 
+// Best-effort AND bounded. `apiFetch` has no timeout of its own, so a request that never settles
+// hangs sign-out behind it and traps someone in an app they are trying to leave -- the exact wedge
+// `unregisterFromIncoming` races a deadline to avoid one step earlier in `performSignOut`, which
+// that deadline does not actually prevent while the very next await is unbounded. Giving up costs
+// only a server-side session row that expires on its own; the local token is cleared regardless.
+const LOGOUT_TIMEOUT_MS = 5000;
 export async function logout(): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
   try {
-    await apiFetch("/api/logout", { method: "POST" });
+    await apiFetch("/api/logout", { method: "POST", signal: controller.signal });
   } catch { /* logout is best-effort; the local token is cleared regardless by the caller */ }
+  finally { clearTimeout(timer); }
 }
 
 export type LiveCall = {

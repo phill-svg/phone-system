@@ -1,5 +1,6 @@
 import { jsonResponse } from "./respond";
 import { listPhoneNumbers } from "../db/phoneNumbers";
+import { blankToNull } from "../db/calls";
 import { getStaffRoster } from "../db/staff";
 import { getDivertCallerId, getDivertCallerIdRejection } from "../db/settings";
 import { isStaffAvailable } from "../dial/presence";
@@ -29,6 +30,11 @@ type Env = {
   DB: D1Database;
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
+  // The US1-region API key this worker ALREADY holds for `sendSms` (the Messages API is US1-only:
+  // "Endpoint is not supported in realm 'au1'"). The two checks that talk to a global Twilio host
+  // need exactly the same credential -- see `globalAuth` below.
+  TWILIO_US1_API_KEY_SID?: string;
+  TWILIO_US1_API_KEY_SECRET?: string;
   SERVICEM8_API_KEY?: string;
   TWILIO_INTELLIGENCE_SERVICE_SID?: string;
   TWILIO_PUSH_CREDENTIAL_SID_IOS?: string;
@@ -161,6 +167,50 @@ async function checkTwilioCredentials(env: Env): Promise<Check> {
   }
 }
 
+// Twilio issues credentials PER REGION: "you'll need to use different Auth Tokens and API Keys
+// based on which Region you are sending API requests to". This account is AU1-homed, so
+// TWILIO_AUTH_TOKEN is the AU1 token -- it has to be, since it authenticates
+// api.sydney.au1.twilio.com and validates the webhook signatures on every inbound call. Against
+// routes.twilio.com and notify.twilio.com, which are global (implicitly US1), that same token is
+// simply not a credential, and the answer is 401 every single time. Push Credentials in particular
+// are US1-ONLY by Twilio's own documentation ("REST API operations that manage Push Credentials
+// for the Notification service are supported only in US1"), so there is no AU1 host to point at
+// even in principle.
+//
+// That is NOT a reason to give up on checking them, because this worker already holds the other
+// credential: `sendSms` uses TWILIO_US1_API_KEY_SID/SECRET for precisely the same reason (the
+// Messages API answers "Endpoint is not supported in realm 'au1'"). So both checks send the US1
+// key when it is set, and fall back to the AU1 token only when it is not.
+//
+// Using it is worth more than tidiness. The sandbox flag on the APNs credential is the live lead
+// for "the softphone never rang", and a check that permanently answers "can't tell" is the amber
+// row nobody reads -- which this file's own rule (`divert_caller_id_last_error` clearing itself,
+// the "unfinished" badge that had to stay rare) says is worse than no alarm at all.
+type GlobalAuth = { header: string; us1: boolean };
+
+function globalAuth(env: Env): GlobalAuth {
+  if (env.TWILIO_US1_API_KEY_SID && env.TWILIO_US1_API_KEY_SECRET) {
+    return {
+      header: `Basic ${btoa(`${env.TWILIO_US1_API_KEY_SID}:${env.TWILIO_US1_API_KEY_SECRET}`)}`,
+      us1: true,
+    };
+  }
+  return { header: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`, us1: false };
+}
+
+// What a 401 from one of those hosts MEANS depends entirely on which credential we just sent, and
+// the two must never be reported as the same thing. With no US1 key there is nothing wrong in the
+// console and the remedy is to set the secret -- an actionable next step that clears, rather than
+// a permanent warning. With one, a 401 is a real rejection: the auth token exposed on 2026-09-10
+// still needs rotating, and a fumbled rotation 401s every Twilio host at once. Explaining THAT
+// away as a harmless region quirk would turn this screen into the reassuring silence it exists to
+// break.
+function regional401(auth: GlobalAuth): string {
+  return auth.us1
+    ? "Twilio rejected the US1 API key (401) — check TWILIO_US1_API_KEY_SID/SECRET, and whether the auth token rotation took"
+    : "this worker holds only the AU1 auth token and that endpoint is US1-only, so it can't be read from here — set TWILIO_US1_API_KEY_SID/SECRET as worker secrets and it can be";
+}
+
 // The one that cost a whole day. A Twilio number is global but its config is per-region, and
 // inbound calls are handled in whichever region its Inbound Processing Region names. If that isn't
 // au1, the softphone cannot be connected to the call -- and with no voice handler there, Twilio
@@ -171,19 +221,32 @@ async function checkNumberRegions(env: Env): Promise<Check> {
   const numbers = (await listPhoneNumbers(env.DB)).filter((n) => n.voice_enabled);
   if (numbers.length === 0) return { ...base, status: "warn", detail: "No voice-enabled numbers configured." };
 
+  const auth = globalAuth(env);
   const wrong: string[] = [];
   const unknown: string[] = [];
+  // Kept as STRUCTURED rows, not pre-formatted prose. The severity below turns on whether the
+  // recorded region is au1, and re-deriving that by substring-matching a sentence this function
+  // built one line earlier would silently flip a red row to amber the day the wording changes.
+  const unverified: { e164: string; region: string | null }[] = [];
   for (const number of numbers) {
     try {
       const res = await withTimeout(
         fetch(`https://routes.twilio.com/v2/PhoneNumbers/${encodeURIComponent(number.e164)}`, {
-          headers: { Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}` },
+          headers: { Authorization: auth.header },
         }),
         "Twilio routes"
       );
       // A 404 means no explicit regional config exists, which DEFAULTS to us1 -- the trap itself.
       if (res.status === 404) {
         wrong.push(`${number.e164} (no region set — defaults to us1)`);
+        continue;
+      }
+      if (res.status === 401) {
+        // Not transient -- see `globalAuth`. Fall back to the region recorded on /admin/settings,
+        // which is the only thing left to go on, flagged as unverified because that column is what
+        // someone typed rather than what Twilio believes. `blankToNull`, not `?? null`: an empty
+        // string is a value that reads as an answer and would report "recorded as ".
+        unverified.push({ e164: number.e164, region: blankToNull(number.region) });
         continue;
       }
       if (!res.ok) {
@@ -197,11 +260,37 @@ async function checkNumberRegions(env: Env): Promise<Check> {
     }
   }
 
+  // Every number is accounted for in every branch. These lists used to be first-match-wins, so a
+  // number that timed out went unmentioned the moment a DIFFERENT number answered 401 -- and the
+  // one it left unmentioned could be the one sitting in us1.
+  const leftovers = [
+    unverified.length > 0
+      ? `Couldn't confirm with Twilio (${regional401(auth)}), so going on what's recorded: ` +
+        unverified.map((u) => `${u.e164} (recorded as ${u.region ?? "nothing"})`).join(", ")
+      : "",
+    unknown.length > 0 ? `Couldn't check at all: ${unknown.join(", ")}` : "",
+  ].filter(Boolean);
+  const trailing = leftovers.length > 0 ? ` ${leftovers.join(". ")}.` : "";
+
   if (wrong.length > 0) {
     return {
       ...base,
       status: "fail",
-      detail: `Not in au1: ${wrong.join(", ")}. Inbound calls to these are handled outside au1, where the softphone can't be connected. Fix on the number's Regional tab in the Twilio console.`,
+      detail:
+        `Not in au1: ${wrong.join(", ")}. Inbound calls to these are handled outside au1, where the softphone can't be connected. ` +
+        `Fix on the number's Regional tab in the Twilio console.${trailing}`,
+    };
+  }
+  if (unverified.length > 0) {
+    // A region RECORDED as something other than au1 is the dangerous half and earns a fail. A
+    // region nobody ever recorded is merely unknown, and unknown is not known-bad: failing on it
+    // would turn this row red over a number whose Twilio config may be perfectly correct, and send
+    // someone to "fix" a Regional tab that is already right.
+    const recordedBad = unverified.filter((u) => u.region !== null && u.region !== "au1");
+    return {
+      ...base,
+      status: recordedBad.length > 0 ? "fail" : "warn",
+      detail: `${trailing.trim()} Check the number's Regional tab in the console.`,
     };
   }
   if (unknown.length > 0) return { ...base, status: "warn", detail: `Couldn't check: ${unknown.join(", ")}.` };
@@ -508,6 +597,13 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
     if (s === "fail" || (s === "warn" && worst === "ok")) worst = s;
   };
 
+  const auth = globalAuth(env);
+  // Tracked as a flag on the APNs entry, not re-read out of the notes afterwards. The guidance it
+  // gates is specifically "go and look at the APNs credential", so it has to mean "the APNs one is
+  // the credential we could not read" -- pointing someone at APNs because the FCM credential 401'd
+  // would send them to re-check the very credential this run just verified as production.
+  let apnsUnreadable = false;
+
   for (const c of configured) {
     if (!c.sid) {
       notes.push(`${c.platform}: not set — the softphone will never ring on it`);
@@ -516,12 +612,22 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
     }
     try {
       const res = await fetch(`https://notify.twilio.com/v1/Credentials/${encodeURIComponent(c.sid)}`, {
-        headers: { Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}` },
+        headers: { Authorization: auth.header },
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       });
       if (res.status === 404) {
         notes.push(`${c.platform}: that credential does not exist on this Twilio account`);
         bump("fail");
+        continue;
+      }
+      if (res.status === 401) {
+        // Not a blip -- see `globalAuth`, and `regional401` for why "no US1 key" and "the US1 key
+        // was rejected" must read differently. Either way the credential is SET (we have a sid);
+        // what cannot be read is whether it is sandbox or production, which is the half that
+        // matters. Say exactly that, and where to look.
+        notes.push(`${c.platform}: set, but not verifiable here — ${regional401(auth)}`);
+        if (c.expect === "apn") apnsUnreadable = true;
+        bump("warn");
         continue;
       }
       if (!res.ok) {
@@ -551,7 +657,19 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
     }
   }
 
-  return { ...base, status: worst, detail: notes.join(". ") + "." };
+  const detail = notes.join(". ") + ".";
+  // When the APNs credential is the one we could not read, say what to do rather than leaving an
+  // amber row with no next step -- a sandbox APNs credential is silence on a TestFlight build and
+  // looks identical to everything working, so that is the one to check by hand. iOS unreadable
+  // while Android answers fine is the normal case here: FCM and APNs are separate credentials and
+  // only one of them decides whether a TestFlight build rings.
+  return {
+    ...base,
+    status: worst,
+    detail: apnsUnreadable
+      ? `${detail} Open Twilio Console > Voice > Push Credentials (US1 region) and confirm the APNs one is NOT sandbox.`
+      : detail,
+  };
 }
 
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {

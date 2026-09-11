@@ -1,13 +1,16 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { getToken, setToken, clearToken } from "./session";
-import { login as apiLogin, logout as apiLogout, getMe, setUnauthorizedHandler, type StaffUser } from "./api";
+import { getToken, setToken } from "./session";
+import { login as apiLogin, getMe, setUnauthorizedHandler, type StaffUser } from "./api";
+import { performSignOut } from "./signOut";
 
 type Status = "loading" | "authed" | "anon";
 type AuthValue = {
   status: Status;
   user: StaffUser | null;
   signIn: (email: string, password: string) => Promise<void>;
-  signOut: () => Promise<void>;
+  // Resolves false when this handset could NOT be unregistered from Twilio, i.e. it may keep
+  // ringing for customer calls. The caller is expected to tell the user; nothing else can.
+  signOut: () => Promise<boolean>;
 };
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -45,10 +48,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setStatus("authed");
     },
     async signOut() {
-      await apiLogout();
-      await clearToken();
+      // The whole sequence lives in `performSignOut` so it can be tested -- what is left here is
+      // React state, which is all this component should own. See that module for why the order is
+      // load-bearing and why `./voice` is imported lazily.
+      const { ringingStopped } = await performSignOut();
       setUser(null);
       setStatus("anon");
+      return ringingStopped;
     },
   }), [status, user]);
 

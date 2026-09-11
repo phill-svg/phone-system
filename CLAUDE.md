@@ -219,9 +219,10 @@ before adding one, or you will duplicate a path that already works.
   global handler chains to the previous one (observes, does not change behaviour) and an error
   boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
   (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
-  falling over must be able to say so whoever holds it). Handsets are on **OTA 66**, and the first
-  binary carrying the native CallKit fix is **build 5** (2026-09-10) — Settings shows both as
-  `#66 · b5`.
+  falling over must be able to say so whoever holds it). Handsets are on **OTA 67**, and the first
+  binary carrying the native CallKit fix is **build 5** (2026-09-10), **confirmed installed on
+  Phill's iPhone on 2026-09-11**. Settings shows both as `#67 · b5` — and only from OTA 67, which
+  is the first build where that `· b5` half actually renders (see the bullet on it below).
 - **Recent work (2026-09-09/10):** the day the missed calls were root-caused. `0xBAADCA11` turned
   out to be the iOS CallKit watchdog rather than any JavaScript fault (see the two bullets on it
   below — most of a day went into chasing it as a JS crash, which it can never be), the cure shipped
@@ -235,9 +236,13 @@ before adding one, or you will duplicate a path that already works.
   actually added `iconFallback` to `Row`, which this line used to credit to #90; then **#92** and **#94**, two rounds of
   `/code-review` fixes over #89 — see the review bullet below, which is the durable lesson from the
   whole day. OTA **66** on both channels; worker deployed.
+  Superseded on 2026-09-11: **OTA 67** on both channels, worker deployed, migration `0036` applied.
   **Still outstanding at the end of it, and almost none of it is code:**
-  * Build 5 has never been proven on a device. It needs ONE locked-phone test call — lock the
-    handset, leave it a few minutes so the launch is genuinely cold, then ring the business number.
+  * ~~Build 5 has never been proven on a device.~~ **2026-09-11: build 5 IS installed, and a real
+    call still did not ring the softphone** — so the CallKit watchdog is ruled out as the remaining
+    cause and the lead is the VoIP push credential (see that bullet below). A locked-phone test call
+    is still the proof, but only once `TWILIO_PUSH_CREDENTIAL_SID_IOS` is confirmed set and not
+    sandbox; until then there is nothing for the handset to be woken BY.
   * **The on-call rotation is LIVE BUT EMPTY, and the IVR's after-hours branch is still not wired to
     it**, so after-hours callers still reach voicemail. Health Checks now names both gaps in one
     line rather than making you find them one at a time.

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ScrollView, View, Text, Linking, Alert } from "react-native";
 import * as Updates from "expo-updates";
 import { router } from "expo-router";
@@ -34,6 +34,32 @@ export default function SettingsScreen() {
   const { settings, update } = useUserSettings();
   const [voiceReg, setVoiceReg] = useState("…");
   useEffect(() => onRegStatus(setVoiceReg), []);
+
+  // Signing out is no longer instant: it first tells Twilio to stop ringing this handset, which is
+  // a token mint plus an SDK call, so the row would otherwise sit there looking dead long enough to
+  // be tapped again -- the same "the tap looks dead so you tap again" shape as the double-dial.
+  // The ref, not the state, is the guard: a second tap can land before a re-render.
+  const signingOutRef = useRef(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const doSignOut = async () => {
+    if (signingOutRef.current) return;
+    signingOutRef.current = true;
+    setSigningOut(true);
+    try {
+      // False means the unregister failed or timed out and this phone may still ring for customer
+      // calls. Nothing else can say so: the Settings row that reports registration is inside the
+      // authed tab group, which is unmounting by the time the answer exists.
+      if (!(await signOut())) {
+        Alert.alert(
+          "Signed out, but this phone may still ring",
+          "We could not tell Twilio to stop sending calls to this device. Sign in and out again on a better connection to stop it."
+        );
+      }
+    } finally {
+      signingOutRef.current = false;
+      setSigningOut(false);
+    }
+  };
 
   // Availability: whether business calls ring this person at all. Read from the server rather than
   // the cached session, so a change made on another device or by an admin shows up here.
@@ -248,7 +274,7 @@ export default function SettingsScreen() {
         </Group>
 
         <Group>
-          <Row label="Sign Out" destructive onPress={() => signOut()} />
+          <Row label={signingOut ? "Signing Out…" : "Sign Out"} destructive onPress={doSignOut} />
         </Group>
 
         <View style={{ height: 8 }} />
