@@ -286,10 +286,46 @@ before adding one, or you will duplicate a path that already works.
   `TWILIO_PUSH_CREDENTIAL_SID_ANDROID` is a plain var in `wrangler.jsonc`; **the iOS one is not
   there at all**, so it has always depended on a wrangler secret (`deploy.yml` does not set
   secrets) that nothing verified. `Admin > Health Checks > Ringing the app` now answers it, and it
-  asks Twilio rather than trusting the var: a 404 means the SID is not on this account, and
-  `sandbox: "true"` on an APNs credential means silence on any TestFlight or App Store build,
-  because those talk to PRODUCTION APNs. Could-not-reach is a warn, never a fail — a Twilio blip
-  must not send someone rebuilding credentials that were fine.
+  asks Twilio rather than trusting the var: a 404 means the SID is not in au1 (see the next
+  bullet), and `sandbox: "true"` on an APNs credential means silence on any TestFlight or App Store
+  build, because those talk to PRODUCTION APNs. Could-not-reach is a warn, never a fail — a Twilio
+  blip must not send someone rebuilding credentials that were fine.
+- **A PUSH CREDENTIAL MUST LIVE IN au1, AND THE CONSOLE CANNOT MAKE ONE. This cost two days.**
+  Twilio's Voice SDK regional guide states the binding rule: *"The Twilio resources referred to by
+  the Access Token (the API Key, TwiML Application, **and Push Credential**) must exist in the
+  Twilio Region specified in the Access Token."* `mintAccessToken` sets `twr: "au1"`, so a us1
+  credential on the token is not a near-miss — Twilio has nothing to send a VoIP push with and the
+  handset is never woken. That is **error 52161**, and it is what commit `8822611` hit on Android
+  on 2026-08-23.
+  What makes this a trap is that Twilio ALSO says *"Mobile push credential creation for the AU1
+  region is not supported"* and *"REST API operations that manage Push Credentials … are supported
+  only in US1"*. **Both are true of the CONSOLE and false of the REST API.** The au1 host creates
+  and reads them perfectly well:
+  ```bash
+  curl -X POST https://notify.sydney.au1.twilio.com/v1/Credentials -u "$ACCOUNT_SID:$AU1_AUTH_TOKEN" \
+    --data-urlencode Type=apn --data-urlencode FriendlyName="..." \
+    --data-urlencode Certificate@voip_cert.pem --data-urlencode PrivateKey@voip_key_rsa.pem \
+    --data-urlencode Sandbox=false
+  ```
+  (the AU1 **auth token**, which is a different value from the us1 one — API keys and auth tokens
+  are per-region. `Invoke-WebRequest` fails this POST with "Cannot follow an insecure redirection";
+  use curl.)
+  So **the US1 Console list is NOT the account's list**, and a 404 from `notify.twilio.com` says
+  nothing whatsoever about an au1-homed account. Checked live 2026-09-12: the au1 host returns 200
+  for `CRa514b67c…` (Android FCM) and `CRa85b8607…` (iOS APNs) and **404 for `CR7b85225…`**, a real
+  credential that simply sits in us1.
+  The iOS credential is `CRa85b8607a3c0fa5a465024590c9ff96a` (apn, sandbox false), created
+  2026-09-12 from an Apple **VoIP Services Certificate** — not a standard APNs cert, which Twilio's
+  own FAQ says fails exactly this way, and not a `.p8` key, which their APNs credential does not
+  take. Use a **fresh CSR**: reusing one that already made a regular APNs certificate causes
+  "service type confusion" and the certificate then looks fine and silently does not work.
+  **The iPhone rang, locked, at 07:28 on 2026-09-12** — the first time it ever has.
+  Two things that wasted most of that investigation, recorded so nobody repeats them. A **foreground**
+  app is rung over the Voice SDK's own signalling connection with **no push involved**, so "it rang
+  while I had the app open" is never evidence about the push credential — only a locked or killed
+  handset tests it. And the Expo dashboard's push graph is the **other** push system entirely (SMS,
+  voicemail, missed-call alerts); 100% delivery there says nothing about VoIP push. Getting the
+  missed-call notification but no ring is the signature of exactly this bug.
 - **The `· b5` in Settings never rendered, on any device, ever.** It read
   `Constants.nativeBuildVersion`, which is not a property of `Constants` in SDK 54 — only a
   `@deprecated` comment pointing at `expo-application`. `Constants` is typed `& Record<string, any>`,

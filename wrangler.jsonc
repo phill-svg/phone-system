@@ -38,7 +38,13 @@
     // no Android handset could be woken by a VoIP push, exactly as the iPhone could not. "Android
     // rings" was never evidence otherwise: a FOREGROUND app is rung over the Voice SDK's own
     // signalling connection and needs no push at all.
-    "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CR7b8522534d1d2afe09478d18d7c8b078",
+    // MUST be the au1 credential. The access token sets twr:"au1" and Twilio requires the token's
+    // push credential to exist in the token's own region, so a us1 sid delivers no push at all
+    // (error 52161). CR7b8522534d1d2afe09478d18d7c8b078 is the us1 one: it was set here originally,
+    // failed exactly that way, was replaced by this au1 credential in 8822611 -- and was wrongly
+    // restored in #99 on the belief that us1 was the only place push credentials can live. Checked
+    // against the au1 host on 2026-09-12: this sid 200s there, the us1 one 404s.
+    "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CRa514b67c428755dd962c50503041de9a",
     "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au",
     "TWILIO_MESSENGER_FROM": "messenger:626021143926639",
     "DEMO_ACCOUNT_EMAILS": "reviewer@tcbpestcontrolcanberra.com.au"
