@@ -723,7 +723,7 @@ export class CallSession extends DurableObject<Env> {
       renderDialAgentIntoConference({
         conferenceName: body.callSid,
         actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
-        recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+        recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`, this.env.TWILIO_WEBHOOK_SECRET),
         record,
         // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
         // whisper appears exactly when the screen didn't already say this was work.

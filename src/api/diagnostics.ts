@@ -87,6 +87,9 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
     };
   }
   try {
+    // On `intelligence_status`, NOT `intelligence_sid`. A recording that came back mono is skipped
+    // before Twilio is ever asked, so it has no sid -- and keying on the sid made those rows
+    // invisible to the very check whose headline case they are.
     const row = await env.DB.prepare(
       `SELECT
          SUM(intelligence_status = 'completed')      AS done,
@@ -94,7 +97,7 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
          SUM(intelligence_status = 'pending')        AS pending,
          SUM(intelligence_status IN ('abandoned', 'failed')) AS stuck
        FROM calls
-       WHERE intelligence_sid IS NOT NULL AND started_at > ?`
+       WHERE intelligence_status IS NOT NULL AND started_at > ?`
     )
       .bind(Date.now() - 7 * 24 * 60 * 60 * 1000)
       .first<{ done: number | null; mono: number | null; pending: number | null; stuck: number | null }>();

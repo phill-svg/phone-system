@@ -490,7 +490,7 @@ export default {
         renderDialAgentIntoConference({
           conferenceName,
           actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
-          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1`, env.TWILIO_WEBHOOK_SECRET),
           record,
         }),
         { headers: { "Content-Type": "text/xml" } }
@@ -627,7 +627,7 @@ export default {
         renderDialAgentIntoConference({
           conferenceName,
           actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
-          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1`, env.TWILIO_WEBHOOK_SECRET),
           record,
         }),
         { headers: { "Content-Type": "text/xml" } }
@@ -791,6 +791,10 @@ export default {
       // transcript"); answered-call recordings land in `call_transcript` ("Call transcript").
       if (params.RecordingUrl) {
         const isVoicemail = url.searchParams.get("vm") === "1";
+        // Set only on the <Conference record="record-from-start"> callback URLs. It is what
+        // separates "this recording SHOULD have been dual-channel" from a mobile-bridge leg that is
+        // mono by construction.
+        const isConference = url.searchParams.get("conference") === "1";
         const column = isVoicemail ? "transcription" : "call_transcript";
         const job = transcribeCallRecording(env, callSid, params.RecordingUrl, column);
         if (ctx) ctx.waitUntil(job);
@@ -814,8 +818,39 @@ export default {
           // sat inert for a day.
           console.log(
             "INTELLIGENCE_SKIPPED_MONO",
-            JSON.stringify({ callSid, channels: params.RecordingChannels ?? null })
+            JSON.stringify({ callSid, channels: params.RecordingChannels ?? null, conference: isConference })
           );
+          // A log line is not an alarm. Skipping here means no `intelligence_sid` is ever written,
+          // and Health Checks counted only rows that HAD one -- so the single most likely reason
+          // this feature does nothing (the Console switch being off) read as the benign "no
+          // answered call has been transcribed yet", forever. Persist the skip so the check can see
+          // it. `single_channel` is the same claim the sweep makes from the sentences, arrived at
+          // one step earlier; there is no reason to spell it differently.
+          //
+          // CONFERENCE recordings only. A call-via-mobile leg is <Dial record="record-from-answer">,
+          // mono by construction and unaffected by any Console setting, so marking those would put
+          // Health Checks permanently red over something that is working exactly as designed -- and
+          // a marker that is always set is one you learn to ignore. `conference=1` is on the
+          // conference callback URLs we build ourselves, which beats inferring it from whichever
+          // parameters Twilio does or does not send.
+          //
+          // Guarded on a NULL status so a redelivered callback can never overwrite a transcript
+          // that has since completed, nor a `pending` row awaiting the sweep.
+          if (isConference) {
+            const monoJob = env.DB.prepare(
+              "UPDATE calls SET intelligence_status = 'single_channel' WHERE id = ? AND intelligence_status IS NULL"
+            )
+              .bind(callSid)
+              .run()
+              .catch((e) => {
+                console.log(
+                  "INTELLIGENCE_MONO_MARK_FAILED",
+                  JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) })
+                );
+              });
+            if (ctx) ctx.waitUntil(monoJob);
+            else await monoJob;
+          }
         }
         if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && isDualChannelRecording(params.RecordingChannels)) {
           // The CUSTOMER is whichever end is not us, and that flips with direction: both outbound
