@@ -188,6 +188,24 @@ describe("incoming invite lifecycle", () => {
     unsub();
   });
 
+  // Signing out while the phone is RINGING has to stop it. Unregistering alone does not: the invite
+  // is already delivered and CallKit's own UI is already up, so without this the caller sits behind
+  // a leg nobody is going to answer for the whole ring window instead of falling through.
+  it("rejects a ringing invite when the handset unregisters on sign-out", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const invite = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", invite);
+    expect(voiceLib.getPendingInvite()).toBe(invite);
+
+    // The fake Voice has no `unregister`, so the Twilio half fails -- which is the point: the
+    // invite must be dealt with regardless of whether the unregister itself lands.
+    await expect(voiceLib.unregisterFromIncoming()).resolves.toBe(false);
+
+    expect(invite.rejected).toBe(true);
+    expect(voiceLib.getPendingInvite()).toBeNull();
+    unsub();
+  });
+
   it("still accepts a genuinely pending invite", async () => {
     const unsub = track(await voiceLib.registerForIncoming(() => {}));
     const invite = makeInvite(CallInviteState.Pending);

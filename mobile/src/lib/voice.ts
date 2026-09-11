@@ -143,6 +143,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Which push credential the minted access token should carry. Written out at four call sites
+// before this, which is four chances for one of them to drift onto the wrong platform -- and a
+// token minted against the wrong credential registers happily and is never woken (see the
+// "missing VoIP push credential" note in the root CLAUDE.md).
+function tokenPlatform(): "ios" | "android" {
+  return Platform.OS === "ios" ? "ios" : "android";
+}
+
 // Creates the PKPushRegistry, and it must happen AS EARLY AS POSSIBLE in app startup.
 //
 // This is the 0xBAADCA11 crash. When a VoIP push arrives, iOS launches the app in the background
@@ -222,7 +230,7 @@ async function registerWithRetry(token: string): Promise<void> {
 // business's voice-enabled numbers); omit to use the default number.
 export async function placeCall(to: string, from?: string): Promise<Call> {
   await ensureMicPermission();
-  const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
+  const token = await getSoftphoneToken(tokenPlatform());
   const params: Record<string, string> = { To: to };
   if (from) params.CallerId = from;
   const call = await voice.connect(token, { params });
@@ -334,7 +342,7 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     // cause that is not what happened -- while the real reason, recorded at launch, is overwritten.
     const primeError = getPushRegistryError();
     if (primeError !== null) throw new Error("PushKit registry unavailable: " + primeError);
-    const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
+    const token = await getSoftphoneToken(tokenPlatform());
     await registerWithRetry(token);
     // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
     if (regStatus === "registering…") setRegStatus("registered ✓");
@@ -347,6 +355,65 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     voice.off(Voice.Event.Registered, onRegistered);
     voice.off(Voice.Event.Error, onError);
   };
+}
+
+// Tell Twilio to stop sending this device incoming calls.
+//
+// Nothing did this before, and the consequence is not subtle: registration is a binding held by
+// TWILIO, not a local flag, so a handset stayed registered forever. Logging out cleared the session
+// token and nothing else -- the phone kept receiving VoIP pushes for `client:{email}` and kept
+// ringing for real customers, on a device nobody was signed in on. Observed on an Android handset
+// that was logged out and rang anyway (2026-09-11).
+//
+// ORDER MATTERS: `unregister` needs an access token, and minting one needs the session. This must
+// run BEFORE the session is cleared, which is why `performSignOut` awaits it first.
+//
+// WHAT THIS DOES NOT COVER, and cannot: a REMOVED staff member, or anyone whose session is revoked
+// from the server (a password reset, `handleRemoveStaff`), never taps Sign Out. They hit a 401,
+// `apiFetch` clears the token and drops the app to anon, and from that moment there is no session
+// left to mint the token an unregister needs -- so that handset stays registered, keeps ringing and
+// can still ANSWER a live customer call. Only a voluntary sign-out is fixed here. Closing that hole
+// needs the SERVER to be able to drop the binding, which Twilio does not expose; the nearest
+// practical mitigation is the sibling `push_tokens` scrub `handleRemoveStaff` already does.
+//
+// Best-effort and BOUNDED. `apiFetch` has no timeout, so an unsettled token request would hang
+// sign-out and trap someone in an app they are trying to leave -- the same "module state plus a
+// timeout-less fetch is a permanent wedge" trap recorded for placeCall. Logging out must always
+// complete, so this races a deadline and gives up. A failed unregister leaves the handset ringing,
+// which is bad, but strictly better than being unable to log out at all -- and the caller SURFACES
+// that failure (see `performSignOut` -> the Settings sign-out row), because `regStatus` alone
+// cannot: it renders only on the Settings screen, which is inside the authed tab group and is
+// unmounting by the time this runs.
+const UNREGISTER_TIMEOUT_MS = 5000;
+
+export async function unregisterFromIncoming(): Promise<boolean> {
+  // A phone that is RINGING as its owner signs out has to stop, and the caller has to fall through
+  // to the next person rather than wait out the whole ring window behind a leg nobody is going to
+  // answer. Unregistering alone does not do that -- the invite is already delivered and the CallKit
+  // / notification UI is already up. Safe on a settled invite: rejectIncoming guards on the state.
+  await rejectIncoming().catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const done = (async () => {
+      const token = await getSoftphoneToken(tokenPlatform());
+      await voice.unregister(token);
+      return true;
+    })();
+    const timedOut = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), UNREGISTER_TIMEOUT_MS);
+    });
+    const ok = await Promise.race([done, timedOut]);
+    setRegStatus(ok ? "unregistered" : "unregister timed out — this phone may still ring");
+    return ok;
+  } catch (e) {
+    setRegStatus("unregister failed: " + (e instanceof Error ? e.message : String(e)));
+    return false;
+  } finally {
+    // The deadline must not outlive the race it bounds. Left uncleared it holds a timer open for
+    // five seconds after every sign-out, and in Jest it is an open handle that force-exits the
+    // worker -- which is how it was found.
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 // The currently-live call, or null. Guards every "the call is already up, hand it back" path: a
@@ -439,7 +506,7 @@ function num(v: unknown): number | null {
 }
 
 export async function runConnectionTest(): Promise<ConnectionTestResult> {
-  const token = await getSoftphoneToken(Platform.OS === "ios" ? "ios" : "android");
+  const token = await getSoftphoneToken(tokenPlatform());
   const test = await voice.runPreflight(token);
 
   return new Promise<ConnectionTestResult>((resolve, reject) => {
