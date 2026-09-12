@@ -45,7 +45,6 @@
     // restored in #99 on the belief that us1 was the only place push credentials can live. Checked
     // against the au1 host on 2026-09-12: this sid 200s there, the us1 one 404s.
     "TWILIO_PUSH_CREDENTIAL_SID_ANDROID": "CRa514b67c428755dd962c50503041de9a",
-    "AUTH_FROM_EMAIL": "noreply@mail.tcbpestcontrolcanberra.com.au",
     "TWILIO_MESSENGER_FROM": "messenger:626021143926639",
     "DEMO_ACCOUNT_EMAILS": "reviewer@tcbpestcontrolcanberra.com.au"
   }

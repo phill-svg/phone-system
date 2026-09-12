@@ -1,3 +1,4 @@
+import { authHeader } from "./conferenceClient";
 export type OutboundCallOptions = {
   to: string;
   from: string;
@@ -83,7 +84,7 @@ export async function createOutboundCall(
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls.json`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${btoa(`${apiKeySid}:${apiKeySecret}`)}`,
+      Authorization: authHeader(apiKeySid, apiKeySecret),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body,
@@ -102,7 +103,7 @@ export async function cancelCall(
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${btoa(`${apiKeySid}:${apiKeySecret}`)}`,
+      Authorization: authHeader(apiKeySid, apiKeySecret),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({ Status: "canceled" }),
@@ -117,7 +118,7 @@ export async function hangupCall(accountSid: string, authToken: string, callSid:
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+      Authorization: authHeader(accountSid, authToken),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({ Status: "completed" }),
@@ -129,7 +130,7 @@ export async function redirectCall(accountSid: string, authToken: string, callSi
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+      Authorization: authHeader(accountSid, authToken),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({ Url: url }),

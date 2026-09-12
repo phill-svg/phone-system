@@ -1,4 +1,5 @@
 import { getCallDetail } from "../db/calls";
+import { authHeader } from "../twilio/conferenceClient";
 
 type RecordingEnv = { TWILIO_ACCOUNT_SID: string; TWILIO_AUTH_TOKEN: string };
 
@@ -27,7 +28,7 @@ export async function handleGetRecording(
   const range = request.headers.get("Range");
   const twilioRes = await fetchImpl(mediaUrl, {
     headers: {
-      Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,
+      Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN),
       ...(range ? { Range: range } : {}),
     },
   });

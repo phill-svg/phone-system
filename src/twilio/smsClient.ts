@@ -1,3 +1,4 @@
+import { authHeader } from "./conferenceClient";
 // SMS send via Twilio's Messages API. Unlike this account's voice (au1), the Messages endpoint is
 // NOT served in the au1 realm ("Endpoint is not supported in realm 'au1'"), so SMS goes through the
 // default (us1) API host -- even for the au1-homed number.
@@ -15,7 +16,7 @@ export async function sendSms(
   const res = await fetch(`${TWILIO_API_BASE}/2010-04-01/Accounts/${accountSid}/Messages.json`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${btoa(`${apiKeySid}:${apiKeySecret}`)}`,
+      Authorization: authHeader(apiKeySid, apiKeySecret),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body,

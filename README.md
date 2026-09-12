@@ -58,10 +58,9 @@ VOIP phone system built on Cloudflare Workers: Twilio IVR call routing, call his
 
    ```bash
    npx wrangler secret put TWILIO_AUTH_TOKEN
-   npx wrangler secret put SENDGRID_API_KEY
    ```
 
-   See [Authentication](#authentication) below for the staff login system and the rest of the SendGrid-related config.
+   See [Authentication](#authentication) below for the staff login system and how invite/reset emails are sent.
 
 5. **Point your Twilio number at the worker**
 
@@ -112,17 +111,14 @@ Cloudflare Access or SSO involved — auth is handled entirely by the worker.
   Staff access**. The invitee receives a one-time emailed link to set their
   own password. A **"forgot password"** flow on the login page works the same
   way, sending a one-time reset link. Invite and reset emails are sent via
-  SendGrid (`src/email/sendgrid.ts`).
+  Cloudflare's native `send_email` binding (`src/email/sendgrid.ts` — the file
+  keeps its old name; SendGrid itself is no longer used).
 - **Required config:**
-  - `AUTH_FROM_EMAIL` (`wrangler.jsonc` → `vars`) — the "from" address for
-    invite/reset emails. Must be a sender verified on your SendGrid account
-    for the domain.
-  - `SENDGRID_API_KEY` (secret) — set with:
-
-    ```bash
-    npx wrangler secret put SENDGRID_API_KEY
-    ```
-- **Break-glass (set a password without email)** — if SendGrid is
+  - The `EMAIL` binding (`wrangler.jsonc` → `send_email`). The from and
+    reply-to addresses are constants in `src/email/sendgrid.ts`, not config —
+    Email Routing only permits addresses verified on the domain, so there is
+    nothing useful to vary per environment.
+- **Break-glass (set a password without email)** — if email delivery is
   unavailable or you need to bootstrap the first admin account, generate a
   password hash locally and write it directly to D1:
 
