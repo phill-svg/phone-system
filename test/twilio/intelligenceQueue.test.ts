@@ -53,13 +53,14 @@ describe("collectPendingTranscripts", () => {
     await seed("CA-done", { sid: "GT-done", status: "pending" });
     stub((url) =>
       url.includes("/Sentences")
-        ? // Recording is `record-from-answer-dual` on the STAFF leg's <Dial>, and a Dial recording
-          // puts channel 1 on the parent call -- so channel 1 is staff and channel 2 is the
-          // conference, i.e. the customer. Deterministic, unlike the conference-join race this
-          // used to depend on (which is why the default moved 2 -> 1 on 2026-09-12).
+        ? // Recording is `record-from-answer-dual` on the CALLER's <Dial>, and a Dial recording puts
+          // channel 1 on the parent call -- so channel 1 is the customer and channel 2 is whoever
+          // they are speaking to, across a transfer included. Structural, not the conference-join
+          // race this used to infer. (It was briefly the other way round on 2026-09-12, when the
+          // recording sat on the staff leg; that placement recorded a transferred call twice.)
           sentences([
-            { media_channel: 2, transcript: "Would that be Phil?", sentence_index: 0 },
-            { media_channel: 1, transcript: "Yes, speaking.", sentence_index: 1 },
+            { media_channel: 1, transcript: "Would that be Phil?", sentence_index: 0 },
+            { media_channel: 2, transcript: "Yes, speaking.", sentence_index: 1 },
           ])
         : completed()
     );
@@ -191,12 +192,12 @@ describe("collectPendingTranscripts", () => {
     await seed("CA-paged", { sid: "GT-paged", status: "pending" });
     stub((url) => {
       if (!url.includes("/Sentences")) return completed();
-      // Channel 1 is STAFF on a Dial dual recording (parent call), 2 is the customer. This test is
-      // about pagination, not labelling, so the channels carry the roles the expectation names.
+      // Channel 1 is the CUSTOMER on a caller-leg Dial dual recording (parent call), 2 is staff.
+      // This test is about pagination, not labelling, so the channels carry the named roles.
       if (url.includes("Page=2")) {
         return new Response(
           JSON.stringify({
-            sentences: [{ media_channel: 1, transcript: "And the second half.", sentence_index: 1 }],
+            sentences: [{ media_channel: 2, transcript: "And the second half.", sentence_index: 1 }],
             meta: { next_page_url: null },
           }),
           { status: 200 }
@@ -204,7 +205,7 @@ describe("collectPendingTranscripts", () => {
       }
       return new Response(
         JSON.stringify({
-          sentences: [{ media_channel: 2, transcript: "The first half.", sentence_index: 0 }],
+          sentences: [{ media_channel: 1, transcript: "The first half.", sentence_index: 0 }],
           meta: { next_page_url: "https://intelligence.twilio.com/v2/Transcripts/GT-paged/Sentences?Page=2" },
         }),
         { status: 200 }
@@ -229,8 +230,8 @@ describe("collectPendingTranscripts", () => {
       return new Response(
         JSON.stringify({
           sentences: [
-            { media_channel: 2, transcript: "Hello.", sentence_index: 0 },
-            { media_channel: 1, transcript: "Speaking.", sentence_index: 1 },
+            { media_channel: 1, transcript: "Hello.", sentence_index: 0 },
+            { media_channel: 2, transcript: "Speaking.", sentence_index: 1 },
           ],
           meta: { next_page_url: "https://evil.example.com/v2/Transcripts/GT-offsite/Sentences?Page=2" },
         }),

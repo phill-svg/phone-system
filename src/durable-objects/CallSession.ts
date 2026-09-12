@@ -636,7 +636,19 @@ export class CallSession extends DurableObject<Env> {
         .bind(activeRing.ringNodeId, body.callSid)
         .run();
       await this.ctx.storage.delete("activeRing");
-      return this.xml(renderJoinConference({ conferenceName: body.callSid }));
+      // Carries the recording, for the same reason the /join-conference route does -- this is the
+      // caller's leg. Only ONE of the two ever applies (this response or the REST redirect wins the
+      // race, the other is discarded), so this cannot produce a second recording.
+      return this.xml(
+        renderJoinConference({
+          conferenceName: body.callSid,
+          record: await getRecordingEnabled(this.env.DB),
+          recordingStatusCallbackUrl: appendWebhookSecret(
+            `${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`,
+            this.env.TWILIO_WEBHOOK_SECRET
+          ),
+        })
+      );
     }
 
     if (outcome === "callback_requested") {
@@ -718,13 +730,17 @@ export class CallSession extends DurableObject<Env> {
       appendWebhookSecret(`${origin}/webhooks/twilio/join-conference?conf=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET)
     );
 
-    const record = await getRecordingEnabled(this.env.DB);
     return this.xml(
       renderDialAgentIntoConference({
         conferenceName: body.callSid,
         actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
         recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`, this.env.TWILIO_WEBHOOK_SECRET),
-        record,
+        // NEVER from the staff leg on an inbound call. The caller's leg (redirected to
+        // /join-conference immediately above) carries the recording, dual-channel and continuous
+        // across any transfer. Recording here too would give the call TWO recordings whose
+        // callbacks overwrite each other's `recording_url` -- and a warm transfer would add a
+        // THIRD from the target's leg. `record: false` is load-bearing, not a tidy-up.
+        record: false,
         // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
         // whisper appears exactly when the screen didn't already say this was work.
         whisper: body.whisper === true,

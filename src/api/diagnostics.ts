@@ -129,9 +129,13 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
         ...base,
         status: "fail",
         detail:
-          `${mono} recording(s) came back on one channel. Most likely Voice > Settings > ` +
-          `Dual-channel Recording for Conference is off — but a call where only one party spoke ` +
-          `looks the same, so check a recent one before changing anything.`,
+          `${mono} recording(s) came back on one channel. This used to say "turn on Dual-channel ` +
+          `Recording for Conference in the Console" — do NOT: that switch was verified on and saved ` +
+          `on 2026-09-12 while Twilio kept returning mono, which is why inbound calls are now ` +
+          `recorded dual-channel on the caller's own leg instead and no Console setting affects them. ` +
+          `A mono one now means either an OUTBOUND softphone call (recorded conference-level, where ` +
+          `that switch does still apply) or a call where only one party spoke. Check a recent one ` +
+          `before changing anything.`,
       };
     }
     // Every transcript giving up is the OTHER silent failure. A transcript Twilio holds but whose

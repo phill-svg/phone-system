@@ -465,7 +465,21 @@ export default {
       if (!conferenceName) {
         return new Response("missing conf", { status: 400 });
       }
-      return new Response(renderJoinConference({ conferenceName }), { headers: { "Content-Type": "text/xml" } });
+      // THE recording for an inbound call lives on this leg -- the caller's. One caller, one leg,
+      // lasting the whole call across any transfer, and its parent call is always the customer, so
+      // channel 1 is always the customer. See renderJoinConference for why not the staff leg.
+      const joinRecord = await getRecordingEnabled(env.DB);
+      return new Response(
+        renderJoinConference({
+          conferenceName,
+          record: joinRecord,
+          recordingStatusCallbackUrl: appendWebhookSecret(
+            `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1`,
+            env.TWILIO_WEBHOOK_SECRET
+          ),
+        }),
+        { headers: { "Content-Type": "text/xml" } }
+      );
     }
 
     // Transfer target's answer webhook (Task 7): TwiML for the outbound call dialed to the transfer
@@ -485,6 +499,11 @@ export default {
       if (!conferenceName) {
         return new Response("missing conf", { status: 400 });
       }
+      // Conference-level, so however many legs join and ask for it there is still exactly ONE
+      // recording -- which is the point. This route serves BOTH the transfer target (staff) and, via
+      // /twiml/voice-app, the dialled CUSTOMER on an outbound softphone call, so it cannot know
+      // whose leg it is; a <Dial> recording here would therefore be both duplicated and ambiguous
+      // about which channel is which. See renderJoinConference.
       const record = await getRecordingEnabled(env.DB);
       return new Response(
         renderDialAgentIntoConference({

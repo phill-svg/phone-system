@@ -662,6 +662,42 @@ describe("CallSession", () => {
     expect(row?.ivr_path).toBe("main_ring");
   });
 
+  // EXACTLY ONE leg of an inbound call may record it, and it must be the CALLER's.
+  //
+  // This is a call-site invariant, not a helper one -- testing renderJoinConference/
+  // renderDialAgentIntoConference in isolation does not test which document each leg is handed,
+  // which is the whole defect. On 2026-09-12 the recording was briefly put on the staff leg's
+  // <Dial>; a warm transfer then produced TWO recordings (original staff leg, then the target's),
+  // both posting to the same recording-status callback, and `recording_url` is last-write-wins --
+  // so the pre-transfer half of the conversation was orphaned in Twilio, plus a doubled
+  // Conversational Intelligence bill and a second `pending` write able to reset a completed
+  // transcript.
+  //
+  // The caller's leg is the right one because there is exactly one caller and their leg lasts the
+  // whole call, transfer included -- so one continuous recording that no other leg can overwrite.
+  it("records an inbound call on the caller's leg only, never the staff leg", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-rec1");
+    await send(stub, mainEvent("CA-rec1"));
+    await send(stub, mainEvent("CA-rec1", { digits: "1" }));
+
+    // The STAFF leg's document must request no recording at all.
+    const answer = await send(stub, agentAnswer("CA-rec1", "sid-client:phill@b.com"));
+    expect(answer.xml).not.toContain("recordingStatusCallback");
+    expect(answer.xml).not.toContain("record=");
+
+    // The CALLER's leg does, dual-channel, flagged as a conference recording so the mono-marker can
+    // tell it from a call-via-mobile leg.
+    const left = await send(stub, queueLeft("CA-rec1"));
+    expect(left.xml).toContain('record="record-from-answer-dual"');
+    expect(left.xml).toContain("/webhooks/twilio/recording-status");
+    expect(left.xml).toContain("conference=1");
+  });
+
   // The other half of the divert caller ID: if the screen showed the customer, the pickup has to
   // say this is work, or a diverted call is answered like a personal one.
   it("whispers on answer only for the divert leg that showed the customer", async () => {

@@ -45,13 +45,22 @@ export function intelligenceEnabled(env: IntelligenceEnv): boolean {
 // Ask Twilio to transcribe a recording. Returns the GT... transcript sid, or null on any failure --
 // a transcript is a nicety and must never break the recording webhook that calls this.
 //
-// `participants` only LABELS the channels for Twilio's own viewer -- it does not choose them. Twilio
-// assigns channel 1 to whoever joins the conference first, and that is a race we do not control:
-// handleAgentAnswer awaits the caller's redirectCall into /join-conference BEFORE it returns the
-// staff leg's <Dial><Conference>, so the caller usually lands first. Which channel is staff is
-// therefore a SETTING (getTranscriptStaffChannel), read at collection time and defaulting to 2 --
-// an earlier version of this hardcoded 1 on the opposite claim, which would have labelled every
-// inbound transcript backwards while presenting it as fact.
+// `participants` only LABELS the channels for Twilio's own viewer -- it does not choose them. Which
+// channel is staff is a SETTING (getTranscriptStaffChannel), read at collection time and defaulting
+// to 2.
+//
+// For an INBOUND call that 2 is structural, not a guess: the recording is `record-from-answer-dual`
+// on the CALLER's own <Dial> (renderJoinConference), and a <Dial> recording puts channel 1 on the
+// parent call -- the customer. Channel 2 is whoever they are speaking to, across a transfer
+// included, because the caller's leg never changes.
+//
+// It stays a setting because an OUTBOUND softphone call is recorded conference-level instead, where
+// channel 1 goes to whoever joined first and that genuinely is a race. Those come back mono in
+// practice and are discarded unlabelled rather than guessed at.
+//
+// Do not hardcode this. It was briefly 1 on 2026-09-12, when the recording sat on the STAFF leg's
+// <Dial>; /code-review found that placement recorded a transferred call twice and labelled every
+// outbound transcript backwards, and both went back.
 export async function requestTranscript(
   env: IntelligenceEnv,
   recordingSid: string,
