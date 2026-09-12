@@ -684,6 +684,30 @@ before adding one, or you will duplicate a path that already works.
   COALESCEs the error fields. Terminal-to-terminal is still allowed deliberately: ordering
   `delivered`/`failed`/`undelivered`/`read` against each other would invent a progression Twilio
   does not promise.
+- **The delivery caption under a message bubble has three rules, and the Messenger one is the
+  counter-intuitive one.** Asked for as "what happened to the delivered". Nothing happened — until
+  now both surfaces rendered ONLY a red "Not delivered" on `failed`/`undelivered` (#17,
+  2026-09-02) and never a positive label, so a working thread showed nothing at all. The rule lives
+  in `messageStatusLabel` (`mobile/src/lib/conversations.ts`) and in an identical `msgStatusLabel`
+  in the web client JS (`src/html/pages/messages.ts`) — two copies, both pinned, because the two
+  surfaces already drifted once on "was this call missed?".
+  (1) A FAILURE shows on every failed message wherever it sits: a text that never arrived still
+  matters ten messages later. (2) A POSITIVE label (`Delivered`/`Sent`/`Read`) shows only under the
+  LAST outbound message, the way a phone's own Messages app does it — "Delivered" under every bubble
+  is noise people learn to skip, the same reasoning as the self-clearing `divert_caller_id_last_error`
+  and the deliberately narrow "unfinished" IVR badge. (3) **A Messenger thread gets NO positive
+  label.** Facebook does not report delivery back the way Twilio's status callback does, so every
+  Messenger message stops at `sent` PERMANENTLY — 13 of them in live D1 on 2026-09-12, newest from
+  09-04 — and captioning those "Sent" forever would read as "not delivered yet" and be wrong every
+  single time. A Messenger FAILURE still shows: that one is real, and is the 24-hour-window
+  rejection the indicator was built for. Unknown statuses render NOTHING rather than defaulting to
+  "Sent", so a status Twilio adds later is never captioned on a guess.
+  The mobile row is its own component (`MessageBubble`) purely so the CALL SITE is testable:
+  `@testing-library/react-native` cannot run here (it resolves `test-renderer`, which does not exist
+  against the installed React — that is why `auth.test.tsx` is in `testPathIgnorePatterns`), so the
+  test calls the function component directly with the theme hook mocked and walks the returned
+  element tree. Deleting the caption block fails five tests; with the rule's unit tests alone it
+  failed none.
 - **Sending a message is TWO failures, not one.** `insertMessage` used to sit inside the send `try`,
   so a D1 hiccup after Twilio returned a sid answered "Could not send" for a message the customer
   had already received: staff resend, the customer gets it twice, and with no row the status

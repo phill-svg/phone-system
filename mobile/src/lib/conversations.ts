@@ -45,3 +45,58 @@ export function canSaveContact(opts: { number: string; knownName: string }): boo
 // and from a message thread, but never from here -- the screen you land on from Recents, and so the
 // one place you are actually looking at an unknown caller.
 export const canSaveContactFromCall = canSaveContact;
+
+// The one-line status caption under an outbound bubble. Pure, so the rules are testable and so the
+// web dashboard's copy of them (src/html/pages/messages.ts, msgStatusLabel) has something to be
+// checked against -- the two surfaces answered "was this call missed?" differently for weeks and
+// this is the same shape of question.
+//
+// Three rules, each with a reason:
+//
+// A FAILURE shows on every failed message, wherever it sits in the thread. A text that never
+// arrived still matters ten messages later, and that is the behaviour #17 shipped.
+//
+// A POSITIVE label ("Delivered"/"Sent"/"Read") shows only under the LAST outbound message, the way
+// a phone's own Messages app does it. Repeating "Delivered" under every bubble is noise people
+// learn to skip, which is the same reason `divert_caller_id_last_error` clears itself and why the
+// "unfinished" IVR badge covers only the types with no server-side default.
+//
+// A MESSENGER thread gets no positive label at all. Facebook does not report delivery back the way
+// Twilio's status callback does, so every Messenger message stops at `sent` permanently -- 13 of
+// them in production on 2026-09-12, the newest from 09-04. Captioning those "Sent" forever would
+// read as "not delivered yet" and be wrong every single time. A Messenger FAILURE still shows: that
+// one is real, and the 24-hour-window rejection is exactly what the indicator was built for.
+export type MessageStatusLabel = { text: string; failed: boolean };
+
+// Twilio's non-terminal statuses all mean the same thing to a human: we handed it over, no receipt
+// yet. Listed explicitly rather than treated as a default, so a status nobody has seen before
+// renders NOTHING instead of being captioned "Sent" on a guess.
+const SENT_STATUSES = ["sent", "queued", "sending", "accepted", "scheduled"];
+
+export function messageStatusLabel(opts: {
+  direction: string;
+  status: string | null | undefined;
+  isLastOutbound: boolean;
+  isMessenger: boolean;
+}): MessageStatusLabel | null {
+  if (opts.direction !== "outbound") return null;
+  const status = (opts.status ?? "").trim().toLowerCase();
+  if (status === "failed" || status === "undelivered") return { text: "Not delivered", failed: true };
+  if (opts.isMessenger || !opts.isLastOutbound) return null;
+  if (status === "read") return { text: "Read", failed: false };
+  if (status === "delivered") return { text: "Delivered", failed: false };
+  if (SENT_STATUSES.includes(status)) return { text: "Sent", failed: false };
+  return null;
+}
+
+// The id of the last outbound message in a thread, or null when there is none. Separate from the
+// label rule because the screen needs it once per render rather than once per row -- and because
+// the thread arrives oldest-first (listThread orders `ts ASC`), which is the assumption that makes
+// a backwards scan correct and is worth pinning in a test rather than leaving in a comment.
+export function lastOutboundId(messages: { id: string; direction: string }[] | undefined): string | null {
+  if (!messages) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].direction === "outbound") return messages[i].id;
+  }
+  return null;
+}

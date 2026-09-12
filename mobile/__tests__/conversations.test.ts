@@ -1,4 +1,4 @@
-import { markConversationRead, canSaveContactFromThread } from "../src/lib/conversations";
+import { markConversationRead, canSaveContactFromThread, messageStatusLabel, lastOutboundId } from "../src/lib/conversations";
 import type { Conversation } from "../src/lib/api";
 
 const list: Conversation[] = [
@@ -46,5 +46,90 @@ describe("canSaveContactFromThread", () => {
   it("does not offer it while a new thread has no usable number typed yet", () => {
     expect(canSaveContactFromThread({ ...base, to: "", isNew: true })).toBe(false);
     expect(canSaveContactFromThread({ ...base, to: "04" })).toBe(false);
+  });
+});
+
+describe("messageStatusLabel", () => {
+  const label = (over: Partial<Parameters<typeof messageStatusLabel>[0]> = {}) =>
+    messageStatusLabel({ direction: "outbound", status: "delivered", isLastOutbound: true, isMessenger: false, ...over });
+
+  it("captions the last outbound SMS with its delivery state", () => {
+    expect(label({ status: "delivered" })).toEqual({ text: "Delivered", failed: false });
+    expect(label({ status: "sent" })).toEqual({ text: "Sent", failed: false });
+    expect(label({ status: "read" })).toEqual({ text: "Read", failed: false });
+    expect(label({ status: "queued" })).toEqual({ text: "Sent", failed: false });
+  });
+
+  it("says nothing under an inbound message", () => {
+    expect(label({ direction: "inbound" })).toBeNull();
+    expect(label({ direction: "inbound", status: "failed" })).toBeNull();
+  });
+
+  // Repeating "Delivered" under every bubble is noise people learn to skip -- the same reasoning as
+  // the self-clearing divert-caller-ID marker and the deliberately narrow "unfinished" IVR badge.
+  it("captions only the LAST outbound message", () => {
+    expect(label({ status: "delivered", isLastOutbound: false })).toBeNull();
+    expect(label({ status: "sent", isLastOutbound: false })).toBeNull();
+  });
+
+  // A text that never arrived still matters ten messages later.
+  it("reports a failure wherever it sits in the thread", () => {
+    expect(label({ status: "failed", isLastOutbound: false })).toEqual({ text: "Not delivered", failed: true });
+    expect(label({ status: "undelivered", isLastOutbound: false })).toEqual({ text: "Not delivered", failed: true });
+  });
+
+  // Facebook never reports delivery back the way Twilio's status callback does, so every Messenger
+  // message stops at `sent` permanently. Captioning those "Sent" forever would read as "not
+  // delivered yet" and be wrong every single time.
+  it("never captions a Messenger message as sent or delivered", () => {
+    expect(label({ status: "sent", isMessenger: true })).toBeNull();
+    expect(label({ status: "delivered", isMessenger: true })).toBeNull();
+    expect(label({ status: "read", isMessenger: true })).toBeNull();
+  });
+
+  it("still reports a Messenger failure, which is the 24-hour-window rejection", () => {
+    expect(label({ status: "failed", isMessenger: true, isLastOutbound: false })).toEqual({
+      text: "Not delivered",
+      failed: true,
+    });
+  });
+
+  it("says nothing for a status it does not recognise, rather than guessing 'Sent'", () => {
+    expect(label({ status: null })).toBeNull();
+    expect(label({ status: undefined })).toBeNull();
+    expect(label({ status: "" })).toBeNull();
+    expect(label({ status: "something_twilio_added_later" })).toBeNull();
+  });
+
+  it("is case- and whitespace-insensitive about the stored status", () => {
+    expect(label({ status: " Delivered " })).toEqual({ text: "Delivered", failed: false });
+    expect(label({ status: "FAILED" })).toEqual({ text: "Not delivered", failed: true });
+  });
+
+  // The web dashboard renders the same rules from its own copy (src/html/pages/messages.ts,
+  // msgStatusLabel, pinned in test/html/messagesStatus.test.ts). The two surfaces already drifted
+  // once on "was this call missed?"; these two suites are what stop it happening again.
+  it("matches the rule the web dashboard implements", () => {
+    expect(label({ status: "delivered" })?.text).toBe("Delivered");
+  });
+});
+
+describe("lastOutboundId", () => {
+  // listThread orders `ts ASC`, so the thread arrives oldest-first and the last outbound is found by
+  // scanning backwards. Pinned rather than left as a comment, because the whole caption hangs on it.
+  it("finds the final outbound in a thread that ends with an inbound reply", () => {
+    expect(
+      lastOutboundId([
+        { id: "a", direction: "inbound" },
+        { id: "b", direction: "outbound" },
+        { id: "c", direction: "inbound" },
+      ])
+    ).toBe("b");
+  });
+
+  it("returns null when the customer has only ever written to us", () => {
+    expect(lastOutboundId([{ id: "a", direction: "inbound" }])).toBeNull();
+    expect(lastOutboundId([])).toBeNull();
+    expect(lastOutboundId(undefined)).toBeNull();
   });
 });

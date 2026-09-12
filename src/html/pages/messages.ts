@@ -52,6 +52,7 @@ export function renderMessagesPage(role: "admin" | "staff" = "admin"): string {
     .bubble.in.fb { border-color: rgba(8,102,255,0.5); }
     .bubble.out { background: var(--admin-brand); color: #fff; }
     .msg-status-fail { font-size: 0.72rem; color: #ff6b6b; padding: 0.05rem 0.3rem 0; }
+    .msg-status { font-size: 0.72rem; color: var(--admin-dim); padding: 0.05rem 0.3rem 0; }
     .sms-from-row { padding: 0.4rem 1.1rem; border-top: 1px solid var(--admin-border); font-size: 0.8rem; color: var(--admin-dim); display: flex; align-items: center; gap: 0.5rem; }
     .sms-from-row select { font-size: 0.8rem; padding: 0.2rem 0.4rem; }
     .composer { display: flex; gap: 0.6rem; padding: 0.8rem 1.1rem; border-top: 1px solid var(--admin-border); }
@@ -161,8 +162,21 @@ const CLIENT_JS = [
   // A Twilio status callback (see /webhooks/twilio/sms-status) can flip an outbound message's status
   // to failed/undelivered well after the initial "sent" -- most commonly a Messenger reply Facebook
   // rejected for being outside the 24-hour window. Surface that instead of showing it as sent forever.
-  'function isFailedStatus(s){ return s==="failed"||s==="undelivered"; }',
-  'function renderThread(msgs){var el=document.getElementById("scroll");if(msgs.length===0){el.innerHTML="<div class=\\"msg-empty\\">No messages yet. Send the first one below.</div>";return;}var html="";for(var i=0;i<msgs.length;i++){var m=msgs[i];var out=m.direction==="outbound";var inCls=isMessenger(current)?"in fb":"in";var failed=out&&isFailedStatus(m.status);html+="<div class=\\"bubble-row "+(out?"out":"in")+"\\"><div class=\\"bubble "+(out?"out":inCls)+"\\">"+esc(m.body)+"</div></div>";if(failed){var detail=m.error_message||(m.error_code?"Error "+m.error_code:null);html+="<div class=\\"bubble-row out\\"><div class=\\"msg-status-fail\\">Not delivered"+(detail?" -- "+esc(detail):"")+"</div></div>";}}el.innerHTML=html;el.scrollTop=el.scrollHeight;}',
+  // Non-terminal Twilio statuses, listed rather than treated as a default: a status nobody has seen
+  // before renders NOTHING instead of being captioned "Sent" on a guess.
+  'var SENT_STATUSES=["sent","queued","sending","accepted","scheduled"];',
+  'function lastOutboundIndex(msgs){for(var i=msgs.length-1;i>=0;i--){if(msgs[i].direction==="outbound")return i;}return -1;}',
+  // The caption under an outbound bubble. Mirrors mobile/src/lib/conversations.ts messageStatusLabel
+  // EXACTLY -- the two surfaces already drifted once on "was this call missed?", so both now answer
+  // this from one named function apiece and a test pins the behaviour of each.
+  //
+  // A failure shows on every failed message wherever it sits. A positive label shows only under the
+  // LAST outbound one, the way a phone's own Messages app does it -- "Delivered" under every bubble
+  // is noise people learn to skip. A Messenger thread gets no positive label at all: Facebook never
+  // reports delivery back, so those stop at `sent` permanently and captioning them "Sent" forever
+  // would read as "not delivered yet" and be wrong every time. A Messenger FAILURE still shows.
+  'function msgStatusLabel(direction,status,isLastOutbound,isMessengerThread){if(direction!=="outbound")return null;var s=String(status==null?"":status).trim().toLowerCase();if(s==="failed"||s==="undelivered")return {text:"Not delivered",failed:true};if(isMessengerThread||!isLastOutbound)return null;if(s==="read")return {text:"Read",failed:false};if(s==="delivered")return {text:"Delivered",failed:false};if(SENT_STATUSES.indexOf(s)>=0)return {text:"Sent",failed:false};return null;}',
+  'function renderThread(msgs){var el=document.getElementById("scroll");if(msgs.length===0){el.innerHTML="<div class=\\"msg-empty\\">No messages yet. Send the first one below.</div>";return;}var fbThread=isMessenger(current);var lastOut=lastOutboundIndex(msgs);var html="";for(var i=0;i<msgs.length;i++){var m=msgs[i];var out=m.direction==="outbound";var inCls=fbThread?"in fb":"in";var st=msgStatusLabel(m.direction,m.status,i===lastOut,fbThread);html+="<div class=\\"bubble-row "+(out?"out":"in")+"\\"><div class=\\"bubble "+(out?"out":inCls)+"\\">"+esc(m.body)+"</div></div>";if(st){var detail=st.failed?(m.error_message||(m.error_code?"Error "+m.error_code:null)):null;html+="<div class=\\"bubble-row out\\"><div class=\\""+(st.failed?"msg-status-fail":"msg-status")+"\\">"+esc(st.text)+(detail?" -- "+esc(detail):"")+"</div></div>";}}el.innerHTML=html;el.scrollTop=el.scrollHeight;}',
   // The recipient is either the open thread, or -- for a brand-new message -- whatever is typed
   // in the inline To field, so Send works without having to commit the number first.
   'function send(){var ta=document.getElementById("text");var body=ta.value.trim();var ti=document.getElementById("toInput");var to=current||(ti?(ti.value||"").trim():"");if(!body||!to)return;var fresh=!current;var btn=document.getElementById("sendBtn");btn.disabled=true;var fs=document.getElementById("smsFromSelect");var payload={to:to,body:body};if(fs&&fs.value)payload.from=fs.value;api("/api/messages",{method:"POST",body:JSON.stringify(payload)}).then(function(){ta.value="";if(fresh){openThread(to);}else{loadThread();loadConversations();}}).catch(function(err){alert(err&&err.message?err.message:"Could not send the message.");}).then(function(){btn.disabled=false;});}',
