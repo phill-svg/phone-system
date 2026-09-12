@@ -599,13 +599,29 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       function humanize(s) {
         return String(s).replace(/_/g, ' ').replace(/\\b\\w/g, function (ch) { return ch.toUpperCase(); });
       }
+      // Derived from what HAPPENED, never from ivr_path.
+      //
+      // ivr_path holds an IVR NODE ID, and in production those are generated -- so this printed
+      // "Outcome: N 5frbzxd" on every bridged call, which is internal plumbing shown to a user. It
+      // only ever looked like prose because the seeded test flows use readable ids ("main_ring" ->
+      // "Main Ring"); the live flow does not, and never will.
+      //
+      // Order is deliberate. mailbox_label comes FIRST because it is the definition of a voicemail
+      // (CLAUDE.md: a voicemail is a call with a mailbox_label, not one with a transcript) and it
+      // can coexist with an 'answered' event: on an AMD fallthrough the staff member's carrier
+      // voicemail answers -- writing 'answered' -- and the caller is then redirected to business
+      // voicemail. "Voicemail" is the truer outcome there than "Answered".
+      // NOTE: no backticks in here -- this whole block is inside a template literal.
       function outcomeLabel(c) {
         if (c.status === 'in_progress') return 'In progress';
-        if (!c.ivr_path) return isMissed(c) ? 'Missed call' : 'Abandoned';
-        return humanize(c.ivr_path);
+        if (c.direction === 'outbound') return 'Outgoing call';
+        if (c.mailbox_label) return 'Voicemail';
+        if (c.answered) return 'Answered';
+        if (isMissed(c)) return 'Missed call';
+        return 'Abandoned';
       }
       function subLabel(c) {
-        if (isMissed(c)) return c.ivr_path ? 'Missed call - ' + humanize(c.ivr_path) : 'Missed call';
+        if (isMissed(c)) return 'Missed call';
         if (c.direction === 'outbound') return 'Outgoing call';
         return outcomeLabel(c);
       }

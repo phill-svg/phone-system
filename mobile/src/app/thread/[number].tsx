@@ -8,7 +8,8 @@ import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Avatar } from "../../components/ui/Avatar";
 import { getThread, getContacts, sendMessage, getNumbers, getConversations, type Conversation, type Message } from "../../lib/api";
-import { markConversationRead, canSaveContactFromThread } from "../../lib/conversations";
+import { markConversationRead, canSaveContactFromThread, lastOutboundId } from "../../lib/conversations";
+import { MessageBubble } from "../../components/MessageBubble";
 import { formatPhone, contactForNumber, searchContacts } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
@@ -53,6 +54,9 @@ export default function ThreadScreen() {
   const contact = contactForNumber(to, contacts.data ?? []);
   const contactName = contact?.name;
   const isMessenger = to.startsWith("messenger:");
+  // Computed once per render, not once per row: the caption only appears under the LAST outbound
+  // message, so every row needs to know which one that is.
+  const lastOutId = useMemo(() => lastOutboundId(thread.data), [thread.data]);
 
   // Suggestions for the To field on a brand-new message: search by name, company or digits, not
   // just digits -- a plain phone-number field meant typing "Marion" found nothing. Hidden once a
@@ -200,31 +204,9 @@ export default function ThreadScreen() {
             data={thread.data}
             keyExtractor={(m) => m.id}
             contentContainerStyle={{ padding: 16, gap: 8 }}
-            renderItem={({ item }: { item: Message }) => {
-              const out = item.direction === "outbound";
-              // A Twilio status callback can flip an outbound message to failed/undelivered well
-              // after it looked "sent" -- most commonly a Messenger reply Facebook rejected (a
-              // broken Page connection, or outside the 24-hour window). Surface that instead of
-              // showing it as sent forever, same as the web admin dashboard does.
-              const failed = out && (item.status === "failed" || item.status === "undelivered");
-              const failDetail = item.error_message || (item.error_code ? `Error ${item.error_code}` : null);
-              return (
-                <View>
-                  <View style={[styles.bubbleRow, { justifyContent: out ? "flex-end" : "flex-start" }]}>
-                    <View style={[styles.bubble, out ? { backgroundColor: t.colors.accent } : { backgroundColor: t.colors.fill }]}>
-                      <Text style={[type.body, { color: out ? "#FFFFFF" : t.colors.label }]}>{item.body}</Text>
-                    </View>
-                  </View>
-                  {failed ? (
-                    <View style={[styles.bubbleRow, { justifyContent: "flex-end" }]}>
-                      <Text style={[type.caption, { color: "#FF3B30", paddingHorizontal: 4, maxWidth: "78%", textAlign: "right" }]}>
-                        Not delivered{failDetail ? ` -- ${failDetail}` : ""}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-              );
-            }}
+            renderItem={({ item }: { item: Message }) => (
+              <MessageBubble message={item} isLastOutbound={item.id === lastOutId} isMessenger={isMessenger} />
+            )}
           />
         )}
 

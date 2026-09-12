@@ -465,7 +465,21 @@ export default {
       if (!conferenceName) {
         return new Response("missing conf", { status: 400 });
       }
-      return new Response(renderJoinConference({ conferenceName }), { headers: { "Content-Type": "text/xml" } });
+      // THE recording for an inbound call lives on this leg -- the caller's. One caller, one leg,
+      // lasting the whole call across any transfer, and its parent call is always the customer, so
+      // channel 1 is always the customer. See renderJoinConference for why not the staff leg.
+      const joinRecord = await getRecordingEnabled(env.DB);
+      return new Response(
+        renderJoinConference({
+          conferenceName,
+          record: joinRecord,
+          recordingStatusCallbackUrl: appendWebhookSecret(
+            `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1&rec=dual`,
+            env.TWILIO_WEBHOOK_SECRET
+          ),
+        }),
+        { headers: { "Content-Type": "text/xml" } }
+      );
     }
 
     // Transfer target's answer webhook (Task 7): TwiML for the outbound call dialed to the transfer
@@ -485,7 +499,26 @@ export default {
       if (!conferenceName) {
         return new Response("missing conf", { status: 400 });
       }
-      const record = await getRecordingEnabled(env.DB);
+      // RECORDS ONLY WHEN THE URL SAYS SO, because this route serves two different legs and only
+      // one of them should record:
+      //
+      //   /twiml/voice-app  -> the dialled CUSTOMER on an outbound softphone call. No caller-owned
+      //                        <Dial> exists there, so this conference recording is the ONLY one.
+      //   handleTransfer    -> the transfer TARGET on an inbound call, which is ALREADY being
+      //                        recorded by the caller's own leg (renderJoinConference).
+      //
+      // Recording unconditionally meant a warm-transferred inbound call produced TWO recordings --
+      // the caller's dual-channel DialVerb one plus a mono conference one -- both POSTing to the
+      // same recording-status callback, where recording_url is COALESCE/last-write-wins. The row
+      // could end up pointing at the mono one with the dual one orphaned in Twilio, and the two
+      // callbacks race the intelligence_status write. That is the exact defect the caller-leg move
+      // was supposed to make impossible, surviving in the one place it wasn't looked for; found by
+      // /code-review before it shipped.
+      //
+      // The flag is on the URL WE BUILD rather than inferred from Twilio's parameters -- the same
+      // reasoning as `conference=1`, and for the same reason: whose leg this is, is something only
+      // the code that dialled it knows.
+      const record = url.searchParams.get("rec") === "conf" && (await getRecordingEnabled(env.DB));
       return new Response(
         renderDialAgentIntoConference({
           conferenceName,
@@ -613,7 +646,14 @@ export default {
       const { sid: targetSid } = await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
         to: target,
         from: fromNumber,
-        url: appendWebhookSecret(`${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+        // `rec=conf` because THIS is the leg that must record on an outbound softphone call: the
+        // customer is dialled, so there is no caller-owned <Dial> to hang a dual recording on and
+        // the conference recording is the only one. handleTransfer deliberately omits it -- see the
+        // transfer-answer route.
+        url: appendWebhookSecret(
+          `${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}&rec=conf`,
+          env.TWILIO_WEBHOOK_SECRET
+        ),
         statusCallback: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
         statusCallbackEvent: ["completed"],
       });
@@ -791,9 +831,21 @@ export default {
       // transcript"); answered-call recordings land in `call_transcript` ("Call transcript").
       if (params.RecordingUrl) {
         const isVoicemail = url.searchParams.get("vm") === "1";
-        // Set only on the <Conference record="record-from-start"> callback URLs. It is what
-        // separates "this recording SHOULD have been dual-channel" from a mobile-bridge leg that is
-        // mono by construction.
+        // WHICH KIND of recording this is, because "came back mono" means two completely different
+        // things and only one of them is benign. Both flags are set on URLs we build ourselves --
+        // never inferred from Twilio's parameters, which is the whole reason they exist.
+        //
+        //   rec=dual      the CALLER's leg, <Dial record="record-from-answer-dual">. Dual channel is
+        //                 the entire point, so mono here is a REAL FAULT: Twilio not honouring
+        //                 record-from-answer-dual, or RecordingChannels simply absent from the
+        //                 callback (isDualChannelRecording(undefined) is false). It must alarm.
+        //   conference=1  a <Conference record="record-from-start"> recording -- outbound softphone,
+        //                 where mono is the expected outcome of the Console's dual-channel switch
+        //                 not working, and is not worth waking anyone over.
+        //
+        // Collapsing the two would have re-created the exact gap fixed a day earlier: an inbound
+        // recording silently un-transcribed while Health Checks called it expected.
+        const isCallerDual = url.searchParams.get("rec") === "dual";
         const isConference = url.searchParams.get("conference") === "1";
         const column = isVoicemail ? "transcription" : "call_transcript";
         const job = transcribeCallRecording(env, callSid, params.RecordingUrl, column);
@@ -818,29 +870,41 @@ export default {
           // sat inert for a day.
           console.log(
             "INTELLIGENCE_SKIPPED_MONO",
-            JSON.stringify({ callSid, channels: params.RecordingChannels ?? null, conference: isConference })
+            JSON.stringify({
+              callSid,
+              channels: params.RecordingChannels ?? null,
+              conference: isConference,
+              callerDual: isCallerDual,
+            })
           );
           // A log line is not an alarm. Skipping here means no `intelligence_sid` is ever written,
           // and Health Checks counted only rows that HAD one -- so the single most likely reason
-          // this feature does nothing (the Console switch being off) read as the benign "no
-          // answered call has been transcribed yet", forever. Persist the skip so the check can see
-          // it. `single_channel` is the same claim the sweep makes from the sentences, arrived at
-          // one step earlier; there is no reason to spell it differently.
+          // this feature does nothing read as the benign "no answered call has been transcribed
+          // yet", forever. Persist the skip so the check can see it.
           //
-          // CONFERENCE recordings only. A call-via-mobile leg is <Dial record="record-from-answer">,
-          // mono by construction and unaffected by any Console setting, so marking those would put
-          // Health Checks permanently red over something that is working exactly as designed -- and
-          // a marker that is always set is one you learn to ignore. `conference=1` is on the
-          // conference callback URLs we build ourselves, which beats inferring it from whichever
-          // parameters Twilio does or does not send.
+          // TWO statuses, because "came back mono" has two meanings and treating them alike would
+          // reintroduce that same silence from the other direction:
+          //
+          //   dual_failed     the CALLER's leg, which asked for record-from-answer-dual. Mono here
+          //                   should be impossible, so it is a real fault and Health Checks FAILS on
+          //                   it. Without this it would have been filed as `single_channel` and the
+          //                   screen would have called an un-transcribed inbound call expected.
+          //   single_channel  a conference recording (outbound softphone). Mono is the known outcome
+          //                   of the Console's dual-channel switch, which is reported but not
+          //                   alarming -- those transcripts keep Whisper's text.
+          //
+          // Anything else is left UNMARKED: a call-via-mobile leg is <Dial record="record-from-answer">,
+          // mono by construction, so marking it would pin Health Checks red over something working
+          // exactly as designed -- and a marker that is always set is one you learn to ignore.
           //
           // Guarded on a NULL status so a redelivered callback can never overwrite a transcript
           // that has since completed, nor a `pending` row awaiting the sweep.
-          if (isConference) {
+          const monoStatus = isCallerDual ? "dual_failed" : isConference ? "single_channel" : null;
+          if (monoStatus) {
             const monoJob = env.DB.prepare(
-              "UPDATE calls SET intelligence_status = 'single_channel' WHERE id = ? AND intelligence_status IS NULL"
+              "UPDATE calls SET intelligence_status = ? WHERE id = ? AND intelligence_status IS NULL"
             )
-              .bind(callSid)
+              .bind(monoStatus, callSid)
               .run()
               .catch((e) => {
                 console.log(

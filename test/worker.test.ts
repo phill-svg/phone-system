@@ -611,6 +611,35 @@ describe("Task 8 queue/ring webhook routes", () => {
         expect(await statusOf("CA-rec-mono")).toBe("single_channel");
       });
 
+      // A mono CALLER-LEG recording is a different fault and must not share that status. `rec=dual`
+      // means the leg asked for `record-from-answer-dual`, so mono should be impossible -- Twilio not
+      // honouring it, or RecordingChannels absent from the callback. Filing it as `single_channel`
+      // would have Health Checks report an un-transcribed INBOUND call as the expected outcome of a
+      // Console switch, which is the same reassuring silence that screen exists to break.
+      //
+      // Pinned on the WRITE, not just the read: the health-check tests seed these statuses directly,
+      // so collapsing the two here left all 60 of them green.
+      it("records dual_failed, not single_channel, for a mono caller-leg recording", async () => {
+        await seedCall("CA-rec-dual");
+        await postSigned(
+          "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-dual&conference=1&rec=dual",
+          { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE-dual", RecordingChannels: "1" }
+        );
+        expect(await statusOf("CA-rec-dual")).toBe("dual_failed");
+      });
+
+      // RecordingChannels absent is the likelier shape of this in the wild than an explicit "1":
+      // isDualChannelRecording(undefined) is false, so the recording is skipped exactly the same way
+      // and must still be distinguishable from the conference case.
+      it("treats an ABSENT channel count on a caller-leg recording as dual_failed too", async () => {
+        await seedCall("CA-rec-dual-abs");
+        await postSigned(
+          "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-dual-abs&conference=1&rec=dual",
+          { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE-dual-abs" }
+        );
+        expect(await statusOf("CA-rec-dual-abs")).toBe("dual_failed");
+      });
+
       // A call-via-mobile leg is <Dial record="record-from-answer">: mono by construction and
       // unaffected by any Console setting. Marking those would pin Health Checks red over something
       // working exactly as designed, and a marker that is always set is one you learn to ignore.
@@ -779,6 +808,35 @@ describe("POST /webhooks/twilio/transfer-answer", () => {
     const xml = await response.text();
     expect(xml).toContain("<Conference");
     expect(xml).toContain("CAcaller</Conference>");
+  });
+
+  // This route serves TWO different legs and only one of them may record.
+  //
+  // The transfer TARGET (handleTransfer, no `rec`) joins an inbound call that the CALLER's own leg
+  // is already recording dual-channel. Recording here as well gave a warm-transferred call two
+  // recordings -- one dual DialVerb, one mono Conference -- both POSTing to the same
+  // recording-status callback where recording_url is last-write-wins, so the row could end up
+  // pointing at the mono one with the dual one orphaned in Twilio, and the two callbacks race the
+  // intelligence_status write. Found by /code-review; it was the exact defect the caller-leg move
+  // claimed to have made impossible, surviving in the one route nobody looked at.
+  //
+  // The dialled CUSTOMER on an outbound softphone call (/twiml/voice-app, `rec=conf`) is the
+  // opposite: no caller-owned <Dial> exists there, so this conference recording is the only one.
+  it("records only when the URL asks it to, so a transferred call is not recorded twice", async () => {
+    const target = await postSigned("https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller", {
+      CallSid: "CA-transfer-notrec",
+    });
+    const targetXml = await target.text();
+    expect(targetXml).not.toContain("record");
+    expect(targetXml).not.toContain("recordingStatusCallback");
+
+    const outbound = await postSigned(
+      "https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller&rec=conf",
+      { CallSid: "CA-transfer-rec" }
+    );
+    const outboundXml = await outbound.text();
+    expect(outboundXml).toContain('record="record-from-start"');
+    expect(outboundXml).toContain("recordingStatusCallback");
   });
 });
 

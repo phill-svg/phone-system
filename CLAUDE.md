@@ -412,40 +412,62 @@ before adding one, or you will duplicate a path that already works.
   **Conversation Intelligence (classic)** → Services, and the SID starts `GA`. No Language Operators
   are needed; only the raw sentences and their channel numbers are read. Creating it by API avoids
   the navigation entirely: `POST https://intelligence.twilio.com/v2/Services` with `UniqueName`.
-  The channel rule that default rests on changed on 2026-09-12 when the recording moved to the
-  `<Dial>`: a DialVerb dual recording puts channel 1 on the parent call, so staff are channel 1.
-  (For a CONFERENCE recording it was channel 1 = whoever joined first, hence the old default of 2.)
-- **The recording is on the `<Dial>`, NOT the `<Conference>`, and that is what makes labelling work
-  at all.** A `<Conference>` recording's channel count is governed by one account-wide Console
-  switch — **Dual-channel Recording for Conference**, under Voice > Recordings > Settings. On
-  2026-09-12 that switch was confirmed **Enabled and saved** and conference recordings were *still*
-  arriving mono: Twilio's own Recordings API reported `channels: 1, source: Conference` for a
-  143-second call answered that morning, and for every other recording on the account. So the
-  switch is not something this system can depend on, whatever it displays — and "the transcripts
-  aren't working" was that, twice, on two separate days.
-  `record="record-from-answer-dual"` on the `<Dial>` is Twilio's documented alternative — their
-  `<Dial>` page carries this exact shape, *"a dual-channel recording for a `<Dial>` with a nested
-  `<Conference>`"* — and it produces a **`source: DialVerb`** recording, which no account setting
-  touches. Do NOT move `record` back onto the `<Conference>` noun: a test asserts it is an attribute
-  of the `<Dial>` and absent from the `<Conference>`, because a bare substring check would pass
-  either way.
-  Two deliberate consequences. Recording starts when the staff member **answers** rather than at
-  conference start, so the caller's hold music is no longer at the front of every recording. And
-  the staff-leg recording is now `DialVerb`, the same as a call-via-mobile leg — the mono-marker in
-  the recording webhook keeps them apart by the `conference=1` flag on the callback URL we build
-  ourselves, never by Twilio's parameters, which is precisely why it was built that way.
+  The channel rule that default rests on: a DialVerb dual recording puts channel 1 on the **parent
+  call**, and for an inbound call that parent is the **CALLER** — so the customer is channel 1 and
+  **staff are channel 2**, which is why the default is 2. (For a CONFERENCE recording it was channel
+  1 = whoever joined first, which happened to give the same answer for a weaker reason.) This
+  paragraph said "staff are channel 1" for about half an hour on 2026-09-12, left over from a
+  reverted attempt at putting the recording on the staff leg; that is the sentence a future session
+  reads before touching `transcript_staff_channel`, and believing it labels every inbound transcript
+  backwards.
+- **An inbound call is recorded by the CALLER's leg, and that one sentence is the whole design.**
+  Speaker labelling needs two channels, and a `<Conference>` recording's channel count is governed
+  by one account-wide Console switch — **Dual-channel Recording for Conference**, Voice > Recordings
+  > Settings. On 2026-09-12 that switch was confirmed **Enabled and saved** and Twilio's own
+  Recordings API still reported `channels: 1, source: Conference` for every recording on the
+  account, including a 143-second call answered that morning. **The switch does not work here; do
+  not send anyone to it.** "The transcripts aren't working" was that, twice, on two separate days.
+  So the recording must be a `<Dial>` recording — `record="record-from-answer-dual"`, which Twilio's
+  `<Dial>` page documents for exactly this shape (*"a dual-channel recording for a `<Dial>` with a
+  nested `<Conference>`"*) and which produces a `source: DialVerb` recording no account setting
+  touches.
+  **Which leg's `<Dial>` is the entire question, and the first answer was wrong.** It went on the
+  STAFF leg (`renderDialAgentIntoConference`) and `/code-review` found two faults the same hour:
+  (1) a `<Dial>` recording belongs to EVERY leg rendering that document, and two do per call — the
+  original staff leg plus the transfer target on a warm transfer, or the agent leg plus the dialled
+  customer on an outbound softphone call. Both post to the same callback, `recording_url` is
+  last-write-wins, so half the conversation was orphaned in Twilio, with a doubled Intelligence bill
+  and a second `pending` write able to reset a completed transcript. (2) "channel 1 is the staff
+  member" held only where the parent call IS staff, and `/twiml/voice-app` renders that same document
+  on the CUSTOMER's leg — so every outbound transcript would have been labelled backwards.
+  It lives on **`renderJoinConference`** now — the caller's own leg. There is exactly ONE caller and
+  their leg lasts the WHOLE call (staff legs come and go across a transfer; the customer never
+  leaves the conference), so it is one continuous recording per call that no other leg can overwrite,
+  and no future flow can add a second. `handleAgentAnswer` therefore passes **`record: false`** on
+  the staff leg — load-bearing, not tidy-up — and a test at the CALL SITE pins both halves, because
+  testing the two render helpers in isolation does not test which document each leg is handed, which
+  was the defect.
+  `renderDialAgentIntoConference` keeps a **conference-level** (`record-from-start`) recording for
+  the outbound softphone flow, where no caller-owned `<Dial>` exists. A conference recording is one
+  recording however many legs ask for it, so it cannot double up; the cost is that it is mono, so
+  those transcripts stay unlabelled and keep Whisper's text. Worth having over no recording.
 - **Which audio channel is the staff member is a SETTING, not a constant**
-  (`transcript_staff_channel`, **default 1** since 2026-09-12). A **Dial** dual recording puts
-  channel 1 on the **parent call**, and that document belongs to the staff leg — so staff are
-  channel 1 and the conference (the caller) is channel 2, deterministically.
-  It defaulted to **2** while this was a `<Conference>` recording, where channel 1 goes to whoever
-  joined first and `handleAgentAnswer` awaits the caller's `redirectCall` into `/join-conference`
-  BEFORE returning the staff leg's document — so the caller usually landed first. "Usually" was the
-  problem: a race, not a rule, and an even earlier version hardcoded the opposite and would have
-  labelled every inbound transcript backwards while presenting it as fact. Moving to the `<Dial>`
-  removed the race. It stays a setting anyway, because the cost of being wrong is a transcript that
-  confidently attributes the customer's words to staff, and one stored row beats a deploy. Read one
-  real transcript and flip it if the labels come out the wrong way round.
+  (`transcript_staff_channel`, default **2**). For an inbound call that 2 is now structural rather
+  than a guess: the recording is on the CALLER's `<Dial>`, a `<Dial>` recording puts channel 1 on
+  the **parent call**, and the parent there is the customer — so channel 2 is whoever they are
+  speaking to, across a transfer included, because the caller's leg never changes.
+  It defaulted to 2 before this too, but for a weaker reason — a `<Conference>` recording gives
+  channel 1 to whoever joined first, and the caller is redirected in before the staff leg answers,
+  so the caller "usually" landed first. That was a race being read as a rule. It briefly became
+  **1** on 2026-09-12 while the recording sat on the staff leg; when that placement was reverted so
+  was this. It stays a setting because an outbound softphone call is still recorded conference-level
+  where the join order genuinely is a race, and because the cost of being wrong is a transcript that
+  confidently attributes the customer's words to staff. Read one real transcript and flip it if the
+  labels come out the wrong way round.
+  `getTranscriptStaffChannel` **catches `JSON.parse`**: it is awaited inline on the recording-status
+  webhook *after* `recording_url` has been written, so a hand-edited junk row would 500 a callback
+  whose work is half done. The first test for that seeded `'7'` — valid JSON, so the guard was never
+  executed and deleting it left the test green.
 - **Whisper and the Twilio sweep both write `call_transcript`, in the same cron tick.**
   `backfillTranscripts` can select a row with a NULL transcript, spend 10-30s in Workers AI, and land
   after the labelled text was written -- destroying it permanently, since the row is by then out of
@@ -662,6 +684,30 @@ before adding one, or you will duplicate a path that already works.
   COALESCEs the error fields. Terminal-to-terminal is still allowed deliberately: ordering
   `delivered`/`failed`/`undelivered`/`read` against each other would invent a progression Twilio
   does not promise.
+- **The delivery caption under a message bubble has three rules, and the Messenger one is the
+  counter-intuitive one.** Asked for as "what happened to the delivered". Nothing happened — until
+  now both surfaces rendered ONLY a red "Not delivered" on `failed`/`undelivered` (#17,
+  2026-09-02) and never a positive label, so a working thread showed nothing at all. The rule lives
+  in `messageStatusLabel` (`mobile/src/lib/conversations.ts`) and in an identical `msgStatusLabel`
+  in the web client JS (`src/html/pages/messages.ts`) — two copies, both pinned, because the two
+  surfaces already drifted once on "was this call missed?".
+  (1) A FAILURE shows on every failed message wherever it sits: a text that never arrived still
+  matters ten messages later. (2) A POSITIVE label (`Delivered`/`Sent`/`Read`) shows only under the
+  LAST outbound message, the way a phone's own Messages app does it — "Delivered" under every bubble
+  is noise people learn to skip, the same reasoning as the self-clearing `divert_caller_id_last_error`
+  and the deliberately narrow "unfinished" IVR badge. (3) **A Messenger thread gets NO positive
+  label.** Facebook does not report delivery back the way Twilio's status callback does, so every
+  Messenger message stops at `sent` PERMANENTLY — 13 of them in live D1 on 2026-09-12, newest from
+  09-04 — and captioning those "Sent" forever would read as "not delivered yet" and be wrong every
+  single time. A Messenger FAILURE still shows: that one is real, and is the 24-hour-window
+  rejection the indicator was built for. Unknown statuses render NOTHING rather than defaulting to
+  "Sent", so a status Twilio adds later is never captioned on a guess.
+  The mobile row is its own component (`MessageBubble`) purely so the CALL SITE is testable:
+  `@testing-library/react-native` cannot run here (it resolves `test-renderer`, which does not exist
+  against the installed React — that is why `auth.test.tsx` is in `testPathIgnorePatterns`), so the
+  test calls the function component directly with the theme hook mocked and walks the returned
+  element tree. Deleting the caption block fails five tests; with the rule's unit tests alone it
+  failed none.
 - **Sending a message is TWO failures, not one.** `insertMessage` used to sit inside the send `try`,
   so a D1 hiccup after Twilio returned a sid answered "Could not send" for a message the customer
   had already received: staff resend, the customer gets it twice, and with no row the status

@@ -79,27 +79,39 @@ const TRANSCRIPT_STAFF_CHANNEL_KEY = "transcript_staff_channel";
 // Which audio channel the STAFF member is on in a dual-channel recording, for labelling
 // speaker-separated transcripts.
 //
-// DEFAULT 1, and the reason changed on 2026-09-12. The recording moved from the <Conference> noun to
-// `record-from-answer-dual` on the <Dial> (see conferenceTwiml.ts for why -- the account-wide Console
-// switch that governs conference channel count was enabled, saved, and still producing mono). A Dial
-// recording puts channel 1 on the PARENT call, and that document belongs to the staff leg, so staff
-// are channel 1 and the conference -- the caller -- is channel 2. Deterministic.
+// DEFAULT 2, and as of 2026-09-12 that is a property of the design rather than a guess about a race.
 //
-// Before that it defaulted to 2, because a CONFERENCE recording gives channel 1 to whoever joined
-// first and our answer path awaits the caller's redirectCall into /join-conference before returning
-// the staff leg's document. That was a race we were reading tea leaves about, not a rule -- an even
-// earlier version hardcoded the opposite and would have labelled every transcript backwards while
-// presenting it as fact. This is now a property of which leg owns the <Dial>, which is not a race.
+// An inbound call is recorded by the CALLER's own leg -- `record-from-answer-dual` on the <Dial> in
+// renderJoinConference. A <Dial> recording puts channel 1 on the PARENT call, and that document
+// belongs to the caller, so channel 1 is the customer and channel 2 is whoever they are speaking to.
+// Across a transfer that stays true: the caller's leg never changes, so channel 2 is simply whichever
+// staff member currently holds the call.
+//
+// It defaulted to 2 before this too, but for a weaker reason -- a CONFERENCE recording gives channel
+// 1 to whoever joined first, and the answer path awaits the caller's redirectCall into
+// /join-conference before returning the staff leg's document, so the caller "usually" landed first.
+// That was a race being read as a rule. It briefly became 1 on 2026-09-12 when the recording was put
+// on the STAFF leg's <Dial>; /code-review found that placement was wrong (two legs record on a warm
+// transfer, and /twiml/voice-app renders the same document on the CUSTOMER's leg, which would have
+// labelled every outbound transcript backwards), so both the placement and this default went back.
 //
 // It stays a SETTING regardless, because the cost of being wrong is a transcript that confidently
 // attributes the customer's words to staff, and one stored row beats a deploy.
+//
+// A junk stored value must fall back rather than throw: this is awaited inline on the
+// recording-status webhook path, after `recording_url` has already been written, so a throw here
+// 500s a callback whose work is half done. `JSON.parse` is the part that can throw.
 export async function getTranscriptStaffChannel(db: D1Database): Promise<1 | 2> {
   const row = await db
     .prepare("SELECT value FROM settings WHERE key = ?")
     .bind(TRANSCRIPT_STAFF_CHANNEL_KEY)
     .first<{ value: string }>();
-  if (!row) return 1;
-  return JSON.parse(row.value) === 2 ? 2 : 1;
+  if (!row) return 2;
+  try {
+    return JSON.parse(row.value) === 1 ? 1 : 2;
+  } catch {
+    return 2;
+  }
 }
 
 export async function setTranscriptStaffChannel(db: D1Database, channel: 1 | 2): Promise<void> {

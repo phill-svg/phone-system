@@ -111,27 +111,55 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
       `SELECT
          SUM(intelligence_status = 'completed')      AS done,
          SUM(intelligence_status = 'single_channel') AS mono,
+         SUM(intelligence_status = 'dual_failed')    AS dual_failed,
          SUM(intelligence_status = 'pending')        AS pending,
          SUM(intelligence_status IN ('abandoned', 'failed')) AS stuck
        FROM calls
        WHERE intelligence_status IS NOT NULL AND started_at > ?`
     )
       .bind(Date.now() - 7 * 24 * 60 * 60 * 1000)
-      .first<{ done: number | null; mono: number | null; pending: number | null; stuck: number | null }>();
+      .first<{
+        done: number | null;
+        mono: number | null;
+        dual_failed: number | null;
+        pending: number | null;
+        stuck: number | null;
+      }>();
     const done = row?.done ?? 0;
     const mono = row?.mono ?? 0;
+    const dualFailed = row?.dual_failed ?? 0;
     const pending = row?.pending ?? 0;
     const stuck = row?.stuck ?? 0;
-    // Recordings coming back on one channel is the tell that the Console's dual-channel conference
-    // switch is off -- the single most likely reason this is configured but not working.
-    if (mono > 0 && done === 0) {
+    // FIRST, and regardless of how many others succeeded. An INBOUND call is recorded on the
+    // caller's leg with `record-from-answer-dual`, so mono there should be impossible -- it means
+    // Twilio is not honouring it, or RecordingChannels is absent from the callback. Unlike a mono
+    // conference recording this has no benign reading and no Console switch to blame, so it is
+    // reported even alongside successful transcripts: `done > 0` must not mask it, or one broken
+    // inbound call hides behind a week of working ones.
+    if (dualFailed > 0) {
       return {
         ...base,
         status: "fail",
         detail:
-          `${mono} recording(s) came back on one channel. Most likely Voice > Settings > ` +
-          `Dual-channel Recording for Conference is off — but a call where only one party spoke ` +
-          `looks the same, so check a recent one before changing anything.`,
+          `${dualFailed} INBOUND recording(s) came back mono despite asking for dual-channel on the ` +
+          `caller's leg. That should not be possible and no Console setting affects it — check the ` +
+          `worker logs for INTELLIGENCE_SKIPPED_MONO and what RecordingChannels Twilio actually sent.`,
+      };
+    }
+    // A mono CONFERENCE recording is the different, milder case: outbound softphone calls are
+    // recorded conference-level, where the Console's dual-channel switch does still apply. Worth
+    // reporting, but it is not the inbound path and those transcripts keep Whisper's text.
+    if (mono > 0 && done === 0) {
+      return {
+        ...base,
+        status: "warn",
+        detail:
+          `${mono} conference recording(s) came back on one channel, so those transcripts are ` +
+          `unlabelled and keep the Whisper text. That is the OUTBOUND softphone path. Do NOT go and ` +
+          `turn on "Dual-channel Recording for Conference" expecting it to fix inbound calls — that ` +
+          `switch was verified on and saved on 2026-09-12 while Twilio still returned mono, which is ` +
+          `why inbound is recorded on the caller's own leg instead. A call where only one party ` +
+          `spoke looks identical, so check a recent one before changing anything.`,
       };
     }
     // Every transcript giving up is the OTHER silent failure. A transcript Twilio holds but whose
