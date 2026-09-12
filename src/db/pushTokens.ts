@@ -37,11 +37,6 @@ export async function upsertPushToken(
     .run();
 }
 
-export async function listPushTokens(db: D1Database): Promise<string[]> {
-  const rows = await db.prepare("SELECT token FROM push_tokens").all<{ token: string }>();
-  return rows.results.map((r) => r.token);
-}
-
 export async function deletePushTokens(db: D1Database, tokens: string[]): Promise<void> {
   if (tokens.length === 0) return;
   const placeholders = tokens.map(() => "?").join(",");

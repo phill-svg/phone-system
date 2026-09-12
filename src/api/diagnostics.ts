@@ -1,4 +1,5 @@
 import { jsonResponse } from "./respond";
+import { authHeader } from "../twilio/conferenceClient";
 import { listPhoneNumbers } from "../db/phoneNumbers";
 import { blankToNull } from "../db/calls";
 import { getStaffRoster } from "../db/staff";
@@ -188,7 +189,7 @@ async function checkTwilioCredentials(env: Env): Promise<Check> {
   try {
     const res = await withTimeout(
       fetch(`https://api.sydney.au1.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}.json`, {
-        headers: { Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}` },
+        headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) },
       }),
       "Twilio"
     );
@@ -228,11 +229,11 @@ type GlobalAuth = { header: string; us1: boolean };
 function globalAuth(env: Env): GlobalAuth {
   if (env.TWILIO_US1_API_KEY_SID && env.TWILIO_US1_API_KEY_SECRET) {
     return {
-      header: `Basic ${btoa(`${env.TWILIO_US1_API_KEY_SID}:${env.TWILIO_US1_API_KEY_SECRET}`)}`,
+      header: authHeader(env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET),
       us1: true,
     };
   }
-  return { header: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`, us1: false };
+  return { header: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN), us1: false };
 }
 
 // What a 401 from one of those hosts MEANS depends entirely on which credential we just sent, and
@@ -660,7 +661,7 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
 
   // The AU1 token, deliberately -- see the block comment above. Not `globalAuth`, which exists for
   // routes.twilio.com, a host that really is global.
-  const authHeader = `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`;
+  const au1Auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
 
   for (const c of configured) {
     if (!c.sid) {
@@ -670,7 +671,7 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
     }
     try {
       const res = await fetch(`${AU1_NOTIFY_BASE}/v1/Credentials/${encodeURIComponent(c.sid)}`, {
-        headers: { Authorization: authHeader },
+        headers: { Authorization: au1Auth },
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       });
       if (res.status === 404) {

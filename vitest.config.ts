@@ -23,12 +23,10 @@ export default defineWorkersConfig(async () => {
               TWILIO_AUTH_TOKEN: "test-auth-token",
               AUTH_MODE: "dev",
               DEV_STAFF_EMAIL: "phill@tcbpestcontrolcanberra.com.au",
-              SENDGRID_API_KEY: "SG.test",
               // Speaker-labelled transcripts are gated on this being present. A test value here
               // rather than in wrangler.jsonc, because the real one is a worker SECRET and a
               // committed value would misrepresent how this is deployed.
               TWILIO_INTELLIGENCE_SERVICE_SID: "GA-test",
-              AUTH_FROM_EMAIL: "no-reply@tcbpestcontrolcanberra.com.au",
             },
           },
         },
