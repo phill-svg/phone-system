@@ -77,6 +77,32 @@ export async function notifyMissedCall(db: D1Database, callerNumber: string): Pr
   if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
 }
 
+// Fire-and-forget: a call is ringing a staff member's MOBILE right now.
+//
+// The one thing the carrier ring cannot say. With divert_caller_id on (the default) the mobile
+// presents the CUSTOMER's number, which is what you want for calling back -- but it makes a work
+// call indistinguishable from a personal one until you answer and hear the "T C B call." whisper.
+// This lands on the lock screen alongside the ring and closes that gap.
+//
+// Only the divert path calls it. A softphone leg already shows a full CallKit incoming screen
+// saying who it is, so this there would be duplicate noise.
+//
+// `notif_incoming` has existed in user_settings since the settings foundation shipped, defaulted
+// on, shown in the app -- and until now NOTHING read it. Every other notif_ key had a notifyX()
+// behind it; this was a dead switch.
+export async function notifyIncomingCall(db: D1Database, callerNumber: string): Promise<void> {
+  const tokens = await getPushTokensForType(db, "notif_incoming");
+  if (tokens.length === 0) return;
+  const contact = await findContactByPhone(db, callerNumber);
+  const who = contact?.name || callerNumber;
+  const { invalidTokens } = await sendExpoPush(tokens, {
+    title: `TCB call from ${who}`,
+    body: "Ringing your mobile now.",
+    data: { type: "incoming_call", from: callerNumber },
+  });
+  if (invalidTokens.length) await deletePushTokens(db, invalidTokens);
+}
+
 // Fire-and-forget: notify staff that an outbound message (SMS or Messenger) failed to deliver --
 // Twilio's initial "sent" only means accepted, so this is the only alert staff get for a send that
 // actually bounced (e.g. a broken Facebook channel connection, error 63001). Prunes dead tokens.
