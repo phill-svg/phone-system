@@ -31,7 +31,7 @@ import { appendCallEvent, parseRecordingDuration } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
-import { notifyCallbackRequest, notifyMissedCall, notifyVoicemail } from "../api/push";
+import { notifyCallbackRequest, notifyIncomingCall, notifyMissedCall, notifyVoicemail } from "../api/push";
 
 type Env = {
   DB: D1Database;
@@ -1099,6 +1099,23 @@ export class CallSession extends DurableObject<Env> {
     if (divert) {
       try {
         ({ sid } = await createLeg(divert.from, divert.token, true));
+        // The mobile is now ringing showing the CUSTOMER's number, which is the one thing that
+        // screen cannot tell them: a work call looks exactly like a personal one until the
+        // "T C B call." whisper plays on pickup, which is after the decision to answer.
+        //
+        // HERE, not beside divertCallerId() above, and the difference is not cosmetic. Up there we
+        // only know the caller ID was REQUESTED; Twilio may still reject it (the catch below), and
+        // the leg then rings as the business -- where the screen already says TCB and this
+        // notification would be telling them what they can see. Down here the leg exists and the
+        // customer's number was accepted.
+        //
+        // Awaited with a .catch(), matching notifyVoicemail and notifyCallbackRequest. The await
+        // costs the CALLER nothing: the leg is already created and the handset is already ringing,
+        // so this runs alongside the ring rather than in front of it. The catch is load-bearing --
+        // a throw escapes dialBatch -> startRing -> handleMainWebhook to the DO's catch-all, which
+        // says "we're experiencing a technical issue" and HANGS UP on a live customer. A failed
+        // push must cost a notification, never the call.
+        await notifyIncomingCall(this.env.DB, divert.from).catch(() => {});
         // A working divert clears any recorded rejection, so Health Checks reflects now rather than
         // the worst thing that ever happened.
         //

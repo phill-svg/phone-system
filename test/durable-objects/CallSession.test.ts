@@ -888,6 +888,61 @@ describe("CallSession", () => {
     expect(dial?.get("Url")).toContain("whisper=1");
   });
 
+  // The other half of that: the screen says who, but not that it is WORK. A diverted call showing
+  // the customer's number is indistinguishable from a personal one until the "T C B call." whisper
+  // plays on pickup, which is too late to decide whether to pick up.
+  //
+  // `notif_incoming` had been in user_settings since the settings foundation shipped -- defaulted
+  // on, listed in the app -- and nothing read it. Every other notif_ key had a notifyX() behind it.
+  it("pushes a TCB-call notification while a diverted mobile is ringing", async () => {
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await env.DB.prepare(
+      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[t1]', 'ios', 'phill@b.com', 1, 1)"
+    ).run();
+
+    const stub = stubFor("CA-divert-push");
+    await send(stub, mainEvent("CA-divert-push", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-divert-push", { digits: "1" }));
+
+    const push = fetchMock.mock.calls.find((c) => String(c[0]).includes("exp.host"));
+    expect(push).toBeTruthy();
+    const [msg] = JSON.parse((push![1] as RequestInit).body as string) as { title: string; data: unknown }[];
+    // Raw E.164, matching notifyMissedCall -- formatAuNumber lives in src/html/ and importing it
+    // here would be the wrong direction for one cosmetic space.
+    expect(msg.title).toBe("TCB call from +61402430107");
+    expect(msg.data).toMatchObject({ type: "incoming_call", from: "+61402430107" });
+  });
+
+  // Gated on the caller ID actually being swapped, not merely on "this is a mobile leg". With the
+  // divert off the mobile shows the BUSINESS number, which the phone's own contacts already resolve
+  // to TCB -- so the notification would say something the screen just said. A notification you
+  // learn to ignore is worse than none, the same rule as the self-clearing divert-rejection marker.
+  it("sends no notification when the divert falls back to the business number", async () => {
+    await setDivertCallerId(env.DB, false);
+    await seedDefaultVoiceNumber("+61261059771");
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await env.DB.prepare(
+      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[t2]', 'ios', 'phill@b.com', 1, 1)"
+    ).run();
+
+    const stub = stubFor("CA-nodivert-push");
+    await send(stub, mainEvent("CA-nodivert-push", { from: "+61402430107", callToken: "CT-abc" }));
+    await send(stub, mainEvent("CA-nodivert-push", { digits: "1" }));
+
+    // The leg still rings -- it just rings as the business, and says nothing extra.
+    expect(outboundDialBodies(fetchMock).find((b) => b.get("To") === "+61412345678")).toBeTruthy();
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("exp.host"))).toBe(false);
+  });
+
   // The token arrives on the FIRST webhook only, but the ring is several gather turns later -- so
   // it has to survive in DO storage. This is the case that breaks if it is read at ring time.
   it("keeps the CallToken from the first webhook when later webhooks omit it", async () => {
