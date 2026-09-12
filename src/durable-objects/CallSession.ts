@@ -637,14 +637,23 @@ export class CallSession extends DurableObject<Env> {
         .run();
       await this.ctx.storage.delete("activeRing");
       // Carries the recording, for the same reason the /join-conference route does -- this is the
-      // caller's leg. Only ONE of the two ever applies (this response or the REST redirect wins the
-      // race, the other is discarded), so this cannot produce a second recording.
+      // caller's leg.
+      //
+      // Both documents carry it, and that is a DELIBERATE choice between two imperfect options
+      // rather than a claim that only one applies. The comment above is explicit that Twilio does
+      // not document which response wins this race, so: if only one is applied there is one
+      // recording (right); if this one is applied AFTER the redirect, the first <Dial> ends and a
+      // second begins, giving two recordings on one callSid where last-write-wins keeps the later
+      // half. Recording on only one path instead would mean NO recording at all whenever the other
+      // path wins, which is worse -- a missing recording is invisible, a duplicated one is at least
+      // visible in Twilio's own list. An earlier version of this comment asserted the two could
+      // never both apply, which was not something we know.
       return this.xml(
         renderJoinConference({
           conferenceName: body.callSid,
           record: await getRecordingEnabled(this.env.DB),
           recordingStatusCallbackUrl: appendWebhookSecret(
-            `${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`,
+            `${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1&rec=dual`,
             this.env.TWILIO_WEBHOOK_SECRET
           ),
         })

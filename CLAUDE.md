@@ -412,9 +412,14 @@ before adding one, or you will duplicate a path that already works.
   **Conversation Intelligence (classic)** → Services, and the SID starts `GA`. No Language Operators
   are needed; only the raw sentences and their channel numbers are read. Creating it by API avoids
   the navigation entirely: `POST https://intelligence.twilio.com/v2/Services` with `UniqueName`.
-  The channel rule that default rests on changed on 2026-09-12 when the recording moved to the
-  `<Dial>`: a DialVerb dual recording puts channel 1 on the parent call, so staff are channel 1.
-  (For a CONFERENCE recording it was channel 1 = whoever joined first, hence the old default of 2.)
+  The channel rule that default rests on: a DialVerb dual recording puts channel 1 on the **parent
+  call**, and for an inbound call that parent is the **CALLER** — so the customer is channel 1 and
+  **staff are channel 2**, which is why the default is 2. (For a CONFERENCE recording it was channel
+  1 = whoever joined first, which happened to give the same answer for a weaker reason.) This
+  paragraph said "staff are channel 1" for about half an hour on 2026-09-12, left over from a
+  reverted attempt at putting the recording on the staff leg; that is the sentence a future session
+  reads before touching `transcript_staff_channel`, and believing it labels every inbound transcript
+  backwards.
 - **An inbound call is recorded by the CALLER's leg, and that one sentence is the whole design.**
   Speaker labelling needs two channels, and a `<Conference>` recording's channel count is governed
   by one account-wide Console switch — **Dual-channel Recording for Conference**, Voice > Recordings

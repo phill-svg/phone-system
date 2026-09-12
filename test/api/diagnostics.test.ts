@@ -168,13 +168,41 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("No Intelligence service set");
     });
 
-    it("reports the dual-channel switch from a mono recording that HAS no transcript sid", async () => {
-      // The whole point: sid NULL, status single_channel. Keyed on the sid, this row is invisible.
+    // Still the original point -- sid NULL, status single_channel, so a check keyed on the sid never
+    // sees this row at all. It is a WARN rather than a fail now: `single_channel` means a mono
+    // CONFERENCE recording, which is the outbound softphone path where the Console switch genuinely
+    // does apply, and those transcripts keep Whisper's text. The inbound path has its own status.
+    it("reports a mono conference recording that HAS no transcript sid", async () => {
       await seed("CA-diag-tr-mono", "single_channel", null);
       stubFetch();
       const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("conference recording");
+      // And it must actively steer away from that switch as a fix for inbound, which is the wrong
+      // turn this wording exists to prevent.
+      expect(check.detail).toContain("Do NOT");
+    });
+
+    // An INBOUND recording coming back mono is a different animal: the caller's leg asked for
+    // `record-from-answer-dual`, so mono should be impossible and no Console setting explains it.
+    // Filing it as `single_channel` would have had Health Checks call an un-transcribed inbound call
+    // expected -- the same silence fixed a day earlier, arriving from the other direction.
+    it("FAILS on an inbound caller-leg recording that came back mono", async () => {
+      await seed("CA-diag-tr-dual", "dual_failed", null);
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
       expect(check.status).toBe("fail");
-      expect(check.detail).toContain("Dual-channel Recording for Conference");
+      expect(check.detail).toContain("INBOUND");
+      expect(check.detail).toContain("dual-channel");
+    });
+
+    // ...and it must not be masked by calls that DID work. One broken inbound call hiding behind a
+    // week of successful ones is exactly how this goes unnoticed.
+    it("still fails on a mono inbound recording even when other transcripts succeeded", async () => {
+      await seed("CA-diag-tr-dual2", "dual_failed", null);
+      await seed("CA-diag-tr-ok", "completed", "GT-ok");
+      stubFetch();
+      expect(find(await run(ON()), "transcripts").status).toBe("fail");
     });
 
     it("goes green again once a labelled transcript lands, without clearing the old mono rows", async () => {
