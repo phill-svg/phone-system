@@ -1,98 +1,135 @@
-import React, { useMemo, useState } from "react";
-import { View, Text, TextInput, Pressable, FlatList, StyleSheet } from "react-native";
+import React, { useState } from "react";
+import { View, Text, Pressable, FlatList, StyleSheet, Alert, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
-import { Segmented } from "../components/ui/Segmented";
 import { Avatar } from "../components/ui/Avatar";
-import { Icon } from "../components/ui/Icon";
-import { getContacts, type Contact } from "../lib/api";
-import { formatPhone, normalizePhone } from "../lib/phone";
+import { PrimaryButton } from "../components/ui/PrimaryButton";
+import { getStaffRoster, startTransfer, completeTransfer, type RosterEntry } from "../lib/api";
+import { transferTargets } from "../lib/transfer";
+import { getActiveCall } from "../lib/voice";
+import { useAuth } from "../lib/auth";
 import { haptics } from "../theme/haptics";
 import { useTheme, type } from "../theme/theme";
 
+// Attended transfer only. A blind transfer the colleague never answers leaves the customer alone in
+// the conference, so the staff member stays on the line until the colleague has joined.
 export default function TransferScreen() {
   const t = useTheme();
   const insets = useSafeAreaInsets();
-  const [mode, setMode] = useState<"blind" | "attended">("blind");
-  const [q, setQ] = useState("");
-  const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts });
+  const { user } = useAuth();
+  const roster = useQuery({ queryKey: ["staff-roster"], queryFn: getStaffRoster });
+  const [calling, setCalling] = useState<RosterEntry | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const results = useMemo(() => {
-    const list = contacts.data ?? [];
-    const needle = q.trim().toLowerCase();
-    const digits = normalizePhone(q);
-    if (!needle) return list;
-    return list.filter((c) => c.name.toLowerCase().includes(needle) || (digits.length >= 2 && c.phone_normalized.includes(digits)));
-  }, [contacts.data, q]);
+  const errorMessage = (e: unknown) => (e as { message?: string })?.message ?? "Try again.";
 
-  function transferTo(number: string, name?: string) {
+  function ownLeg(): string | null {
+    const sid = getActiveCall()?.getSid();
+    if (!sid) Alert.alert("No call to transfer", "This call has already ended.");
+    return sid ?? null;
+  }
+
+  async function callColleague(target: RosterEntry) {
+    if (busy) return;
+    const sid = ownLeg();
+    if (!sid) return;
     haptics.medium();
-    if (mode === "attended") {
-      // Attended: call the target first so the agent can speak before completing.
-      router.replace({ pathname: "/call-active", params: { number, name: name ?? "" } });
-    } else {
-      // Blind: hand the caller straight over and return to the call surface.
-      router.back();
+    setBusy(true);
+    try {
+      await startTransfer(sid, target.email);
+      setCalling(target);
+    } catch (e) {
+      Alert.alert("Couldn't start the transfer", errorMessage(e));
+    } finally {
+      setBusy(false);
     }
   }
 
-  const typedIsNumber = normalizePhone(q).length >= 4;
+  async function complete() {
+    if (busy) return;
+    const sid = ownLeg();
+    if (!sid) return;
+    setBusy(true);
+    try {
+      await completeTransfer(sid);
+      haptics.medium();
+      // The server removed this leg, so the Call disconnects and the in-call screen underneath
+      // closes itself once this one is out of the way.
+      router.back();
+    } catch (e) {
+      Alert.alert("Couldn't complete the transfer", errorMessage(e));
+      setBusy(false);
+    }
+  }
+
+  // Cancel only closes this screen. If the colleague is already being rung, their phone keeps ringing
+  // (there is no endpoint to withdraw it) and answering joins them to the call as a third party.
+  const cancel = () => router.back();
 
   return (
     <View style={{ flex: 1, backgroundColor: t.colors.bg, paddingTop: insets.top }}>
       <View style={styles.bar}>
-        <Pressable onPress={() => router.back()} hitSlop={10}><Text style={[type.body, { color: t.colors.accent }]}>Cancel</Text></Pressable>
+        <Pressable onPress={cancel} hitSlop={10}><Text style={[type.body, { color: t.colors.accent }]}>Cancel</Text></Pressable>
         <Text style={[type.headline, { color: t.colors.label }]}>Transfer</Text>
         <View style={{ width: 54 }} />
       </View>
 
-      <View style={{ paddingHorizontal: 16, gap: 10 }}>
-        <Segmented value={mode} onChange={setMode} options={[{ label: "Blind", value: "blind" }, { label: "Attended", value: "attended" }]} />
-        <Text style={[type.footnote, { color: t.colors.labelSecondary }]}>
-          {mode === "blind" ? "Hand the caller straight to the person you choose." : "Call the person first, speak, then complete the transfer."}
-        </Text>
-        <View style={[styles.search, { backgroundColor: t.colors.fill }]}>
-          <Icon name="magnifyingglass" fallback="search" size={17} color={t.colors.labelTertiary} />
-          <TextInput value={q} onChangeText={setQ} placeholder="Name or number" placeholderTextColor={t.colors.labelTertiary} style={[styles.input, { color: t.colors.label }]} keyboardType="default" autoCapitalize="none" />
+      {calling ? (
+        <View style={styles.calling}>
+          <Avatar name={calling.email} size={84} />
+          <Text style={[type.title3, { color: t.colors.label, marginTop: 16, textAlign: "center" }]} numberOfLines={1}>
+            Calling {calling.email}…
+          </Text>
+          <Text style={[type.subhead, { color: t.colors.labelSecondary, marginTop: 8, textAlign: "center", lineHeight: 21 }]}>
+            Once they answer, tell them who is on the line, then complete the transfer. The caller can hear you both.
+          </Text>
+          <View style={{ alignSelf: "stretch", marginTop: 28 }}>
+            <PrimaryButton label="Complete transfer" onPress={complete} busy={busy} />
+          </View>
         </View>
-      </View>
-
-      <FlatList
-        data={results}
-        keyExtractor={(c) => String(c.id)}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6 }}
-        ListHeaderComponent={
-          typedIsNumber ? (
-            <Pressable onPress={() => transferTo(q)} style={({ pressed }) => [styles.row, { backgroundColor: pressed ? t.colors.cardPressed : "transparent" }]}>
-              <View style={[styles.numTile, { backgroundColor: t.colors.accentSoft }]}>
-                <Icon name="phone.arrow.up.right.fill" fallback="call" size={18} color={t.colors.accent} />
+      ) : (
+        <FlatList
+          data={transferTargets(roster.data ?? [], user?.email)}
+          keyExtractor={(s) => s.email}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6 }}
+          ListHeaderComponent={
+            <Text style={[type.footnote, { color: t.colors.labelSecondary, marginBottom: 6 }]}>
+              Choose a colleague. Their app rings, you speak to them, then complete the transfer.
+            </Text>
+          }
+          ListEmptyComponent={
+            roster.isLoading ? (
+              <ActivityIndicator style={{ marginTop: 24 }} />
+            ) : (
+              <Text style={[type.body, { color: t.colors.labelSecondary, marginTop: 24, textAlign: "center" }]}>
+                {roster.isError ? errorMessage(roster.error) : "No colleagues to transfer to."}
+              </Text>
+            )
+          }
+          ItemSeparatorComponent={() => <View style={[styles.sep, { backgroundColor: t.colors.separator, marginLeft: 54 }]} />}
+          renderItem={({ item }) => (
+            <Pressable
+              onPress={() => callColleague(item)}
+              disabled={busy}
+              style={({ pressed }) => [styles.row, { backgroundColor: pressed ? t.colors.cardPressed : "transparent", opacity: busy ? 0.5 : 1 }]}
+            >
+              <Avatar name={item.email} size={42} />
+              <View style={{ flex: 1 }}>
+                <Text style={[type.body, { color: t.colors.label, fontWeight: "600" }]} numberOfLines={1}>{item.email}</Text>
+                <Text style={[type.footnote, { color: t.colors.labelSecondary, textTransform: "capitalize" }]}>{item.status}</Text>
               </View>
-              <Text style={[type.body, { color: t.colors.label, fontWeight: "600" }]}>Transfer to {formatPhone(q)}</Text>
             </Pressable>
-          ) : null
-        }
-        ItemSeparatorComponent={() => <View style={[styles.sep, { backgroundColor: t.colors.separator, marginLeft: 54 }]} />}
-        renderItem={({ item }: { item: Contact }) => (
-          <Pressable onPress={() => transferTo(item.phone, item.name)} style={({ pressed }) => [styles.row, { backgroundColor: pressed ? t.colors.cardPressed : "transparent" }]}>
-            <Avatar name={item.name} size={42} />
-            <View style={{ flex: 1 }}>
-              <Text style={[type.body, { color: t.colors.label, fontWeight: "600" }]} numberOfLines={1}>{item.name}</Text>
-              <Text style={[type.footnote, { color: t.colors.labelSecondary }]} numberOfLines={1}>{item.company ? `${item.company} · ` : ""}{formatPhone(item.phone)}</Text>
-            </View>
-          </Pressable>
-        )}
-      />
+          )}
+        />
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   bar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12 },
-  search: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 10, paddingVertical: 9, borderRadius: 10 },
-  input: { flex: 1, fontSize: 17, padding: 0 },
+  calling: { alignItems: "center", paddingHorizontal: 24, paddingTop: 40 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10 },
-  numTile: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center" },
   sep: { height: StyleSheet.hairlineWidth },
 });

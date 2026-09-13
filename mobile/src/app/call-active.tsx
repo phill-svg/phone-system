@@ -307,7 +307,7 @@ export default function ActiveCallScreen() {
             />
             <Control icon="plus" fallback="add" label="add call" disabled={state !== "connected"} onPress={() => router.push("/contacts")} />
             <Control icon="pause.fill" fallback="pause" label="hold" active={held} disabled={state !== "connected"} onPress={toggleHold} />
-            <Control icon="arrow.uturn.right" fallback="arrow-redo" label="transfer" disabled={state !== "connected"} onPress={() => router.push({ pathname: "/transfer", params: { number, name } })} />
+            <Control icon="arrow.uturn.right" fallback="arrow-redo" label="transfer" disabled={state !== "connected" || !callRef.current} onPress={() => callRef.current && router.push("/transfer")} />
             <Control icon="record.circle" fallback="radio-button-on" label="record" active={recording} disabled={state !== "connected"} onPress={() => setRecording((r) => !r)} />
             <Control icon="person.crop.circle.fill" fallback="person" label="contacts" onPress={() => router.push("/contacts")} />
             {hasBluetooth ? (
