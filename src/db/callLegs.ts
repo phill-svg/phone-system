@@ -26,11 +26,3 @@ export async function ownLegConference(db: D1Database, callSid: string, staffEma
     .first<{ conference_name: string }>();
   return row?.conference_name ?? null;
 }
-
-export async function isOwnLeg(db: D1Database, callSid: string, staffEmail: string): Promise<boolean> {
-  const row = await db
-    .prepare("SELECT 1 FROM softphone_call_legs WHERE call_sid = ? AND staff_email = ?")
-    .bind(callSid, staffEmail)
-    .first();
-  return row !== null;
-}
