@@ -376,8 +376,12 @@ const currentSubscriber = (): InviteSubscriber | undefined => inviteSubscribers[
 const onRegistered = () => setRegStatus("registered ✓");
 const onRegError = (e: unknown) => setRegStatus("error: " + ((e as { message?: string })?.message ?? String(e)));
 
+// How the most recent invite ended, for a ringing screen that mounts after the fact.
+let lastInviteOutcome: "accepted" | "cancelled" | null = null;
+
 function handleInvite(invite: CallInvite): void {
   pendingInvite = invite;
+  lastInviteOutcome = null;
   // A withdrawn invite MUST drop out of `pendingInvite`. Accepting one that is no longer pending
   // throws deep in TwilioVoice's native CallKit path, as an Objective-C exception that no JS
   // try/catch can reach -- it aborts the whole app. That is the 09:14 crash: the caller hung up
@@ -385,14 +389,20 @@ function handleInvite(invite: CallInvite): void {
   // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
   // live the whole time the screen is up.
   invite.on(CallInvite.Event.Cancelled, () => {
-    if (pendingInvite === invite) pendingInvite = null;
+    if (pendingInvite === invite) {
+      pendingInvite = null;
+      lastInviteOutcome = "cancelled";
+    }
     notifyInviteCancelled();
   });
   // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
   // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
   // second accept can reach the native layer, and tell the ringing screen to get out of the way.
   invite.on(CallInvite.Event.Accepted, (call: Call) => {
-    if (pendingInvite === invite) pendingInvite = null;
+    if (pendingInvite === invite) {
+      pendingInvite = null;
+      lastInviteOutcome = "accepted";
+    }
     if (call) adoptCall(call);
     notifyInviteAccepted();
   });
@@ -526,11 +536,12 @@ export async function acceptWaitingCall(): Promise<Call | null> {
 
 // What a ringing screen should do as it mounts. It is pushed after awaited pref reads, so the invite
 // can already be gone: withdrawn (dismiss), or answered from CallKit (go to the in-call screen, or
-// the live call has no controls). Never "in-call" for call waiting -- there the live call is the one
-// already on screen underneath, not this caller.
+// the live call has no controls). For call waiting a live call alone proves nothing -- it may be the
+// one already on screen underneath -- so there it takes this invite having been ANSWERED.
 export function ringingScreenOnMount(waiting: boolean): "ring" | "in-call" | "dismiss" {
   if (pendingInvite?.getState() === CallInvite.State.Pending) return "ring";
-  return !waiting && liveCall() ? "in-call" : "dismiss";
+  if (!liveCall()) return "dismiss";
+  return !waiting || lastInviteOutcome === "accepted" ? "in-call" : "dismiss";
 }
 
 export { Call };

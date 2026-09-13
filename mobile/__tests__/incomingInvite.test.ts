@@ -406,5 +406,19 @@ describe("incoming invite lifecycle", () => {
       expect(voiceLib.ringingScreenOnMount(true)).toBe("dismiss");
       unsub();
     });
+
+    // The waiting call answered from CallKit before the ringing screen mounted: the live call is now
+    // THIS caller. Dismissing left the in-call screen underneath tied to the old call, so the new call
+    // had no screen and no hang-up button.
+    it("opens the in-call screen for a call-waiting invite answered natively", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      voiceLib.setActiveCall(liveCallFake([]));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Accepted;
+      invite.fireWith(CallInviteEvent.Accepted, { on: jest.fn(), getState: () => "connected" });
+      expect(voiceLib.ringingScreenOnMount(true)).toBe("in-call");
+      unsub();
+    });
   });
 });
