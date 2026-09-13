@@ -206,16 +206,26 @@ describe("admin diagnostics", () => {
     });
 
     // Twilio refusing the transcript request left the row with no status at all, so this check said
-    // "no answered call has been transcribed yet" forever. Not masked by successes either: N calls
-    // that were never submitted is a fault however many others worked.
-    it("FAILS when recordings could not be submitted to Twilio", async () => {
+    // "no answered call has been transcribed yet" forever. Every request failing is the live state
+    // this was built for, and it fails.
+    it("FAILS when recordings could not be submitted to Twilio and none succeeded", async () => {
       await seed("CA-diag-tr-req1", "request_failed", null);
       await seed("CA-diag-tr-req2", "request_failed", null);
-      await seed("CA-diag-tr-req-ok", "completed", "GT-ok2");
       stubFetch();
       const check = find(await run(ON()), "transcripts");
       expect(check.status).toBe("fail");
       expect(check.detail).toContain("2 recording(s) could not be submitted to Twilio");
+    });
+
+    // The marker is permanent and a network blip or one 5xx sets it too. Failing for seven days over
+    // one blip teaches people to ignore the screen; alongside working transcripts it is a warning.
+    it("WARNS, not fails, when some requests failed but others were transcribed", async () => {
+      await seed("CA-diag-tr-req3", "request_failed", null);
+      await seed("CA-diag-tr-req-ok", "completed", "GT-ok2");
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("1 recording(s) could not be submitted to Twilio");
     });
 
     it("goes green again once a labelled transcript lands, without clearing the old mono rows", async () => {

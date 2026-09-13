@@ -152,12 +152,13 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
     }
     // Twilio refused the transcript request (or could not be reached), so these recordings never got
     // a transcript sid. Before this was persisted it was invisible here, and the check said nothing
-    // had been transcribed yet while every request was failing. Like dual_failed, not masked by
-    // successes: N recordings that were never submitted is a fault however many others worked.
+    // had been transcribed yet while every request was failing. Not masked by successes, but not a
+    // FAIL alongside them either: the marker is permanent and a network blip or one 5xx sets it, and
+    // a week of red over one blip teaches people to ignore this screen.
     if (requestFailed > 0) {
       return {
         ...base,
-        status: "fail",
+        status: done === 0 ? "fail" : "warn",
         detail:
           `${requestFailed} recording(s) could not be submitted to Twilio for transcription in the last ` +
           `7 days. Check the worker logs for INTELLIGENCE_CREATE_FAILED, which carries the HTTP status ` +
