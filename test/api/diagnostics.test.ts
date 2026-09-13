@@ -133,6 +133,25 @@ describe("admin diagnostics", () => {
     expect(check.detail).not.toContain("reviewer");
   });
 
+  // Every check shares one Promise.all, so an unguarded read in one of them 500s the whole screen.
+  it("reports an unreadable phone_numbers or staff_users table as a warn row, not a failed request", async () => {
+    stubFetch();
+    const failing = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop !== "prepare") return Reflect.get(target, prop).bind?.(target) ?? Reflect.get(target, prop);
+        return (sql: string) => {
+          if (/FROM (phone_numbers|staff_users)\b/.test(sql)) throw new Error("D1_ERROR: boom");
+          return target.prepare(sql);
+        };
+      },
+    });
+    const checks = await run(baseEnv({ DB: failing }));
+    expect(find(checks, "regions")).toMatchObject({ status: "warn" });
+    expect(find(checks, "regions").detail).toContain("Couldn't read");
+    expect(find(checks, "roster")).toMatchObject({ status: "warn" });
+    expect(find(checks, "roster").detail).toContain("Couldn't read");
+  });
+
   it("fails the Twilio check on a 401, because nothing can dial without it", async () => {
     stubFetch({ twilio: 401 });
     expect(find(await run(), "twilio").status).toBe("fail");

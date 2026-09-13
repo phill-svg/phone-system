@@ -274,7 +274,13 @@ function regional401(auth: GlobalAuth): string {
 // "not connected" intercept. /admin/settings only shows the region we RECORDED; this asks Twilio.
 async function checkNumberRegions(env: Env): Promise<Check> {
   const base = { key: "regions", label: "Voice number regions" };
-  const numbers = (await listPhoneNumbers(env.DB)).filter((n) => n.voice_enabled);
+  // Guarded because every check shares one Promise.all: a throw here would 500 the whole screen.
+  let numbers: Awaited<ReturnType<typeof listPhoneNumbers>>;
+  try {
+    numbers = (await listPhoneNumbers(env.DB)).filter((n) => n.voice_enabled);
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't read the phone numbers: ${e instanceof Error ? e.message : "error"}` };
+  }
   if (numbers.length === 0) return { ...base, status: "warn", detail: "No voice-enabled numbers configured." };
 
   const auth = globalAuth(env);
@@ -367,8 +373,14 @@ function checkEmail(env: Env): Check {
 async function checkRingRoster(env: Env): Promise<Check> {
   const base = { key: "roster", label: "Who's on call now" };
   const now = new Date();
-  // Demo accounts are dropped at dial time (resolveRingTargets), so they never "would ring".
-  const available = excludeDemos(await getStaffRoster(env.DB), env).filter((s) => isStaffAvailable(s, now));
+  // Demo accounts are dropped at dial time (resolveRingTargets), so they never "would ring". Guarded
+  // for the same shared-Promise.all reason as checkNumberRegions.
+  let available: Awaited<ReturnType<typeof getStaffRoster>>;
+  try {
+    available = excludeDemos(await getStaffRoster(env.DB), env).filter((s) => isStaffAvailable(s, now));
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't read the staff roster: ${e instanceof Error ? e.message : "error"}` };
+  }
   if (available.length === 0) {
     return {
       ...base,
