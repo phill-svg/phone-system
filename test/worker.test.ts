@@ -1,4 +1,4 @@
-import { env, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
 import { setCallBlocklist } from "../src/db/settings";
@@ -316,6 +316,21 @@ describe("Task 8 queue/ring webhook routes", () => {
     it("turns whisper=1 in the query into the spoken work-call announcement", async () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
       vi.stubGlobal("fetch", fetchMock);
+      // Only a leg the ring is still waiting on bridges (a later answer is turned away), so each call
+      // needs a ring in progress that this staff leg belongs to.
+      const ringing = (callSid: string, agentCallSid: string) =>
+        runInDurableObject(env.CALL_SESSION.get(env.CALL_SESSION.idFromName(callSid)), (_instance, state) =>
+          state.storage.put("activeRing", {
+            ringNodeId: "n_ring",
+            play: null,
+            allowCallbackStar: false,
+            ringConfig: { target: "all", strategy: "cascade", timeoutSeconds: 20, noAnswerNextNodeId: "n_vm" },
+            ringPlanState: { name: "DIALING", strategy: "cascade", numbers: ["client:a@b.com"], cascadeIndex: 0 },
+            attemptSids: [agentCallSid],
+          })
+        );
+      await ringing("CA-caller-w1", "CA-staff-w1");
+      await ringing("CA-caller-w2", "CA-staff-w2");
 
       const on = await postSigned(
         "https://example.com/webhooks/twilio/agent-answer?callSid=CA-caller-w1&whisper=1",

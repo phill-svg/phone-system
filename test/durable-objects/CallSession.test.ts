@@ -686,7 +686,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-bridge"));
     await send(stub, mainEvent("CA-bridge", { digits: "1" }));
 
-    const answer = await send(stub, agentAnswer("CA-bridge", "sid-client:phill@b.com"));
+    const answer = await send(stub, agentAnswer("CA-bridge", "sid-client:phill@b.com?CallerNumber=61400000000"));
 
     // The caller's own leg (CallSid "CA-bridge") was REST-redirected into the join-conference webhook.
     const redirectHit = fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/Calls/CA-bridge.json"));
@@ -743,7 +743,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-rec1", { digits: "1" }));
 
     // The STAFF leg's document must request no recording at all.
-    const answer = await send(stub, agentAnswer("CA-rec1", "sid-client:phill@b.com"));
+    const answer = await send(stub, agentAnswer("CA-rec1", "sid-client:phill@b.com?CallerNumber=61400000000"));
     expect(answer.xml).not.toContain("recordingStatusCallback");
     expect(answer.xml).not.toContain("record=");
 
@@ -767,7 +767,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-whisper"));
     await send(stub, mainEvent("CA-whisper", { digits: "1" }));
 
-    const answer = await send(stub, agentAnswer("CA-whisper", "sid-client:phill@b.com", undefined, true));
+    const answer = await send(stub, agentAnswer("CA-whisper", "sid-client:phill@b.com?CallerNumber=61400000000", undefined, true));
     expect(answer.xml).toContain("<Say>T C B call.</Say>");
     expect(answer.xml).toContain("<Conference");
   });
@@ -782,7 +782,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-nowhisper"));
     await send(stub, mainEvent("CA-nowhisper", { digits: "1" }));
 
-    const answer = await send(stub, agentAnswer("CA-nowhisper", "sid-client:phill@b.com"));
+    const answer = await send(stub, agentAnswer("CA-nowhisper", "sid-client:phill@b.com?CallerNumber=61400000000"));
     expect(answer.xml).not.toContain("<Say>");
   });
 
@@ -970,6 +970,103 @@ describe("CallSession", () => {
       .bind("CA-cancelfail")
       .all<{ event_type: string }>();
     expect(events.results.map((e) => e.event_type)).toContain("answered");
+  });
+
+  // Two phones in a ring-all picked up inside the same instant, before the first answer's cancels
+  // landed. The second answer used to bridge as well: it REST-redirected the caller a second time
+  // (restarting the caller-leg <Dial> and its recording, dropping and rejoining the customer) and
+  // put a second staff member into the live conversation. It must be turned away instead -- whether
+  // it lands before the caller's queue_left (plan DONE) or after it (activeRing deleted).
+  for (const afterQueueLeft of [false, true]) {
+    it(`a second staff leg answering after the call bridged is turned away (${afterQueueLeft ? "after" : "before"} queue_left)`, async () => {
+      await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+      await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+      await seedVoicemail("main_vm", "default");
+      await seedStaff("phill@b.com");
+      await seedStaff("sam@b.com");
+
+      const callSid = `CA-second-answer-${afterQueueLeft}`;
+      const stub = stubFor(callSid);
+      await send(stub, mainEvent(callSid));
+      await send(stub, mainEvent(callSid, { digits: "1" }));
+
+      const first = await send(stub, agentAnswer(callSid, "sid-client:phill@b.com?CallerNumber=61400000000"));
+      expect(first.xml).toContain("<Conference");
+      if (afterQueueLeft) await send(stub, queueLeft(callSid));
+
+      const second = await send(stub, agentAnswer(callSid, "sid-client:sam@b.com?CallerNumber=61400000000"));
+      expect(second.xml).toContain("<Say>This call was answered by someone else.</Say>");
+      expect(second.xml).toContain("<Hangup/>");
+      expect(second.xml).not.toContain("<Conference");
+
+      // The caller was redirected into the conference exactly once, by the answer that bridged.
+      const joins = fetchMock.mock.calls.filter(
+        (c) =>
+          String(c[0]).endsWith(`/Calls/${callSid}.json`) &&
+          (new URLSearchParams((c[1] as RequestInit).body as string).get("Url") ?? "").includes("join-conference")
+      );
+      expect(joins).toHaveLength(1);
+    });
+  }
+
+  // A redelivered answer webhook for the leg that DID bridge is still that staff member's call: it
+  // must join the conference (turning it away would hang up the one person talking to the caller),
+  // and must not redirect the caller again.
+  it("a redelivered answer for the leg that bridged still joins the conference without re-redirecting the caller", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const stub = stubFor("CA-answer-redelivered");
+    await send(stub, mainEvent("CA-answer-redelivered"));
+    await send(stub, mainEvent("CA-answer-redelivered", { digits: "1" }));
+    const phillSid = "sid-client:phill@b.com?CallerNumber=61400000000";
+    await send(stub, agentAnswer("CA-answer-redelivered", phillSid));
+    await send(stub, queueLeft("CA-answer-redelivered"));
+
+    fetchMock.mockClear();
+    const again = await send(stub, agentAnswer("CA-answer-redelivered", phillSid));
+    expect(again.xml).toContain(">CA-answer-redelivered</Conference>");
+    expect(again.xml).not.toContain("<Hangup/>");
+    expect(redirectIndex(fetchMock, "CA-answer-redelivered", "join-conference")).toBe(-1);
+  });
+
+  // The window above is the time the first answer spends cancelling its siblings: those are Twilio
+  // round trips, and a Durable Object lets another event in while it waits on one. So the bridged
+  // plan must already be in storage when the first cancel goes out, or the sibling's answer reads a
+  // still-DIALING plan and bridges too.
+  it("persists the bridged plan before cancelling the sibling legs", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const stub = stubFor("CA-done-first");
+    await send(stub, mainEvent("CA-done-first"));
+    await send(stub, mainEvent("CA-done-first", { digits: "1" }));
+
+    let storage: DurableObjectStorage | undefined;
+    await runInDurableObject(stub, (_instance, state) => {
+      storage = state.storage;
+    });
+    const planAtCancel: string[] = [];
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const isCancel =
+        /\/Calls\/[^/]+\.json$/.test(String(input)) &&
+        new URLSearchParams((init as RequestInit).body as string).get("Status") === "canceled";
+      if (isCancel) {
+        const ring = await storage!.get<{ ringPlanState: { name: string } }>("activeRing");
+        planAtCancel.push(ring?.ringPlanState.name ?? "missing");
+      }
+      return previous(input, init);
+    });
+
+    await send(stub, agentAnswer("CA-done-first", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    expect(planAtCancel).toEqual(["DONE"]);
   });
 
   // Reported as "it's forwarding from the test number not the main number": when a call diverts to
@@ -1766,7 +1863,7 @@ describe("CallSession", () => {
     const stub = stubFor("CA-timeline");
     await send(stub, mainEvent("CA-timeline"));
     await send(stub, mainEvent("CA-timeline", { digits: "1" }));
-    await send(stub, agentAnswer("CA-timeline", "sid-client:phill@b.com"));
+    await send(stub, agentAnswer("CA-timeline", "sid-client:phill@b.com?CallerNumber=61400000000"));
 
     const rows = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ? ORDER BY id")
       .bind("CA-timeline")
@@ -1817,7 +1914,7 @@ describe("CallSession", () => {
     expect(after).toEqual(before);
 
     // The second leg can still answer normally → bridge.
-    const answer = await send(stub, agentAnswer("CA-dup", "sid-+61422222222"));
+    const answer = await send(stub, agentAnswer("CA-dup", "sid-client:sam@b.com?CallerNumber=61400000000"));
     expect(answer.xml).toContain("<Dial");
   });
 

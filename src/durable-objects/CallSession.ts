@@ -455,7 +455,10 @@ export class CallSession extends DurableObject<Env> {
       attemptSids,
       pendingDial: greetingPrefix ? numbersToDial : undefined,
     };
+    // A new ring round: nobody has bridged in it yet. A leg left over from an earlier round (one the
+    // AMD rescue pulled the caller away from) must not read as the caller's leg in this one.
     await this.ctx.storage.put("activeRing", activeRing);
+    await this.ctx.storage.delete("bridgedAgentSid");
     if (!greetingPrefix) await this.logEvent(callSid, "ring_started", { targets: numbers.length, strategy: ringConfig.strategy });
 
     return renderEnqueue({
@@ -723,15 +726,39 @@ export class CallSession extends DurableObject<Env> {
     const origin = new URL(body.webhookUrl).origin;
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
 
-    if (activeRing && activeRing.ringPlanState.name === "DIALING") {
-      const { state, commands } = reduceRingPlan(activeRing.ringPlanState, { type: "ATTEMPT_ANSWERED" });
-      if (commands.some((c) => c.type === "CANCEL_OTHER_ATTEMPTS")) {
-        for (const sid of activeRing.attemptSids) {
-          if (sid !== body.agentCallSid) await this.cancelStaff(sid);
-        }
+    // Only a leg this ring round is still waiting on may bridge. Anything else answered too late:
+    // a sibling that picked up in the sub-second before the first answer's cancel reached it.
+    // Bridging it too re-redirected the caller (restarting their <Dial> and its recording, dropping
+    // and rejoining them) and put a second staff member into the live conversation.
+    //
+    // This never turns away the FIRST answer. Every path that deletes activeRing or ends DIALING
+    // before an answer is one where no caller is waiting to be bridged: queue_left's no-answer or
+    // hangup branch, a callback request (*), or the AMD rescue to business voicemail. queue_left's
+    // BRIDGED branch deletes it too, but only after an answer here already set DONE{bridged} --
+    // which is exactly the case to refuse, bar a redelivery of that same answer (below).
+    const isFirstAnswer =
+      activeRing?.ringPlanState.name === "DIALING" && activeRing.attemptSids.includes(body.agentCallSid);
+    if (!isFirstAnswer) {
+      // The leg that DID bridge, answer webhook delivered again: still that staff member's call. The
+      // caller was already redirected by the first delivery, so only this leg's document is needed.
+      if ((await this.ctx.storage.get<string>("bridgedAgentSid")) === body.agentCallSid) {
+        return this.xml(this.renderAgentJoin(body, origin));
       }
-      activeRing.ringPlanState = state;
-      await this.ctx.storage.put("activeRing", activeRing);
+      console.log("AGENT_ANSWER_TOO_LATE", JSON.stringify({ callSid: body.callSid, agentCallSid: body.agentCallSid }));
+      return this.xml(wrapResponse("<Say>This call was answered by someone else.</Say><Hangup/>"));
+    }
+
+    // Persisted BEFORE the cancels: each is a Twilio round trip, and a Durable Object lets other
+    // events in while it waits on one. A sibling's answer arriving then must already read DONE.
+    // bridgedAgentSid is which leg the caller is talking to this round (reset in startRing); it
+    // outlives activeRing, which queue_left deletes before any async AMD verdict lands.
+    const { state, commands } = reduceRingPlan(activeRing.ringPlanState, { type: "ATTEMPT_ANSWERED" });
+    activeRing.ringPlanState = state;
+    await this.ctx.storage.put({ activeRing, bridgedAgentSid: body.agentCallSid });
+    if (commands.some((c) => c.type === "CANCEL_OTHER_ATTEMPTS")) {
+      for (const sid of activeRing.attemptSids) {
+        if (sid !== body.agentCallSid) await this.cancelStaff(sid);
+      }
     }
     await this.logEvent(body.callSid, "answered", { agentCallSid: body.agentCallSid });
 
@@ -742,22 +769,25 @@ export class CallSession extends DurableObject<Env> {
       appendWebhookSecret(`${origin}/webhooks/twilio/join-conference?conf=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET)
     );
 
-    return this.xml(
-      renderDialAgentIntoConference({
-        conferenceName: body.callSid,
-        actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
-        recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`, this.env.TWILIO_WEBHOOK_SECRET),
-        // NEVER from the staff leg on an inbound call. The caller's leg (redirected to
-        // /join-conference immediately above) carries the recording, dual-channel and continuous
-        // across any transfer. Recording here too would give the call TWO recordings whose
-        // callbacks overwrite each other's `recording_url` -- and a warm transfer would add a
-        // THIRD from the target's leg. `record: false` is load-bearing, not a tidy-up.
-        record: false,
-        // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
-        // whisper appears exactly when the screen didn't already say this was work.
-        whisper: body.whisper === true,
-      })
-    );
+    return this.xml(this.renderAgentJoin(body, origin));
+  }
+
+  // The answering staff leg's own document: join the caller's conference.
+  private renderAgentJoin(body: AgentAnswerEvent, origin: string): string {
+    return renderDialAgentIntoConference({
+      conferenceName: body.callSid,
+      actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+      recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`, this.env.TWILIO_WEBHOOK_SECRET),
+      // NEVER from the staff leg on an inbound call. The caller's leg (redirected to
+      // /join-conference by handleAgentAnswer) carries the recording, dual-channel and continuous
+      // across any transfer. Recording here too would give the call TWO recordings whose
+      // callbacks overwrite each other's `recording_url` -- and a warm transfer would add a
+      // THIRD from the target's leg. `record: false` is load-bearing, not a tidy-up.
+      record: false,
+      // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
+      // whisper appears exactly when the screen didn't already say this was work.
+      whisper: body.whisper === true,
+    });
   }
 
   // -------------------------------------------------------------------------
