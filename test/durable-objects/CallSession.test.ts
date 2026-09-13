@@ -573,6 +573,119 @@ describe("CallSession", () => {
     expect(events.results[0].detail).toContain("mobile_voicemail_answered");
   });
 
+  // Two mobiles ring at once. Phill picks up; Sam's carrier voicemail answers in the same instant, so
+  // the cancel misses it and Sam's leg reaches agent-answer too (and is turned away). Sam's machine
+  // verdict lands 2-4s later -- and used to take the rescue path, pulling the caller OUT of a live
+  // conversation with Phill and into business voicemail.
+  it("a machine verdict on a sibling mobile does not pull the caller away from the staff member who answered", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await setUserSettings(env.DB, "sam@b.com", { ring_my_mobile: true, mobile_number: "0487654321" });
+
+    const stub = stubFor("CA-amd-sibling");
+    await send(stub, mainEvent("CA-amd-sibling"));
+    await send(stub, mainEvent("CA-amd-sibling", { digits: "1" }));
+    expect(outboundDials(fetchMock).sort()).toEqual(["+61412345678", "+61487654321"]);
+
+    // The real order: Phill's answer bridges, the caller's queue_left fires, Sam's late answer.
+    await send(stub, agentAnswer("CA-amd-sibling", "sid-+61412345678"));
+    await send(stub, queueLeft("CA-amd-sibling"));
+    const late = await send(stub, agentAnswer("CA-amd-sibling", "sid-+61487654321"));
+    expect(late.xml).not.toContain("<Conference");
+
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-sibling", "sid-+61412345678", "human"));
+    await send(stub, amdStatus("CA-amd-sibling", "sid-+61487654321", "machine_start"));
+
+    expect(redirectIndex(fetchMock, "CA-amd-sibling", "amd-fallthrough")).toBe(-1);
+    expect(hangupIndex(fetchMock, "sid-+61487654321")).toBeGreaterThanOrEqual(0);
+    expect(hangupIndex(fetchMock, "sid-+61412345678")).toBe(-1);
+  });
+
+  // The other arrival order, which is why "whichever leg answered first" was never human-vs-machine:
+  // Sam's voicemail reaches agent-answer first and bridges, and Phill's real answer is the late one,
+  // turned away. Nobody is live with the caller but a voicemail greeting, so Sam's machine verdict
+  // must still rescue them to business voicemail rather than leave them in it.
+  it("a machine verdict on the mobile that bridged still rescues the caller when a sibling answered second", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await setUserSettings(env.DB, "sam@b.com", { ring_my_mobile: true, mobile_number: "0487654321" });
+
+    const stub = stubFor("CA-amd-vm-first");
+    await send(stub, mainEvent("CA-amd-vm-first"));
+    await send(stub, mainEvent("CA-amd-vm-first", { digits: "1" }));
+
+    await send(stub, agentAnswer("CA-amd-vm-first", "sid-+61487654321"));
+    await send(stub, queueLeft("CA-amd-vm-first"));
+    const late = await send(stub, agentAnswer("CA-amd-vm-first", "sid-+61412345678"));
+    expect(late.xml).toContain("answered by someone else");
+
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-vm-first", "sid-+61487654321", "machine_start"));
+
+    const redirectAt = redirectIndex(fetchMock, "CA-amd-vm-first", "amd-fallthrough");
+    const hangupAt = hangupIndex(fetchMock, "sid-+61487654321");
+    expect(redirectAt).toBeGreaterThanOrEqual(0);
+    expect(hangupAt).toBeGreaterThan(redirectAt);
+
+    const fallthrough = await send(stub, amdFallthrough("CA-amd-vm-first"));
+    expect(fallthrough.xml).toContain("<Record");
+  });
+
+  // What sank the first attempt at the sibling fix: the leg that bridged was remembered for the whole
+  // call, so after a rescue sent the caller down the no-answer branch into a SECOND ring node, that
+  // round's voicemail no longer matched and the caller was not rescued. Which leg bridged is a fact
+  // about one ring round. A redelivered verdict from the first round must not pull the caller off
+  // hold in the second, either.
+  it("rescues from a staff voicemail in a second ring round, and ignores a stale verdict from the first", async () => {
+    await seedEntryGather({ option1: "ring_one", defaultNextNodeId: "main_vm" });
+    await seedRing("ring_one", { target: ["phill@b.com"], noAnswerNextNodeId: "ring_two" });
+    await seedRing("ring_two", { target: ["sam@b.com"], noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await setUserSettings(env.DB, "sam@b.com", { ring_my_mobile: true, mobile_number: "0487654321" });
+
+    const stub = stubFor("CA-amd-round2");
+    await send(stub, mainEvent("CA-amd-round2"));
+    await send(stub, mainEvent("CA-amd-round2", { digits: "1" }));
+
+    // Round one: Phill's voicemail answers, is caught, and the caller is rescued into round two.
+    await send(stub, agentAnswer("CA-amd-round2", "sid-+61412345678"));
+    await send(stub, queueLeft("CA-amd-round2"));
+    await send(stub, amdStatus("CA-amd-round2", "sid-+61412345678", "machine_start"));
+    fetchMock.mockClear();
+    const roundTwo = await send(stub, amdFallthrough("CA-amd-round2"));
+    expect(roundTwo.xml).toContain("<Enqueue");
+    expect(outboundDials(fetchMock)).toEqual(["+61487654321"]);
+
+    // Round one's verdict, delivered again while the caller is on hold ringing Sam.
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-round2", "sid-+61412345678", "machine_start"));
+    expect(redirectIndex(fetchMock, "CA-amd-round2", "amd-fallthrough")).toBe(-1);
+
+    // Round two: Sam's voicemail answers too, and is rescued exactly like the first.
+    await send(stub, agentAnswer("CA-amd-round2", "sid-+61487654321"));
+    await send(stub, queueLeft("CA-amd-round2"));
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-round2", "sid-+61487654321", "machine_start"));
+    const redirectAt = redirectIndex(fetchMock, "CA-amd-round2", "amd-fallthrough");
+    expect(redirectAt).toBeGreaterThanOrEqual(0);
+    expect(hangupIndex(fetchMock, "sid-+61487654321")).toBeGreaterThan(redirectAt);
+
+    const fallthrough = await send(stub, amdFallthrough("CA-amd-round2"));
+    expect(fallthrough.xml).toContain("<Record");
+  });
+
   // ivr_path is written by the VOICEMAIL handoff too, so the recovery join is pinned to ring nodes.
   // Walking a voicemail node's (nonexistent) no-answer branch would be a confident wrong answer.
   it("hangs up rather than guessing when the call is not parked on a ring node", async () => {

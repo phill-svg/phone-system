@@ -820,6 +820,30 @@ export class CallSession extends DurableObject<Env> {
       return new Response("ok", { status: 200 });
     }
 
+    // Is this the leg the caller is actually bridged to? Decided from which leg bridged THIS ring
+    // round, never from which answer arrived first: handleAgentAnswer turns every later answer away,
+    // so the leg that bridged is the only staff leg in the conference, whether it turns out to be a
+    // person or a voicemail. A verdict on any other leg -- a sibling mobile that picked up in the same
+    // instant, or a redelivered verdict from an earlier round -- is about a leg that never reached the
+    // caller, and rescuing on it pulled the caller out of a live conversation. That leg just goes.
+    //
+    // Not Twilio's participant list: a staff leg that has answered but not yet joined reads as "nobody
+    // there", which is the exact window this runs in, and a failed read would need a fallback.
+    // With no record of who bridged (a call answered before this shipped) and no ring in progress,
+    // the rescue runs as it always did.
+    const bridgedAgentSid = await this.ctx.storage.get<string>("bridgedAgentSid");
+    const isCallersLeg = bridgedAgentSid
+      ? bridgedAgentSid === body.agentCallSid
+      : activeRing?.ringPlanState.name !== "DIALING";
+    if (!isCallersLeg) {
+      try {
+        await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.agentCallSid);
+      } catch {
+        /* leg already gone */
+      }
+      return new Response("ok", { status: 200 });
+    }
+
     // Normal path: already bridged. ORDER MATTERS -- pull the CALLER out of the conference first,
     // then hang up the voicemail leg. Doing it the other way round fires the voicemail leg's
     // agent-status, whose cleanupLoneConference ends any conference with <=1 participant left --
