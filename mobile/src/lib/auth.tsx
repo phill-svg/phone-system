@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { getToken, setToken } from "./session";
+import { getTokenWhenReadable, setToken } from "./session";
 import { login as apiLogin, getMe, setUnauthorizedHandler, type StaffUser } from "./api";
 import { performSignOut } from "./signOut";
 
@@ -23,7 +23,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // A 401 anywhere drops us to anon.
     setUnauthorizedHandler(() => { setUser(null); setStatus("anon"); });
     (async () => {
-      const token = await getToken();
+      // Not getToken: on a locked-phone launch the keychain refuses the read, and an uncaught throw
+      // here left the app on its spinner for the life of the process.
+      const token = await getTokenWhenReadable();
       if (!token) { setStatus("anon"); return; }
       setStatus("authed");
       // Sign-in is the only other place `user` is set, so a relaunch restored the token but left

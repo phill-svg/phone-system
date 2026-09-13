@@ -1,20 +1,92 @@
 jest.mock("expo-secure-store");
 import * as SecureStore from "expo-secure-store";
-import { getToken, setToken, clearToken } from "../src/lib/session";
+import { AppState } from "react-native";
+import { getToken, setToken, clearToken, getTokenWhenReadable } from "../src/lib/session";
+
+const store = SecureStore as jest.Mocked<typeof SecureStore>;
 
 describe("session token store", () => {
-  beforeEach(() => jest.clearAllMocks());
-
-  it("setToken writes to secure store under the token key", async () => {
-    await setToken("abc.def");
-    expect(SecureStore.setItemAsync).toHaveBeenCalledWith("tcb_session_token", "abc.def");
+  beforeEach(() => {
+    jest.clearAllMocks();
+    store.getItemAsync.mockResolvedValue(null);
   });
-  it("getToken reads from secure store", async () => {
-    (SecureStore.getItemAsync as jest.Mock).mockResolvedValue("abc.def");
+
+  // A VoIP push launches the app on a LOCKED iPhone. The default (WHEN_UNLOCKED) item cannot be
+  // read then, the restore threw, and the app sat on its spinner with no call UI.
+  it("setToken stores the token readable after first unlock", async () => {
+    await setToken("abc.def");
+    expect(store.setItemAsync).toHaveBeenCalledWith("tcb_session_token_v2", "abc.def", {
+      keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+    });
+  });
+
+  it("getToken reads the current key", async () => {
+    store.getItemAsync.mockImplementation(async (k: string) => (k === "tcb_session_token_v2" ? "abc.def" : null));
     expect(await getToken()).toBe("abc.def");
   });
-  it("clearToken deletes the key", async () => {
+
+  // Accessibility is fixed when an item is written, and SecureStore's update keeps the old value,
+  // so an existing token has to be rewritten under a new key. Written first, old deleted after:
+  // a crash in between must not sign anyone out.
+  it("moves a token stored the old way to the new key, writing before deleting", async () => {
+    store.getItemAsync.mockImplementation(async (k: string) => (k === "tcb_session_token" ? "old.tok" : null));
+    const order: string[] = [];
+    store.setItemAsync.mockImplementation(async () => { order.push("set"); });
+    store.deleteItemAsync.mockImplementation(async () => { order.push("delete"); });
+
+    expect(await getToken()).toBe("old.tok");
+    expect(store.setItemAsync).toHaveBeenCalledWith("tcb_session_token_v2", "old.tok", {
+      keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+    });
+    expect(store.deleteItemAsync).toHaveBeenCalledWith("tcb_session_token");
+    expect(order).toEqual(["set", "delete"]);
+  });
+
+  // api.ts and the auth restore both read at launch. Two moves racing let one delete the legacy
+  // key between the other's two reads, which returned null, 401'd, and signed the user out.
+  it("gives concurrent reads during the move the same token", async () => {
+    const keys = new Map<string, string>([["tcb_session_token", "old.tok"]]);
+    const tick = () => new Promise((r) => setImmediate(r));
+    store.getItemAsync.mockImplementation(async (k: string) => { await tick(); return keys.get(k) ?? null; });
+    store.setItemAsync.mockImplementation(async (k: string, v: string) => { await tick(); keys.set(k, v); });
+    store.deleteItemAsync.mockImplementation(async (k: string) => { await tick(); keys.delete(k); });
+
+    expect(await Promise.all([getToken(), getToken()])).toEqual(["old.tok", "old.tok"]);
+    // One move, not two racing ones -- the interleaving that loses the token is timing-dependent,
+    // so what is pinned is that it cannot happen at all.
+    expect(store.setItemAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("clearToken deletes both keys", async () => {
     await clearToken();
-    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith("tcb_session_token");
+    expect(store.deleteItemAsync).toHaveBeenCalledWith("tcb_session_token_v2");
+    expect(store.deleteItemAsync).toHaveBeenCalledWith("tcb_session_token");
+  });
+});
+
+describe("getTokenWhenReadable", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  // The keychain refusing a read is not "signed out". Treating it as anon would put a locked-launch
+  // user on the login screen; leaving it thrown left them on a spinner. Wait for the app to be
+  // active (unlocked) and read again.
+  it("retries a refused read once the app becomes active", async () => {
+    let listener: ((s: string) => void) | undefined;
+    const remove = jest.fn();
+    jest.spyOn(AppState, "addEventListener").mockImplementation(((_: string, fn: (s: string) => void) => {
+      listener = fn;
+      return { remove };
+    }) as never);
+    store.getItemAsync
+      .mockRejectedValueOnce(new Error("User interaction is not allowed."))
+      .mockResolvedValue("abc.def");
+
+    const pending = getTokenWhenReadable();
+    await new Promise((r) => setImmediate(r));
+    expect(listener).toBeDefined();
+    listener!("active");
+
+    expect(await pending).toBe("abc.def");
+    expect(remove).toHaveBeenCalled();
   });
 });
