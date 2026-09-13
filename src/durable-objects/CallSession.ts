@@ -1227,7 +1227,18 @@ export class CallSession extends DurableObject<Env> {
     // can later verify a client-submitted CallSid actually belongs to the AUTHENTICATED staff
     // member, not just that it's someone's leg in the conference. `callSid` here is the caller's
     // own CallSid, which is also the queue/conference name (see startRing's renderEnqueue call).
-    await recordCallLeg(this.env.DB, sid, ownerEmail, callSid);
+    //
+    // Never throws: the leg already EXISTS and is ringing. Throwing here loses its sid, so it sits in
+    // no attemptSids and is never cancelled on answer. A missing ownership row only costs that staff
+    // member hold/transfer on this one call.
+    try {
+      await recordCallLeg(this.env.DB, sid, ownerEmail, callSid);
+    } catch (err) {
+      console.log(
+        "CALL_LEG_RECORD_FAILED",
+        JSON.stringify({ callSid, sid, error: err instanceof Error ? err.message : String(err) })
+      );
+    }
     return sid;
   }
 

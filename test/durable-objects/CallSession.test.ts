@@ -1746,6 +1746,35 @@ describe("CallSession", () => {
     expect(answer.xml).toContain("<Dial");
   });
 
+  // recordCallLeg runs AFTER Twilio has created the leg. When it threw, dialStaff threw with it and
+  // the sid was lost: dialBatch cancelled only the legs it already held, so this one kept ringing in
+  // no attemptSids -- never cancelled on answer -- while the caller was sent to voicemail anyway.
+  it("keeps ringing and tracks the leg when recording its ownership fails", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const stub = stubFor("CA-leg-record-throws");
+    await send(stub, mainEvent("CA-leg-record-throws"));
+    await env.DB.prepare("ALTER TABLE softphone_call_legs RENAME TO softphone_call_legs_broken").run();
+    let xml: string;
+    try {
+      ({ xml } = await send(stub, mainEvent("CA-leg-record-throws", { digits: "1" })));
+    } finally {
+      await env.DB.prepare("ALTER TABLE softphone_call_legs_broken RENAME TO softphone_call_legs").run();
+    }
+
+    expect(xml).toContain("<Enqueue");
+    expect(outboundDials(fetchMock).length).toBe(2);
+
+    // Both legs are tracked, so answering one cancels the other.
+    await send(stub, agentAnswer("CA-leg-record-throws", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    expect(cancelHits(fetchMock)).toHaveLength(1);
+    expect(cancelHits(fetchMock)[0]).toContain("sam@b.com");
+  });
+
   // The softphone-outbound lookup at the top of handleAgentStatus used to be unguarded. A transient
   // D1 failure there threw to the DO catch-all, which answers agent_status with a plain 200 -- so
   // Twilio never retried, the leg was never removed from attemptSids, and the plan sat in DIALING
