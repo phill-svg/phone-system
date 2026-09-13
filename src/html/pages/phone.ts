@@ -1505,6 +1505,14 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         setTimeout(loadCalls, 1500);
       }
 
+      // An incoming call that never connected HERE -- answered on another phone, or declined. Only
+      // the banner and the reference go: onCallEnded's showDetail('empty') would replace whatever
+      // pane was open, unsaved call notes included, over a call this browser never took.
+      function onIncomingGone(call) {
+        hideIncomingBanner();
+        if (activeCall === call) activeCall = null;
+      }
+
       // Load the business's voice numbers into the dialer "Call from" row. 2+ numbers => a dropdown
       // picker; exactly 1 => a static "Calling from …" line; 0 => hidden. Ported numbers make the
       // picker appear automatically.
@@ -1727,8 +1735,8 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
             window.desktopBridge?.notifyIncomingCall(incomingCallerNumber(call));
             call.on('accept', onCallConnected);
             call.on('disconnect', onCallEnded);
-            call.on('cancel', onCallEnded);
-            call.on('reject', onCallEnded);
+            call.on('cancel', function () { onIncomingGone(call); });
+            call.on('reject', function () { onIncomingGone(call); });
           });
           await device.register();
         } catch (err) {
