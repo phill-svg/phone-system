@@ -84,7 +84,28 @@ describe("handlePostHold", () => {
     expect(setHold).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAother", true);
   });
 
+  // An inbound call's conference is named after the CALLER's leg (CallSession.dialStaff), which a
+  // handset does not know. The web sent its own leg sid and got "conference not found" on every
+  // inbound hold. The leg row already records the real conference, so that is the one to use.
+  it("finds an inbound call's conference from the leg record, not the client's guess", async () => {
+    await recordCallLeg(env.DB, "CAself", "a@b.com", "CAcaller");
+    const findSid = vi.fn().mockResolvedValue("CFxxx");
+    const listParticipants = vi.fn().mockResolvedValue([{ callSid: "CAself" }, { callSid: "CAcaller" }]);
+    const setHold = vi.fn().mockResolvedValue(undefined);
+    const res = await handlePostHold(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAself", selfCallSid: "CAself", hold: true }) }),
+      { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },
+      { email: "a@b.com", role: "staff" },
+      env.DB,
+      { findConferenceSid: findSid, listParticipants, setParticipantHold: setHold }
+    );
+    expect(res.status).toBe(200);
+    expect(findSid).toHaveBeenCalledWith("ACxxx", "authtoken", "CAcaller");
+    expect(setHold).toHaveBeenCalledWith("ACxxx", "authtoken", "CFxxx", "CAcaller", true);
+  });
+
   it("404s when the conference can't be found", async () => {
+    await recordCallLeg(env.DB, "CAself", "a@b.com", "CAcaller");
     const res = await handlePostHold(
       new Request("http://x", { method: "POST", body: JSON.stringify({ conferenceName: "CAcaller", selfCallSid: "CAself", hold: true }) }),
       { TWILIO_ACCOUNT_SID: "ACxxx", TWILIO_AUTH_TOKEN: "authtoken" },

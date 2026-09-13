@@ -17,6 +17,16 @@ export async function recordCallLeg(
     .run();
 }
 
+// The conference this staff member's leg sits in, or null when the leg is not theirs. The client
+// cannot be asked for it: an inbound call's conference is named after the CALLER's leg.
+export async function ownLegConference(db: D1Database, callSid: string, staffEmail: string): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT conference_name FROM softphone_call_legs WHERE call_sid = ? AND staff_email = ?")
+    .bind(callSid, staffEmail)
+    .first<{ conference_name: string }>();
+  return row?.conference_name ?? null;
+}
+
 export async function isOwnLeg(db: D1Database, callSid: string, staffEmail: string): Promise<boolean> {
   const row = await db
     .prepare("SELECT 1 FROM softphone_call_legs WHERE call_sid = ? AND staff_email = ?")

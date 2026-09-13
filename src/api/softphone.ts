@@ -9,7 +9,7 @@ function validCallerId(resolved: string | null): string | null {
   const n = (resolved ?? "").trim();
   return /^\+[1-9]\d{7,14}$/.test(n) ? n : null;
 }
-import { recordCallLeg, isOwnLeg } from "../db/callLegs";
+import { recordCallLeg, isOwnLeg, ownLegConference } from "../db/callLegs";
 import type { StaffUser } from "../access/requireStaffUser";
 import {
   findConferenceSid as realFindConferenceSid,
@@ -109,19 +109,20 @@ export async function handlePostHold(
     return new Response("invalid request body", { status: 400 });
   }
   if (typeof body !== "object" || body === null) return new Response("invalid request body", { status: 400 });
-  const { conferenceName, selfCallSid, hold } = body as Record<string, unknown>;
-  if (typeof conferenceName !== "string" || typeof selfCallSid !== "string" || typeof hold !== "boolean") {
+  // A body `conferenceName` is ignored: the leg record knows the real one, and a client cannot --
+  // an inbound call's conference is named after the caller's leg, so every inbound hold used to 404.
+  const { selfCallSid, hold } = body as Record<string, unknown>;
+  if (typeof selfCallSid !== "string" || typeof hold !== "boolean") {
     return new Response("invalid request body", { status: 400 });
   }
-  const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
-  if (!conferenceSid) return new Response("conference not found", { status: 404 });
   // Bind the claimed leg to the AUTHENTICATED staff identity -- never trust a body-supplied email.
   // This closes the gap where a staff member reads a colleague's live-call CallSid (via
   // GET /api/calls/live) and submits it as their OWN selfCallSid: it's a genuine participant, but
   // it was never dialed/received on THIS staff member's behalf.
-  if (!(await isOwnLeg(db, selfCallSid, staff.email))) {
-    return new Response("not your call leg", { status: 403 });
-  }
+  const conferenceName = await ownLegConference(db, selfCallSid, staff.email);
+  if (!conferenceName) return new Response("not your call leg", { status: 403 });
+  const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
+  if (!conferenceSid) return new Response("conference not found", { status: 404 });
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
   if (!participants.some((p) => p.callSid === selfCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
