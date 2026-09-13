@@ -680,6 +680,9 @@ export class CallSession extends DurableObject<Env> {
     await this.logEvent(body.callSid, abandonedMidRing ? "caller_hung_up" : "no_answer");
     await this.notifyMissedOnce(body.callSid);
     await this.ctx.storage.delete("activeRing");
+    // The no-answer branch is for a caller still on the line. Walking it after a hangup rang the
+    // next ring node's whole team again for nobody.
+    if (body.queueResult === "hangup") return this.xml(wrapResponse("<Hangup/>"));
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     return this.xml(
       await this.renderNoAnswerFallthrough(body.callSid, activeRing.ringConfig.noAnswerNextNodeId, isAfterHours, origin)

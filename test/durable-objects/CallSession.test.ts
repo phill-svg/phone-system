@@ -1661,6 +1661,27 @@ describe("CallSession", () => {
     expect(ev).toBeTruthy();
   });
 
+  // The no-answer branch is for a caller still on the line. Production's main flow rings a second
+  // round there, so walking it after a hangup dialled the whole team again for nobody.
+  it("caller hanging up mid-ring does not walk the no-answer branch (no second ring round)", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_ring2" });
+    await seedRing("main_ring2", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const stub = stubFor("CA-abandon2");
+    await send(stub, mainEvent("CA-abandon2"));
+    await send(stub, mainEvent("CA-abandon2", { digits: "1" }));
+    expect(outboundDials(fetchMock).length).toBe(2);
+
+    const left = await send(stub, queueLeft("CA-abandon2", "hangup"));
+
+    expect(outboundDials(fetchMock).length).toBe(2);
+    expect(left.xml).toContain("<Hangup/>");
+  });
+
   it("writes a call event timeline (call_started, menu_selection, ring_started, answered)", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
