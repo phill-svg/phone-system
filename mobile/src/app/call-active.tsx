@@ -90,6 +90,9 @@ export default function ActiveCallScreen() {
   const [state, setState] = useState<CallState>("calling");
   const [seconds, setSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
+  // Read when the Call attaches: mute tapped while an outbound call is still being placed had no
+  // Call to reach, so the screen said muted and the call connected with the mic open.
+  const mutedRef = useRef(false);
   // Reflects the actually-selected native audio device (not just what was requested) —
   // kept in sync via onAudioDevicesUpdated below so the UI never lies about the real route.
   const [audioRoute, setAudioRoute] = useState<AudioDeviceLike["type"] | null>(null);
@@ -150,6 +153,7 @@ export default function ActiveCallScreen() {
           return;
         }
         callRef.current = call;
+        if (mutedRef.current) Promise.resolve(call.mute(true)).catch(() => {});
         if (isIncoming) setState("connected");
         call.on(TwilioCall.Event.Ringing, () => setState("calling"));
         call.on(TwilioCall.Event.Connected, () => setState("connected"));
@@ -248,6 +252,7 @@ export default function ActiveCallScreen() {
 
   function toggleMute() {
     const next = !muted;
+    mutedRef.current = next;
     callRef.current?.mute(next);
     setMuted(next);
   }
