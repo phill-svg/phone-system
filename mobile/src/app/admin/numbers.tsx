@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ScrollView, View, Text, TextInput, ActivityIndicator, Alert } from "react-native";
 import { Screen } from "../../components/ui/Screen";
 import { Group, Row } from "../../components/ui/Grouped";
@@ -13,6 +13,7 @@ import {
   type PhoneNumberInput,
 } from "../../lib/api";
 import { toE164 } from "../../lib/phone";
+import { reseedDraft } from "../../lib/draft";
 import { useTheme, type } from "../../theme/theme";
 
 type Region = "au1" | "us1";
@@ -141,7 +142,15 @@ function NumberCard({ number, onChanged }: { number: PhoneNumber; onChanged: () 
   const [input, setInput] = useState<PhoneNumberInput>(toInput(number));
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => setInput(toInput(number)), [number]);
+  // Every save, remove or add on this screen reloads the whole list, which hands EVERY card a new
+  // `number` -- so re-seeding unconditionally discarded unsaved edits on the other cards.
+  const seeded = useRef(toInput(number));
+  useEffect(() => {
+    const last = seeded.current; // captured now: the updater runs after the ref moves below
+    const incoming = toInput(number);
+    setInput((current) => reseedDraft(current, last, incoming));
+    seeded.current = incoming;
+  }, [number]);
 
   const dirty = JSON.stringify(input) !== JSON.stringify(toInput(number));
   // The trap that cost a day when the landline ported in on us1: a voice number is processed in
