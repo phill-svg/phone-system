@@ -833,6 +833,53 @@ describe("admin diagnostics", () => {
       stubFetch();
       expect(find(await run(), "on_call").status).toBe("ok");
     });
+
+    async function node(id: string, flow: string, isEntry: boolean, type: string, config: unknown) {
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1)")
+        .bind(id, flow, isEntry ? 1 : 0, type, JSON.stringify(config))
+        .run();
+    }
+    const ON_CALL_RING = { target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" };
+    const VOICEMAIL = { audioAssetId: null, ttsText: "", mailboxLabel: "after hours" };
+
+    // A date_rule branches on the HOLIDAY list, not on the time of day. An ordinary night is not a
+    // closed date, so flowEngine takes its OPEN branch -- following only closedNextNodeId walked the
+    // holiday path and called a correctly wired rota unwired.
+    it("follows a date rule's open branch, which is the one an ordinary night takes", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await node("n_dates", "main", true, "date_rule", { closedDates: ["12-25"], openNextNodeId: "n_ring", closedNextNodeId: "n_vm" });
+      await node("n_ring", "main", false, "ring", ON_CALL_RING);
+      await node("n_vm", "main", false, "voicemail", VOICEMAIL);
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("ok");
+    });
+
+    // CallSession routes an after-hours call into the `after_hours` flow whenever that flow has an
+    // entry node, so that flow -- not `main` -- is the one an after-hours caller walks.
+    it("walks the after_hours flow when it has an entry node", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await seedUnwiredFlow();
+      await node("n_ah_ring", "after_hours", true, "ring", ON_CALL_RING);
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("ok");
+    });
+
+    it("is not satisfied by main when an after_hours flow bypasses the rota", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await wireIvrToOnCall();
+      await node("n_ah_vm", "after_hours", true, "voicemail", VOICEMAIL);
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("no step of the phone menu");
+    });
 });
 });
 
