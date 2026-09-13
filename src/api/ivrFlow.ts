@@ -28,6 +28,15 @@ function isNumberOrNull(value: unknown): value is number | null {
   return value === null || typeof value === "number";
 }
 
+// numDigits goes to <Gather> verbatim and timeoutSeconds to the ring leg, so zero is not "unset" --
+// it is a live Gather collecting no digits, or a leg that never rings.
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 1;
+}
+
+// The one numeric field per type that must be at least 1, checked by name so the 400 says which.
+const POSITIVE_INT_FIELD: Partial<Record<NodeType, string>> = { input: "numDigits", ring: "timeoutSeconds" };
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -67,7 +76,7 @@ function isRingConfig(c: Record<string, unknown>): boolean {
   return (
     (c.target === "all" || c.target === "on_call" || isStringArray(c.target)) &&
     (c.strategy === "cascade" || c.strategy === "simultaneous") &&
-    typeof c.timeoutSeconds === "number" &&
+    isPositiveInteger(c.timeoutSeconds) &&
     isString(c.noAnswerNextNodeId)
   );
 }
@@ -108,7 +117,7 @@ function isInputConfig(c: Record<string, unknown>): boolean {
   return (
     isStringOrNull(c.audioAssetId) &&
     isStringOrNull(c.ttsText) &&
-    typeof c.numDigits === "number" &&
+    isPositiveInteger(c.numDigits) &&
     isString(c.nextNodeId)
   );
 }
@@ -218,6 +227,10 @@ export async function handlePutFlow(
       if (bad !== undefined) {
         return badRequest(`node '${raw.id}': closed date '${bad}' is not a date this can match. Use YYYY-MM-DD, MM-DD, or a range of either with '..'.`);
       }
+    }
+    const intField = POSITIVE_INT_FIELD[type];
+    if (intField && isPlainObject(raw.config) && !isPositiveInteger(raw.config[intField])) {
+      return badRequest(`node '${raw.id}': ${intField} must be a whole number of at least 1`);
     }
     if (!isValidConfigForType(type, raw.config)) {
       return badRequest(`node '${raw.id}' has an invalid config shape for type '${type}'`);
