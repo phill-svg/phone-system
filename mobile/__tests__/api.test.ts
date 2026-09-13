@@ -11,7 +11,7 @@ declare global {
 
 jest.mock("../src/lib/session");
 import * as session from "../src/lib/session";
-import { apiFetch, login, logout, ApiError, setUnauthorizedHandler, putIvrFlow, holdCall } from "../src/lib/api";
+import { apiFetch, login, logout, ApiError, setUnauthorizedHandler, putIvrFlow, holdCall, startTransfer, completeTransfer, getStaffRoster } from "../src/lib/api";
 import { IVR_NODE_PUT_FIELDS } from "../src/lib/ivr";
 
 const okJson = (body: unknown, status = 200) =>
@@ -127,5 +127,46 @@ describe("holdCall", () => {
     expect(url).toMatch(/\/api\/softphone\/hold$/);
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({ selfCallSid: "CA-leg-1", hold: true });
+  });
+});
+
+// The server resolves the conference from the leg itself (an inbound call's is named after the
+// caller's leg), so neither request carries a conferenceName.
+describe("transfer", () => {
+  beforeEach(() => { (session.getToken as jest.Mock).mockResolvedValue(null); });
+
+  it("dials the colleague into this leg's conference", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okJson({ sid: "CA-transfer" }));
+    (global as any).fetch = fetchMock as any;
+
+    await startTransfer("CA-leg-1", "b@tcb.com.au");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/softphone\/transfer$/);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ agentCallSid: "CA-leg-1", targetEmail: "b@tcb.com.au" });
+  });
+
+  it("completes by removing this leg", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okJson({ ok: true }));
+    (global as any).fetch = fetchMock as any;
+
+    await completeTransfer("CA-leg-1");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/softphone\/transfer\/complete$/);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ selfCallSid: "CA-leg-1" });
+  });
+
+  it("reads the colleague roster, not the admin one", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okJson([]));
+    (global as any).fetch = fetchMock as any;
+
+    await getStaffRoster();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/staff$/);
+    expect(init.method).toBeUndefined();
   });
 });
