@@ -745,6 +745,11 @@ export class CallSession extends DurableObject<Env> {
         return this.xml(this.renderAgentJoin(body, origin));
       }
       console.log("AGENT_ANSWER_TOO_LATE", JSON.stringify({ callSid: body.callSid, agentCallSid: body.agentCallSid }));
+      // Remembered so this leg's own `completed` status (it did answer) does not run the lone-
+      // conference cleanup: it was never a participant, and it hangs up inside the window where the
+      // caller has joined and the leg that bridged has not -- see handleAgentStatus.
+      const turnedAway = (await this.ctx.storage.get<string[]>("turnedAwayAgentSids")) ?? [];
+      await this.ctx.storage.put("turnedAwayAgentSids", [...turnedAway, body.agentCallSid]);
       return this.xml(wrapResponse("<Say>This call was answered by someone else.</Say><Hangup/>"));
     }
 
@@ -967,7 +972,11 @@ export class CallSession extends DurableObject<Env> {
     // sibling that failed never joined -- answering cancels the siblings, and their `canceled`
     // callbacks land while the caller has been redirected in but the answering staff leg has not
     // yet joined, when "<=1 participant" is true and ending the conference drops the customer.
-    if (body.callStatus === "completed") {
+    //
+    // Nor did a leg handleAgentAnswer turned away: it answered, so it reports `completed`, but it
+    // was never in the conference and its hangup lands in that same join window.
+    const turnedAway = (await this.ctx.storage.get<string[]>("turnedAwayAgentSids"))?.includes(body.agentCallSid) ?? false;
+    if (body.callStatus === "completed" && !turnedAway) {
       await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
     } else if (terminal && targetSid !== null && targetSid === body.agentCallSid) {
       // An outbound softphone customer was busy, never answered, or failed. End the staff member's

@@ -1122,6 +1122,48 @@ describe("CallSession", () => {
     });
   }
 
+  // A turned-away leg DID answer, so Twilio reports it `completed` -- the status that runs
+  // cleanupLoneConference. But it was never in the conference, and it hangs up within seconds,
+  // inside the window where the caller has been redirected in and the staff leg that bridged has not
+  // yet joined: "<=1 participant" is true then, and ending the conference drops the customer.
+  it("a turned-away leg hanging up does not end the conference the caller is joining", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const u = String(input);
+      if (u.includes("/Conferences.json")) return new Response(JSON.stringify({ conferences: [{ sid: "CF1" }] }), { status: 200 });
+      if (u.includes("/Participants.json")) return new Response(JSON.stringify({ participants: [{ call_sid: "CA-refused-hangup" }] }), { status: 200 });
+      return previous(input, init);
+    });
+    const endConferenceHits = () =>
+      fetchMock.mock.calls.filter(
+        (c) =>
+          String(c[0]).endsWith("/Conferences/CF1.json") &&
+          new URLSearchParams((c[1] as RequestInit).body as string).get("Status") === "completed"
+      ).length;
+
+    const stub = stubFor("CA-refused-hangup");
+    await send(stub, mainEvent("CA-refused-hangup"));
+    await send(stub, mainEvent("CA-refused-hangup", { digits: "1" }));
+    const phillSid = "sid-client:phill@b.com?CallerNumber=61400000000";
+    const samSid = "sid-client:sam@b.com?CallerNumber=61400000000";
+    await send(stub, agentAnswer("CA-refused-hangup", phillSid));
+    await send(stub, queueLeft("CA-refused-hangup"));
+    await send(stub, agentAnswer("CA-refused-hangup", samSid));
+
+    await send(stub, agentStatus("CA-refused-hangup", samSid, "completed"));
+    expect(endConferenceHits()).toBe(0);
+
+    // The leg that was in the conference still cleans up after itself.
+    await send(stub, agentStatus("CA-refused-hangup", phillSid, "completed"));
+    expect(endConferenceHits()).toBe(1);
+  });
+
   // A redelivered answer webhook for the leg that DID bridge is still that staff member's call: it
   // must join the conference (turning it away would hang up the one person talking to the caller),
   // and must not redirect the caller again.
