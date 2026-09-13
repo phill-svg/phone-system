@@ -1657,7 +1657,10 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           document.getElementById('complete-transfer-btn').style.display = 'none';
           activeCall.disconnect();
         } else {
-          status.textContent = 'Failed to complete transfer.';
+          // The server says why (e.g. 409: the colleague has not answered yet, so leaving would drop the caller).
+          var msg = 'Failed to complete transfer.';
+          try { var errBody = await res.json(); if (errBody && errBody.error) msg = errBody.error; } catch (e) {}
+          status.textContent = msg;
         }
       });
 
