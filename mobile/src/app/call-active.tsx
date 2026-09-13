@@ -208,11 +208,9 @@ export default function ActiveCallScreen() {
 
   function endCall() {
     haptics.heavy();
-    // Nothing left to hang up: End on a finished call is the way out, not a no-op.
-    if (state === "ended") {
-      router.back();
-      return;
-    }
+    // Nothing left to hang up, and the screen is already leaving (finish's timer, or on refocus).
+    // Going back here too popped the screen underneath as well.
+    if (state === "ended") return;
     const call = callRef.current;
     if (!call) {
       // No Call object attached to this screen: leaving would strand a live call with no UI, so

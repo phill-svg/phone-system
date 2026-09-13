@@ -262,7 +262,12 @@ function adoptCall(call: Call): void {
 // Register this device to receive incoming calls via push, and wire the CallInvite handler.
 // `onInvite` is called (with the caller's number) when a call comes in, so the UI can navigate
 // to the ringing screen. Returns an unsubscribe function.
-export async function registerForIncoming(onInvite: (from: string) => void): Promise<() => void> {
+// `onAdopted` is called when a call was already answered (from CallKit) before JS subscribed, so the
+// UI can open the in-call screen for it -- otherwise it is live with no in-app controls.
+export async function registerForIncoming(
+  onInvite: (from: string) => void,
+  onAdopted?: (from: string) => void
+): Promise<() => void> {
   // Android 13+ needs notification permission to show the incoming-call banner. Best-effort —
   // registration still proceeds if declined (the call just won't post a heads-up notification).
   if (Platform.OS === "android" && Number(Platform.Version) >= 33) {
@@ -327,7 +332,10 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
       for (const [uuid, invite] of invites) {
         const answered = calls.get(uuid);
         if (answered) {
-          if (!activeCall) adoptCall(answered);
+          if (!activeCall) {
+            adoptCall(answered);
+            onAdopted?.(invite.getFrom());
+          }
           continue;
         }
         handler(invite);

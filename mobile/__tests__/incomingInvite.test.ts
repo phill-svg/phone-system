@@ -257,12 +257,16 @@ describe("incoming invite lifecycle", () => {
     mockVoiceRef.current.pendingInvites = new Map([["uuid-2", invite]]);
     mockVoiceRef.current.calls = new Map([["uuid-2", call]]);
 
-    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    const onAdopted = jest.fn();
+    const unsub = track(await voiceLib.registerForIncoming(onInvite, onAdopted));
     await new Promise((r) => setImmediate(r));
 
     expect(onInvite).not.toHaveBeenCalled();
     expect(voiceLib.getPendingInvite()).toBeNull();
     expect(voiceLib.getActiveCall()).toBe(call);
+    // Adopting silently left a live call with no in-app End/Hold/keypad: the app has to be told so
+    // it can open the in-call screen.
+    expect(onAdopted).toHaveBeenCalledWith("+61400000000");
     unsub();
     mockVoiceRef.current.pendingInvites = new Map();
     mockVoiceRef.current.calls = new Map();

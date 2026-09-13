@@ -32,6 +32,9 @@ function useIncomingCalls() {
       }
       // show-incoming and show-waiting both open the ringing screen; "waiting" adds context.
       router.push({ pathname: "/call-incoming", params: { number: from, name: "", waiting: action === "show-waiting" ? "1" : "" } });
+    }, (from) => {
+      // Already answered from the lock screen before the app loaded: straight to the in-call screen.
+      router.push({ pathname: "/call-active", params: { number: from, name: "", direction: "incoming" } });
     })
       .then((u) => {
         unsub = u;

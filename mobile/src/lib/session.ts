@@ -29,12 +29,21 @@ async function readToken(): Promise<string | null> {
   return legacy;
 }
 
-// A refused read is not "signed out": wait until the app is active (unlocked) and read again.
+// A refused read is not "signed out": wait until the app is active (unlocked) and read again. If it
+// is ALREADY active, no change event will come -- retry at once, and a second refusal while active
+// is not the lock (an Android keystore that cannot decrypt), so it counts as signed out rather than
+// a spinner forever.
 export async function getTokenWhenReadable(): Promise<string | null> {
+  let refusedWhileActive = false;
   for (;;) {
     try {
       return await getToken();
     } catch {
+      if (AppState.currentState === "active") {
+        if (refusedWhileActive) return null;
+        refusedWhileActive = true;
+        continue;
+      }
       await new Promise<void>((resolve) => {
         const sub = AppState.addEventListener("change", (s) => {
           if (s === "active") {

@@ -65,7 +65,33 @@ describe("session token store", () => {
 });
 
 describe("getTokenWhenReadable", () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+    Object.defineProperty(AppState, "currentState", { value: "background", configurable: true });
+  });
+
+  // Unlocked and opened before the listener attached: no further change event ever comes. Waiting
+  // for one left the app on its spinner until it was backgrounded and reopened.
+  it("retries at once when the app is already active", async () => {
+    Object.defineProperty(AppState, "currentState", { value: "active", configurable: true });
+    const add = jest.spyOn(AppState, "addEventListener");
+    store.getItemAsync
+      .mockRejectedValueOnce(new Error("User interaction is not allowed."))
+      .mockResolvedValue("abc.def");
+
+    expect(await getTokenWhenReadable()).toBe("abc.def");
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  // A refusal while active is not the lock (e.g. an Android keystore that cannot decrypt). Waiting
+  // for an unlock that is not coming is the same spinner; signed out at least lets them sign in.
+  it("treats a second refusal while active as signed out", async () => {
+    Object.defineProperty(AppState, "currentState", { value: "active", configurable: true });
+    store.getItemAsync.mockRejectedValue(new Error("decrypt failed"));
+
+    expect(await getTokenWhenReadable()).toBeNull();
+  });
 
   // The keychain refusing a read is not "signed out". Treating it as anon would put a locked-launch
   // user on the login screen; leaving it thrown left them on a spinner. Wait for the app to be
