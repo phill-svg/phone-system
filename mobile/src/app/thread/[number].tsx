@@ -4,6 +4,7 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Avatar } from "../../components/ui/Avatar";
@@ -35,7 +36,11 @@ export default function ThreadScreen() {
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
   // Polled: a reply arriving while the thread is open has no other way onto the screen. Paused while
   // the app is in the background (queryFocus.ts).
-  const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2, refetchInterval: 15_000 });
+  // Polls only while this thread is on screen: every load marks the thread read for the WHOLE team,
+  // so polling under a call screen (calling the customer from here) cleared everyone's unread dot for
+  // texts nobody had seen.
+  const isFocused = useIsFocused();
+  const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2, refetchInterval: isFocused ? 15_000 : false });
   const numbers = useQuery({ queryKey: ["numbers"], queryFn: getNumbers, staleTime: 300_000 });
 
   // Loading a thread marks its inbound messages read server-side (GET /api/messages/:number), so
