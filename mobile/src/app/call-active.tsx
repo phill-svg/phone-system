@@ -13,7 +13,7 @@ import { DialPad } from "../components/keypad/DialPad";
 import { formatPhone } from "../lib/phone";
 import { placeCall, getActiveCall, listAudioDevices, selectAudioRoute, onAudioDevicesUpdated } from "../lib/voice";
 import { setPref } from "../lib/prefs";
-import { holdCall } from "../lib/api";
+import { holdCall, getRecordingSetting } from "../lib/api";
 import { createScreenExit } from "../lib/nav";
 import type { AudioDeviceLike, AudioRoutePref } from "../lib/audioRouting";
 import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
@@ -98,7 +98,21 @@ export default function ActiveCallScreen() {
   const [audioRoute, setAudioRoute] = useState<AudioDeviceLike["type"] | null>(null);
   const [hasBluetooth, setHasBluetooth] = useState(false);
   const [held, setHeld] = useState(false);
+  // Read-only. Recording is the business-wide setting, applied server-side to every call; there is
+  // no per-call control. A Record button used to toggle this flag alone, so the REC pill claimed a
+  // recording had started or stopped when nothing had changed.
   const [recording, setRecording] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    getRecordingSetting()
+      .then((on) => {
+        if (mounted) setRecording(on);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
   const [showKeypad, setShowKeypad] = useState(false);
   const [entered, setEntered] = useState("");
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -275,7 +289,7 @@ export default function ActiveCallScreen() {
 
       {/* Callee identity */}
       <View style={[styles.header, { paddingTop: insets.top + 28 }]}>
-        {recording ? (
+        {recording && state === "connected" ? (
           <View style={styles.recPill}>
             <View style={styles.recDot} />
             <Text style={styles.recText}>REC</Text>
@@ -313,7 +327,6 @@ export default function ActiveCallScreen() {
             <Control icon="plus" fallback="add" label="add call" disabled={state !== "connected"} onPress={() => router.push("/contacts")} />
             <Control icon="pause.fill" fallback="pause" label="hold" active={held} disabled={state !== "connected"} onPress={toggleHold} />
             <Control icon="arrow.uturn.right" fallback="arrow-redo" label="transfer" disabled={state !== "connected" || !callRef.current} onPress={() => callRef.current && router.push("/transfer")} />
-            <Control icon="record.circle" fallback="radio-button-on" label="record" active={recording} disabled={state !== "connected"} onPress={() => setRecording((r) => !r)} />
             <Control icon="person.crop.circle.fill" fallback="person" label="contacts" onPress={() => router.push("/contacts")} />
             {hasBluetooth ? (
               <Control
@@ -326,6 +339,8 @@ export default function ActiveCallScreen() {
             ) : (
               <View style={styles.controlCell} />
             )}
+            {/* Keeps the last row three cells wide now there is no Record button. */}
+            <View style={styles.controlCell} />
           </View>
         )}
 
