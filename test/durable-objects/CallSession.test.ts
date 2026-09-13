@@ -573,6 +573,49 @@ describe("CallSession", () => {
     expect(events.results[0].detail).toContain("mobile_voicemail_answered");
   });
 
+  // Dialling a round is several Twilio/D1 round trips per leg, and activeRing was only stored after
+  // the LAST leg. A staff member with the app open can answer the first leg while the second is still
+  // being created: that answer was turned away ("answered by someone else") with nobody bridged, and
+  // the caller sat on ringback. The first answer must bridge however early it lands.
+  it("an answer that lands while the other legs are still being dialled bridges the caller", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await setUserSettings(env.DB, "sam@b.com", { ring_my_mobile: true, mobile_number: "0487654321" });
+
+    let releaseSecond: () => void = () => {};
+    const secondGate = new Promise<void>((r) => (releaseSecond = r));
+    let firstCreated: () => void = () => {};
+    const firstDone = new Promise<void>((r) => (firstCreated = r));
+    const previous = fetchMock.getMockImplementation()!;
+    let creates = 0;
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      if (String(input).includes("/Calls.json")) {
+        creates++;
+        if (creates === 1) firstCreated();
+        if (creates === 2) await secondGate;
+      }
+      return previous(input, init);
+    });
+
+    const stub = stubFor("CA-early-answer");
+    await send(stub, mainEvent("CA-early-answer"));
+    const ringing = send(stub, mainEvent("CA-early-answer", { digits: "1" }));
+    await firstDone;
+    const firstTo = outboundDials(fetchMock)[0];
+    const answer = send(stub, agentAnswer("CA-early-answer", `sid-${firstTo}`));
+    await new Promise((r) => setTimeout(r, 50));
+    releaseSecond();
+    await ringing;
+    const answered = await answer;
+
+    expect(answered.xml).not.toContain("answered by someone else");
+    expect(answered.xml).toContain("<Conference");
+  });
+
   // Two mobiles ring at once. Phill picks up; Sam's carrier voicemail answers in the same instant, so
   // the cancel misses it and Sam's leg reaches agent-answer too (and is turned away). Sam's machine
   // verdict lands 2-4s later -- and used to take the rescue path, pulling the caller OUT of a live

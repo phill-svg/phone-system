@@ -437,28 +437,33 @@ export class CallSession extends DurableObject<Env> {
     // message (and whoever answers catches the caller mid-recording). The deferred dial runs on the
     // first hold-poll (waitUrl), which Twilio fetches right after the greeting <Play> finishes.
     // Without a greeting, dial immediately (original behaviour) via the shared dialBatch helper.
-    let attemptSids: string[] = [];
-    if (!greetingPrefix) {
-      const sids = await this.dialBatch(numbersToDial, callSid, origin, ringConfig.timeoutSeconds);
-      if (!sids) {
-        return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
+    // Dialled and stored with other events held (see dialRound): an answer to the first leg can
+    // otherwise land while later legs are still being created, before activeRing exists.
+    const dialled = await this.dialRound(async () => {
+      // A new ring round: nobody has bridged in it yet. A leg left over from an earlier round (one the
+      // AMD rescue pulled the caller away from) must not read as the caller's leg in this one.
+      await this.ctx.storage.delete("bridgedAgentSid");
+      let attemptSids: string[] = [];
+      if (!greetingPrefix) {
+        const sids = await this.dialBatch(numbersToDial, callSid, origin, ringConfig.timeoutSeconds);
+        if (!sids) return false;
+        attemptSids = sids;
       }
-      attemptSids = sids;
+      const activeRing: ActiveRing = {
+        ringNodeId,
+        play,
+        allowCallbackStar,
+        ringConfig,
+        ringPlanState,
+        attemptSids,
+        pendingDial: greetingPrefix ? numbersToDial : undefined,
+      };
+      await this.ctx.storage.put("activeRing", activeRing);
+      return true;
+    });
+    if (!dialled) {
+      return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
     }
-
-    const activeRing: ActiveRing = {
-      ringNodeId,
-      play,
-      allowCallbackStar,
-      ringConfig,
-      ringPlanState,
-      attemptSids,
-      pendingDial: greetingPrefix ? numbersToDial : undefined,
-    };
-    // A new ring round: nobody has bridged in it yet. A leg left over from an earlier round (one the
-    // AMD rescue pulled the caller away from) must not read as the caller's leg in this one.
-    await this.ctx.storage.put("activeRing", activeRing);
-    await this.ctx.storage.delete("bridgedAgentSid");
     if (!greetingPrefix) await this.logEvent(callSid, "ring_started", { targets: numbers.length, strategy: ringConfig.strategy });
 
     return renderEnqueue({
@@ -549,18 +554,28 @@ export class CallSession extends DurableObject<Env> {
   // the queue into the no-answer fall-through (mirrors startRing's immediate-dial failure path).
   private async performDeferredDial(activeRing: ActiveRing, callSid: string, origin: string): Promise<void> {
     const numbersToDial = activeRing.pendingDial ?? [];
-    const sids = await this.dialBatch(numbersToDial, callSid, origin, activeRing.ringConfig.timeoutSeconds);
-    if (!sids) {
+    const sids = await this.dialRound(async () => {
+      const created = await this.dialBatch(numbersToDial, callSid, origin, activeRing.ringConfig.timeoutSeconds);
       activeRing.pendingDial = undefined;
-      activeRing.attemptSids = [];
-      activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+      activeRing.attemptSids = created ?? [];
+      if (!created) activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
       await this.ctx.storage.put("activeRing", activeRing);
-      return;
-    }
-    activeRing.attemptSids = sids;
-    activeRing.pendingDial = undefined;
-    await this.ctx.storage.put("activeRing", activeRing);
-    await this.logEvent(callSid, "ring_started", { targets: sids.length, strategy: activeRing.ringConfig.strategy });
+      return created;
+    });
+    if (sids) await this.logEvent(callSid, "ring_started", { targets: sids.length, strategy: activeRing.ringConfig.strategy });
+  }
+
+  // Runs a ring round's dial-and-store with every other event to this call held until it finishes.
+  // Creating a leg is several Twilio/D1 round trips, and a Durable Object otherwise lets events in
+  // while it waits on them: an answer to the first leg arrived before activeRing (or the new leg's
+  // sid) was stored, was turned away with nobody bridged, and the caller sat on ringback. Held, the
+  // answer simply waits a second and then sees the round exactly as dialled.
+  //
+  // The cost: a throw inside, or 30s without finishing, resets this object. dialBatch and dialStaff
+  // already catch their own failures, so reaching that needs a storage write to fail -- which would
+  // already have sent the caller to the catch-all. Keep anything else that can throw OUT of here.
+  private dialRound<T>(work: () => Promise<T>): Promise<T> {
+    return this.ctx.blockConcurrencyWhile(work);
   }
 
   // Dials each number in order, in its own try/catch. If any create-call throws part-way through a
@@ -1061,16 +1076,19 @@ export class CallSession extends DurableObject<Env> {
         // plan as exhausted → DONE{no_answer}; the caller then falls through to voicemail via the
         // existing queue_left/no-answer rail (renderNoAnswerFallthrough). Persist only after the
         // new dial genuinely succeeds.
-        let nextSid: string;
-        try {
-          nextSid = await this.dialStaff(dialNext.number, callSid, origin, activeRing.ringConfig.timeoutSeconds);
-        } catch {
-          activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+        // Held like any other ring round (dialRound): the next person can answer before their sid
+        // is stored.
+        await this.dialRound(async () => {
+          try {
+            const nextSid = await this.dialStaff(dialNext.number, callSid, origin, activeRing.ringConfig.timeoutSeconds);
+            activeRing.ringPlanState = state;
+            activeRing.attemptSids.push(nextSid);
+          } catch {
+            activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+          }
           await this.ctx.storage.put("activeRing", activeRing);
-          return;
-        }
-        activeRing.ringPlanState = state;
-        activeRing.attemptSids.push(nextSid);
+        });
+        return;
       } else {
         // No DIAL_NEXT command → cascade exhausted; state is already DONE{no_answer}.
         activeRing.ringPlanState = state;
