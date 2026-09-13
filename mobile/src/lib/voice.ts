@@ -210,19 +210,41 @@ export function getPushRegistryError(): string | null {
 // initialize PushKit device token". Retry with backoff on that specific error; anything else
 // (bad access token, network) fails fast.
 const PUSHKIT_BACKOFF_MS = [0, 1000, 2000, 3000, 5000, 8000, 10000];
-async function registerWithRetry(token: string): Promise<void> {
+
+// Raised by every unregisterFromIncoming. A registration captures it when it starts and stops the
+// moment it moves: the retries above run for ~29s with a token already minted, so a sign-out inside
+// that window unregistered successfully and the pending retry then registered the signed-out handset
+// again -- which kept receiving VoIP pushes that CallKit rings natively. Monotonic, so a registration
+// started after the sign-out (the next person signing in) is unaffected.
+//
+// Raised only by the unregister, not by the last invite subscriber leaving: a registration's own
+// subscriber stays in the stack until registerForIncoming returns, so that can never happen while a
+// retry is pending -- and the tabs layout's cleanup runs AFTER performSignOut's unregister anyway.
+let registrationGeneration = 0;
+
+// False when a sign-out overtook it: nothing is registered and the status must not say otherwise.
+async function registerWithRetry(token: string, generation: number): Promise<boolean> {
   for (let attempt = 0; attempt < PUSHKIT_BACKOFF_MS.length; attempt++) {
     if (PUSHKIT_BACKOFF_MS[attempt] > 0) await sleep(PUSHKIT_BACKOFF_MS[attempt]);
+    if (generation !== registrationGeneration) return false;
     try {
       await voice.register(token);
-      return;
+      // Already in flight when the unregister ran, and landed after it: undo it. Best-effort, the
+      // same as the sign-out's own unregister.
+      if (generation !== registrationGeneration) {
+        await voice.unregister(token).catch(() => {});
+        return false;
+      }
+      return true;
     } catch (e) {
+      if (generation !== registrationGeneration) return false;
       const isPushKitRace = e instanceof Error && e.message.includes("PushKit device token");
       const isLastAttempt = attempt === PUSHKIT_BACKOFF_MS.length - 1;
       if (!isPushKitRace || isLastAttempt) throw e;
       setRegStatus(`registering… (retry ${attempt + 1})`);
     }
   }
+  return false; // unreachable: the last attempt returns or throws
 }
 
 // ---- Outbound ----
@@ -247,11 +269,28 @@ export async function placeCall(to: string, from?: string): Promise<Call> {
   return call;
 }
 
+// Makes an answered call the one the in-call screen drives, and lets go of it when it ends.
+function adoptCall(call: Call): void {
+  activeCall = call;
+  call.on(Call.Event.Disconnected, () => {
+    if (activeCall === call) activeCall = null;
+  });
+  call.on(Call.Event.ConnectFailure, () => {
+    if (activeCall === call) activeCall = null;
+  });
+}
+
 // ---- Incoming registration ----
 // Register this device to receive incoming calls via push, and wire the CallInvite handler.
 // `onInvite` is called (with the caller's number) when a call comes in, so the UI can navigate
 // to the ringing screen. Returns an unsubscribe function.
-export async function registerForIncoming(onInvite: (from: string) => void): Promise<() => void> {
+// `onAdopted` is called when a call was already answered (from CallKit) before JS subscribed, so the
+// UI can open the in-call screen for it -- otherwise it is live with no in-app controls.
+export async function registerForIncoming(
+  onInvite: (from: string) => void,
+  onAdopted?: (from: string) => void
+): Promise<() => void> {
+  const generation = registrationGeneration;
   // Android 13+ needs notification permission to show the incoming-call banner. Best-effort —
   // registration still proceeds if declined (the call just won't post a heads-up notification).
   if (Platform.OS === "android" && Number(Platform.Version) >= 33) {
@@ -271,37 +310,13 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
   }
   await ensureMicPermission().catch(() => {});
 
-  const handler = (invite: CallInvite) => {
-    pendingInvite = invite;
-    // A withdrawn invite MUST drop out of `pendingInvite`. Accepting one that is no longer pending
-    // throws deep in TwilioVoice's native CallKit path, as an Objective-C exception that no JS
-    // try/catch can reach -- it aborts the whole app. That is the 09:14 crash: the caller hung up
-    // at :34 and the process died at :35 inside -[CXProvider performAction:] -> TVOAcceptOptions.
-    // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
-    // live the whole time the screen is up.
-    invite.on(CallInvite.Event.Cancelled, () => {
-      if (pendingInvite === invite) pendingInvite = null;
-      notifyInviteCancelled();
-    });
-    // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
-    // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
-    // second accept can reach the native layer, and tell the ringing screen to get out of the way.
-    invite.on(CallInvite.Event.Accepted, (call: Call) => {
-      if (pendingInvite === invite) pendingInvite = null;
-      if (call) {
-        activeCall = call;
-        call.on(Call.Event.Disconnected, () => {
-          if (activeCall === call) activeCall = null;
-        });
-        call.on(Call.Event.ConnectFailure, () => {
-          if (activeCall === call) activeCall = null;
-        });
-      }
-      notifyInviteAccepted();
-    });
-    onInvite(invite.getFrom());
-  };
-  voice.on(Voice.Event.CallInvite, handler);
+  const me: InviteSubscriber = { onInvite, onAdopted };
+  inviteSubscribers.push(me);
+  if (inviteSubscribers.length === 1) {
+    voice.on(Voice.Event.CallInvite, handleInvite);
+    voice.on(Voice.Event.Registered, onRegistered);
+    voice.on(Voice.Event.Error, onRegError);
+  }
   // An invite delivered BEFORE this listener existed is never re-emitted -- the SDK's
   // sendEventWithName is a no-op until JS subscribes. That window is real now that the native
   // module is built during launch (mobile/plugins/TwilioEarlyInit.swift): a cold launch from a
@@ -311,19 +326,30 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
   // button" report. The SDK keeps pending invites, so ask for the one already in flight.
   // Deliberately not awaited: registration must not wait on it, and a missing method (an older
   // SDK) must degrade to today's behaviour rather than break registering entirely.
+  //
+  // An invite already ANSWERED from CallKit is not waiting: on iOS the SDK keeps it in
+  // getCallInvites(), rebuilt as Pending, until the call ends. Announcing it rang a live call, every
+  // Pending guard passed, and Decline hung up on the customer. Its Call sits in getCalls() under the
+  // same uuid, so adopt that instead.
   void Promise.resolve()
-    .then(() => voice.getCallInvites())
-    .then((invites) => {
+    .then(() => Promise.all([voice.getCallInvites(), voice.getCalls()]))
+    .then(([invites, calls]) => {
       // Only when nothing came through the event first, so an invite is never announced twice.
       if (pendingInvite) return;
-      const [waiting] = Array.from(invites.values());
-      if (waiting) handler(waiting);
+      for (const [uuid, invite] of invites) {
+        const answered = calls.get(uuid);
+        if (answered) {
+          if (!activeCall) {
+            adoptCall(answered);
+            currentSubscriber()?.onAdopted?.(invite.getFrom());
+          }
+          continue;
+        }
+        handleInvite(invite);
+        return;
+      }
     })
     .catch(() => {});
-  const onRegistered = () => setRegStatus("registered ✓");
-  const onError = (e: unknown) => setRegStatus("error: " + ((e as { message?: string })?.message ?? String(e)));
-  voice.on(Voice.Event.Registered, onRegistered);
-  voice.on(Voice.Event.Error, onError);
 
   setRegStatus("registering…");
   try {
@@ -343,18 +369,70 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     const primeError = getPushRegistryError();
     if (primeError !== null) throw new Error("PushKit registry unavailable: " + primeError);
     const token = await getSoftphoneToken(tokenPlatform());
-    await registerWithRetry(token);
+    const registered = await registerWithRetry(token, generation);
     // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
-    if (regStatus === "registering…") setRegStatus("registered ✓");
+    if (registered && regStatus === "registering…") setRegStatus("registered ✓");
   } catch (e) {
-    setRegStatus("register failed: " + (e instanceof Error ? e.message : String(e)));
+    // Signed out meanwhile (the token request 401s, say): the sign-out's own status stands.
+    if (generation === registrationGeneration) {
+      setRegStatus("register failed: " + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   return () => {
-    voice.off(Voice.Event.CallInvite, handler);
-    voice.off(Voice.Event.Registered, onRegistered);
-    voice.off(Voice.Event.Error, onError);
+    const i = inviteSubscribers.indexOf(me);
+    if (i < 0) return;
+    inviteSubscribers.splice(i, 1);
+    if (inviteSubscribers.length === 0) {
+      voice.off(Voice.Event.CallInvite, handleInvite);
+      voice.off(Voice.Event.Registered, onRegistered);
+      voice.off(Voice.Event.Error, onRegError);
+    }
   };
+}
+
+// ONE native invite handler however many registrations are live. Each registration used to add its
+// own, so two live ones -- a second tab navigator pushed over a call by "add call"/"contacts", or a
+// registration whose unsubscribe was lost to an unmount mid-registration -- opened two ringing
+// screens per call, and with auto-answer on both accepted. The newest registration is the one told;
+// removing it hands invites back to the one beneath.
+type InviteSubscriber = { onInvite: (from: string) => void; onAdopted?: (from: string) => void };
+const inviteSubscribers: InviteSubscriber[] = [];
+const currentSubscriber = (): InviteSubscriber | undefined => inviteSubscribers[inviteSubscribers.length - 1];
+const onRegistered = () => setRegStatus("registered ✓");
+const onRegError = (e: unknown) => setRegStatus("error: " + ((e as { message?: string })?.message ?? String(e)));
+
+// How the most recent invite ended, for a ringing screen that mounts after the fact.
+let lastInviteOutcome: "accepted" | "cancelled" | null = null;
+
+function handleInvite(invite: CallInvite): void {
+  pendingInvite = invite;
+  lastInviteOutcome = null;
+  // A withdrawn invite MUST drop out of `pendingInvite`. Accepting one that is no longer pending
+  // throws deep in TwilioVoice's native CallKit path, as an Objective-C exception that no JS
+  // try/catch can reach -- it aborts the whole app. That is the 09:14 crash: the caller hung up
+  // at :34 and the process died at :35 inside -[CXProvider performAction:] -> TVOAcceptOptions.
+  // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
+  // live the whole time the screen is up.
+  invite.on(CallInvite.Event.Cancelled, () => {
+    if (pendingInvite === invite) {
+      pendingInvite = null;
+      lastInviteOutcome = "cancelled";
+    }
+    notifyInviteCancelled();
+  });
+  // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
+  // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
+  // second accept can reach the native layer, and tell the ringing screen to get out of the way.
+  invite.on(CallInvite.Event.Accepted, (call: Call) => {
+    if (pendingInvite === invite) {
+      pendingInvite = null;
+      lastInviteOutcome = "accepted";
+    }
+    if (call) adoptCall(call);
+    notifyInviteAccepted();
+  });
+  currentSubscriber()?.onInvite(invite.getFrom());
 }
 
 // Tell Twilio to stop sending this device incoming calls.
@@ -387,6 +465,8 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
 const UNREGISTER_TIMEOUT_MS = 5000;
 
 export async function unregisterFromIncoming(): Promise<boolean> {
+  // First, before any await: a registration still retrying must not register again behind this.
+  registrationGeneration++;
   // A phone that is RINGING as its owner signs out has to stop, and the caller has to fall through
   // to the next person rather than wait out the whole ring window behind a leg nobody is going to
   // answer. Unregistering alone does not do that -- the invite is already delivered and the CallKit
@@ -469,6 +549,27 @@ export async function rejectIncoming(): Promise<void> {
   pendingInvite = null;
   // Same guard as accept: rejecting an already-settled invite is not a no-op in the native layer.
   if (invite && invite.getState() === CallInvite.State.Pending) await invite.reject();
+}
+
+// Call waiting: answering the new call ends the current one -- but only once the new one can still
+// be answered. Hanging up first and checking second meant a caller who gave up a moment before
+// Answer cost the staff member BOTH calls. Null means "nothing to answer, leave the current call".
+export async function acceptWaitingCall(): Promise<Call | null> {
+  const invite = pendingInvite;
+  if (!invite || invite.getState() !== CallInvite.State.Pending) return null;
+  const current = liveCall();
+  if (current) Promise.resolve(current.disconnect()).catch(() => {});
+  return acceptIncoming();
+}
+
+// What a ringing screen should do as it mounts. It is pushed after awaited pref reads, so the invite
+// can already be gone: withdrawn (dismiss), or answered from CallKit (go to the in-call screen, or
+// the live call has no controls). For call waiting a live call alone proves nothing -- it may be the
+// one already on screen underneath -- so there it takes this invite having been ANSWERED.
+export function ringingScreenOnMount(waiting: boolean): "ring" | "in-call" | "dismiss" {
+  if (pendingInvite?.getState() === CallInvite.State.Pending) return "ring";
+  if (!liveCall()) return "dismiss";
+  return !waiting || lastInviteOutcome === "accepted" ? "in-call" : "dismiss";
 }
 
 export { Call };

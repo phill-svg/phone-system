@@ -1,7 +1,7 @@
 // src/api/auth.ts
 import { verifyPassword, getDummyHash, hashPassword } from "../access/password";
 import { createSession, destroySession, destroySessionsForEmail, parseSessionCookie, sessionCookieHeader, clearSessionCookieHeader, parseBearerToken } from "../access/session";
-import { isRateLimited, recordFailedAttempt, clearAttempts } from "../access/loginAttempts";
+import { reserveAttempt, clearAttempts } from "../access/loginAttempts";
 import { issueToken, peekToken, consumeToken, invalidateTokensForEmail } from "../access/passwordTokens";
 import { sendEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
 import { renderLoginPage, renderForgotPasswordPage, renderSetPasswordPage, renderAuthMessagePage } from "../html/pages/login";
@@ -31,7 +31,8 @@ export async function handleLoginSubmit(request: Request, env: Env): Promise<Res
     return html(renderLoginPage({ error: "Enter your email and password.", email }), 400);
   }
 
-  if (await isRateLimited(env.DB, email)) {
+  // Counted before the hash runs (the reservation IS the failure record; a success clears it).
+  if (!(await reserveAttempt(env.DB, email))) {
     return html(renderLoginPage({ error: "Too many attempts. Try again in a few minutes.", email }), 429);
   }
 
@@ -42,12 +43,10 @@ export async function handleLoginSubmit(request: Request, env: Env): Promise<Res
   // Unknown email or password not set yet: burn equivalent time, then fail generically.
   if (!user || !user.password_hash) {
     await verifyPassword(password, await getDummyHash());
-    await recordFailedAttempt(env.DB, email);
     return html(renderLoginPage({ error: "Invalid email or password.", email }), 401);
   }
 
   if (!(await verifyPassword(password, user.password_hash))) {
-    await recordFailedAttempt(env.DB, email);
     return html(renderLoginPage({ error: "Invalid email or password.", email }), 401);
   }
 
@@ -151,7 +150,8 @@ export async function handleApiLogin(request: Request, env: Env): Promise<Respon
   const password = String(body.password ?? "");
   if (!email || !password) return jsonResponse({ error: "Enter your email and password." }, 400);
 
-  if (await isRateLimited(env.DB, email)) {
+  // Counted before the hash runs (the reservation IS the failure record; a success clears it).
+  if (!(await reserveAttempt(env.DB, email))) {
     return jsonResponse({ error: "Too many attempts. Try again in a few minutes." }, 429);
   }
 
@@ -161,11 +161,9 @@ export async function handleApiLogin(request: Request, env: Env): Promise<Respon
 
   if (!user || !user.password_hash) {
     await verifyPassword(password, await getDummyHash());
-    await recordFailedAttempt(env.DB, email);
     return jsonResponse({ error: "Invalid email or password." }, 401);
   }
   if (!(await verifyPassword(password, user.password_hash))) {
-    await recordFailedAttempt(env.DB, email);
     return jsonResponse({ error: "Invalid email or password." }, 401);
   }
 

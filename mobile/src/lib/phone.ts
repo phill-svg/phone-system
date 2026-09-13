@@ -45,8 +45,21 @@ export function matchContacts(typed: string, contacts: Contact[], limit = 3): Co
 export function contactForNumber(number: string, contacts: Contact[]): Contact | undefined {
   const digits = normalizePhone(number);
   if (!digits) return undefined;
-  return contacts.find((c) => c.phone_normalized === digits) ?? contacts.find((c) => c.phone_normalized.endsWith(digits) || digits.endsWith(c.phone_normalized));
+  // The suffix pass needs a real number on both sides: `x.endsWith("")` is always true, so a contact
+  // saved with "TBC" as its phone named every unknown caller, and a short code named everyone ending
+  // in it. 8 digits is a full local number without its area code.
+  return (
+    contacts.find((c) => c.phone_normalized === digits) ??
+    (digits.length < MIN_SUFFIX_DIGITS
+      ? undefined
+      : contacts.find(
+          (c) =>
+            c.phone_normalized.length >= MIN_SUFFIX_DIGITS &&
+            (c.phone_normalized.endsWith(digits) || digits.endsWith(c.phone_normalized))
+        ))
+  );
 }
+const MIN_SUFFIX_DIGITS = 8;
 
 // Contact search for a "who am I messaging/calling" picker -- matches on name, company OR digits,
 // unlike matchContacts above (digits only, for the keypad's live-dial suggestions). An empty query

@@ -123,6 +123,47 @@ describe("handleCallViaMobile", () => {
     expect(res.status).toBe(400);
   });
 
+  // A typo'd default voice number would otherwise go straight into From and 400 every call.
+  it("falls back to TWILIO_FROM_NUMBER when the default voice number is not valid E.164", async () => {
+    await setUserSettings(env.DB, STAFF.email, { mobile_number: MOBILE });
+    await env.DB.prepare("UPDATE phone_numbers SET e164 = '6105 9771'").run();
+    const fetchMock = stubTwilio();
+    const res = await handleCallViaMobile(req({ to: "0402430107" }), testEnv(), STAFF, "https://example.com", passThroughSecret);
+    expect(res.status).toBe(200);
+    expect(sentParams(fetchMock).get("From")).toBe("+61866108941");
+  });
+
+  // A rotated key or a 429 used to throw out of the handler as a non-JSON 500, which the handset
+  // can only show as "request failed (500)".
+  it("answers a Twilio rejection with a JSON 502 naming the status", async () => {
+    await setUserSettings(env.DB, STAFF.email, { mobile_number: MOBILE });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response('{"message":"Too Many Requests"}', { status: 429 }))));
+    const res = await handleCallViaMobile(req({ to: "0402430107" }), testEnv(), STAFF, "https://example.com", passThroughSecret);
+    expect(res.status).toBe(502);
+    expect((await res.json<{ error: string }>()).error).toContain("429");
+  });
+
+  // Twilio has accepted the call by then -- the staff mobile is ringing -- so a failed INSERT is a
+  // bookkeeping failure, not a failed call. Reporting failure invites a second tap and a second ring.
+  it("still reports success when the calls row cannot be written after Twilio accepted the call", async () => {
+    await setUserSettings(env.DB, STAFF.email, { mobile_number: MOBILE });
+    stubTwilio();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const failing = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop !== "prepare") return Reflect.get(target, prop).bind?.(target) ?? Reflect.get(target, prop);
+        return (sql: string) => {
+          if (sql.startsWith("INSERT INTO calls")) throw new Error("D1_ERROR: boom");
+          return target.prepare(sql);
+        };
+      },
+    });
+    const res = await handleCallViaMobile(req({ to: "0402430107" }), { ...testEnv(), DB: failing }, STAFF, "https://example.com", passThroughSecret);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, callSid: "CAmobile1" });
+    expect(log).toHaveBeenCalledWith("CALL_VIA_MOBILE_INSERT_FAILED", expect.stringContaining("CAmobile1"));
+  });
+
   it("rejects a number it can't dial without calling Twilio at all", async () => {
     await setUserSettings(env.DB, STAFF.email, { mobile_number: MOBILE });
     const fetchMock = stubTwilio();

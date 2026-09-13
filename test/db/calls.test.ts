@@ -73,6 +73,22 @@ describe("db/calls", () => {
     expect(result.map((c) => c.id)).toEqual(["CA-vm-new", "CA-vm-old"]);
   });
 
+  // The web call-detail pane runs the one "was this missed?" rule on this object. Without these two
+  // columns it read undefined, labelled every answered inbound call "Abandoned" and never showed a
+  // missed call red -- disagreeing with the list pane beside it.
+  it("getCallDetail carries the answered/event_count the missed-call rule reads", async () => {
+    await seedCall("CA-detail-answered", { status: "completed" });
+    await appendCallEvent(env.DB, "CA-detail-answered", "ring_started");
+    await appendCallEvent(env.DB, "CA-detail-answered", "answered");
+    await seedCall("CA-detail-missed", { status: "completed" });
+    await appendCallEvent(env.DB, "CA-detail-missed", "ring_started");
+
+    const answered = await getCallDetail(env.DB, "CA-detail-answered");
+    expect(answered?.call).toMatchObject({ answered: 1, event_count: 2 });
+    const missed = await getCallDetail(env.DB, "CA-detail-missed");
+    expect(missed?.call).toMatchObject({ answered: 0, event_count: 1 });
+  });
+
   it("getCallDetail returns null for a missing call", async () => {
     expect(await getCallDetail(env.DB, "CA-missing")).toBeNull();
   });

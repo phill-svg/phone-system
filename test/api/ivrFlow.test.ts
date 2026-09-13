@@ -160,6 +160,35 @@ describe("handlePutFlow", () => {
     expect(body.error).toContain("2026-13-01");
   });
 
+  // numDigits goes to <Gather numDigits> verbatim and timeoutSeconds to the ring leg's Timeout, so a
+  // zero from a cleared web field used to be accepted and reach a live call.
+  for (const [type, field, config] of [
+    ["input", "numDigits", { audioAssetId: null, ttsText: "enter your number", nextNodeId: "" }],
+    ["ring", "timeoutSeconds", { target: "all", strategy: "cascade", noAnswerNextNodeId: "" }],
+  ] as const) {
+    it(`refuses a ${type} node whose ${field} is not a whole number of at least 1, naming the field`, async () => {
+      for (const bad of [0, -1, 1.5]) {
+        const response = await handlePutFlow(
+          putRequest({ entryNodeId: "n1", nodes: [{ id: "n1", type, config: { ...config, [field]: bad } }] }),
+          env.DB,
+          "test_flow",
+          ADMIN
+        );
+        expect(response.status, `${field}=${bad}`).toBe(400);
+        const body = await response.json<{ error?: string }>();
+        expect(body.error).toContain("n1");
+        expect(body.error).toContain(field);
+      }
+      const ok = await handlePutFlow(
+        putRequest({ entryNodeId: "n1", nodes: [{ id: "n1", type, config: { ...config, [field]: 1 } }] }),
+        env.DB,
+        "test_flow",
+        ADMIN
+      );
+      expect(ok.status).toBe(200);
+    });
+  }
+
   it("returns 400 when a play node's config is missing nextNodeId", async () => {
     const response = await handlePutFlow(
       putRequest({ entryNodeId: "n1", nodes: [{ id: "n1", type: "play", config: { audioAssetId: null, ttsText: "hi" } }] }),

@@ -2,6 +2,7 @@
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/access/password";
+import { handleApiLogin } from "../../src/api/auth";
 
 const EMAIL = "mobileuser@example.com";
 
@@ -44,6 +45,27 @@ describe("mobile JSON auth", () => {
     const me = await SELF.fetch("https://example.com/api/me", { headers: { Authorization: `Bearer ${token}` } });
     expect(me.status).toBe(200);
   });
+
+  // The lockout counted failures, then ran the slow password hash, then recorded the failure -- so
+  // a burst of parallel guesses all passed the count before any failure landed, and one 15-minute
+  // window allowed as many guesses as the attacker sent at once.
+  it("a parallel burst of wrong passwords gets no more than 8 guesses", async () => {
+    await seed("supersecret10");
+    // Called directly, not through SELF: the test worker serialises SELF requests, which hides the
+    // interleaving a production isolate allows at every await.
+    const guess = (i: number) =>
+      handleApiLogin(
+        new Request("https://example.com/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: EMAIL, password: `wrong-guess-${i}` }),
+        }),
+        env as never
+      );
+    const statuses = (await Promise.all(Array.from({ length: 20 }, (_, i) => guess(i)))).map((r) => r.status);
+    expect(statuses.filter((s) => s === 401).length).toBeLessThanOrEqual(8);
+    expect(statuses.filter((s) => s === 429).length).toBeGreaterThanOrEqual(12);
+  }, 60_000);
 
   it("POST /api/login 401s on wrong password with no token", async () => {
     await seed("supersecret10");

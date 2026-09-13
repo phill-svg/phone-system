@@ -38,6 +38,10 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
     async getCallInvites() {
       return this.pendingInvites;
     }
+    calls = new Map<string, any>();
+    async getCalls() {
+      return this.calls;
+    }
   }
   const Voice: any = jest.fn().mockImplementation(() => {
     mockVoiceRef.current = new FakeVoice();
@@ -234,6 +238,67 @@ describe("incoming invite lifecycle", () => {
     unsub();
   });
 
+  // The replay's own target case: answered from the CallKit screen before JS subscribed. On iOS the
+  // SDK keeps that invite in getCallInvites() -- rebuilt as Pending -- until the call ends, so the
+  // replay announced a LIVE call as ringing, every Pending guard passed, and Decline hung up on the
+  // customer. The answered call is in getCalls() under the same uuid; adopt it instead.
+  it("adopts a call already answered from the lock screen instead of ringing for it again", async () => {
+    // Clear module state an earlier test left behind (an un-cancelled pending invite).
+    mockVoiceRef.current.pendingInvites = new Map();
+    const clear = await voiceLib.registerForIncoming(() => {});
+    const stale = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", stale);
+    stale.fire(CallInviteEvent.Cancelled);
+    clear();
+
+    const invite = makeInvite(CallInviteState.Pending);
+    const call = { on: jest.fn() };
+    const onInvite = jest.fn();
+    mockVoiceRef.current.pendingInvites = new Map([["uuid-2", invite]]);
+    mockVoiceRef.current.calls = new Map([["uuid-2", call]]);
+
+    const onAdopted = jest.fn();
+    const unsub = track(await voiceLib.registerForIncoming(onInvite, onAdopted));
+    await new Promise((r) => setImmediate(r));
+
+    expect(onInvite).not.toHaveBeenCalled();
+    expect(voiceLib.getPendingInvite()).toBeNull();
+    expect(voiceLib.getActiveCall()).toBe(call);
+    // Adopting silently left a live call with no in-app End/Hold/keypad: the app has to be told so
+    // it can open the in-call screen.
+    expect(onAdopted).toHaveBeenCalledWith("+61400000000");
+    unsub();
+    mockVoiceRef.current.pendingInvites = new Map();
+    mockVoiceRef.current.calls = new Map();
+  });
+
+  // Every registration added its own native handler, so two live registrations -- a second tab
+  // navigator pushed over a call by "add call"/"contacts", or a registration whose unsubscribe was
+  // lost to an unmount mid-registration -- opened two ringing screens per call, and with auto-answer
+  // on both accepted. One handler; the newest registration is the one told; removing it hands back.
+  it("announces each invite once however many registrations are live, newest first", async () => {
+    mockVoiceRef.current.pendingInvites = new Map();
+    const first = jest.fn();
+    const second = jest.fn();
+    const unsubFirst = track(await voiceLib.registerForIncoming(first));
+    const unsubSecond = await voiceLib.registerForIncoming(second);
+
+    expect(mockVoiceRef.current.handlers["callInvite"]).toHaveLength(1);
+    const a = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", a);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    a.fire(CallInviteEvent.Cancelled);
+
+    unsubSecond();
+    const b = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", b);
+    expect(first).toHaveBeenCalledTimes(1);
+    b.fire(CallInviteEvent.Cancelled);
+    unsubFirst();
+    expect(mockVoiceRef.current.handlers["callInvite"]).toHaveLength(0);
+  });
+
   it("does not announce an invite twice when the event arrived first", async () => {
     const invite = makeInvite(CallInviteState.Pending);
     const onInvite = jest.fn();
@@ -253,5 +318,107 @@ describe("incoming invite lifecycle", () => {
 
     expect(onInvite).toHaveBeenCalledTimes(1);
     unsub();
+  });
+
+  // Call waiting: answering the new call ends the current one. The ringing screen used to hang up
+  // the current call FIRST and only then find out the new caller had already gone -- so a staff
+  // member tapping Answer a moment too late lost both calls.
+  function liveCallFake(order: string[]) {
+    return {
+      on: jest.fn(),
+      getState: () => "connected",
+      disconnect: jest.fn(() => { order.push("disconnect"); return Promise.resolve(); }),
+    };
+  }
+
+  it("call waiting: a withdrawn invite leaves the call in progress connected", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const current = liveCallFake([]);
+    voiceLib.setActiveCall(current);
+    const invite = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    invite.state = CallInviteState.Rejected;
+    invite.fire(CallInviteEvent.Cancelled);
+
+    await expect(voiceLib.acceptWaitingCall()).resolves.toBeNull();
+    expect(current.disconnect).not.toHaveBeenCalled();
+    expect(invite.accepted).toBe(false);
+    unsub();
+  });
+
+  it("call waiting: a pending invite ends the current call, then is accepted", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const order: string[] = [];
+    const current = liveCallFake(order);
+    voiceLib.setActiveCall(current);
+    const invite = makeInvite(CallInviteState.Pending);
+    const accept = invite.accept.bind(invite);
+    invite.accept = async () => { order.push("accept"); return accept(); };
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    await expect(voiceLib.acceptWaitingCall()).resolves.not.toBeNull();
+    expect(order).toEqual(["disconnect", "accept"]);
+    expect(invite.accepted).toBe(true);
+    unsub();
+  });
+
+  // The ringing screen is pushed after two awaited pref reads, so the caller can hang up before it
+  // mounts -- and onInviteCancelled only reports cancellations that happen AFTER it subscribes.
+  describe("ringingScreenOnMount", () => {
+    it("rings while the invite is still pending", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      mockVoiceRef.current.emit("callInvite", makeInvite(CallInviteState.Pending));
+      expect(voiceLib.ringingScreenOnMount(false)).toBe("ring");
+      unsub();
+    });
+
+    it("dismisses when the caller gave up before the screen mounted", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Rejected;
+      invite.fire(CallInviteEvent.Cancelled);
+      expect(voiceLib.ringingScreenOnMount(false)).toBe("dismiss");
+      unsub();
+    });
+
+    // Answered from CallKit before the screen mounted: dismissing would strand a live call with no
+    // in-app controls, so the screen has to go to the in-call screen instead.
+    it("opens the in-call screen for an invite already answered natively", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Accepted;
+      invite.fireWith(CallInviteEvent.Accepted, { on: jest.fn(), getState: () => "connected" });
+      expect(voiceLib.ringingScreenOnMount(false)).toBe("in-call");
+      unsub();
+    });
+
+    // During call waiting the live call is the one ALREADY on screen underneath, not this caller.
+    it("dismisses a withdrawn call-waiting invite even though a call is live", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      voiceLib.setActiveCall(liveCallFake([]));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Rejected;
+      invite.fire(CallInviteEvent.Cancelled);
+      expect(voiceLib.ringingScreenOnMount(true)).toBe("dismiss");
+      unsub();
+    });
+
+    // The waiting call answered from CallKit before the ringing screen mounted: the live call is now
+    // THIS caller. Dismissing left the in-call screen underneath tied to the old call, so the new call
+    // had no screen and no hang-up button.
+    it("opens the in-call screen for a call-waiting invite answered natively", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      voiceLib.setActiveCall(liveCallFake([]));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Accepted;
+      invite.fireWith(CallInviteEvent.Accepted, { on: jest.fn(), getState: () => "connected" });
+      expect(voiceLib.ringingScreenOnMount(true)).toBe("in-call");
+      unsub();
+    });
   });
 });

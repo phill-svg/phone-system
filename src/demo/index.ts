@@ -1,4 +1,4 @@
-import { jsonResponse } from "../api/respond";
+import { jsonResponse, safeDecode } from "../api/respond";
 import { demoCall, demoCalls, demoContacts, demoConversations, demoThread } from "./fixtures";
 
 // The App Review demo account is served invented data instead of the real business inbox, because
@@ -65,7 +65,8 @@ export function handleDemoRequest(
 
   const threadMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
   if (threadMatch) {
-    return jsonResponse(demoThread(now, decodeURIComponent(threadMatch[1])));
+    const peer = safeDecode(threadMatch[1]);
+    return peer === null ? jsonResponse({ error: "not found" }, 404) : jsonResponse(demoThread(now, peer));
   }
 
   if (url.pathname === "/api/calls") {
@@ -88,7 +89,8 @@ export function handleDemoRequest(
     // Notes and disposition are editable on a call; swallow the write rather than let a reviewer
     // annotate a record that does not exist.
     if (method !== "GET") return jsonResponse({ ok: true });
-    const call = demoCall(now, decodeURIComponent(callMatch[1]));
+    const callId = safeDecode(callMatch[1]);
+    const call = callId === null ? null : demoCall(now, callId);
     return call ? jsonResponse(call) : jsonResponse({ error: "not found" }, 404);
   }
 

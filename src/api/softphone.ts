@@ -5,11 +5,11 @@ import { setStaffStatus, touchHeartbeat } from "../db/staff";
 import { resolveSendingNumber } from "../db/phoneNumbers";
 
 // A resolved sending number, or null if it is not a plausible E.164 number Twilio would accept.
-function validCallerId(resolved: string | null): string | null {
+export function validCallerId(resolved: string | null): string | null {
   const n = (resolved ?? "").trim();
   return /^\+[1-9]\d{7,14}$/.test(n) ? n : null;
 }
-import { recordCallLeg, isOwnLeg } from "../db/callLegs";
+import { recordCallLeg, ownLegConference } from "../db/callLegs";
 import type { StaffUser } from "../access/requireStaffUser";
 import {
   findConferenceSid as realFindConferenceSid,
@@ -109,19 +109,20 @@ export async function handlePostHold(
     return new Response("invalid request body", { status: 400 });
   }
   if (typeof body !== "object" || body === null) return new Response("invalid request body", { status: 400 });
-  const { conferenceName, selfCallSid, hold } = body as Record<string, unknown>;
-  if (typeof conferenceName !== "string" || typeof selfCallSid !== "string" || typeof hold !== "boolean") {
+  // A body `conferenceName` is ignored: the leg record knows the real one, and a client cannot --
+  // an inbound call's conference is named after the caller's leg, so every inbound hold used to 404.
+  const { selfCallSid, hold } = body as Record<string, unknown>;
+  if (typeof selfCallSid !== "string" || typeof hold !== "boolean") {
     return new Response("invalid request body", { status: 400 });
   }
-  const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
-  if (!conferenceSid) return new Response("conference not found", { status: 404 });
   // Bind the claimed leg to the AUTHENTICATED staff identity -- never trust a body-supplied email.
   // This closes the gap where a staff member reads a colleague's live-call CallSid (via
   // GET /api/calls/live) and submits it as their OWN selfCallSid: it's a genuine participant, but
   // it was never dialed/received on THIS staff member's behalf.
-  if (!(await isOwnLeg(db, selfCallSid, staff.email))) {
-    return new Response("not your call leg", { status: 403 });
-  }
+  const conferenceName = await ownLegConference(db, selfCallSid, staff.email);
+  if (!conferenceName) return new Response("not your call leg", { status: 403 });
+  const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
+  if (!conferenceSid) return new Response("conference not found", { status: 404 });
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
   if (!participants.some((p) => p.callSid === selfCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
@@ -169,16 +170,17 @@ export async function handlePostTransfer(
     return new Response("invalid request body", { status: 400 });
   }
   if (typeof body !== "object" || body === null) return new Response("invalid request body", { status: 400 });
-  const { conferenceName, targetEmail, agentCallSid } = body as Record<string, unknown>;
-  if (typeof conferenceName !== "string" || typeof targetEmail !== "string" || typeof agentCallSid !== "string") {
+  // A body `conferenceName` is ignored, as for hold: an inbound call's conference is named after the
+  // caller's leg, so the client's guess dialled the colleague into a conference nobody was in.
+  const { targetEmail, agentCallSid } = body as Record<string, unknown>;
+  if (typeof targetEmail !== "string" || typeof agentCallSid !== "string") {
     return new Response("invalid request body", { status: 400 });
   }
+  // Bind the claimed leg to the AUTHENTICATED requester -- never trust a body-supplied email.
+  const conferenceName = await ownLegConference(db, agentCallSid, staff.email);
+  if (!conferenceName) return new Response("not your call leg", { status: 403 });
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
-  // Bind the claimed leg to the AUTHENTICATED requester -- never trust a body-supplied email.
-  if (!(await isOwnLeg(db, agentCallSid, staff.email))) {
-    return new Response("not your call leg", { status: 403 });
-  }
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
   if (!participants.some((p) => p.callSid === agentCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
@@ -194,7 +196,7 @@ export async function handlePostTransfer(
   });
   // Staff-gate the transferred-to leg for the TARGET staff member, before they even exist as a
   // real conference participant, so a subsequent hold/transfer/complete-transfer they make can
-  // itself be verified via isOwnLeg.
+  // itself be verified via ownLegConference.
   await recordCallLeg(db, sid, targetEmail, conferenceName);
   return jsonResponse({ sid });
 }
@@ -217,20 +219,28 @@ export async function handlePostCompleteTransfer(
     return new Response("invalid request body", { status: 400 });
   }
   if (typeof body !== "object" || body === null) return new Response("invalid request body", { status: 400 });
-  const { conferenceName, callSid, selfCallSid } = body as Record<string, unknown>;
-  if (typeof conferenceName !== "string" || typeof callSid !== "string" || typeof selfCallSid !== "string") {
+  // Completing a transfer means the requester LEAVES, so the leg removed is always their own. Body
+  // `callSid` and `conferenceName` are ignored: removing `callSid` as given let anyone holding a real
+  // leg name the customer's sid and hang up on them, and the conference comes from the leg record.
+  const { selfCallSid } = body as Record<string, unknown>;
+  if (typeof selfCallSid !== "string") {
     return new Response("invalid request body", { status: 400 });
   }
+  // Bind the claimed leg to the AUTHENTICATED requester -- never trust a body-supplied email.
+  const conferenceName = await ownLegConference(db, selfCallSid, staff.email);
+  if (!conferenceName) return new Response("not your call leg", { status: 403 });
   const conferenceSid = await deps.findConferenceSid(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceName);
   if (!conferenceSid) return new Response("conference not found", { status: 404 });
-  // Bind the claimed leg to the AUTHENTICATED requester -- never trust a body-supplied email.
-  if (!(await isOwnLeg(db, selfCallSid, staff.email))) {
-    return new Response("not your call leg", { status: 403 });
-  }
   const participants = await deps.listParticipants(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid);
   if (!participants.some((p) => p.callSid === selfCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
   }
-  await deps.removeParticipant(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid, callSid);
+  // The colleague only becomes a participant once they answer. Leaving before that leaves the customer
+  // alone, and cleanupLoneConference then ends the conference on them -- so refuse.
+  // ponytail: a muted listen-in supervisor counts as the third party; tell them apart if that bites.
+  if (participants.length < 3) {
+    return jsonResponse({ error: "Your colleague hasn't answered yet." }, 409);
+  }
+  await deps.removeParticipant(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, conferenceSid, selfCallSid);
   return jsonResponse({ ok: true });
 }

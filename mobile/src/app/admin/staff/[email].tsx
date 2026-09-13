@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ScrollView, View, Text, TextInput, ActivityIndicator, Alert } from "react-native";
+import { ScrollView, View, Text, ActivityIndicator, Alert } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { Screen } from "../../../components/ui/Screen";
 import { Group, Row } from "../../../components/ui/Grouped";
 import { PrimaryButton } from "../../../components/ui/PrimaryButton";
 import { Segmented } from "../../../components/ui/Segmented";
 import { ScheduleEditor } from "../../../components/ui/ScheduleEditor";
+import { NumberField } from "../../../components/ui/NumberField";
 import {
   getAdminStaff,
   setStaffSchedule,
@@ -41,7 +42,8 @@ export default function StaffMemberScreen() {
   const [member, setMember] = useState<AdminStaff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [schedule, setSchedule] = useState<BusinessHours>(CLOSED_WEEK);
-  const [priority, setPriority] = useState("");
+  const [priority, setPriority] = useState(0);
+  const [savingPriority, setSavingPriority] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
@@ -54,7 +56,7 @@ export default function StaffMemberScreen() {
       }
       setMember(found);
       setSchedule(normalizeSchedule(found.schedule));
-      setPriority(String(found.ringPriority));
+      setPriority(found.ringPriority);
     } catch {
       setError("Couldn't load this staff member.");
     }
@@ -79,26 +81,23 @@ export default function StaffMemberScreen() {
     }
   }
 
+  // A draft committed on change and saved by its own button, like working hours. It used to save on
+  // BLUR: clearing the box and dismissing the keyboard saved `Number("")`, i.e. 0, moving this person
+  // to the front of the ring order, and under keyboardShouldPersistTaps="handled" a tap elsewhere
+  // never blurred the field, so a typed value could go unsaved with nothing saying so. The server
+  // still enforces 0-9999 and its message is shown.
+  const priorityDirty = member !== null && priority !== member.ringPriority;
+
   async function savePriority() {
-    if (!member) return;
-    const value = Number(priority.trim());
-    if (!Number.isFinite(value) || value < 0 || value > 9999) {
-      Alert.alert("Ring order", "Enter a whole number between 0 and 9999. Lower rings earlier.");
-      setPriority(String(member.ringPriority));
-      return;
-    }
-    const rounded = Math.round(value);
-    if (rounded === member.ringPriority) {
-      setPriority(String(rounded));
-      return;
-    }
+    if (savingPriority || !member) return;
+    setSavingPriority(true);
     try {
-      await setStaffRingPriority(member.email, rounded);
-      setMember({ ...member, ringPriority: rounded });
-      setPriority(String(rounded));
+      await setStaffRingPriority(member.email, priority);
+      setMember({ ...member, ringPriority: priority });
     } catch (e) {
-      setPriority(String(member.ringPriority));
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
+    } finally {
+      setSavingPriority(false);
     }
   }
 
@@ -199,28 +198,18 @@ export default function StaffMemberScreen() {
           title="Ring order"
           footer="Lower rings earlier in the cascade. Each person on shift contributes exactly one leg — their softphone, or their mobile if they've turned on Ring My Mobile."
         >
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 14, paddingVertical: 10 }}>
-            <Text style={[type.body, { color: t.colors.label, flex: 1 }]}>Priority</Text>
-            <TextInput
-              value={priority}
-              onChangeText={setPriority}
-              onBlur={savePriority}
-              keyboardType="number-pad"
-              returnKeyType="done"
-              onSubmitEditing={savePriority}
-              style={{
-                color: t.colors.label,
-                backgroundColor: t.colors.fill,
-                borderRadius: 8,
-                paddingHorizontal: 14,
-                paddingVertical: 8,
-                fontSize: 17,
-                minWidth: 84,
-                textAlign: "center",
-              }}
-            />
-          </View>
+          {/* min 0: zero is a legitimate priority, it just has to be typed rather than cleared into. */}
+          <NumberField label="Priority" placeholder="0" min={0} value={priority} onCommit={setPriority} />
         </Group>
+
+        <View style={{ paddingHorizontal: 16, marginTop: 20 }}>
+          <PrimaryButton
+            label={savingPriority ? "Saving…" : priorityDirty ? "Save Ring Order" : "Saved"}
+            onPress={savePriority}
+            disabled={!priorityDirty}
+            busy={savingPriority}
+          />
+        </View>
 
         <Group
           title="Working hours"

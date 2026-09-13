@@ -8,7 +8,7 @@ import { getIvrFlow, putIvrFlow } from "../../../lib/api";
 import {
   IVR_NODE_TYPES,
   NODE_TYPE_LABELS,
-  blankConfigFor,
+  addStepTo,
   incompleteReason,
   newNodeId,
   nodeSummary,
@@ -54,12 +54,8 @@ export default function IvrFlowScreen() {
     const id = newNodeId();
     // A new step is saved immediately rather than held locally, so its editor can load the flow
     // fresh like every other screen -- and so a half-added step can never be lost by navigating.
-    const next: IvrFlow = {
-      ...flow,
-      nodes: [...flow.nodes, { id, flow: FLOW, isEntry: false, type: nodeType, config: blankConfigFor(nodeType), positionX: null, positionY: null }],
-    };
     try {
-      await putIvrFlow(FLOW, next);
+      await addStepTo(flow, FLOW, nodeType, id, { get: () => getIvrFlow(FLOW), put: (f) => putIvrFlow(FLOW, f) });
       setAdding(false);
       router.push(`/admin/ivr/${id}`);
     } catch (e) {

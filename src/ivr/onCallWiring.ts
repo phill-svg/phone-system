@@ -12,19 +12,28 @@ import type { IvrNode } from "../db/ivrNodes";
 // 2. Walking every branch follows the OPEN side of business_hours as well. A ring step hung off
 //    the daytime path would report the AFTER-HOURS rota as fine, which is the one thing the check
 //    exists to deny. flowEngine takes `closedNextNodeId` and only that when isAfterHours, so this
-//    follows the closed branch alone at those two node types.
+//    follows the closed branch alone there. NOT at date_rule: that branches on the HOLIDAY list,
+//    and an ordinary night is not a closed date, so it takes openNextNodeId -- following only the
+//    closed side walked the holiday path and got a correctly wired rota wrong. Following both then
+//    went green over a rota only holidays reach. The open branch alone is the ordinary night.
 // 3. Loading one flow drops any next-id crossing into another. Node ids are a global PRIMARY KEY
 //    -- `nodeExistsInOtherFlow` exists precisely because of that, and flowEngine's loadNodeById
 //    has no flow predicate -- so a cross-flow reference is a supported shape, and a correctly
 //    wired rota would have been reported as unwired.
 //
+// 4. Walking `main` alone. CallSession sends an after-hours call into the `after_hours` flow
+//    whenever that flow has an entry node, falling back to `main` only when it has none -- so that
+//    is the flow walked here, chosen the same way.
+//
 // `null` means "could not answer", which the caller reports as a warning rather than a failure.
 
-const CLOSED_ONLY = new Set(["business_hours", "date_rule"]);
+const CLOSED_ONLY = new Set(["business_hours"]);
 
 const NEXT_FIELDS: Record<string, string[]> = {
   business_hours: ["closedNextNodeId"],
-  date_rule: ["closedNextNodeId"],
+  // Open only: an ordinary night is not a closed date. Following the holiday (closed) branch too
+  // reported a rota wired when only holidays reached it.
+  date_rule: ["openNextNodeId"],
   play: ["nextNodeId"],
   gather: ["defaultNextNodeId"],
   input: ["nextNodeId"],
@@ -34,7 +43,7 @@ const NEXT_FIELDS: Record<string, string[]> = {
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
-export async function isRingNodeReachingOnCall(db: D1Database, flow = "main"): Promise<boolean | null> {
+export async function isRingNodeReachingOnCall(db: D1Database): Promise<boolean | null> {
   const result = await db.prepare("SELECT * FROM ivr_nodes").all<{
     id: string;
     flow: string;
@@ -52,7 +61,8 @@ export async function isRingNodeReachingOnCall(db: D1Database, flow = "main"): P
   }));
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const entry = nodes.find((n) => n.flow === flow && n.isEntry);
+  const entry =
+    nodes.find((n) => n.flow === "after_hours" && n.isEntry) ?? nodes.find((n) => n.flow === "main" && n.isEntry);
   // No entry node means every inbound call already fails in loadEntryNode -- the phone system is
   // down, not missing a menu step. Reporting that as "add a ring step" would send someone building
   // a menu while no call of any kind is answered, so it is explicitly unanswerable here.

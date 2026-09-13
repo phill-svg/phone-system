@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { ScrollView, View, TextInput } from "react-native";
+import { useFocusEffect } from "expo-router";
 import { Screen } from "../components/ui/Screen";
 import { Group, Row } from "../components/ui/Grouped";
 import { useTheme } from "../theme/theme";
@@ -10,9 +11,29 @@ export default function CallForwardingScreen() {
   const { settings, update } = useUserSettings();
   const [number, setNumber] = useState(settings.mobile_number);
 
+  // Refs, so the commit below sees the latest typing from a cleanup, and so a blur followed at once
+  // by the cleanup cannot save the same value twice before a re-render catches up.
+  const numberRef = useRef(number);
+  const savedRef = useRef(settings.mobile_number);
+  const updateRef = useRef(update);
+  updateRef.current = update;
+
   useEffect(() => {
     setNumber(settings.mobile_number);
+    numberRef.current = settings.mobile_number;
+    savedRef.current = settings.mobile_number;
   }, [settings.mobile_number]);
+
+  const commit = useCallback(() => {
+    const next = numberRef.current.trim();
+    if (next === savedRef.current) return;
+    savedRef.current = next;
+    updateRef.current({ mobile_number: next });
+  }, []);
+
+  // onBlur alone lost the number: leaving by the header back button while the field is focused
+  // unmounts it, and onBlur never runs. The focus-effect cleanup runs on leaving and on unmount.
+  useFocusEffect(useCallback(() => commit, [commit]));
 
   return (
     <Screen>
@@ -27,11 +48,11 @@ export default function CallForwardingScreen() {
           <View style={{ paddingHorizontal: 14, paddingVertical: 10 }}>
             <TextInput
               value={number}
-              onChangeText={setNumber}
-              onBlur={() => {
-                const next = number.trim();
-                if (next !== settings.mobile_number) update({ mobile_number: next });
+              onChangeText={(v) => {
+                numberRef.current = v;
+                setNumber(v);
               }}
+              onBlur={commit}
               placeholder="0412 345 678"
               placeholderTextColor={t.colors.labelTertiary}
               keyboardType="phone-pad"

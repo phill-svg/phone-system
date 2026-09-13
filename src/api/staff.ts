@@ -102,7 +102,11 @@ export async function handleInviteStaff(request: Request, env: StaffAdminEnv, st
   const role = body.role === "admin" ? "admin" : "staff";
   if (!EMAIL_RE.test(email)) return jsonResponse({ error: "Enter a valid email address." }, 400);
 
-  await createInvitedStaff(env.DB, email, role);
+  // An existing row keeps its role (INSERT OR IGNORE), so answering ok would silently drop the role
+  // the admin asked for and re-send an invite they didn't mean to.
+  if (!(await createInvitedStaff(env.DB, email, role))) {
+    return jsonResponse({ error: "Already a staff member — use Resend invite." }, 409);
+  }
   const token = await issueToken(env.DB, email, "invite");
   const { subject, html } = inviteEmail(`${origin}/set-password?token=${token}`);
   try {

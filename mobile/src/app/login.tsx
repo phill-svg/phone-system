@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useAuth } from "../lib/auth";
+import { loginErrorMessage } from "../lib/apiErrors";
 import { colors } from "../lib/theme";
 
 // 🎨 COLORS FOR THIS PAGE (Login) — click a swatch to recolor just this screen.
@@ -28,8 +29,8 @@ export default function LoginScreen() {
     setBusy(true);
     try {
       await signIn(email.trim().toLowerCase(), password);
-    } catch {
-      setError("Invalid email or password.");
+    } catch (e) {
+      setError(loginErrorMessage(e));
     } finally {
       setBusy(false);
     }

@@ -37,6 +37,15 @@ describe("contactForNumber", () => {
     expect(contactForNumber("+61402430107", [])).toBeUndefined();
   });
 
+  // "".endsWith check is always true: a contact saved with "TBC" or "n/a" as its phone named every
+  // caller not in the book, and a short code like "123" named everyone ending in 123. Staff answer
+  // believing it is someone else.
+  it("never names a stranger after a contact with a blank or short number", () => {
+    const book = [contact(7, "No Number", "TBC", ""), contact(8, "Short Code", "107", "107"), ...BOOK];
+    expect(contactForNumber("+61499999999", book)).toBeUndefined();
+    expect(contactForNumber("+61488000107", book)).toBeUndefined();
+  });
+
   it("prefers an exact match over a suffix one", () => {
     const book = [contact(9, "Suffix Only", "430107", "430107"), ...BOOK];
     expect(contactForNumber("+61402430107", book)?.name).toBe("Sue Dunkley");

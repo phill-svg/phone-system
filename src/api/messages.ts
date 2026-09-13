@@ -27,6 +27,14 @@ function normalizeNumber(raw: string): string {
   return trimmed;
 }
 
+// The key a thread is stored under. Sending normalises the number before storing it, so looking a
+// thread up by the number as typed ("0412 345 678") found nothing: a new message sent fine and then
+// showed an empty thread. Only something shaped like a phone number is normalised: a Messenger id,
+// or an alphanumeric sender ID stored exactly as Twilio sent it ("Service NSW"), passes through.
+export function threadPeer(raw: string): string {
+  return /^[\d\s()+-]+$/.test(raw) ? normalizeNumber(raw) : raw;
+}
+
 export async function handleListConversations(db: D1Database): Promise<Response> {
   return jsonResponse(await listConversations(db));
 }

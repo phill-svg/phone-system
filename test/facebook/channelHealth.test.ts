@@ -77,6 +77,34 @@ describe("checkMessengerChannelHealth", () => {
   // Having nobody to tell is not the same as having told them. Stamping the cooldown anyway meant
   // an alert that reached no handset still suppressed the next six hours of them, so the outage
   // went unreported for a working day.
+  // Same lesson one step later: a push Expo refused for every device reached nobody either.
+  it("does not arm the cooldown when Expo accepted none of the pushes, but still prunes dead tokens", async () => {
+    await seedDevice();
+    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'android', ?, ?, ?)")
+      .bind("ExponentPushToken[def]", "c@d.com", NOW, NOW)
+      .run();
+    vi.stubGlobal("fetch", async () =>
+      new Response(
+        JSON.stringify({
+          data: [
+            { status: "error", details: { error: "DeviceNotRegistered" } },
+            { status: "error", details: { error: "InvalidCredentials" } },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await seedFailures(CHANNEL_FAILURE_THRESHOLD);
+    await checkMessengerChannelHealth(env as never, NOW);
+    expect(await getFbChannelAlertLastSent(env.DB)).toBe(0);
+    expect(log).toHaveBeenCalledWith("FB_CHANNEL_ALERT_UNDELIVERED", expect.any(String));
+    const left = await env.DB.prepare("SELECT token FROM push_tokens").all<{ token: string }>();
+    // One DeviceNotRegistered ticket, so exactly one token is pruned (which one is positional).
+    expect(left.results).toHaveLength(1);
+    log.mockRestore();
+  });
+
   it("does not arm the cooldown when there was no device to alert", async () => {
     const calls = stubExpo();
     await seedFailures(CHANNEL_FAILURE_THRESHOLD);

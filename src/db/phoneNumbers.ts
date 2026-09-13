@@ -51,8 +51,12 @@ export async function createPhoneNumber(db: D1Database, input: PhoneNumberInput)
 
 export async function updatePhoneNumber(db: D1Database, id: number, input: PhoneNumberInput): Promise<boolean> {
   const stmts: D1PreparedStatement[] = [];
-  if (input.is_default_voice) stmts.push(db.prepare("UPDATE phone_numbers SET is_default_voice = 0"));
-  if (input.is_default_sms) stmts.push(db.prepare("UPDATE phone_numbers SET is_default_sms = 0"));
+  // Scoped to "the edited row still exists": unscoped, an edit to a number deleted elsewhere would
+  // clear every default in this batch and then 404, leaving no default voice/SMS number at all.
+  const othersIfTargetExists = "WHERE id <> ?1 AND EXISTS (SELECT 1 FROM phone_numbers WHERE id = ?1)";
+  if (input.is_default_voice) stmts.push(db.prepare(`UPDATE phone_numbers SET is_default_voice = 0 ${othersIfTargetExists}`).bind(id));
+  if (input.is_default_sms) stmts.push(db.prepare(`UPDATE phone_numbers SET is_default_sms = 0 ${othersIfTargetExists}`).bind(id));
+  // Last, so its change count still drives the handler's 404.
   stmts.push(
     db
       .prepare(

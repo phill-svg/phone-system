@@ -56,6 +56,27 @@ export async function getSoftphoneToken(platform: "android" | "ios" = "android")
 export async function setPresence(status: "available" | "away" | "offline"): Promise<void> {
   await apiFetch("/api/softphone/presence", { method: "PUT", body: JSON.stringify({ status }) });
 }
+// Holds (or resumes) the OTHER party on this leg's conference. The server works out which
+// conference from the leg itself -- an inbound call's is named after the caller's leg.
+export async function holdCall(selfCallSid: string, hold: boolean): Promise<void> {
+  await apiFetch("/api/softphone/hold", { method: "POST", body: JSON.stringify({ selfCallSid, hold }) });
+}
+// Attended transfer. Dials the colleague's softphone into this leg's conference; the server works out
+// which conference from the leg, as for hold.
+export async function startTransfer(selfCallSid: string, targetEmail: string): Promise<void> {
+  await apiFetch("/api/softphone/transfer", { method: "POST", body: JSON.stringify({ agentCallSid: selfCallSid, targetEmail }) });
+}
+// Removes THIS leg, leaving the customer with the colleague. The server refuses (409) until the
+// colleague has actually joined, rather than leave the customer alone in the conference.
+export async function completeTransfer(selfCallSid: string): Promise<void> {
+  await apiFetch("/api/softphone/transfer/complete", { method: "POST", body: JSON.stringify({ selfCallSid }) });
+}
+// The ungated colleague roster (demo account already excluded server-side). Deliberately omits
+// schedules and ring order; the admin surfaces use getAdminStaff.
+export type RosterEntry = { email: string; role: "admin" | "staff"; status: "available" | "away" | "offline" };
+export async function getStaffRoster(): Promise<RosterEntry[]> {
+  return apiFetch<RosterEntry[]>("/api/staff");
+}
 export async function sendHeartbeat(): Promise<void> {
   await apiFetch("/api/softphone/heartbeat", { method: "POST" });
 }
@@ -256,23 +277,17 @@ export async function getConversations(): Promise<Conversation[]> {
   }
 }
 
+// Throws rather than returning []: the open thread polls, and React Query keeps the last good data
+// on an error, whereas [] blanked the conversation to "No Messages Yet" on every failed poll.
 export async function getThread(number: string): Promise<Message[]> {
-  try {
-    return await apiFetch<Message[]>(`/api/messages/${encodeURIComponent(number)}`);
-  } catch {
-    return [];
-  }
+  return apiFetch<Message[]>(`/api/messages/${encodeURIComponent(number)}`);
 }
 
-// Returns true if sent, false if messaging isn't linked/available yet. `from` optionally picks the
-// sending number (validated server-side against SMS-enabled numbers).
-export async function sendMessage(to: string, body: string, from?: string): Promise<boolean> {
-  try {
-    await apiFetch("/api/messages", { method: "POST", body: JSON.stringify({ to, body, from }) });
-    return true;
-  } catch {
-    return false;
-  }
+// Throws on failure, deliberately: the reason (not configured, Twilio rejected it, no signal) is
+// what the thread shows -- see sendFailureAlert. `from` optionally picks the sending number
+// (validated server-side against SMS-enabled numbers).
+export async function sendMessage(to: string, body: string, from?: string): Promise<void> {
+  await apiFetch("/api/messages", { method: "POST", body: JSON.stringify({ to, body, from }) });
 }
 
 // ---- Sending numbers (caller-ID / SMS-from picker) ----

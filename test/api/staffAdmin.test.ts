@@ -39,6 +39,26 @@ describe("staff admin API", () => {
     expect(tok?.purpose).toBe("invite");
   });
 
+  // INSERT OR IGNORE kept the old row, so the requested role was silently dropped while the
+  // response said ok and a fresh invite went out.
+  it("invite: refuses an address that is already staff, without touching the role or sending email", async () => {
+    await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1)").bind(NEW).run();
+    const { env: e, send } = emailEnv();
+    const res = await handleInviteStaff(
+      new Request("https://example.com/api/staff", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: NEW, role: "admin" }) }),
+      e,
+      ADMIN,
+      "https://example.com"
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json<{ error: string }>()).error).toContain("Resend invite");
+    expect(send).not.toHaveBeenCalled();
+    const row = await env.DB.prepare("SELECT role FROM staff_users WHERE email = ?").bind(NEW).first<{ role: string }>();
+    expect(row?.role).toBe("staff");
+    const tok = await env.DB.prepare("SELECT purpose FROM password_tokens WHERE email = ?").bind(NEW).first();
+    expect(tok).toBeNull();
+  });
+
   it("DELETE /api/staff/:email removes the user and their sessions", async () => {
     await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1)").bind(NEW).run();
     const res = await SELF.fetch(`https://example.com/api/staff/${encodeURIComponent(NEW)}`, { method: "DELETE" });

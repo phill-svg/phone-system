@@ -299,6 +299,23 @@ export function newNodeId(): string {
   return `n_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+// Adds a blank step and saves. The endpoint deletes and re-inserts the whole flow, so it re-reads
+// first: saving from the list screen's focus-time copy silently reverted any web edit made since.
+// A failed re-read falls back to that copy rather than refusing, as the step editor does.
+export async function addStepTo(
+  snapshot: IvrFlow,
+  flowName: string,
+  type: IvrNodeType,
+  id: string,
+  io: { get: () => Promise<IvrFlow>; put: (flow: IvrFlow) => Promise<void> }
+): Promise<void> {
+  const fresh = await io.get().catch(() => snapshot);
+  await io.put({
+    ...fresh,
+    nodes: [...fresh.nodes, { id, flow: flowName, isEntry: false, type, config: blankConfigFor(type), positionX: null, positionY: null }],
+  });
+}
+
 // Deleting a step must also unlink it, or every reference becomes a dangling id that the flow
 // engine only fails on when a real call reaches it -- silently, mid-call. Cleared references
 // become blank, which is the same "not wired up yet" state a newly added step is in.

@@ -118,6 +118,40 @@ describe("admin diagnostics", () => {
     expect(find(await run(), "regions").status).toBe("ok");
   });
 
+  // resolveRingTargets drops the demo account before shift is considered, so listing it as someone
+  // who "would ring" reports a leg that is never dialled.
+  it("does not count the demo account among who would ring", async () => {
+    const ALL_DAY = { open: "00:00", close: "00:00" };
+    const schedule = JSON.stringify({ mon: ALL_DAY, tue: ALL_DAY, wed: ALL_DAY, thu: ALL_DAY, fri: ALL_DAY, sat: ALL_DAY, sun: ALL_DAY });
+    await env.DB.prepare("DELETE FROM staff_users WHERE email LIKE '%@roster.test'").run();
+    await env.DB
+      .prepare("INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES ('reviewer@roster.test', 'staff', 1, 'available', ?, NULL, 100)")
+      .bind(schedule)
+      .run();
+    stubFetch();
+    const check = find(await run(baseEnv({ DEMO_ACCOUNT_EMAILS: "reviewer@roster.test" })), "roster");
+    expect(check.detail).not.toContain("reviewer");
+  });
+
+  // Every check shares one Promise.all, so an unguarded read in one of them 500s the whole screen.
+  it("reports an unreadable phone_numbers or staff_users table as a warn row, not a failed request", async () => {
+    stubFetch();
+    const failing = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop !== "prepare") return Reflect.get(target, prop).bind?.(target) ?? Reflect.get(target, prop);
+        return (sql: string) => {
+          if (/FROM (phone_numbers|staff_users)\b/.test(sql)) throw new Error("D1_ERROR: boom");
+          return target.prepare(sql);
+        };
+      },
+    });
+    const checks = await run(baseEnv({ DB: failing }));
+    expect(find(checks, "regions")).toMatchObject({ status: "warn" });
+    expect(find(checks, "regions").detail).toContain("Couldn't read");
+    expect(find(checks, "roster")).toMatchObject({ status: "warn" });
+    expect(find(checks, "roster").detail).toContain("Couldn't read");
+  });
+
   it("fails the Twilio check on a 401, because nothing can dial without it", async () => {
     stubFetch({ twilio: 401 });
     expect(find(await run(), "twilio").status).toBe("fail");
@@ -203,6 +237,29 @@ describe("admin diagnostics", () => {
       await seed("CA-diag-tr-ok", "completed", "GT-ok");
       stubFetch();
       expect(find(await run(ON()), "transcripts").status).toBe("fail");
+    });
+
+    // Twilio refusing the transcript request left the row with no status at all, so this check said
+    // "no answered call has been transcribed yet" forever. Every request failing is the live state
+    // this was built for, and it fails.
+    it("FAILS when recordings could not be submitted to Twilio and none succeeded", async () => {
+      await seed("CA-diag-tr-req1", "request_failed", null);
+      await seed("CA-diag-tr-req2", "request_failed", null);
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("2 recording(s) could not be submitted to Twilio");
+    });
+
+    // The marker is permanent and a network blip or one 5xx sets it too. Failing for seven days over
+    // one blip teaches people to ignore the screen; alongside working transcripts it is a warning.
+    it("WARNS, not fails, when some requests failed but others were transcribed", async () => {
+      await seed("CA-diag-tr-req3", "request_failed", null);
+      await seed("CA-diag-tr-req-ok", "completed", "GT-ok2");
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("1 recording(s) could not be submitted to Twilio");
     });
 
     it("goes green again once a labelled transcript lands, without clearing the old mono rows", async () => {
@@ -832,6 +889,66 @@ describe("admin diagnostics", () => {
         .run();
       stubFetch();
       expect(find(await run(), "on_call").status).toBe("ok");
+    });
+
+    async function node(id: string, flow: string, isEntry: boolean, type: string, config: unknown) {
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1)")
+        .bind(id, flow, isEntry ? 1 : 0, type, JSON.stringify(config))
+        .run();
+    }
+    const ON_CALL_RING = { target: "on_call", strategy: "cascade", timeoutSeconds: 30, noAnswerNextNodeId: "" };
+    const VOICEMAIL = { audioAssetId: null, ttsText: "", mailboxLabel: "after hours" };
+
+    // A date_rule branches on the HOLIDAY list, not on the time of day. An ordinary night is not a
+    // closed date, so flowEngine takes its OPEN branch -- following only closedNextNodeId walked the
+    // holiday path and called a correctly wired rota unwired.
+    it("follows a date rule's open branch, which is the one an ordinary night takes", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await node("n_dates", "main", true, "date_rule", { closedDates: ["12-25"], openNextNodeId: "n_ring", closedNextNodeId: "n_vm" });
+      await node("n_ring", "main", false, "ring", ON_CALL_RING);
+      await node("n_vm", "main", false, "voicemail", VOICEMAIL);
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("ok");
+    });
+
+    // The other half: following BOTH branches reported the rota wired when it hung off the holiday
+    // branch alone -- every ordinary night still went to voicemail with this check saying ok.
+    it("does not count a rota reachable only on the holiday branch", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await node("n_dates", "main", true, "date_rule", { closedDates: ["12-25"], openNextNodeId: "n_vm", closedNextNodeId: "n_ring" });
+      await node("n_ring", "main", false, "ring", ON_CALL_RING);
+      await node("n_vm", "main", false, "voicemail", VOICEMAIL);
+      stubFetch();
+      expect(find(await run(), "on_call").status).not.toBe("ok");
+    });
+
+    // CallSession routes an after-hours call into the `after_hours` flow whenever that flow has an
+    // entry node, so that flow -- not `main` -- is the one an after-hours caller walks.
+    it("walks the after_hours flow when it has an entry node", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await seedUnwiredFlow();
+      await node("n_ah_ring", "after_hours", true, "ring", ON_CALL_RING);
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("ok");
+    });
+
+    it("is not satisfied by main when an after_hours flow bypasses the rota", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await wireIvrToOnCall();
+      await node("n_ah_vm", "after_hours", true, "voicemail", VOICEMAIL);
+      stubFetch();
+      const check = find(await run(), "on_call");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("no step of the phone menu");
     });
 });
 });

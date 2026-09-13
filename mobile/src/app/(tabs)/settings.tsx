@@ -165,13 +165,19 @@ export default function SettingsScreen() {
   // Call Recording is a business-wide setting stored server-side (not a device preference).
   // Admins can toggle it; staff see it read-only.
   const isAdmin = user?.role === "admin";
-  const [recording, setRecording] = useState(false);
+  // Null until loaded: a failed load used to show "Off" whatever the real setting was, and a failed
+  // save left the switch showing a value the server never took. Same pattern as toggleAvailable.
+  const [recording, setRecording] = useState<boolean | null>(null);
   useEffect(() => {
     getRecordingSetting().then(setRecording).catch(() => {});
   }, []);
   function onToggleRecording(v: boolean) {
+    const previous = recording;
     setRecording(v); // optimistic
-    setRecordingSetting(v).catch(() => {});
+    setRecordingSetting(v).catch(() => {
+      setRecording(previous);
+      Alert.alert("Couldn't save", "Call Recording didn't change. Check your connection and try again.");
+    });
   }
 
   return (
@@ -215,9 +221,9 @@ export default function SettingsScreen() {
             }} />
           <Row icon="phone.badge.checkmark" iconColor="#5E5CE6" label="Auto-Answer" toggle={autoAnswer} onToggle={setAutoAnswer} />
           {isAdmin ? (
-            <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" toggle={recording} onToggle={onToggleRecording} />
+            <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" toggle={recording ?? false} toggleDisabled={recording === null} onToggle={onToggleRecording} />
           ) : (
-            <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" value={recording ? "On" : "Off"} />
+            <Row icon="record.circle" iconColor={t.colors.accent} label="Call Recording" value={recording === null ? "—" : recording ? "On" : "Off"} />
           )}
         </Group>
 
@@ -270,7 +276,7 @@ export default function SettingsScreen() {
         </Group>
 
         <Group footer="Preview the incoming-call screen without a live call.">
-          <Row icon="bell.badge.fill" iconColor="#FF9500" label="Preview Incoming Call" chevron onPress={() => router.push({ pathname: "/call-incoming", params: { number: "0400123456", name: "" } })} />
+          <Row icon="bell.badge.fill" iconColor="#FF9500" label="Preview Incoming Call" chevron onPress={() => router.push({ pathname: "/call-incoming", params: { number: "0400123456", name: "", preview: "1" } })} />
         </Group>
 
         <Group>

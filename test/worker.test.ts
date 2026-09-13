@@ -1,4 +1,4 @@
-import { env, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
 import { setCallBlocklist } from "../src/db/settings";
@@ -316,6 +316,21 @@ describe("Task 8 queue/ring webhook routes", () => {
     it("turns whisper=1 in the query into the spoken work-call announcement", async () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
       vi.stubGlobal("fetch", fetchMock);
+      // Only a leg the ring is still waiting on bridges (a later answer is turned away), so each call
+      // needs a ring in progress that this staff leg belongs to.
+      const ringing = (callSid: string, agentCallSid: string) =>
+        runInDurableObject(env.CALL_SESSION.get(env.CALL_SESSION.idFromName(callSid)), (_instance, state) =>
+          state.storage.put("activeRing", {
+            ringNodeId: "n_ring",
+            play: null,
+            allowCallbackStar: false,
+            ringConfig: { target: "all", strategy: "cascade", timeoutSeconds: 20, noAnswerNextNodeId: "n_vm" },
+            ringPlanState: { name: "DIALING", strategy: "cascade", numbers: ["client:a@b.com"], cascadeIndex: 0 },
+            attemptSids: [agentCallSid],
+          })
+        );
+      await ringing("CA-caller-w1", "CA-staff-w1");
+      await ringing("CA-caller-w2", "CA-staff-w2");
 
       const on = await postSigned(
         "https://example.com/webhooks/twilio/agent-answer?callSid=CA-caller-w1&whisper=1",
@@ -678,6 +693,56 @@ describe("Task 8 queue/ring webhook routes", () => {
           RecordingChannels: "1",
         });
         expect(await statusOf("CA-rec-mono-done")).toBe("completed");
+      });
+    });
+
+    // A dual-channel recording whose submission to Twilio FAILS used to leave no trace but a log
+    // line: requestTranscript returned null and nothing was written, so Health Checks -- counting
+    // only rows with a status -- kept saying "no answered call has been transcribed yet" while 76
+    // recordings in production never got a sid.
+    describe("a transcript request Twilio refuses", () => {
+      async function seedCall(id: string, status: string | null = null) {
+        await env.DB.prepare(
+          "INSERT INTO calls (id, caller_number, called_number, started_at, direction, intelligence_status) VALUES (?, '+61400000000', '+61261059771', ?, 'inbound', ?)"
+        )
+          .bind(id, Date.now(), status)
+          .run();
+      }
+      const statusOf = (id: string) =>
+        env.DB.prepare("SELECT intelligence_status FROM calls WHERE id = ?")
+          .bind(id)
+          .first<{ intelligence_status: string | null }>()
+          .then((r) => r?.intelligence_status ?? null);
+
+      beforeEach(() => {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (input: RequestInfo | URL) =>
+            String(input).includes("intelligence.twilio.com")
+              ? new Response("unauthorized", { status: 401 })
+              : new Response("", { status: 200 })
+          )
+        );
+      });
+
+      it("records request_failed so the health check can see it", async () => {
+        await seedCall("CA-rec-reqfail");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-reqfail&conference=1&rec=dual", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-reqfail",
+          RecordingChannels: "2",
+        });
+        expect(await statusOf("CA-rec-reqfail")).toBe("request_failed");
+      });
+
+      it("never overwrites a status that is already set", async () => {
+        await seedCall("CA-rec-reqfail-done", "completed");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-reqfail-done&conference=1&rec=dual", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-reqfail-done",
+          RecordingChannels: "2",
+        });
+        expect(await statusOf("CA-rec-reqfail-done")).toBe("completed");
       });
     });
 
@@ -1368,6 +1433,52 @@ describe("GET /admin/live", () => {
   });
 });
 
+// Sending normalises "0412 345 678" to +61412345678 before storing, but the thread was matched on the
+// number exactly as typed -- so a new message sent fine and then showed "No messages yet", which
+// invites a resend, and Contacts > Message (?to=) opened an existing conversation empty.
+describe("GET /api/messages/:number with a locally formatted number", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM messages").run();
+  });
+
+  it("finds the thread stored under the normalised number", async () => {
+    await insertMessage(env.DB, {
+      id: "wt-local-format-1",
+      direction: "outbound",
+      peer_number: "+61412345678",
+      our_number: "+61485034869",
+      body: "Booked in for Tuesday",
+      status: "sent",
+      read: 1,
+      createdAt: Date.now(),
+    });
+
+    const res = await SELF.fetch("https://example.com/api/messages/" + encodeURIComponent("0412 345 678"));
+    expect(res.status).toBe(200);
+    const thread = (await res.json()) as { body: string }[];
+    expect(thread.map((m) => m.body)).toEqual(["Booked in for Tuesday"]);
+  });
+
+  // Inbound rows keep Twilio's From as sent, and an alphanumeric sender ID can contain a space.
+  // Stripping it looked up "ServiceNSW" and the thread went empty with an uncleared badge.
+  it("leaves an alphanumeric sender as it is", async () => {
+    await insertMessage(env.DB, {
+      id: "wt-alpha-sender-1",
+      direction: "inbound",
+      peer_number: "Service NSW",
+      our_number: "+61485034869",
+      body: "Your licence renewal",
+      status: "received",
+      read: 0,
+      createdAt: Date.now(),
+    });
+
+    const res = await SELF.fetch("https://example.com/api/messages/" + encodeURIComponent("Service NSW"));
+    const thread = (await res.json()) as { body: string }[];
+    expect(thread.map((m) => m.body)).toEqual(["Your licence renewal"]);
+  });
+});
+
 // The demo swap only covers /api/. These pages render real D1 on the server, so the App Review
 // login would read real callers, transcripts and callbacks. A web login lands on /admin/live first.
 describe("App Review demo account on /admin pages", () => {
@@ -1399,6 +1510,18 @@ describe("App Review demo account on /admin pages", () => {
 describe("GET /api/calls/:id with malformed URL encoding", () => {
   it("returns 404 for malformed URL-encoded call ID", async () => {
     const response = await SELF.fetch("https://example.com/api/calls/%zz");
+    expect(response.status).toBe(404);
+  });
+
+  // decodeURIComponent throws URIError on a truncated escape; unguarded, that was an unhandled 500 --
+  // on /desktop/ for anyone, no session needed.
+  it("returns 404, not 500, on the unauthenticated desktop update route", async () => {
+    const response = await SELF.fetch("https://example.com/desktop/%E0%A4%A");
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 404, not 500, on a staff route", async () => {
+    const response = await SELF.fetch("https://example.com/api/staff/%E0%A4%A/schedule", { method: "PUT", body: "{}" });
     expect(response.status).toBe(404);
   });
 });

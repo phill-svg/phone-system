@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { View, Text, Pressable, FlatList, ActivityIndicator, StyleSheet } from "react-native";
 import { confirmDelete } from "../../lib/confirmDelete";
 import { useAuth } from "../../lib/auth";
-import { useQuery } from "@tanstack/react-query";
-import { router } from "expo-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { router, useFocusEffect } from "expo-router";
 import { Screen } from "../../components/ui/Screen";
 import { LargeHeader } from "../../components/ui/LargeHeader";
 import { StatusPill } from "../../components/ui/StatusPill";
@@ -47,6 +47,20 @@ export default function RecentsScreen() {
   const t = useTheme();
   const [filter, setFilter] = useState<"all" | "missed">("all");
   const calls = useQuery({ queryKey: ["calls"], queryFn: getCalls });
+  // Tabs stay mounted, so switching back to Recents never refetched and a call that came in while
+  // you were on another tab stayed missing. Same pattern as Messages; the first focus is the mount,
+  // which the query already fetches for.
+  const qc = useQueryClient();
+  const focusedBefore = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!focusedBefore.current) {
+        focusedBefore.current = true;
+        return;
+      }
+      qc.refetchQueries({ queryKey: ["calls"] });
+    }, [qc])
+  );
   const { user } = useAuth();
   // Deleting hides a record the whole team sees, so it matches the other business-wide controls:
   // admins only. Long-press rather than a swipe -- Recents is scrolled constantly and a stray

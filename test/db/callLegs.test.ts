@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { env } from "cloudflare:test";
-import { recordCallLeg, isOwnLeg } from "../../src/db/callLegs";
+import { recordCallLeg, ownLegConference } from "../../src/db/callLegs";
 
 describe("softphone call-leg ownership records", () => {
   beforeEach(async () => {
@@ -29,17 +29,17 @@ describe("softphone call-leg ownership records", () => {
     expect(row).toEqual({ staff_email: "a@b.com", conference_name: "CAcaller" });
   });
 
-  it("isOwnLeg returns true when the CallSid is recorded under the given staff email", async () => {
+  it("ownLegConference returns the leg's conference when the CallSid is recorded under the given staff email", async () => {
     await recordCallLeg(env.DB, "CAself", "a@b.com", "CAcaller");
-    expect(await isOwnLeg(env.DB, "CAself", "a@b.com")).toBe(true);
+    expect(await ownLegConference(env.DB, "CAself", "a@b.com")).toBe("CAcaller");
   });
 
-  it("isOwnLeg returns false when the CallSid is recorded under a DIFFERENT staff email", async () => {
+  it("ownLegConference returns null when the CallSid is recorded under a DIFFERENT staff email", async () => {
     await recordCallLeg(env.DB, "CAself", "a@b.com", "CAcaller");
-    expect(await isOwnLeg(env.DB, "CAself", "attacker@b.com")).toBe(false);
+    expect(await ownLegConference(env.DB, "CAself", "attacker@b.com")).toBeNull();
   });
 
-  it("isOwnLeg returns false when the CallSid was never recorded", async () => {
-    expect(await isOwnLeg(env.DB, "CAnonexistent", "a@b.com")).toBe(false);
+  it("ownLegConference returns null when the CallSid was never recorded", async () => {
+    expect(await ownLegConference(env.DB, "CAnonexistent", "a@b.com")).toBeNull();
   });
 });

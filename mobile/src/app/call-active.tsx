@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
@@ -13,6 +13,8 @@ import { DialPad } from "../components/keypad/DialPad";
 import { formatPhone } from "../lib/phone";
 import { placeCall, getActiveCall, listAudioDevices, selectAudioRoute, onAudioDevicesUpdated } from "../lib/voice";
 import { setPref } from "../lib/prefs";
+import { holdCall, getRecordingSetting } from "../lib/api";
+import { createScreenExit } from "../lib/nav";
 import type { AudioDeviceLike, AudioRoutePref } from "../lib/audioRouting";
 import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
 import { haptics } from "../theme/haptics";
@@ -88,12 +90,29 @@ export default function ActiveCallScreen() {
   const [state, setState] = useState<CallState>("calling");
   const [seconds, setSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
+  // Read when the Call attaches: mute tapped while an outbound call is still being placed had no
+  // Call to reach, so the screen said muted and the call connected with the mic open.
+  const mutedRef = useRef(false);
   // Reflects the actually-selected native audio device (not just what was requested) —
   // kept in sync via onAudioDevicesUpdated below so the UI never lies about the real route.
   const [audioRoute, setAudioRoute] = useState<AudioDeviceLike["type"] | null>(null);
   const [hasBluetooth, setHasBluetooth] = useState(false);
   const [held, setHeld] = useState(false);
+  // Read-only. Recording is the business-wide setting, applied server-side to every call; there is
+  // no per-call control. A Record button used to toggle this flag alone, so the REC pill claimed a
+  // recording had started or stopped when nothing had changed.
   const [recording, setRecording] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    getRecordingSetting()
+      .then((on) => {
+        if (mounted) setRecording(on);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
   const [showKeypad, setShowKeypad] = useState(false);
   const [entered, setEntered] = useState("");
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -106,18 +125,25 @@ export default function ActiveCallScreen() {
   // the new call), it must NOT drag the navigator back and pop the screen the user is actually on.
   const isFocused = useIsFocused();
   const focusedRef = useRef(isFocused);
+  // Leaves exactly once and only while on top (see createScreenExit). A covered screen leaving
+  // popped the wrong one and stranded a gestureless "Call Ended" modal; leaving twice popped the
+  // screen the call was placed from.
+  const exit = useRef(createScreenExit({ isFocused: () => focusedRef.current, back: () => router.back() })).current;
   useEffect(() => {
     focusedRef.current = isFocused;
-  }, [isFocused]);
+    if (isFocused) exit.onFocus();
+  }, [isFocused, exit]);
+  useEffect(() => () => exit.dispose(), [exit]);
 
   function finish() {
     if (timer.current) clearInterval(timer.current);
     setState("ended");
-    // Only navigate away if this screen is the one currently focused (top of stack). A blurred,
-    // stale call-active (superseded by a newer one from call waiting) should quietly clean up
-    // without moving the navigator out from under the call the user is actually on.
+    // A blurred, stale call-active (superseded by a newer one from call waiting) must not move the
+    // navigator out from under the call the user is actually on: exit waits until it is uncovered.
     if (focusedRef.current) {
-      setTimeout(() => router.back(), 600);
+      setTimeout(() => exit.leave(), 600);
+    } else {
+      exit.leave();
     }
   }
 
@@ -141,6 +167,7 @@ export default function ActiveCallScreen() {
           return;
         }
         callRef.current = call;
+        if (mutedRef.current) Promise.resolve(call.mute(true)).catch(() => {});
         if (isIncoming) setState("connected");
         call.on(TwilioCall.Event.Ringing, () => setState("calling"));
         call.on(TwilioCall.Event.Connected, () => setState("connected"));
@@ -197,6 +224,11 @@ export default function ActiveCallScreen() {
 
   function endCall() {
     haptics.heavy();
+    // Nothing left to hang up: End is the way out, and the exit guard keeps it from leaving twice.
+    if (state === "ended") {
+      exit.leave();
+      return;
+    }
     const call = callRef.current;
     if (!call) {
       // No Call object attached to this screen: leaving would strand a live call with no UI, so
@@ -213,8 +245,28 @@ export default function ActiveCallScreen() {
     });
   }
 
+  // Only reflects "On Hold" once the server has actually held the other party. It used to flip
+  // local state alone, so the screen said "On Hold" while the customer heard every word.
+  function toggleHold() {
+    const sid = callRef.current?.getSid();
+    if (!sid) return;
+    const next = !held;
+    holdCall(sid, next)
+      .then(() => setHeld(next))
+      .catch((e: unknown) =>
+        Alert.alert(next ? "Couldn't hold the call" : "Couldn't resume the call", (e as { message?: string })?.message ?? "Try again.")
+      );
+  }
+
+  // Sends the tone down the call, so a supplier's phone menu can be navigated.
+  function pressKey(c: string) {
+    setEntered((e) => e + c);
+    callRef.current?.sendDigits(c).catch((e: unknown) => console.warn("[call-active] sendDigits failed", e));
+  }
+
   function toggleMute() {
     const next = !muted;
+    mutedRef.current = next;
     callRef.current?.mute(next);
     setMuted(next);
   }
@@ -237,7 +289,7 @@ export default function ActiveCallScreen() {
 
       {/* Callee identity */}
       <View style={[styles.header, { paddingTop: insets.top + 28 }]}>
-        {recording ? (
+        {recording && state === "connected" ? (
           <View style={styles.recPill}>
             <View style={styles.recDot} />
             <Text style={styles.recText}>REC</Text>
@@ -256,7 +308,7 @@ export default function ActiveCallScreen() {
         {showKeypad ? (
           <View style={styles.inlineKeypad}>
             <Text style={[styles.enteredDigits]} numberOfLines={1}>{entered}</Text>
-            <DialPad onKey={(c) => setEntered((e) => e + c)} />
+            <DialPad onKey={pressKey} />
             <Pressable onPress={() => setShowKeypad(false)} style={styles.hideKeypad}>
               <Text style={styles.hideKeypadText}>Hide</Text>
             </Pressable>
@@ -273,9 +325,8 @@ export default function ActiveCallScreen() {
               onPress={() => selectRoute(audioRoute === "speaker" ? "earpiece" : "speaker")}
             />
             <Control icon="plus" fallback="add" label="add call" disabled={state !== "connected"} onPress={() => router.push("/contacts")} />
-            <Control icon="pause.fill" fallback="pause" label="hold" active={held} disabled={state !== "connected"} onPress={() => setHeld((h) => !h)} />
-            <Control icon="arrow.uturn.right" fallback="arrow-redo" label="transfer" disabled={state !== "connected"} onPress={() => router.push({ pathname: "/transfer", params: { number, name } })} />
-            <Control icon="record.circle" fallback="radio-button-on" label="record" active={recording} disabled={state !== "connected"} onPress={() => setRecording((r) => !r)} />
+            <Control icon="pause.fill" fallback="pause" label="hold" active={held} disabled={state !== "connected"} onPress={toggleHold} />
+            <Control icon="arrow.uturn.right" fallback="arrow-redo" label="transfer" disabled={state !== "connected" || !callRef.current} onPress={() => callRef.current && router.push("/transfer")} />
             <Control icon="person.crop.circle.fill" fallback="person" label="contacts" onPress={() => router.push("/contacts")} />
             {hasBluetooth ? (
               <Control
@@ -288,6 +339,8 @@ export default function ActiveCallScreen() {
             ) : (
               <View style={styles.controlCell} />
             )}
+            {/* Keeps the last row three cells wide now there is no Record button. */}
+            <View style={styles.controlCell} />
           </View>
         )}
 

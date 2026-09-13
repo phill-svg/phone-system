@@ -8,6 +8,7 @@ import {
   nodeSummary,
   blankConfigFor,
   toPutPayload,
+  addStepTo,
   IVR_NODE_TYPES,
   NEXT_FIELDS,
   type IvrFlow,
@@ -247,5 +248,30 @@ describe("blankConfigFor", () => {
         expect(config).toHaveProperty(field);
       }
     }
+  });
+});
+
+// "Add a step" PUT the whole flow -- the endpoint deletes and re-inserts -- from the list screen's
+// focus-time copy, so a web edit made since the list opened was silently reverted. The step editor
+// re-reads first for exactly this; adding a step now does too.
+describe("addStepTo", () => {
+  it("adds to the flow as it is NOW, not the copy the screen loaded", async () => {
+    const stale: IvrFlow = { entryNodeId: "hours", nodes: [node("hours", "business_hours", {}, true)] };
+    const fresh: IvrFlow = { ...stale, nodes: [...stale.nodes, node("web_edit", "play", { ttsText: "Added on the web" })] };
+    const put = jest.fn().mockResolvedValue(undefined);
+
+    await addStepTo(stale, "main", "voicemail", "new_step", { get: async () => fresh, put });
+
+    const sent = put.mock.calls[0][0] as IvrFlow;
+    expect(sent.nodes.map((n) => n.id)).toEqual(["hours", "web_edit", "new_step"]);
+  });
+
+  it("falls back to the screen's copy when the re-read fails, rather than refusing", async () => {
+    const stale: IvrFlow = { entryNodeId: "hours", nodes: [node("hours", "business_hours", {}, true)] };
+    const put = jest.fn().mockResolvedValue(undefined);
+
+    await addStepTo(stale, "main", "voicemail", "new_step", { get: async () => { throw new Error("offline"); }, put });
+
+    expect((put.mock.calls[0][0] as IvrFlow).nodes.map((n) => n.id)).toEqual(["hours", "new_step"]);
   });
 });

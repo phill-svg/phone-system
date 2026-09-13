@@ -4,6 +4,7 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { Icon } from "../../components/ui/Icon";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Avatar } from "../../components/ui/Avatar";
@@ -16,6 +17,7 @@ import { useTheme, type } from "../../theme/theme";
 import { NumberPicker } from "../../components/ui/NumberPicker";
 import { usePersistedString } from "../../lib/prefs";
 import { resolveSendingNumber } from "../../lib/sendingNumber";
+import { sendFailureAlert } from "../../lib/apiErrors";
 
 export default function ThreadScreen() {
   const t = useTheme();
@@ -32,7 +34,14 @@ export default function ThreadScreen() {
   const textInputRef = useRef<TextInput>(null);
 
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
-  const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2 });
+  // Polled: a reply arriving while the thread is open has no other way onto the screen. Paused while
+  // the app is in the background (queryFocus.ts).
+  // Loads only while this thread is on screen: every load marks the thread read for the WHOLE team,
+  // so polling -- or the app-foreground refetch, which fires on unlock or when a CallKit banner
+  // closes -- under a call screen cleared everyone's unread dot for texts nobody had seen. Disabled,
+  // the query keeps its last messages and refetches when the thread is uncovered.
+  const isFocused = useIsFocused();
+  const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: isFocused && !isNew && to.length > 2, refetchInterval: 15_000 });
   const numbers = useQuery({ queryKey: ["numbers"], queryFn: getNumbers, staleTime: 300_000 });
 
   // Loading a thread marks its inbound messages read server-side (GET /api/messages/:number), so
@@ -90,17 +99,27 @@ export default function ThreadScreen() {
     const body = text.trim();
     if (!body || !to.trim() || sending) return;
     setSending(true);
-    const ok = await sendMessage(to.trim(), body, isMessenger ? undefined : effectiveFrom);
-    setSending(false);
-    if (ok) {
-      haptics.success();
-      setText("");
-      qc.invalidateQueries({ queryKey: ["thread", to] });
-      qc.invalidateQueries({ queryKey: ["conversations"] });
-    } else {
+    try {
+      await sendMessage(to.trim(), body, isMessenger ? undefined : effectiveFrom);
+    } catch (e) {
+      setSending(false);
       haptics.warning();
-      Alert.alert("Not connected yet", "Messaging turns on once your TCB number is linked for SMS. Your draft is kept.");
+      const alert = sendFailureAlert(e);
+      Alert.alert(alert.title, alert.message);
+      return;
     }
+    setSending(false);
+    haptics.success();
+    setText("");
+    qc.invalidateQueries({ queryKey: ["conversations"] });
+    // A new message becomes that conversation. `isNew` is fixed by the route, so staying put kept the
+    // thread query disabled: the sent text never appeared and the screen still said "New Message",
+    // which invites a resend. The server keys the thread however the number was typed.
+    if (isNew) {
+      router.replace({ pathname: "/thread/[number]", params: { number: to.trim() } });
+      return;
+    }
+    qc.invalidateQueries({ queryKey: ["thread", to] });
   }
 
   return (

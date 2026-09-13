@@ -9,7 +9,7 @@ import { Icon } from "../components/ui/Icon";
 import { Avatar } from "../components/ui/Avatar";
 import { useContactName } from "../lib/useContactName";
 import { formatPhone } from "../lib/phone";
-import { acceptIncoming, rejectIncoming, getActiveCall, onInviteCancelled, onInviteAccepted } from "../lib/voice";
+import { acceptIncoming, acceptWaitingCall, ringingScreenOnMount, rejectIncoming, onInviteCancelled, onInviteAccepted } from "../lib/voice";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
 
@@ -30,7 +30,7 @@ function SecondaryAction({ icon, fallback, label, onPress }: { icon: SymbolViewP
 
 export default function IncomingCallScreen() {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ number?: string; name?: string; auto?: string; waiting?: string }>();
+  const params = useLocalSearchParams<{ number?: string; name?: string; auto?: string; waiting?: string; preview?: string }>();
   const number = String(params.number ?? "");
   const name = String(params.name ?? "");
   const isAuto = params.auto === "1";
@@ -58,11 +58,8 @@ export default function IncomingCallScreen() {
     actedRef.current = true;
     haptics.success();
     try {
-      if (isWaiting) {
-        // Call waiting: answering the new call ends the currently active one first.
-        getActiveCall()?.disconnect();
-      }
-      const call = await acceptIncoming();
+      // Call waiting ends the current call, but only once the new invite is known to be answerable.
+      const call = await (isWaiting ? acceptWaitingCall() : acceptIncoming());
       if (call) {
         router.replace({ pathname: "/call-active", params: { number, name, direction: "incoming" } });
         return;
@@ -81,6 +78,19 @@ export default function IncomingCallScreen() {
     rejectIncoming().catch(() => {});
     dismiss();
   }
+
+  // The invite can already be settled by the time this mounts, and the listeners below only hear
+  // about changes AFTER they subscribe -- which left a live Answer button on a dead invite. The
+  // Settings preview has no invite at all, so it is exempt.
+  useEffect(() => {
+    if (params.preview === "1") return;
+    const action = ringingScreenOnMount(isWaiting);
+    if (action === "ring") return;
+    actedRef.current = true;
+    if (action === "in-call") router.replace({ pathname: "/call-active", params: { number, name, direction: "incoming" } });
+    else dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The caller gave up (or another device took it) while this screen was up. Dismiss immediately:
   // leaving a live Answer button on a withdrawn invite is what makes the app abort -- accepting a

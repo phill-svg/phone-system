@@ -113,6 +113,7 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
          SUM(intelligence_status = 'completed')      AS done,
          SUM(intelligence_status = 'single_channel') AS mono,
          SUM(intelligence_status = 'dual_failed')    AS dual_failed,
+         SUM(intelligence_status = 'request_failed') AS request_failed,
          SUM(intelligence_status = 'pending')        AS pending,
          SUM(intelligence_status IN ('abandoned', 'failed')) AS stuck
        FROM calls
@@ -123,12 +124,14 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
         done: number | null;
         mono: number | null;
         dual_failed: number | null;
+        request_failed: number | null;
         pending: number | null;
         stuck: number | null;
       }>();
     const done = row?.done ?? 0;
     const mono = row?.mono ?? 0;
     const dualFailed = row?.dual_failed ?? 0;
+    const requestFailed = row?.request_failed ?? 0;
     const pending = row?.pending ?? 0;
     const stuck = row?.stuck ?? 0;
     // FIRST, and regardless of how many others succeeded. An INBOUND call is recorded on the
@@ -145,6 +148,21 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
           `${dualFailed} INBOUND recording(s) came back mono despite asking for dual-channel on the ` +
           `caller's leg. That should not be possible and no Console setting affects it — check the ` +
           `worker logs for INTELLIGENCE_SKIPPED_MONO and what RecordingChannels Twilio actually sent.`,
+      };
+    }
+    // Twilio refused the transcript request (or could not be reached), so these recordings never got
+    // a transcript sid. Before this was persisted it was invisible here, and the check said nothing
+    // had been transcribed yet while every request was failing. Not masked by successes, but not a
+    // FAIL alongside them either: the marker is permanent and a network blip or one 5xx sets it, and
+    // a week of red over one blip teaches people to ignore this screen.
+    if (requestFailed > 0) {
+      return {
+        ...base,
+        status: done === 0 ? "fail" : "warn",
+        detail:
+          `${requestFailed} recording(s) could not be submitted to Twilio for transcription in the last ` +
+          `7 days. Check the worker logs for INTELLIGENCE_CREATE_FAILED, which carries the HTTP status ` +
+          `Twilio answered.`,
       };
     }
     // A mono CONFERENCE recording is the different, milder case: outbound softphone calls are
@@ -256,7 +274,13 @@ function regional401(auth: GlobalAuth): string {
 // "not connected" intercept. /admin/settings only shows the region we RECORDED; this asks Twilio.
 async function checkNumberRegions(env: Env): Promise<Check> {
   const base = { key: "regions", label: "Voice number regions" };
-  const numbers = (await listPhoneNumbers(env.DB)).filter((n) => n.voice_enabled);
+  // Guarded because every check shares one Promise.all: a throw here would 500 the whole screen.
+  let numbers: Awaited<ReturnType<typeof listPhoneNumbers>>;
+  try {
+    numbers = (await listPhoneNumbers(env.DB)).filter((n) => n.voice_enabled);
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't read the phone numbers: ${e instanceof Error ? e.message : "error"}` };
+  }
   if (numbers.length === 0) return { ...base, status: "warn", detail: "No voice-enabled numbers configured." };
 
   const auth = globalAuth(env);
@@ -349,7 +373,14 @@ function checkEmail(env: Env): Check {
 async function checkRingRoster(env: Env): Promise<Check> {
   const base = { key: "roster", label: "Who's on call now" };
   const now = new Date();
-  const available = (await getStaffRoster(env.DB)).filter((s) => isStaffAvailable(s, now));
+  // Demo accounts are dropped at dial time (resolveRingTargets), so they never "would ring". Guarded
+  // for the same shared-Promise.all reason as checkNumberRegions.
+  let available: Awaited<ReturnType<typeof getStaffRoster>>;
+  try {
+    available = excludeDemos(await getStaffRoster(env.DB), env).filter((s) => isStaffAvailable(s, now));
+  } catch (e) {
+    return { ...base, status: "warn", detail: `Couldn't read the staff roster: ${e instanceof Error ? e.message : "error"}` };
+  }
   if (available.length === 0) {
     return {
       ...base,

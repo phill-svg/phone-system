@@ -437,25 +437,33 @@ export class CallSession extends DurableObject<Env> {
     // message (and whoever answers catches the caller mid-recording). The deferred dial runs on the
     // first hold-poll (waitUrl), which Twilio fetches right after the greeting <Play> finishes.
     // Without a greeting, dial immediately (original behaviour) via the shared dialBatch helper.
-    let attemptSids: string[] = [];
-    if (!greetingPrefix) {
-      const sids = await this.dialBatch(numbersToDial, callSid, origin, ringConfig.timeoutSeconds);
-      if (!sids) {
-        return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
+    // Dialled and stored with other events held (see dialRound): an answer to the first leg can
+    // otherwise land while later legs are still being created, before activeRing exists.
+    const dialled = await this.dialRound(async () => {
+      // A new ring round: nobody has bridged in it yet. A leg left over from an earlier round (one the
+      // AMD rescue pulled the caller away from) must not read as the caller's leg in this one.
+      await this.ctx.storage.delete("bridgedAgentSid");
+      let attemptSids: string[] = [];
+      if (!greetingPrefix) {
+        const sids = await this.dialBatch(numbersToDial, callSid, origin, ringConfig.timeoutSeconds);
+        if (!sids) return false;
+        attemptSids = sids;
       }
-      attemptSids = sids;
+      const activeRing: ActiveRing = {
+        ringNodeId,
+        play,
+        allowCallbackStar,
+        ringConfig,
+        ringPlanState,
+        attemptSids,
+        pendingDial: greetingPrefix ? numbersToDial : undefined,
+      };
+      await this.ctx.storage.put("activeRing", activeRing);
+      return true;
+    });
+    if (!dialled) {
+      return this.renderNoAnswerFallthrough(callSid, ringConfig.noAnswerNextNodeId, isAfterHours, origin);
     }
-
-    const activeRing: ActiveRing = {
-      ringNodeId,
-      play,
-      allowCallbackStar,
-      ringConfig,
-      ringPlanState,
-      attemptSids,
-      pendingDial: greetingPrefix ? numbersToDial : undefined,
-    };
-    await this.ctx.storage.put("activeRing", activeRing);
     if (!greetingPrefix) await this.logEvent(callSid, "ring_started", { targets: numbers.length, strategy: ringConfig.strategy });
 
     return renderEnqueue({
@@ -546,18 +554,28 @@ export class CallSession extends DurableObject<Env> {
   // the queue into the no-answer fall-through (mirrors startRing's immediate-dial failure path).
   private async performDeferredDial(activeRing: ActiveRing, callSid: string, origin: string): Promise<void> {
     const numbersToDial = activeRing.pendingDial ?? [];
-    const sids = await this.dialBatch(numbersToDial, callSid, origin, activeRing.ringConfig.timeoutSeconds);
-    if (!sids) {
+    const sids = await this.dialRound(async () => {
+      const created = await this.dialBatch(numbersToDial, callSid, origin, activeRing.ringConfig.timeoutSeconds);
       activeRing.pendingDial = undefined;
-      activeRing.attemptSids = [];
-      activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+      activeRing.attemptSids = created ?? [];
+      if (!created) activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
       await this.ctx.storage.put("activeRing", activeRing);
-      return;
-    }
-    activeRing.attemptSids = sids;
-    activeRing.pendingDial = undefined;
-    await this.ctx.storage.put("activeRing", activeRing);
-    await this.logEvent(callSid, "ring_started", { targets: sids.length, strategy: activeRing.ringConfig.strategy });
+      return created;
+    });
+    if (sids) await this.logEvent(callSid, "ring_started", { targets: sids.length, strategy: activeRing.ringConfig.strategy });
+  }
+
+  // Runs a ring round's dial-and-store with every other event to this call held until it finishes.
+  // Creating a leg is several Twilio/D1 round trips, and a Durable Object otherwise lets events in
+  // while it waits on them: an answer to the first leg arrived before activeRing (or the new leg's
+  // sid) was stored, was turned away with nobody bridged, and the caller sat on ringback. Held, the
+  // answer simply waits a second and then sees the round exactly as dialled.
+  //
+  // The cost: a throw inside, or 30s without finishing, resets this object. dialBatch and dialStaff
+  // already catch their own failures, so reaching that needs a storage write to fail -- which would
+  // already have sent the caller to the catch-all. Keep anything else that can throw OUT of here.
+  private dialRound<T>(work: () => Promise<T>): Promise<T> {
+    return this.ctx.blockConcurrencyWhile(work);
   }
 
   // Dials each number in order, in its own try/catch. If any create-call throws part-way through a
@@ -723,15 +741,44 @@ export class CallSession extends DurableObject<Env> {
     const origin = new URL(body.webhookUrl).origin;
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
 
-    if (activeRing && activeRing.ringPlanState.name === "DIALING") {
-      const { state, commands } = reduceRingPlan(activeRing.ringPlanState, { type: "ATTEMPT_ANSWERED" });
-      if (commands.some((c) => c.type === "CANCEL_OTHER_ATTEMPTS")) {
-        for (const sid of activeRing.attemptSids) {
-          if (sid !== body.agentCallSid) await this.cancelStaff(sid);
-        }
+    // Only a leg this ring round is still waiting on may bridge. Anything else answered too late:
+    // a sibling that picked up in the sub-second before the first answer's cancel reached it.
+    // Bridging it too re-redirected the caller (restarting their <Dial> and its recording, dropping
+    // and rejoining them) and put a second staff member into the live conversation.
+    //
+    // This never turns away the FIRST answer. Every path that deletes activeRing or ends DIALING
+    // before an answer is one where no caller is waiting to be bridged: queue_left's no-answer or
+    // hangup branch, a callback request (*), or the AMD rescue to business voicemail. queue_left's
+    // BRIDGED branch deletes it too, but only after an answer here already set DONE{bridged} --
+    // which is exactly the case to refuse, bar a redelivery of that same answer (below).
+    const isFirstAnswer =
+      activeRing?.ringPlanState.name === "DIALING" && activeRing.attemptSids.includes(body.agentCallSid);
+    if (!isFirstAnswer) {
+      // The leg that DID bridge, answer webhook delivered again: still that staff member's call. The
+      // caller was already redirected by the first delivery, so only this leg's document is needed.
+      if ((await this.ctx.storage.get<string>("bridgedAgentSid")) === body.agentCallSid) {
+        return this.xml(this.renderAgentJoin(body, origin));
       }
-      activeRing.ringPlanState = state;
-      await this.ctx.storage.put("activeRing", activeRing);
+      console.log("AGENT_ANSWER_TOO_LATE", JSON.stringify({ callSid: body.callSid, agentCallSid: body.agentCallSid }));
+      // Remembered so this leg's own `completed` status (it did answer) does not run the lone-
+      // conference cleanup: it was never a participant, and it hangs up inside the window where the
+      // caller has joined and the leg that bridged has not -- see handleAgentStatus.
+      const turnedAway = (await this.ctx.storage.get<string[]>("turnedAwayAgentSids")) ?? [];
+      await this.ctx.storage.put("turnedAwayAgentSids", [...turnedAway, body.agentCallSid]);
+      return this.xml(wrapResponse("<Say>This call was answered by someone else.</Say><Hangup/>"));
+    }
+
+    // Persisted BEFORE the cancels: each is a Twilio round trip, and a Durable Object lets other
+    // events in while it waits on one. A sibling's answer arriving then must already read DONE.
+    // bridgedAgentSid is which leg the caller is talking to this round (reset in startRing); it
+    // outlives activeRing, which queue_left deletes before any async AMD verdict lands.
+    const { state, commands } = reduceRingPlan(activeRing.ringPlanState, { type: "ATTEMPT_ANSWERED" });
+    activeRing.ringPlanState = state;
+    await this.ctx.storage.put({ activeRing, bridgedAgentSid: body.agentCallSid });
+    if (commands.some((c) => c.type === "CANCEL_OTHER_ATTEMPTS")) {
+      for (const sid of activeRing.attemptSids) {
+        if (sid !== body.agentCallSid) await this.cancelStaff(sid);
+      }
     }
     await this.logEvent(body.callSid, "answered", { agentCallSid: body.agentCallSid });
 
@@ -742,22 +789,25 @@ export class CallSession extends DurableObject<Env> {
       appendWebhookSecret(`${origin}/webhooks/twilio/join-conference?conf=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET)
     );
 
-    return this.xml(
-      renderDialAgentIntoConference({
-        conferenceName: body.callSid,
-        actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
-        recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`, this.env.TWILIO_WEBHOOK_SECRET),
-        // NEVER from the staff leg on an inbound call. The caller's leg (redirected to
-        // /join-conference immediately above) carries the recording, dual-channel and continuous
-        // across any transfer. Recording here too would give the call TWO recordings whose
-        // callbacks overwrite each other's `recording_url` -- and a warm transfer would add a
-        // THIRD from the target's leg. `record: false` is load-bearing, not a tidy-up.
-        record: false,
-        // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
-        // whisper appears exactly when the screen didn't already say this was work.
-        whisper: body.whisper === true,
-      })
-    );
+    return this.xml(this.renderAgentJoin(body, origin));
+  }
+
+  // The answering staff leg's own document: join the caller's conference.
+  private renderAgentJoin(body: AgentAnswerEvent, origin: string): string {
+    return renderDialAgentIntoConference({
+      conferenceName: body.callSid,
+      actionUrl: appendWebhookSecret(`${origin}/webhooks/twilio/agent-status?callSid=${body.callSid}`, this.env.TWILIO_WEBHOOK_SECRET),
+      recordingStatusCallbackUrl: appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1`, this.env.TWILIO_WEBHOOK_SECRET),
+      // NEVER from the staff leg on an inbound call. The caller's leg (redirected to
+      // /join-conference by handleAgentAnswer) carries the recording, dual-channel and continuous
+      // across any transfer. Recording here too would give the call TWO recordings whose
+      // callbacks overwrite each other's `recording_url` -- and a warm transfer would add a
+      // THIRD from the target's leg. `record: false` is load-bearing, not a tidy-up.
+      record: false,
+      // Set by dialStaff only on a divert leg that presented the CUSTOMER's number, so the
+      // whisper appears exactly when the screen didn't already say this was work.
+      whisper: body.whisper === true,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -782,6 +832,30 @@ export class CallSession extends DurableObject<Env> {
     // the ring plan carry on to the next number, or to no-answer exhaustion.
     if (activeRing && activeRing.ringPlanState.name === "DIALING" && activeRing.attemptSids.includes(body.agentCallSid)) {
       await this.advanceRingPlanOnFailedAttempt(activeRing, body.agentCallSid, body.callSid, origin);
+      try {
+        await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.agentCallSid);
+      } catch {
+        /* leg already gone */
+      }
+      return new Response("ok", { status: 200 });
+    }
+
+    // Is this the leg the caller is actually bridged to? Decided from which leg bridged THIS ring
+    // round, never from which answer arrived first: handleAgentAnswer turns every later answer away,
+    // so the leg that bridged is the only staff leg in the conference, whether it turns out to be a
+    // person or a voicemail. A verdict on any other leg -- a sibling mobile that picked up in the same
+    // instant, or a redelivered verdict from an earlier round -- is about a leg that never reached the
+    // caller, and rescuing on it pulled the caller out of a live conversation. That leg just goes.
+    //
+    // Not Twilio's participant list: a staff leg that has answered but not yet joined reads as "nobody
+    // there", which is the exact window this runs in, and a failed read would need a fallback.
+    // With no record of who bridged (a call answered before this shipped) and no ring in progress,
+    // the rescue runs as it always did.
+    const bridgedAgentSid = await this.ctx.storage.get<string>("bridgedAgentSid");
+    const isCallersLeg = bridgedAgentSid
+      ? bridgedAgentSid === body.agentCallSid
+      : activeRing?.ringPlanState.name !== "DIALING";
+    if (!isCallersLeg) {
       try {
         await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.agentCallSid);
       } catch {
@@ -887,17 +961,56 @@ export class CallSession extends DurableObject<Env> {
   // forward (cascade to next number, or detect simultaneous exhaustion).
   // -------------------------------------------------------------------------
   private async handleAgentStatus(body: AgentStatusEvent): Promise<Response> {
-    // Any terminal agent-leg status (including a normal post-bridge hangup, which the ring-plan
-    // logic below deliberately ignores) may have left a lone participant behind.
-    if (body.callStatus === "completed" || (body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus))) {
+    const terminal =
+      body.callStatus === "completed" || (!!body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus));
+    // Softphone outbound: the customer (target) leg reports here too. Read once, first, because both
+    // the cleanup rule and the cancel below depend on it.
+    //
+    // Never throws. An escape here reaches the DO catch-all, which answers agent_status with a
+    // plain 200 -- Twilio never retries, the ring-plan advance below never runs, and an inbound
+    // caller hears ringback forever. Losing this lookup costs a softphone callee a few more rings.
+    let targetSid: string | null = null;
+    if (terminal) {
+      try {
+        const outbound = await this.env.DB.prepare("SELECT outbound_target_sid FROM calls WHERE id = ?")
+          .bind(body.callSid)
+          .first<{ outbound_target_sid: string | null }>();
+        targetSid = outbound?.outbound_target_sid ?? null;
+      } catch (err) {
+        console.log(
+          "AGENT_STATUS_OUTBOUND_LOOKUP_FAILED",
+          JSON.stringify({ callSid: body.callSid, error: err instanceof Error ? err.message : String(err) })
+        );
+      }
+    }
+    // A leg that was IN the call (`completed`) may have left a lone participant behind. An inbound
+    // sibling that failed never joined -- answering cancels the siblings, and their `canceled`
+    // callbacks land while the caller has been redirected in but the answering staff leg has not
+    // yet joined, when "<=1 participant" is true and ending the conference drops the customer.
+    //
+    // Nor did a leg handleAgentAnswer turned away: it answered, so it reports `completed`, but it
+    // was never in the conference and its hangup lands in that same join window.
+    const turnedAway = (await this.ctx.storage.get<string[]>("turnedAwayAgentSids"))?.includes(body.agentCallSid) ?? false;
+    if (body.callStatus === "completed" && !turnedAway) {
       await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+    } else if (terminal && targetSid !== null && targetSid === body.agentCallSid) {
+      // An outbound softphone customer was busy, never answered, or failed. End the staff member's
+      // own leg (the conference is named after it) rather than the conference: a number that fails
+      // instantly reports before the staff leg has joined, when there is no conference yet, and they
+      // would join an empty one and hear ringback until they gave up.
+      try {
+        await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+      } catch (err) {
+        console.log(
+          "OUTBOUND_AGENT_HANGUP_FAILED",
+          JSON.stringify({ callSid: body.callSid, error: err instanceof Error ? err.message : String(err) })
+        );
+      }
+    }
+    if (terminal) {
       // Softphone outbound: if the agent's leg ended, cancel the dialed-out (target) leg so it
       // stops ringing the callee. No-op if that leg already answered/ended (cancel then errors,
       // which we swallow). Skip when it's the target's own status firing this callback.
-      const outbound = await this.env.DB.prepare("SELECT outbound_target_sid FROM calls WHERE id = ?")
-        .bind(body.callSid)
-        .first<{ outbound_target_sid: string | null }>();
-      const targetSid = outbound?.outbound_target_sid ?? null;
       if (targetSid && targetSid !== body.agentCallSid) {
         try {
           await this.cancelStaff(targetSid);
@@ -963,16 +1076,19 @@ export class CallSession extends DurableObject<Env> {
         // plan as exhausted → DONE{no_answer}; the caller then falls through to voicemail via the
         // existing queue_left/no-answer rail (renderNoAnswerFallthrough). Persist only after the
         // new dial genuinely succeeds.
-        let nextSid: string;
-        try {
-          nextSid = await this.dialStaff(dialNext.number, callSid, origin, activeRing.ringConfig.timeoutSeconds);
-        } catch {
-          activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+        // Held like any other ring round (dialRound): the next person can answer before their sid
+        // is stored.
+        await this.dialRound(async () => {
+          try {
+            const nextSid = await this.dialStaff(dialNext.number, callSid, origin, activeRing.ringConfig.timeoutSeconds);
+            activeRing.ringPlanState = state;
+            activeRing.attemptSids.push(nextSid);
+          } catch {
+            activeRing.ringPlanState = { name: "DONE", outcome: "no_answer" };
+          }
           await this.ctx.storage.put("activeRing", activeRing);
-          return;
-        }
-        activeRing.ringPlanState = state;
-        activeRing.attemptSids.push(nextSid);
+        });
+        return;
       } else {
         // No DIAL_NEXT command → cascade exhausted; state is already DONE{no_answer}.
         activeRing.ringPlanState = state;
@@ -1215,7 +1331,18 @@ export class CallSession extends DurableObject<Env> {
     // can later verify a client-submitted CallSid actually belongs to the AUTHENTICATED staff
     // member, not just that it's someone's leg in the conference. `callSid` here is the caller's
     // own CallSid, which is also the queue/conference name (see startRing's renderEnqueue call).
-    await recordCallLeg(this.env.DB, sid, ownerEmail, callSid);
+    //
+    // Never throws: the leg already EXISTS and is ringing. Throwing here loses its sid, so it sits in
+    // no attemptSids and is never cancelled on answer. A missing ownership row only costs that staff
+    // member hold/transfer on this one call.
+    try {
+      await recordCallLeg(this.env.DB, sid, ownerEmail, callSid);
+    } catch (err) {
+      console.log(
+        "CALL_LEG_RECORD_FAILED",
+        JSON.stringify({ callSid, sid, error: err instanceof Error ? err.message : String(err) })
+      );
+    }
     return sid;
   }
 

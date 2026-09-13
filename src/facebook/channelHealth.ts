@@ -46,11 +46,16 @@ export async function checkMessengerChannelHealth(env: Env, now = Date.now()): P
     console.log("FB_CHANNEL_ALERT_NO_DEVICES", JSON.stringify({ count }));
     return;
   }
-  const { invalidTokens } = await sendExpoPush(tokens, {
+  const { sent, invalidTokens } = await sendExpoPush(tokens, {
     title: "Facebook Messenger may be down",
     body: `${count} messages failed to send in the last 15 minutes. Check Twilio Console > Messaging > Senders > reconnect the Facebook Page.`,
     data: { type: "channel_health", channel: "messenger" },
   });
   if (invalidTokens.length) await deletePushTokens(env.DB, invalidTokens);
+  // The same rule one step later: a push Expo refused for every device told nobody either.
+  if (sent === 0) {
+    console.log("FB_CHANNEL_ALERT_UNDELIVERED", JSON.stringify({ count, devices: tokens.length }));
+    return;
+  }
   await setFbChannelAlertLastSent(env.DB, now);
 }

@@ -233,7 +233,8 @@ export function renderIvrFlowPage(
         if(t.getAttribute("data-optkey")!=null){ n.config.options[parseInt(t.getAttribute("data-optkey"),10)].digit=t.value; drawLines(); syncNode(n); return; }
         var fld=t.getAttribute("data-fld"); if(!fld) return;
         if(t.getAttribute("data-bool")){ n.config[fld]=t.checked; return; }
-        if(t.getAttribute("data-num")){ n.config[fld]=parseInt(t.value,10)||0; return; }
+        // An empty box commits nothing rather than 0, which would be a live Gather collecting no digits.
+        if(t.getAttribute("data-num")){ var num=parseInt(t.value,10); if(!isNaN(num)) n.config[fld]=num; return; }
         if(t.getAttribute("data-list")){ n.config[fld]=t.value.split(",").map(function(x){return x.trim();}).filter(function(x){return x;}); return; }
         if(fld==="audioAssetId"){ n.config.audioAssetId=t.value||null; if(t.value) n.config.ttsText=null; renderPanel(); syncNode(n); return; }
         if(fld==="ttsText"){ n.config.ttsText=t.value?t.value:null; if(t.value) n.config.audioAssetId=null; syncNode(n); return; }
