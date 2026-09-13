@@ -118,6 +118,21 @@ describe("admin diagnostics", () => {
     expect(find(await run(), "regions").status).toBe("ok");
   });
 
+  // resolveRingTargets drops the demo account before shift is considered, so listing it as someone
+  // who "would ring" reports a leg that is never dialled.
+  it("does not count the demo account among who would ring", async () => {
+    const ALL_DAY = { open: "00:00", close: "00:00" };
+    const schedule = JSON.stringify({ mon: ALL_DAY, tue: ALL_DAY, wed: ALL_DAY, thu: ALL_DAY, fri: ALL_DAY, sat: ALL_DAY, sun: ALL_DAY });
+    await env.DB.prepare("DELETE FROM staff_users WHERE email LIKE '%@roster.test'").run();
+    await env.DB
+      .prepare("INSERT INTO staff_users (email, role, created_at, status, schedule, last_heartbeat_at, ring_priority) VALUES ('reviewer@roster.test', 'staff', 1, 'available', ?, NULL, 100)")
+      .bind(schedule)
+      .run();
+    stubFetch();
+    const check = find(await run(baseEnv({ DEMO_ACCOUNT_EMAILS: "reviewer@roster.test" })), "roster");
+    expect(check.detail).not.toContain("reviewer");
+  });
+
   it("fails the Twilio check on a 401, because nothing can dial without it", async () => {
     stubFetch({ twilio: 401 });
     expect(find(await run(), "twilio").status).toBe("fail");

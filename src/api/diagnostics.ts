@@ -367,7 +367,8 @@ function checkEmail(env: Env): Check {
 async function checkRingRoster(env: Env): Promise<Check> {
   const base = { key: "roster", label: "Who's on call now" };
   const now = new Date();
-  const available = (await getStaffRoster(env.DB)).filter((s) => isStaffAvailable(s, now));
+  // Demo accounts are dropped at dial time (resolveRingTargets), so they never "would ring".
+  const available = excludeDemos(await getStaffRoster(env.DB), env).filter((s) => isStaffAvailable(s, now));
   if (available.length === 0) {
     return {
       ...base,
