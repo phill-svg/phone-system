@@ -85,8 +85,10 @@ export async function endConference(accountSid: string, authToken: string, confe
 // whoever remains (e.g. the customer, after the agent hangs up) sits alone in the conference
 // hearing silence until they give up. Twilio's endConferenceOnExit attribute can't express
 // "end when a STAFF leg leaves" without also killing warm transfers (where the original agent
-// leaves a caller+target pair behind on purpose), so instead: on any leg's terminal status,
-// end the conference iff at most one participant remains.
+// leaves a caller+target pair behind on purpose), so instead: when a leg that was IN the call
+// completes, end the conference iff at most one participant remains. handleAgentStatus does not
+// call this for pre-answer statuses (canceled/no-answer/busy/failed): those legs never joined, and a
+// cancelled sibling's callback used to end the conference between the caller and staff joining.
 export async function cleanupLoneConference(
   accountSid: string,
   authToken: string,
