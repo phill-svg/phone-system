@@ -887,24 +887,16 @@ export class CallSession extends DurableObject<Env> {
   // forward (cascade to next number, or detect simultaneous exhaustion).
   // -------------------------------------------------------------------------
   private async handleAgentStatus(body: AgentStatusEvent): Promise<Response> {
-    // Only a leg that ANSWERED can have left a lone participant behind, and only an answered leg
-    // reports `completed` (including a normal post-bridge hangup, which the ring-plan logic below
-    // deliberately ignores). A canceled/no-answer/busy/failed leg was never in the conference -- and
-    // cleaning up on one is actively harmful: answering cancels the siblings, and their `canceled`
-    // callbacks land while the caller has been redirected in but the answering staff leg has not yet
-    // joined, when "<=1 participant" is true and ending the conference drops the customer.
-    if (body.callStatus === "completed") {
-      await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
-    }
-    if (body.callStatus === "completed" || (body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus))) {
-      // Softphone outbound: if the agent's leg ended, cancel the dialed-out (target) leg so it
-      // stops ringing the callee. No-op if that leg already answered/ended (cancel then errors,
-      // which we swallow). Skip when it's the target's own status firing this callback.
-      //
-      // Never throws. An escape here reaches the DO catch-all, which answers agent_status with a
-      // plain 200 -- Twilio never retries, the ring-plan advance below never runs, and an inbound
-      // caller hears ringback forever. Losing this cancel costs a softphone callee a few more rings.
-      let targetSid: string | null = null;
+    const terminal =
+      body.callStatus === "completed" || (!!body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus));
+    // Softphone outbound: the customer (target) leg reports here too. Read once, first, because both
+    // the cleanup rule and the cancel below depend on it.
+    //
+    // Never throws. An escape here reaches the DO catch-all, which answers agent_status with a
+    // plain 200 -- Twilio never retries, the ring-plan advance below never runs, and an inbound
+    // caller hears ringback forever. Losing this lookup costs a softphone callee a few more rings.
+    let targetSid: string | null = null;
+    if (terminal) {
       try {
         const outbound = await this.env.DB.prepare("SELECT outbound_target_sid FROM calls WHERE id = ?")
           .bind(body.callSid)
@@ -916,6 +908,19 @@ export class CallSession extends DurableObject<Env> {
           JSON.stringify({ callSid: body.callSid, error: err instanceof Error ? err.message : String(err) })
         );
       }
+    }
+    // A leg that was IN the call (`completed`) may have left a lone participant behind. So may an
+    // outbound customer leg that failed: the staff member is alone hearing ringback. An inbound
+    // sibling that failed never joined -- answering cancels the siblings, and their `canceled`
+    // callbacks land while the caller has been redirected in but the answering staff leg has not
+    // yet joined, when "<=1 participant" is true and ending the conference drops the customer.
+    if (body.callStatus === "completed" || (terminal && targetSid !== null && targetSid === body.agentCallSid)) {
+      await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+    }
+    if (terminal) {
+      // Softphone outbound: if the agent's leg ended, cancel the dialed-out (target) leg so it
+      // stops ringing the callee. No-op if that leg already answered/ended (cancel then errors,
+      // which we swallow). Skip when it's the target's own status firing this callback.
       if (targetSid && targetSid !== body.agentCallSid) {
         try {
           await this.cancelStaff(targetSid);

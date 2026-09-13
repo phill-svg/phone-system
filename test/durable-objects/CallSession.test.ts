@@ -888,6 +888,35 @@ describe("CallSession", () => {
     expect(endConferenceHits()).toBe(1);
   });
 
+  // An outbound softphone call's CUSTOMER leg reports to the same status webhook. If the customer is
+  // busy or never answers, the staff member is alone in the conference hearing ringback -- that one
+  // must still be ended, or they wait forever believing the number is still ringing.
+  it("a failed outbound customer leg still ends the staff member's lone conference", async () => {
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const u = String(input);
+      if (u.includes("/Conferences.json")) return new Response(JSON.stringify({ conferences: [{ sid: "CF1" }] }), { status: 200 });
+      if (u.includes("/Participants.json")) return new Response(JSON.stringify({ participants: [{ call_sid: "CA-agent-out" }] }), { status: 200 });
+      return previous(input, init);
+    });
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, status, direction, outbound_target_sid) VALUES (?, ?, ?, ?, 'in_progress', 'outbound', ?)"
+    )
+      .bind("CA-agent-out", "+61261059771", "+61412345678", Date.now(), "CA-customer-out")
+      .run();
+
+    const stub = stubFor("CA-agent-out");
+    await send(stub, agentStatus("CA-agent-out", "CA-customer-out", "busy"));
+
+    expect(
+      fetchMock.mock.calls.filter(
+        (c) =>
+          String(c[0]).endsWith("/Conferences/CF1.json") &&
+          new URLSearchParams((c[1] as RequestInit).body as string).get("Status") === "completed"
+      ).length
+    ).toBe(1);
+  });
+
   // A sibling leg that just went to voicemail, was declined, or answered a fraction of a second
   // earlier answers Twilio's Status=canceled with a 400; an already torn-down one answers 404. That
   // is an ordinary race in a ring-all, and it used to throw straight out of the answer handler --
