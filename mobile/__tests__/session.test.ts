@@ -84,6 +84,20 @@ describe("getTokenWhenReadable", () => {
     expect(add).not.toHaveBeenCalled();
   });
 
+  // Unlocked mid-read: the refusal was the lock, even though the app is active by the time it lands.
+  // Counting it, then an instant retry iOS also refuses for a moment, signed out a valid token.
+  it("does not count a refusal whose read started while locked", async () => {
+    store.getItemAsync
+      .mockImplementationOnce(async () => {
+        Object.defineProperty(AppState, "currentState", { value: "active", configurable: true });
+        throw new Error("User interaction is not allowed.");
+      })
+      .mockRejectedValueOnce(new Error("User interaction is not allowed."))
+      .mockResolvedValue("abc.def");
+
+    expect(await getTokenWhenReadable()).toBe("abc.def");
+  });
+
   // A refusal while active is not the lock (e.g. an Android keystore that cannot decrypt). Waiting
   // for an unlock that is not coming is the same spinner; signed out at least lets them sign in.
   it("treats a second refusal while active as signed out", async () => {

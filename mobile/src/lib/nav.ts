@@ -16,3 +16,26 @@ export function leaveAdmin(nav: Nav): void {
   if (nav.canGoBack()) nav.back();
   else nav.replace(SETTINGS_HREF);
 }
+
+// Leaving a screen exactly once, and only while it is on top. `back()` pops whatever is on TOP, so
+// leaving while covered pops the covering screen (a call ringing in, Contacts tapped) and strands
+// this one; leaving twice pops the screen underneath too. Both happened on the in-call screen.
+export function createScreenExit(opts: { isFocused: () => boolean; back: () => void }) {
+  let left = false;
+  let pending = false;
+  return {
+    leave() {
+      if (left) return;
+      if (!opts.isFocused()) {
+        pending = true;
+        return;
+      }
+      left = true;
+      pending = false;
+      opts.back();
+    },
+    onFocus() {
+      if (pending) this.leave();
+    },
+  };
+}

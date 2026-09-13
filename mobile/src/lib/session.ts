@@ -33,15 +33,24 @@ async function readToken(): Promise<string | null> {
 // is ALREADY active, no change event will come -- retry at once, and a second refusal while active
 // is not the lock (an Android keystore that cannot decrypt), so it counts as signed out rather than
 // a spinner forever.
+//
+// Only a read that STARTED while active counts: one that started locked and landed after an unlock
+// was still the lock. And the retry waits a moment, because iOS can report active slightly before
+// protected data is readable -- counting that as a real refusal signed out a valid token.
+const RETRY_DELAY_MS = 300;
 export async function getTokenWhenReadable(): Promise<string | null> {
   let refusedWhileActive = false;
   for (;;) {
+    const activeAtStart = AppState.currentState === "active";
     try {
       return await getToken();
     } catch {
       if (AppState.currentState === "active") {
-        if (refusedWhileActive) return null;
-        refusedWhileActive = true;
+        if (activeAtStart) {
+          if (refusedWhileActive) return null;
+          refusedWhileActive = true;
+        }
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
         continue;
       }
       await new Promise<void>((resolve) => {

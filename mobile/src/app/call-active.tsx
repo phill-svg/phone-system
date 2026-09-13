@@ -14,6 +14,7 @@ import { formatPhone } from "../lib/phone";
 import { placeCall, getActiveCall, listAudioDevices, selectAudioRoute, onAudioDevicesUpdated } from "../lib/voice";
 import { setPref } from "../lib/prefs";
 import { holdCall } from "../lib/api";
+import { createScreenExit } from "../lib/nav";
 import type { AudioDeviceLike, AudioRoutePref } from "../lib/audioRouting";
 import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
 import { haptics } from "../theme/haptics";
@@ -107,28 +108,24 @@ export default function ActiveCallScreen() {
   // the new call), it must NOT drag the navigator back and pop the screen the user is actually on.
   const isFocused = useIsFocused();
   const focusedRef = useRef(isFocused);
-  // Set when this call ended while another screen covered it. Without it, closing the covering
-  // screen revealed a "Call Ended" full-screen modal with gestures off and no way out.
-  const leaveOnFocus = useRef(false);
+  // Leaves exactly once and only while on top (see createScreenExit). A covered screen leaving
+  // popped the wrong one and stranded a gestureless "Call Ended" modal; leaving twice popped the
+  // screen the call was placed from.
+  const exit = useRef(createScreenExit({ isFocused: () => focusedRef.current, back: () => router.back() })).current;
   useEffect(() => {
     focusedRef.current = isFocused;
-    if (isFocused && leaveOnFocus.current) {
-      leaveOnFocus.current = false;
-      router.back();
-    }
-  }, [isFocused]);
+    if (isFocused) exit.onFocus();
+  }, [isFocused, exit]);
 
   function finish() {
     if (timer.current) clearInterval(timer.current);
     setState("ended");
-    // Only navigate away if this screen is the one currently focused (top of stack). A blurred,
-    // stale call-active (superseded by a newer one from call waiting) should quietly clean up
-    // without moving the navigator out from under the call the user is actually on -- and leave
-    // the moment it is uncovered.
+    // A blurred, stale call-active (superseded by a newer one from call waiting) must not move the
+    // navigator out from under the call the user is actually on: exit waits until it is uncovered.
     if (focusedRef.current) {
-      setTimeout(() => router.back(), 600);
+      setTimeout(() => exit.leave(), 600);
     } else {
-      leaveOnFocus.current = true;
+      exit.leave();
     }
   }
 
@@ -208,9 +205,11 @@ export default function ActiveCallScreen() {
 
   function endCall() {
     haptics.heavy();
-    // Nothing left to hang up, and the screen is already leaving (finish's timer, or on refocus).
-    // Going back here too popped the screen underneath as well.
-    if (state === "ended") return;
+    // Nothing left to hang up: End is the way out, and the exit guard keeps it from leaving twice.
+    if (state === "ended") {
+      exit.leave();
+      return;
+    }
     const call = callRef.current;
     if (!call) {
       // No Call object attached to this screen: leaving would strand a live call with no UI, so
