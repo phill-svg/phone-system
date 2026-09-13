@@ -11,7 +11,7 @@ declare global {
 
 jest.mock("../src/lib/session");
 import * as session from "../src/lib/session";
-import { apiFetch, login, logout, ApiError, setUnauthorizedHandler, putIvrFlow } from "../src/lib/api";
+import { apiFetch, login, logout, ApiError, setUnauthorizedHandler, putIvrFlow, holdCall } from "../src/lib/api";
 import { IVR_NODE_PUT_FIELDS } from "../src/lib/ivr";
 
 const okJson = (body: unknown, status = 200) =>
@@ -109,5 +109,23 @@ describe("putIvrFlow", () => {
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(Object.keys(body.nodes[0]).sort()).toEqual([...IVR_NODE_PUT_FIELDS].sort());
+  });
+});
+
+// Hold used to flip a local flag only: the screen read "On Hold" while the customer heard every
+// word. The server resolves the conference from this leg, so the leg sid is what has to be sent.
+describe("holdCall", () => {
+  beforeEach(() => { (session.getToken as jest.Mock).mockResolvedValue(null); });
+
+  it("asks the server to hold the other party on this leg's conference", async () => {
+    const fetchMock = jest.fn().mockReturnValue(okJson({ ok: true }));
+    (global as any).fetch = fetchMock as any;
+
+    await holdCall("CA-leg-1", true);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/softphone\/hold$/);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ selfCallSid: "CA-leg-1", hold: true });
   });
 });

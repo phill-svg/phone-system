@@ -56,6 +56,11 @@ export async function getSoftphoneToken(platform: "android" | "ios" = "android")
 export async function setPresence(status: "available" | "away" | "offline"): Promise<void> {
   await apiFetch("/api/softphone/presence", { method: "PUT", body: JSON.stringify({ status }) });
 }
+// Holds (or resumes) the OTHER party on this leg's conference. The server works out which
+// conference from the leg itself -- an inbound call's is named after the caller's leg.
+export async function holdCall(selfCallSid: string, hold: boolean): Promise<void> {
+  await apiFetch("/api/softphone/hold", { method: "POST", body: JSON.stringify({ selfCallSid, hold }) });
+}
 export async function sendHeartbeat(): Promise<void> {
   await apiFetch("/api/softphone/heartbeat", { method: "POST" });
 }
