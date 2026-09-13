@@ -11,6 +11,23 @@ export function wholeNumberInput(raw: string, min: number): { text: string; valu
   return { text, value: text === "" ? null : Math.max(min, Number(text)) };
 }
 
-export function reseedDraft<T>(current: T, lastSeeded: T, incoming: T): T {
-  return JSON.stringify(current) === JSON.stringify(lastSeeded) ? incoming : current;
+// Field by field, not the whole draft: keeping every field of an edited draft kept ones nobody
+// touched. A field follows the reload when it is untouched, when the reload already holds what was
+// typed (a string the server only trimmed counts -- otherwise a saved card stays on "Save" forever),
+// or when it is `serverOwned`: a value other cards' saves change, like which number is the default.
+export function reseedDraft<T extends Record<string, unknown>>(
+  current: T,
+  lastSeeded: T,
+  incoming: T,
+  serverOwned: (keyof T)[] = []
+): T {
+  const same = (a: unknown, b: unknown) =>
+    typeof a === "string" && typeof b === "string" ? a.trim() === b.trim() : JSON.stringify(a) === JSON.stringify(b);
+  const out = { ...current };
+  for (const key of Object.keys(incoming) as (keyof T)[]) {
+    if (serverOwned.includes(key) || same(current[key], lastSeeded[key]) || same(current[key], incoming[key])) {
+      out[key] = incoming[key];
+    }
+  }
+  return out;
 }

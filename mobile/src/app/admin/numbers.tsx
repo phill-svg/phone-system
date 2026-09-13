@@ -148,7 +148,9 @@ function NumberCard({ number, onChanged }: { number: PhoneNumber; onChanged: () 
   useEffect(() => {
     const last = seeded.current; // captured now: the updater runs after the ref moves below
     const incoming = toInput(number);
-    setInput((current) => reseedDraft(current, last, incoming));
+    // Default flags are server-owned: another card's save moves them, and a stale one saved back
+    // from this card would silently take the default away again.
+    setInput((current) => reseedDraft(current, last, incoming, ["is_default_voice", "is_default_sms"]));
     seeded.current = incoming;
   }, [number]);
 

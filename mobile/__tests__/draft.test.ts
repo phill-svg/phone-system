@@ -31,12 +31,30 @@ describe("reseedDraft", () => {
 
   it("keeps an edited draft when another card's save reloads the list", () => {
     const edited = { label: "Typed but not saved", voice: false };
-    expect(reseedDraft(edited, server, { ...server })).toBe(edited);
+    expect(reseedDraft(edited, server, { ...server })).toEqual(edited);
   });
 
   it("keeps an edited draft even when the server copy changed underneath it", () => {
     const edited = { label: "Mine", voice: true };
-    expect(reseedDraft(edited, server, { label: "Theirs", voice: true })).toBe(edited);
+    expect(reseedDraft(edited, server, { label: "Theirs", voice: true })).toEqual(edited);
+  });
+
+  // Field by field: keeping the WHOLE draft kept fields nobody touched. Card B had an unsaved label
+  // and was the default; card A was saved as the new default, the server cleared B's flag, B kept
+  // "default" in its draft -- and saving B's label later silently took the default back.
+  it("takes server-owned fields from the reload even when other fields are edited", () => {
+    const b = { label: "Office", default_voice: true };
+    const edited = { label: "Office (typing)", default_voice: true };
+    expect(reseedDraft(edited, b, { label: "Office", default_voice: false }, ["default_voice"])).toEqual({
+      label: "Office (typing)",
+      default_voice: false,
+    });
+  });
+
+  // The server trims the label. "Office " saved came back "Office", which differed from both the
+  // draft and the seed, so the card stayed on Save forever re-sending the untrimmed value.
+  it("treats a value the server only trimmed as saved", () => {
+    expect(reseedDraft({ label: "Office " }, { label: "Old" }, { label: "Office" })).toEqual({ label: "Office" });
   });
 
   // After this card's own save the reload carries exactly the draft, and the seed moves with it,
