@@ -513,6 +513,26 @@ export async function rejectIncoming(): Promise<void> {
   if (invite && invite.getState() === CallInvite.State.Pending) await invite.reject();
 }
 
+// Call waiting: answering the new call ends the current one -- but only once the new one can still
+// be answered. Hanging up first and checking second meant a caller who gave up a moment before
+// Answer cost the staff member BOTH calls. Null means "nothing to answer, leave the current call".
+export async function acceptWaitingCall(): Promise<Call | null> {
+  const invite = pendingInvite;
+  if (!invite || invite.getState() !== CallInvite.State.Pending) return null;
+  const current = liveCall();
+  if (current) Promise.resolve(current.disconnect()).catch(() => {});
+  return acceptIncoming();
+}
+
+// What a ringing screen should do as it mounts. It is pushed after awaited pref reads, so the invite
+// can already be gone: withdrawn (dismiss), or answered from CallKit (go to the in-call screen, or
+// the live call has no controls). Never "in-call" for call waiting -- there the live call is the one
+// already on screen underneath, not this caller.
+export function ringingScreenOnMount(waiting: boolean): "ring" | "in-call" | "dismiss" {
+  if (pendingInvite?.getState() === CallInvite.State.Pending) return "ring";
+  return !waiting && liveCall() ? "in-call" : "dismiss";
+}
+
 export { Call };
 
 

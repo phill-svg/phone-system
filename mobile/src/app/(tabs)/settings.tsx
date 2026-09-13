@@ -270,7 +270,7 @@ export default function SettingsScreen() {
         </Group>
 
         <Group footer="Preview the incoming-call screen without a live call.">
-          <Row icon="bell.badge.fill" iconColor="#FF9500" label="Preview Incoming Call" chevron onPress={() => router.push({ pathname: "/call-incoming", params: { number: "0400123456", name: "" } })} />
+          <Row icon="bell.badge.fill" iconColor="#FF9500" label="Preview Incoming Call" chevron onPress={() => router.push({ pathname: "/call-incoming", params: { number: "0400123456", name: "", preview: "1" } })} />
         </Group>
 
         <Group>

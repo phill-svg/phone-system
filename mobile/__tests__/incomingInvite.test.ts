@@ -319,4 +319,92 @@ describe("incoming invite lifecycle", () => {
     expect(onInvite).toHaveBeenCalledTimes(1);
     unsub();
   });
+
+  // Call waiting: answering the new call ends the current one. The ringing screen used to hang up
+  // the current call FIRST and only then find out the new caller had already gone -- so a staff
+  // member tapping Answer a moment too late lost both calls.
+  function liveCallFake(order: string[]) {
+    return {
+      on: jest.fn(),
+      getState: () => "connected",
+      disconnect: jest.fn(() => { order.push("disconnect"); return Promise.resolve(); }),
+    };
+  }
+
+  it("call waiting: a withdrawn invite leaves the call in progress connected", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const current = liveCallFake([]);
+    voiceLib.setActiveCall(current);
+    const invite = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    invite.state = CallInviteState.Rejected;
+    invite.fire(CallInviteEvent.Cancelled);
+
+    await expect(voiceLib.acceptWaitingCall()).resolves.toBeNull();
+    expect(current.disconnect).not.toHaveBeenCalled();
+    expect(invite.accepted).toBe(false);
+    unsub();
+  });
+
+  it("call waiting: a pending invite ends the current call, then is accepted", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const order: string[] = [];
+    const current = liveCallFake(order);
+    voiceLib.setActiveCall(current);
+    const invite = makeInvite(CallInviteState.Pending);
+    const accept = invite.accept.bind(invite);
+    invite.accept = async () => { order.push("accept"); return accept(); };
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    await expect(voiceLib.acceptWaitingCall()).resolves.not.toBeNull();
+    expect(order).toEqual(["disconnect", "accept"]);
+    expect(invite.accepted).toBe(true);
+    unsub();
+  });
+
+  // The ringing screen is pushed after two awaited pref reads, so the caller can hang up before it
+  // mounts -- and onInviteCancelled only reports cancellations that happen AFTER it subscribes.
+  describe("ringingScreenOnMount", () => {
+    it("rings while the invite is still pending", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      mockVoiceRef.current.emit("callInvite", makeInvite(CallInviteState.Pending));
+      expect(voiceLib.ringingScreenOnMount(false)).toBe("ring");
+      unsub();
+    });
+
+    it("dismisses when the caller gave up before the screen mounted", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Rejected;
+      invite.fire(CallInviteEvent.Cancelled);
+      expect(voiceLib.ringingScreenOnMount(false)).toBe("dismiss");
+      unsub();
+    });
+
+    // Answered from CallKit before the screen mounted: dismissing would strand a live call with no
+    // in-app controls, so the screen has to go to the in-call screen instead.
+    it("opens the in-call screen for an invite already answered natively", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Accepted;
+      invite.fireWith(CallInviteEvent.Accepted, { on: jest.fn(), getState: () => "connected" });
+      expect(voiceLib.ringingScreenOnMount(false)).toBe("in-call");
+      unsub();
+    });
+
+    // During call waiting the live call is the one ALREADY on screen underneath, not this caller.
+    it("dismisses a withdrawn call-waiting invite even though a call is live", async () => {
+      const unsub = track(await voiceLib.registerForIncoming(() => {}));
+      voiceLib.setActiveCall(liveCallFake([]));
+      const invite = makeInvite(CallInviteState.Pending);
+      mockVoiceRef.current.emit("callInvite", invite);
+      invite.state = CallInviteState.Rejected;
+      invite.fire(CallInviteEvent.Cancelled);
+      expect(voiceLib.ringingScreenOnMount(true)).toBe("dismiss");
+      unsub();
+    });
+  });
 });
