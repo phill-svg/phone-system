@@ -880,6 +880,19 @@ describe("admin diagnostics", () => {
       expect(find(await run(), "on_call").status).toBe("ok");
     });
 
+    // The other half: following BOTH branches reported the rota wired when it hung off the holiday
+    // branch alone -- every ordinary night still went to voicemail with this check saying ok.
+    it("does not count a rota reachable only on the holiday branch", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await node("n_dates", "main", true, "date_rule", { closedDates: ["12-25"], openNextNodeId: "n_vm", closedNextNodeId: "n_ring" });
+      await node("n_ring", "main", false, "ring", ON_CALL_RING);
+      await node("n_vm", "main", false, "voicemail", VOICEMAIL);
+      stubFetch();
+      expect(find(await run(), "on_call").status).not.toBe("ok");
+    });
+
     // CallSession routes an after-hours call into the `after_hours` flow whenever that flow has an
     // entry node, so that flow -- not `main` -- is the one an after-hours caller walks.
     it("walks the after_hours flow when it has an entry node", async () => {
