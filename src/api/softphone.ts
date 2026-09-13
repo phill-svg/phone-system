@@ -5,7 +5,7 @@ import { setStaffStatus, touchHeartbeat } from "../db/staff";
 import { resolveSendingNumber } from "../db/phoneNumbers";
 
 // A resolved sending number, or null if it is not a plausible E.164 number Twilio would accept.
-function validCallerId(resolved: string | null): string | null {
+export function validCallerId(resolved: string | null): string | null {
   const n = (resolved ?? "").trim();
   return /^\+[1-9]\d{7,14}$/.test(n) ? n : null;
 }
