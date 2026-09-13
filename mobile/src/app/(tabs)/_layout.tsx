@@ -16,6 +16,7 @@ import { useTheme } from "../../theme/theme";
 function useIncomingCalls() {
   useEffect(() => {
     let unsub: (() => void) | undefined;
+    let cancelled = false;
     registerForIncoming(async (from) => {
       const hasActiveCall = getActiveCall() !== null;
       const autoAnswer = await getPrefBool("pref_auto_answer", false);
@@ -37,7 +38,10 @@ function useIncomingCalls() {
       router.push({ pathname: "/call-active", params: { number: from, name: "", direction: "incoming" } });
     })
       .then((u) => {
-        unsub = u;
+        // Registration can take ~30s on iOS. If this unmounted meanwhile, its cleanup found nothing to
+        // call and the registration stayed live forever -- so drop it the moment it arrives.
+        if (cancelled) u();
+        else unsub = u;
       })
       .catch(() => {});
 
@@ -51,6 +55,7 @@ function useIncomingCalls() {
     const hb = setInterval(() => sendHeartbeat().catch(() => {}), 60_000);
 
     return () => {
+      cancelled = true;
       unsub?.();
       clearInterval(hb);
       // Deliberately does NOT set presence to "offline" here. Closing the app is not going off

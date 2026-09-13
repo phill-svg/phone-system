@@ -287,29 +287,13 @@ export async function registerForIncoming(
   }
   await ensureMicPermission().catch(() => {});
 
-  const handler = (invite: CallInvite) => {
-    pendingInvite = invite;
-    // A withdrawn invite MUST drop out of `pendingInvite`. Accepting one that is no longer pending
-    // throws deep in TwilioVoice's native CallKit path, as an Objective-C exception that no JS
-    // try/catch can reach -- it aborts the whole app. That is the 09:14 crash: the caller hung up
-    // at :34 and the process died at :35 inside -[CXProvider performAction:] -> TVOAcceptOptions.
-    // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
-    // live the whole time the screen is up.
-    invite.on(CallInvite.Event.Cancelled, () => {
-      if (pendingInvite === invite) pendingInvite = null;
-      notifyInviteCancelled();
-    });
-    // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
-    // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
-    // second accept can reach the native layer, and tell the ringing screen to get out of the way.
-    invite.on(CallInvite.Event.Accepted, (call: Call) => {
-      if (pendingInvite === invite) pendingInvite = null;
-      if (call) adoptCall(call);
-      notifyInviteAccepted();
-    });
-    onInvite(invite.getFrom());
-  };
-  voice.on(Voice.Event.CallInvite, handler);
+  const me: InviteSubscriber = { onInvite, onAdopted };
+  inviteSubscribers.push(me);
+  if (inviteSubscribers.length === 1) {
+    voice.on(Voice.Event.CallInvite, handleInvite);
+    voice.on(Voice.Event.Registered, onRegistered);
+    voice.on(Voice.Event.Error, onRegError);
+  }
   // An invite delivered BEFORE this listener existed is never re-emitted -- the SDK's
   // sendEventWithName is a no-op until JS subscribes. That window is real now that the native
   // module is built during launch (mobile/plugins/TwilioEarlyInit.swift): a cold launch from a
@@ -334,19 +318,15 @@ export async function registerForIncoming(
         if (answered) {
           if (!activeCall) {
             adoptCall(answered);
-            onAdopted?.(invite.getFrom());
+            currentSubscriber()?.onAdopted?.(invite.getFrom());
           }
           continue;
         }
-        handler(invite);
+        handleInvite(invite);
         return;
       }
     })
     .catch(() => {});
-  const onRegistered = () => setRegStatus("registered ✓");
-  const onError = (e: unknown) => setRegStatus("error: " + ((e as { message?: string })?.message ?? String(e)));
-  voice.on(Voice.Event.Registered, onRegistered);
-  voice.on(Voice.Event.Error, onError);
 
   setRegStatus("registering…");
   try {
@@ -374,10 +354,49 @@ export async function registerForIncoming(
   }
 
   return () => {
-    voice.off(Voice.Event.CallInvite, handler);
-    voice.off(Voice.Event.Registered, onRegistered);
-    voice.off(Voice.Event.Error, onError);
+    const i = inviteSubscribers.indexOf(me);
+    if (i < 0) return;
+    inviteSubscribers.splice(i, 1);
+    if (inviteSubscribers.length === 0) {
+      voice.off(Voice.Event.CallInvite, handleInvite);
+      voice.off(Voice.Event.Registered, onRegistered);
+      voice.off(Voice.Event.Error, onRegError);
+    }
   };
+}
+
+// ONE native invite handler however many registrations are live. Each registration used to add its
+// own, so two live ones -- a second tab navigator pushed over a call by "add call"/"contacts", or a
+// registration whose unsubscribe was lost to an unmount mid-registration -- opened two ringing
+// screens per call, and with auto-answer on both accepted. The newest registration is the one told;
+// removing it hands invites back to the one beneath.
+type InviteSubscriber = { onInvite: (from: string) => void; onAdopted?: (from: string) => void };
+const inviteSubscribers: InviteSubscriber[] = [];
+const currentSubscriber = (): InviteSubscriber | undefined => inviteSubscribers[inviteSubscribers.length - 1];
+const onRegistered = () => setRegStatus("registered ✓");
+const onRegError = (e: unknown) => setRegStatus("error: " + ((e as { message?: string })?.message ?? String(e)));
+
+function handleInvite(invite: CallInvite): void {
+  pendingInvite = invite;
+  // A withdrawn invite MUST drop out of `pendingInvite`. Accepting one that is no longer pending
+  // throws deep in TwilioVoice's native CallKit path, as an Objective-C exception that no JS
+  // try/catch can reach -- it aborts the whole app. That is the 09:14 crash: the caller hung up
+  // at :34 and the process died at :35 inside -[CXProvider performAction:] -> TVOAcceptOptions.
+  // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
+  // live the whole time the screen is up.
+  invite.on(CallInvite.Event.Cancelled, () => {
+    if (pendingInvite === invite) pendingInvite = null;
+    notifyInviteCancelled();
+  });
+  // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
+  // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
+  // second accept can reach the native layer, and tell the ringing screen to get out of the way.
+  invite.on(CallInvite.Event.Accepted, (call: Call) => {
+    if (pendingInvite === invite) pendingInvite = null;
+    if (call) adoptCall(call);
+    notifyInviteAccepted();
+  });
+  currentSubscriber()?.onInvite(invite.getFrom());
 }
 
 // Tell Twilio to stop sending this device incoming calls.

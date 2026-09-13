@@ -272,6 +272,33 @@ describe("incoming invite lifecycle", () => {
     mockVoiceRef.current.calls = new Map();
   });
 
+  // Every registration added its own native handler, so two live registrations -- a second tab
+  // navigator pushed over a call by "add call"/"contacts", or a registration whose unsubscribe was
+  // lost to an unmount mid-registration -- opened two ringing screens per call, and with auto-answer
+  // on both accepted. One handler; the newest registration is the one told; removing it hands back.
+  it("announces each invite once however many registrations are live, newest first", async () => {
+    mockVoiceRef.current.pendingInvites = new Map();
+    const first = jest.fn();
+    const second = jest.fn();
+    const unsubFirst = track(await voiceLib.registerForIncoming(first));
+    const unsubSecond = await voiceLib.registerForIncoming(second);
+
+    expect(mockVoiceRef.current.handlers["callInvite"]).toHaveLength(1);
+    const a = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", a);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    a.fire(CallInviteEvent.Cancelled);
+
+    unsubSecond();
+    const b = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", b);
+    expect(first).toHaveBeenCalledTimes(1);
+    b.fire(CallInviteEvent.Cancelled);
+    unsubFirst();
+    expect(mockVoiceRef.current.handlers["callInvite"]).toHaveLength(0);
+  });
+
   it("does not announce an invite twice when the event arrived first", async () => {
     const invite = makeInvite(CallInviteState.Pending);
     const onInvite = jest.fn();
