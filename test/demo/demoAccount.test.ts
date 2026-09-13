@@ -55,6 +55,9 @@ describe("demo request handling", () => {
       ["/api/contacts/3", "PUT"],
       ["/api/contacts/3", "DELETE"],
       ["/api/calls/DEMO-c01", "PATCH"],
+      // Every notification goes to every stored token, carrying real customer names and message
+      // text. A reviewer's handset registering one would receive all of it.
+      ["/api/push/register", "POST"],
     ] as const) {
       const res = handleDemoRequest(new URL("https://x" + path), req(path, method), NOW);
       expect(res, `${method} ${path}`).not.toBeNull();

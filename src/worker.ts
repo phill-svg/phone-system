@@ -1410,6 +1410,17 @@ export default {
       const staffOrResponse = await requireStaffUser(request, env, { isApi: false });
       if (staffOrResponse instanceof Response) return staffOrResponse;
 
+      // The demo swap lives under /api/, and most of these pages read real D1 on the server. Deny
+      // by default: only the two pages that render from the substituted API are allowed, so a
+      // future page cannot quietly reopen this.
+      if (
+        isDemoUser(staffOrResponse.email, env) &&
+        url.pathname !== "/admin/phone" &&
+        url.pathname !== "/admin/messages"
+      ) {
+        return Response.redirect(new URL("/admin/phone", url).toString(), 302);
+      }
+
       // Admin-only pages: Settings (schedules/blocklist/staff), Analytics, and the IVR Flow
       // editor. A non-admin who types the URL is sent to their Phone page instead of seeing it.
       const adminOnlyPage =

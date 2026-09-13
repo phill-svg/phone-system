@@ -680,6 +680,9 @@ export class CallSession extends DurableObject<Env> {
     await this.logEvent(body.callSid, abandonedMidRing ? "caller_hung_up" : "no_answer");
     await this.notifyMissedOnce(body.callSid);
     await this.ctx.storage.delete("activeRing");
+    // The no-answer branch is for a caller still on the line. Walking it after a hangup rang the
+    // next ring node's whole team again for nobody.
+    if (body.queueResult === "hangup") return this.xml(wrapResponse("<Hangup/>"));
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     return this.xml(
       await this.renderNoAnswerFallthrough(body.callSid, activeRing.ringConfig.noAnswerNextNodeId, isAfterHours, origin)
@@ -817,14 +820,66 @@ export class CallSession extends DurableObject<Env> {
     const origin = new URL(body.webhookUrl).origin;
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
     await this.ctx.storage.delete("activeRing");
-    if (!activeRing) return this.xml(wrapResponse("<Hangup/>"));
+
+    // `activeRing` is ALWAYS gone by the time we get here, which is why this rescue had never once
+    // run in production -- zero `no_answer{mobile_voicemail_answered}` rows in the entire history of
+    // the table, while the caller was hung up on instead.
+    //
+    // handleQueueLeft deletes activeRing the instant the call bridges, and AMD is deliberately
+    // ASYNC (see dialStaff) so its verdict lands 2-4s AFTER that. `if (!activeRing) return Hangup`
+    // was therefore not an edge case, it was the only path: a caller who reached a staff member's
+    // personal voicemail got dropped rather than passed to business voicemail. Reported as calls
+    // ending the same second AMD fired, with no voicemail and nothing in the log.
+    //
+    // The ring node id survives, though: handleQueueLeft writes it to calls.ivr_path on the line
+    // BEFORE it deletes activeRing. So recover the no-answer branch from there rather than
+    // reintroducing state that is deleted for good reasons (a dangling activeRing has its own
+    // tested failure modes).
+    const noAnswerNextNodeId =
+      activeRing?.ringConfig.noAnswerNextNodeId ?? (await this.ringNoAnswerFromCall(body.callSid));
+    // Only when the ring node genuinely cannot be found. Hanging up is still wrong for the caller,
+    // but there is no branch left to send them down and a bare <Hangup/> beats the DO catch-all's
+    // "we're experiencing a technical issue".
+    if (!noAnswerNextNodeId) {
+      console.log("AMD_FALLTHROUGH_NO_BRANCH", JSON.stringify({ callSid: body.callSid }));
+      return this.xml(wrapResponse("<Hangup/>"));
+    }
 
     await this.logEvent(body.callSid, "no_answer", { reason: "mobile_voicemail_answered" });
     await this.notifyMissedOnce(body.callSid);
     const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
     return this.xml(
-      await this.renderNoAnswerFallthrough(body.callSid, activeRing.ringConfig.noAnswerNextNodeId, isAfterHours, origin)
+      await this.renderNoAnswerFallthrough(body.callSid, noAnswerNextNodeId, isAfterHours, origin)
     );
+  }
+
+  // The ring node's no-answer branch, recovered from D1 after the bridge deleted `activeRing`.
+  //
+  // One read, joining the ring node the call is parked on: handleQueueLeft persists that id to
+  // calls.ivr_path when it bridges. `type = 'ring'` is part of the join deliberately -- ivr_path is
+  // also written by the VOICEMAIL handoff, and walking a voicemail node's (nonexistent) no-answer
+  // branch would be a confident wrong answer rather than a miss.
+  //
+  // Never throws: this runs while a live caller waits for TwiML, and an escape reaches the DO's
+  // catch-all, which says "we're experiencing a technical issue" and hangs up on them. Same rule as
+  // every other read on this path (callerId, resolveRingTargets, resolveOnCallEmail).
+  private async ringNoAnswerFromCall(callSid: string): Promise<string | null> {
+    try {
+      const row = await this.env.DB.prepare(
+        "SELECT n.config FROM calls c JOIN ivr_nodes n ON n.id = c.ivr_path WHERE c.id = ? AND n.type = 'ring'"
+      )
+        .bind(callSid)
+        .first<{ config: string }>();
+      if (!row) return null;
+      const next = (JSON.parse(row.config) as { noAnswerNextNodeId?: unknown }).noAnswerNextNodeId;
+      return typeof next === "string" && next !== "" ? next : null;
+    } catch (err) {
+      console.log(
+        "AMD_FALLTHROUGH_LOOKUP_FAILED",
+        JSON.stringify({ callSid, error: err instanceof Error ? err.message : String(err) })
+      );
+      return null;
+    }
   }
 
   // -------------------------------------------------------------------------

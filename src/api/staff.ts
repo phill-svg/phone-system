@@ -6,7 +6,7 @@ import { issueToken, invalidateTokensForEmail } from "../access/passwordTokens";
 import { clearAttempts } from "../access/loginAttempts";
 import { sendEmail, inviteEmail, resetEmail, type SendEmailBinding } from "../email/sendgrid";
 import { destroySessionsForEmail } from "../access/session";
-import { isBusinessHoursSchedule } from "../ivr/businessHours";
+import { isBusinessHoursSchedule, localDateKey } from "../ivr/businessHours";
 
 // `excludeEmails` drops the App Review demo account: it is not a colleague, so it should not
 // appear in the softphone's transfer picker where someone could hand it a real customer's call.
@@ -81,7 +81,8 @@ export async function handlePutStaffStatus(request: Request, db: D1Database, ema
   if (body.status !== "available" && body.status !== "away") {
     return jsonResponse({ error: "Status must be 'available' or 'away'." }, 400);
   }
-  await setStaffStatus(db, email, body.status, null);
+  // Dated like the self-service path, or the 5-minute reset reads it as a forgotten row.
+  await setStaffStatus(db, email, body.status, null, localDateKey(new Date()));
   return jsonResponse({ ok: true });
 }
 

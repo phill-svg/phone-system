@@ -531,6 +531,63 @@ describe("CallSession", () => {
     expect(fallthrough.xml).toContain("<Record");
   });
 
+  // THE REAL SEQUENCE, and the reason the test above passed while production hung up on every
+  // single one of these calls.
+  //
+  // It omits `queue_left`. Production does not: the Enqueue action fires as the caller is bridged,
+  // and handleQueueLeft DELETES activeRing (after writing the ring node id to calls.ivr_path).
+  // AMD is deliberately async, so its verdict lands 2-4s later -- by which time activeRing is
+  // always gone and `if (!activeRing) return <Hangup/>` was not an edge case but the ONLY path.
+  //
+  // Evidence it never once worked: zero no_answer{mobile_voicemail_answered} rows in the entire
+  // history of call_events, against four mobile_machine_answered on 2026-09-11 alone. The caller
+  // reached a staff member's personal voicemail and was then dropped instead of being passed to the
+  // business one -- calls ending the same second AMD fired, no voicemail, nothing in the log.
+  it("rescues the caller to business voicemail after the bridge deleted activeRing", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+
+    const stub = stubFor("CA-amd-bridged");
+    await send(stub, mainEvent("CA-amd-bridged"));
+    await send(stub, mainEvent("CA-amd-bridged", { digits: "1" }));
+    await send(stub, agentAnswer("CA-amd-bridged", "sid-+61412345678"));
+    // The bit the other test skips.
+    await send(stub, queueLeft("CA-amd-bridged"));
+    await send(stub, amdStatus("CA-amd-bridged", "sid-+61412345678", "machine_start"));
+
+    const fallthrough = await send(stub, amdFallthrough("CA-amd-bridged"));
+    // Business voicemail, not a hangup.
+    expect(fallthrough.xml).toContain("<Record");
+    expect(fallthrough.xml).not.toContain("<Hangup/>");
+
+    // And it is RECORDED as a missed call, which is what puts it in front of someone to ring back.
+    const events = await env.DB.prepare(
+      "SELECT event_type, detail FROM call_events WHERE call_id = ? AND event_type = 'no_answer'"
+    )
+      .bind("CA-amd-bridged")
+      .all<{ event_type: string; detail: string | null }>();
+    expect(events.results).toHaveLength(1);
+    expect(events.results[0].detail).toContain("mobile_voicemail_answered");
+  });
+
+  // ivr_path is written by the VOICEMAIL handoff too, so the recovery join is pinned to ring nodes.
+  // Walking a voicemail node's (nonexistent) no-answer branch would be a confident wrong answer.
+  it("hangs up rather than guessing when the call is not parked on a ring node", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-amd-novm");
+    await send(stub, mainEvent("CA-amd-novm"));
+    // No ring, no bridge -- ivr_path never becomes a ring node.
+    const fallthrough = await send(stub, amdFallthrough("CA-amd-novm"));
+    expect(fallthrough.xml).toContain("<Hangup/>");
+  });
+
   // Covers the RETAINED synchronous-AMD path: production now uses AsyncAmd, so AnsweredBy no longer
   // rides on the answer webhook, but the branch stays as a defensive fallback and is still correct.
   it("ring-my-mobile AMD: a machine answer on the mobile leg is hung up WITHOUT bridging or canceling the sibling softphone leg", async () => {
@@ -1602,6 +1659,27 @@ describe("CallSession", () => {
       .bind("CA-abandon")
       .first();
     expect(ev).toBeTruthy();
+  });
+
+  // The no-answer branch is for a caller still on the line. Production's main flow rings a second
+  // round there, so walking it after a hangup dialled the whole team again for nobody.
+  it("caller hanging up mid-ring does not walk the no-answer branch (no second ring round)", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_ring2" });
+    await seedRing("main_ring2", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const stub = stubFor("CA-abandon2");
+    await send(stub, mainEvent("CA-abandon2"));
+    await send(stub, mainEvent("CA-abandon2", { digits: "1" }));
+    expect(outboundDials(fetchMock).length).toBe(2);
+
+    const left = await send(stub, queueLeft("CA-abandon2", "hangup"));
+
+    expect(outboundDials(fetchMock).length).toBe(2);
+    expect(left.xml).toContain("<Hangup/>");
   });
 
   it("writes a call event timeline (call_started, menu_selection, ring_started, answered)", async () => {

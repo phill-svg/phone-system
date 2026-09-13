@@ -1368,6 +1368,34 @@ describe("GET /admin/live", () => {
   });
 });
 
+// The demo swap only covers /api/. These pages render real D1 on the server, so the App Review
+// login would read real callers, transcripts and callbacks. A web login lands on /admin/live first.
+describe("App Review demo account on /admin pages", () => {
+  const REVIEWER = "reviewer@tcbpestcontrolcanberra.com.au";
+  const demoEnv = () => ({ ...env, DEV_STAFF_EMAIL: REVIEWER }) as any;
+
+  beforeEach(async () => {
+    await env.DB.prepare("INSERT OR IGNORE INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1)")
+      .bind(REVIEWER)
+      .run();
+  });
+
+  it("is sent to the phone page instead of any page built from real data", async () => {
+    for (const path of ["/admin/live", "/admin/voicemail", "/admin/callbacks", "/admin/calls/CA-real"]) {
+      const res = await worker.fetch(new Request("https://example.com" + path), demoEnv());
+      expect(res.status, path).toBe(302);
+      expect(res.headers.get("Location"), path).toBe("https://example.com/admin/phone");
+    }
+  });
+
+  it("still reaches the two pages that render from the substituted /api data", async () => {
+    for (const path of ["/admin/phone", "/admin/messages"]) {
+      const res = await worker.fetch(new Request("https://example.com" + path), demoEnv());
+      expect(res.status, path).toBe(200);
+    }
+  });
+});
+
 describe("GET /api/calls/:id with malformed URL encoding", () => {
   it("returns 404 for malformed URL-encoded call ID", async () => {
     const response = await SELF.fetch("https://example.com/api/calls/%zz");
