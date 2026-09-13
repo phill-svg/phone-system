@@ -47,7 +47,7 @@ export function isDemoUser(email: string, env: DemoEnv): boolean {
 //
 // Anything NOT matched here is genuinely harmless for a reviewer to reach: /api/me, /api/numbers
 // (the business's own published numbers), the softphone token, and per-user settings, which write
-// only that reviewer's own row.
+// only that reviewer's own row. Push registration is NOT harmless and is matched below.
 export function handleDemoRequest(
   url: URL,
   request: Request,
@@ -95,6 +95,12 @@ export function handleDemoRequest(
   if (url.pathname === "/api/contacts" || /^\/api\/contacts\/\d+$/.test(url.pathname) || url.pathname === "/api/contacts/import") {
     if (method !== "GET") return jsonResponse({ ok: true });
     return jsonResponse(demoContacts(now));
+  }
+
+  // Push goes to EVERY stored token with real customer names and message text, so a reviewer's
+  // handset must never get one stored. Answer ok so the app's registration flow carries on.
+  if (url.pathname === "/api/push/register" && method === "POST") {
+    return jsonResponse({ ok: true });
   }
 
   // No real caller ever waits on a demo callback list -- and a reviewer ticking one off must not
