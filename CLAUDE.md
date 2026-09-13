@@ -269,6 +269,78 @@ before adding one, or you will duplicate a path that already works.
     signatures and authenticates our REST calls.
   * The **web** `/admin/settings` on-call section and the mobile screen are separate
     implementations of the same rota; a change to one usually needs the other.
+- **Recent work (2026-09-13): a whole-repo bug scan, and all 49 findings fixed.** The `bug-hunter`
+  skill scanned `origin/master` in 9 domain groups (one agent finds, a separate agent challenges and
+  rules), giving 49 confirmed bugs. #105 shipped 5 (worker only); **#106** shipped the other 44 (worker +
+  **OTA 70**, both channels). The findings, fix list and raw verdicts are NOT in the repo, on purpose:
+  `C:\Users\Phill\Documents\TCB Phone bug audit 2026-09-13\`. Every fix has a test that failed first,
+  and each batch was run through `/code-review` until clean. **That took up to four rounds per batch
+  and caught about 20 real defects in the fixes themselves**, one of which (a first attempt at the
+  sibling-voicemail race) made things worse and was reverted, not patched. The rule stands: review
+  the fix, then review the fix to the fix. Still needing a handset: a locked-phone launch, answering
+  from the lock screen then opening the app, an attended transfer, call waiting, mute while dialling.
+- **Hold, transfer and complete-transfer resolve the conference from the staff member's OWN leg**
+  (`ownLegConference`, `softphone_call_legs.conference_name`). A client-supplied `conferenceName` is
+  ignored: an inbound call's conference is named after the CALLER's leg, which no client knows, so
+  web Hold 404'd on every inbound call and mobile Hold only ever flipped local state. Complete-transfer
+  removes **only the requester's own leg** (it used to remove any `callSid` it was given, i.e. a staff
+  member could hang up the customer) and refuses with 409 until the colleague has joined, or the
+  lone-conference cleanup ends the call on the customer. Mobile transfer is **attended only**; Blind
+  was removed deliberately, because an unanswered blind transfer strands the customer alone.
+- **Only the first answer of a ring round bridges, and each round is dialled with other events held.**
+  `dialRound` wraps the dial-and-store of `startRing`, `performDeferredDial` and the cascade advance
+  in `ctx.blockConcurrencyWhile`: creating legs is several Twilio/D1 round trips, and without the hold
+  an answer to the first leg arrived before `activeRing` existed and was turned away with nobody
+  bridged (caller on endless ringback). The cost: a throw or 30s inside resets the object, so keep
+  anything that can throw OUT of `dialRound`. An answer after the bridge is turned away with a short
+  `<Say>` and recorded in `turnedAwayAgentSids`, whose `completed` status must NOT run
+  `cleanupLoneConference` (it hangs up in the window between the caller and the bridged staff leg
+  joining). `bridgedAgentSid` is per round, cleared at round start, and an async-AMD machine verdict
+  rescues the caller only when it is for that leg. **Known limit, accepted:** if a staff member's
+  carrier voicemail answers a split second before a real person, the voicemail leg bridges, the human
+  is turned away and the caller is rescued to business voicemail. Not dropped, but not connected.
+- **`handleAgentStatus` cleanup has three cases, and all three bit.** `completed` (not turned away)
+  runs the lone-conference cleanup. A pre-answer failure (`canceled`/`no-answer`/`busy`/`failed`) of
+  an INBOUND sibling does nothing: answering cancels the siblings, and their callbacks land between
+  the caller joining and the staff leg joining. A failure of the OUTBOUND softphone customer leg
+  (`outbound_target_sid`) hangs up the staff member's own leg instead, because `/twiml/voice-app`
+  dials the customer before the staff leg has joined, so there may be no conference to end yet. And
+  `handleQueueLeft` with `queueResult === "hangup"` returns `<Hangup/>` without walking the no-answer
+  branch, which in production is a second ring round (it re-rang the whole team for nobody).
+- **Transcripts: a refused request is marked `request_failed` and reported.** It fails Health Checks
+  when nothing was transcribed and warns alongside working transcripts (the marker is permanent and a
+  single 5xx sets it). Live D1 on 2026-09-13: 76 recorded calls, **zero** ever given a transcript sid.
+  The likely cause, unverified, is the AU1 `TWILIO_AUTH_TOKEN` being sent to the US1 host
+  `intelligence.twilio.com` (tokens are per-region, and classic Intelligence is listed as unsupported
+  in AU1). One `wrangler tail | grep INTELLIGENCE_CREATE_FAILED` after an answered call settles it:
+  401 is the credential, 400/404 means US1 cannot read an AU1 recording at all.
+- **The App Review demo account is denied by default on `/admin/`**, except `/admin/phone` and
+  `/admin/messages`, which render from the substituted `/api/`; everything else read real D1 and a web
+  login lands on `/admin/live`. Its `POST /api/push/register` is swallowed too, since every push goes
+  to every stored token with real customer names and message text.
+- **The login lockout is `reserveAttempt`: one conditional INSERT before the password hash.** Count,
+  hash, then record let a parallel burst all pass the count (20 of 20 in the test). A success clears.
+  **`SELF.fetch` serialises requests in the test worker, so a concurrency test must call the handler
+  directly**; the SELF version of this test passed against the broken code.
+- **Message threads are keyed by `threadPeer`**, which normalises only phone-shaped strings
+  (`0412 345 678` -> `+61412345678`) and leaves Messenger ids and alphanumeric senders ("Service NSW")
+  untouched. Sending normalised but lookup did not, so a new message showed an empty thread.
+- **Mobile, the durable pieces.** There is ONE native CallInvite handler with a subscriber stack in
+  `voice.ts` (the newest registration is told; two registrations used to open two ringing screens);
+  `unregisterFromIncoming` bumps a generation that stops a pending registration retry re-registering
+  a signed-out phone. The session token is `tcb_session_token_v2` with `AFTER_FIRST_UNLOCK`: the old
+  default could not be read on a locked-phone VoIP launch, the restore threw and the app sat on its
+  spinner with no call UI (a candidate cause of the "no hang-up button" report). `getTokenWhenReadable`
+  waits for unlock, then backs off ~3s before treating refusal as signed out; launch reads share one
+  in-flight read so the key migration cannot race. `createScreenExit` makes a screen leave exactly
+  once and only while on top (call-active). The thread query is **disabled while the thread is not
+  focused**: every load marks the thread read for the WHOLE team, and polling or the app-foreground
+  refetch under a call screen cleared everyone's unread dot.
+- **Test-runner gotchas met on 2026-09-13.** The full worker suite is flaky under load on this machine
+  (timeouts in files unrelated to the change, and once `workerd` crashed at startup with
+  `std::terminate`); re-run the failed files alone before investigating. And `mobile/__tests__/auth.test.tsx`
+  shows as a failing suite on Windows because its `testPathIgnorePatterns` entry uses `/`; it is
+  ignored correctly on Linux, including in `publish-ota.yml`.
 - **READ `docs/superpowers/` BEFORE IMPLEMENTING. It is not decorative, and skipping it cost a day.**
   This file says so at the top and it was ignored on 2026-09-11 through an entire softphone
   investigation. `specs/2026-08-19-ios-softphone-phase1-design.md` lists, under Risks: *"APNs
@@ -1081,7 +1153,9 @@ before adding one, or you will duplicate a path that already works.
   never called. That version fails under any ambient timezone.
 - **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
   UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
-  a live call. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and
+  a live call. OTA 70 fixed two things with exactly that shape: the locked-phone launch that stuck on
+  the auth spinner, and a lock-screen-answered call that never opened the in-call screen. If it does
+  not recur after OTA 70, one of those was it. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and
   over) was never root-caused either: it was escaped by rolling the OTA back to #49, and #53 carries
   the same code plus crash reporting and has been clean since. If it returns, `/admin/errors` is now
   the first place to look rather than the last.
