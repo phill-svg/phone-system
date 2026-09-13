@@ -285,15 +285,11 @@ export async function getThread(number: string): Promise<Message[]> {
   }
 }
 
-// Returns true if sent, false if messaging isn't linked/available yet. `from` optionally picks the
-// sending number (validated server-side against SMS-enabled numbers).
-export async function sendMessage(to: string, body: string, from?: string): Promise<boolean> {
-  try {
-    await apiFetch("/api/messages", { method: "POST", body: JSON.stringify({ to, body, from }) });
-    return true;
-  } catch {
-    return false;
-  }
+// Throws on failure, deliberately: the reason (not configured, Twilio rejected it, no signal) is
+// what the thread shows -- see sendFailureAlert. `from` optionally picks the sending number
+// (validated server-side against SMS-enabled numbers).
+export async function sendMessage(to: string, body: string, from?: string): Promise<void> {
+  await apiFetch("/api/messages", { method: "POST", body: JSON.stringify({ to, body, from }) });
 }
 
 // ---- Sending numbers (caller-ID / SMS-from picker) ----

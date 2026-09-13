@@ -16,6 +16,7 @@ import { useTheme, type } from "../../theme/theme";
 import { NumberPicker } from "../../components/ui/NumberPicker";
 import { usePersistedString } from "../../lib/prefs";
 import { resolveSendingNumber } from "../../lib/sendingNumber";
+import { sendFailureAlert } from "../../lib/apiErrors";
 
 export default function ThreadScreen() {
   const t = useTheme();
@@ -90,17 +91,20 @@ export default function ThreadScreen() {
     const body = text.trim();
     if (!body || !to.trim() || sending) return;
     setSending(true);
-    const ok = await sendMessage(to.trim(), body, isMessenger ? undefined : effectiveFrom);
-    setSending(false);
-    if (ok) {
-      haptics.success();
-      setText("");
-      qc.invalidateQueries({ queryKey: ["thread", to] });
-      qc.invalidateQueries({ queryKey: ["conversations"] });
-    } else {
+    try {
+      await sendMessage(to.trim(), body, isMessenger ? undefined : effectiveFrom);
+    } catch (e) {
+      setSending(false);
       haptics.warning();
-      Alert.alert("Not connected yet", "Messaging turns on once your TCB number is linked for SMS. Your draft is kept.");
+      const alert = sendFailureAlert(e);
+      Alert.alert(alert.title, alert.message);
+      return;
     }
+    setSending(false);
+    haptics.success();
+    setText("");
+    qc.invalidateQueries({ queryKey: ["thread", to] });
+    qc.invalidateQueries({ queryKey: ["conversations"] });
   }
 
   return (
