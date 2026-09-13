@@ -734,13 +734,6 @@ export class CallSession extends DurableObject<Env> {
       await this.ctx.storage.put("activeRing", activeRing);
     }
     await this.logEvent(body.callSid, "answered", { agentCallSid: body.agentCallSid });
-    // Which leg the caller is actually talking to, so handleAmdStatus can tell a machine verdict on
-    // THIS leg (rescue the caller) from one on a sibling that answered in the same instant (just
-    // hang that sibling up). First answer wins: the sibling reaches this handler too, second. Kept
-    // apart from activeRing, which handleQueueLeft deletes before any async AMD verdict lands.
-    if (!(await this.ctx.storage.get<string>("bridgedAgentSid"))) {
-      await this.ctx.storage.put("bridgedAgentSid", body.agentCallSid);
-    }
 
     await redirectCall(
       this.env.TWILIO_ACCOUNT_SID,
@@ -797,20 +790,7 @@ export class CallSession extends DurableObject<Env> {
       return new Response("ok", { status: 200 });
     }
 
-    // A machine on a leg the caller is NOT talking to: a sibling voicemail that answered in the same
-    // instant as the staff member who bridged. Rescuing here would pull the caller out of a live
-    // conversation, so only that leg goes. An unknown bridged leg is treated the same way -- never
-    // yank a live caller on a leg we cannot confirm is theirs.
-    if ((await this.ctx.storage.get<string>("bridgedAgentSid")) !== body.agentCallSid) {
-      try {
-        await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.agentCallSid);
-      } catch {
-        /* leg already gone */
-      }
-      return new Response("ok", { status: 200 });
-    }
-
-    // Normal path: this leg bridged. ORDER MATTERS -- pull the CALLER out of the conference first,
+    // Normal path: already bridged. ORDER MATTERS -- pull the CALLER out of the conference first,
     // then hang up the voicemail leg. Doing it the other way round fires the voicemail leg's
     // agent-status, whose cleanupLoneConference ends any conference with <=1 participant left --
     // which at that moment is the caller, so the rescue would hang up the very person we're saving.
