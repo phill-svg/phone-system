@@ -111,8 +111,15 @@ export default function ThreadScreen() {
     setSending(false);
     haptics.success();
     setText("");
-    qc.invalidateQueries({ queryKey: ["thread", to] });
     qc.invalidateQueries({ queryKey: ["conversations"] });
+    // A new message becomes that conversation. `isNew` is fixed by the route, so staying put kept the
+    // thread query disabled: the sent text never appeared and the screen still said "New Message",
+    // which invites a resend. The server keys the thread however the number was typed.
+    if (isNew) {
+      router.replace({ pathname: "/thread/[number]", params: { number: to.trim() } });
+      return;
+    }
+    qc.invalidateQueries({ queryKey: ["thread", to] });
   }
 
   return (
