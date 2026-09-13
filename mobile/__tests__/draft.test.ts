@@ -1,4 +1,22 @@
-import { reseedDraft } from "../src/lib/draft";
+import { reseedDraft, wholeNumberInput } from "../src/lib/draft";
+
+// A cleared number box commits NOTHING. The staff ring-priority field used `Number("")`, which is 0:
+// clear the box, dismiss the keyboard, and that person was saved to the front of the ring order.
+describe("wholeNumberInput", () => {
+  it("commits nothing while the box is empty", () => {
+    expect(wholeNumberInput("", 0)).toEqual({ text: "", value: null });
+    expect(wholeNumberInput(" ", 0)).toEqual({ text: "", value: null });
+  });
+
+  it("keeps digits only and commits the number", () => {
+    expect(wholeNumberInput("1a2", 0)).toEqual({ text: "12", value: 12 });
+  });
+
+  it("allows zero where zero is legitimate, and floors it where it is not", () => {
+    expect(wholeNumberInput("0", 0).value).toBe(0);
+    expect(wholeNumberInput("0", 1).value).toBe(1);
+  });
+});
 
 // The phone-numbers screen reloads the whole list after any one card saves, removes or adds, and
 // every card used to re-seed its draft from the reload -- discarding unsaved edits on the OTHER
