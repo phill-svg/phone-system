@@ -21,7 +21,12 @@ export default function StaffListScreen() {
 
   const load = useCallback(() => {
     getAdminStaff()
-      .then(setStaff)
+      // Clear a previous failure: the error branch renders before the list, so one failed load
+      // otherwise pins the error screen for the life of the component however many loads succeed.
+      .then((s) => {
+        setError(null);
+        setStaff(s);
+      })
       .catch(() => setError("Couldn't load the staff list."));
   }, []);
   useFocusEffect(load);
