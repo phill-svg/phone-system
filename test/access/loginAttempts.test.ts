@@ -1,7 +1,7 @@
 // test/access/loginAttempts.test.ts
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { isRateLimited, recordFailedAttempt, clearAttempts } from "../../src/access/loginAttempts";
+import { reserveAttempt, clearAttempts } from "../../src/access/loginAttempts";
 
 const EMAIL = "rate@example.com";
 
@@ -10,16 +10,14 @@ describe("login rate limiting", () => {
     await env.DB.prepare("DELETE FROM login_attempts WHERE email = ?").bind(EMAIL).run();
   });
 
-  it("is not limited under the threshold and limited at/over it", async () => {
-    for (let i = 0; i < 7; i++) await recordFailedAttempt(env.DB, EMAIL);
-    expect(await isRateLimited(env.DB, EMAIL)).toBe(false);
-    await recordFailedAttempt(env.DB, EMAIL); // 8th
-    expect(await isRateLimited(env.DB, EMAIL)).toBe(true);
+  it("allows 8 attempts in the window and refuses the 9th", async () => {
+    for (let i = 0; i < 8; i++) expect(await reserveAttempt(env.DB, EMAIL)).toBe(true);
+    expect(await reserveAttempt(env.DB, EMAIL)).toBe(false);
   });
 
   it("clearAttempts resets the counter", async () => {
-    for (let i = 0; i < 8; i++) await recordFailedAttempt(env.DB, EMAIL);
+    for (let i = 0; i < 8; i++) await reserveAttempt(env.DB, EMAIL);
     await clearAttempts(env.DB, EMAIL);
-    expect(await isRateLimited(env.DB, EMAIL)).toBe(false);
+    expect(await reserveAttempt(env.DB, EMAIL)).toBe(true);
   });
 });
