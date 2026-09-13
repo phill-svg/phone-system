@@ -573,6 +573,42 @@ describe("CallSession", () => {
     expect(events.results[0].detail).toContain("mobile_voicemail_answered");
   });
 
+  // Two mobiles ring at once. Phill picks up; Sam's carrier voicemail answers in the same instant, so
+  // the cancel misses and Sam's leg reaches agent-answer too. Sam's machine verdict then lands 2-4s
+  // later -- and used to take the rescue path, pulling the caller OUT of a live conversation with
+  // Phill and into business voicemail. Only a verdict on the leg that actually bridged may do that.
+  it("a machine verdict on a sibling leg does not pull the caller away from the staff member who answered", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+    await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
+    await setUserSettings(env.DB, "sam@b.com", { ring_my_mobile: true, mobile_number: "0487654321" });
+
+    const stub = stubFor("CA-amd-sibling");
+    await send(stub, mainEvent("CA-amd-sibling"));
+    await send(stub, mainEvent("CA-amd-sibling", { digits: "1" }));
+    expect(outboundDials(fetchMock).sort()).toEqual(["+61412345678", "+61487654321"]);
+
+    // Async AMD: neither answer webhook carries AnsweredBy. Phill's arrives first and bridges.
+    await send(stub, agentAnswer("CA-amd-sibling", "sid-+61412345678"));
+    await send(stub, agentAnswer("CA-amd-sibling", "sid-+61487654321"));
+    await send(stub, queueLeft("CA-amd-sibling"));
+
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-sibling", "sid-+61487654321", "machine_start"));
+
+    expect(redirectIndex(fetchMock, "CA-amd-sibling", "amd-fallthrough")).toBe(-1);
+    expect(hangupIndex(fetchMock, "sid-+61487654321")).toBeGreaterThanOrEqual(0);
+    expect(hangupIndex(fetchMock, "sid-+61412345678")).toBe(-1);
+
+    // And the rescue still works for the leg that DID bridge.
+    fetchMock.mockClear();
+    await send(stub, amdStatus("CA-amd-sibling", "sid-+61412345678", "machine_start"));
+    expect(redirectIndex(fetchMock, "CA-amd-sibling", "amd-fallthrough")).toBeGreaterThanOrEqual(0);
+  });
+
   // ivr_path is written by the VOICEMAIL handoff too, so the recovery join is pinned to ring nodes.
   // Walking a voicemail node's (nonexistent) no-answer branch would be a confident wrong answer.
   it("hangs up rather than guessing when the call is not parked on a ring node", async () => {
