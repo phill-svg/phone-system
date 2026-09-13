@@ -2,7 +2,7 @@
 jest.mock("../src/lib/session");
 import * as session from "../src/lib/session";
 import { ApiError, sendMessage } from "../src/lib/api";
-import { sendFailureAlert } from "../src/lib/apiErrors";
+import { sendFailureAlert, loginErrorMessage } from "../src/lib/apiErrors";
 
 const jsonRes = (body: unknown, status: number) =>
   Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) } as Response);
@@ -39,5 +39,23 @@ describe("sendFailureAlert", () => {
     const a = sendFailureAlert(new TypeError("Network request failed"));
     expect(a.title).toBe("Couldn't send");
     expect(a.message).toMatch(/connection/i);
+  });
+});
+
+// Every sign-in failure read "Invalid email or password." -- including the 429 lockout, which sent
+// people retrying a correct password into a longer lockout, and having no signal at all.
+describe("loginErrorMessage", () => {
+  it("keeps the generic text for wrong credentials", () => {
+    expect(loginErrorMessage(new ApiError(401, "unauthorized"))).toBe("Invalid email or password.");
+  });
+
+  it("passes any other server reason through, e.g. the lockout", () => {
+    expect(loginErrorMessage(new ApiError(429, "Too many attempts. Try again in a few minutes."))).toBe(
+      "Too many attempts. Try again in a few minutes."
+    );
+  });
+
+  it("says it is a connection problem when the server was never reached", () => {
+    expect(loginErrorMessage(new TypeError("Network request failed"))).toMatch(/connection/i);
   });
 });

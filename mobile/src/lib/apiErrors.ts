@@ -18,3 +18,10 @@ export function sendFailureAlert(e: unknown): { title: string; message: string }
   }
   return { title: "Couldn't send", message: "Check your connection and try again. Your draft is kept." };
 }
+
+// apiFetch throws ApiError(401, "unauthorized") before reading the body, so wrong credentials are
+// worded here. Every other server answer (the 429 lockout above all) already says what happened.
+export function loginErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) return e.status === 401 ? "Invalid email or password." : e.message;
+  return "Couldn't reach the server. Check your connection and try again.";
+}
