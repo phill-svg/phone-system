@@ -116,6 +116,7 @@ export default function ActiveCallScreen() {
     focusedRef.current = isFocused;
     if (isFocused) exit.onFocus();
   }, [isFocused, exit]);
+  useEffect(() => () => exit.dispose(), [exit]);
 
   function finish() {
     if (timer.current) clearInterval(timer.current);

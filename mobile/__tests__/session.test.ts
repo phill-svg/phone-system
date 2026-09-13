@@ -84,28 +84,31 @@ describe("getTokenWhenReadable", () => {
     expect(add).not.toHaveBeenCalled();
   });
 
-  // Unlocked mid-read: the refusal was the lock, even though the app is active by the time it lands.
-  // Counting it, then an instant retry iOS also refuses for a moment, signed out a valid token.
-  it("does not count a refusal whose read started while locked", async () => {
+  // iOS can report active a moment before protected data is readable -- whether the read started
+  // locked (unlocked mid-read) or right after a wake. Two review rounds found a way for each
+  // "count only some refusals" rule to sign out a valid token. A short run of refusals while active
+  // is the unlock settling, whatever order it arrived in.
+  it("rides out several refusals while active before reading the token", async () => {
+    Object.defineProperty(AppState, "currentState", { value: "active", configurable: true });
     store.getItemAsync
-      .mockImplementationOnce(async () => {
-        Object.defineProperty(AppState, "currentState", { value: "active", configurable: true });
-        throw new Error("User interaction is not allowed.");
-      })
+      .mockRejectedValueOnce(new Error("User interaction is not allowed."))
+      .mockRejectedValueOnce(new Error("User interaction is not allowed."))
       .mockRejectedValueOnce(new Error("User interaction is not allowed."))
       .mockResolvedValue("abc.def");
 
     expect(await getTokenWhenReadable()).toBe("abc.def");
-  });
+  }, 10_000);
 
-  // A refusal while active is not the lock (e.g. an Android keystore that cannot decrypt). Waiting
-  // for an unlock that is not coming is the same spinner; signed out at least lets them sign in.
-  it("treats a second refusal while active as signed out", async () => {
+  // Refusal that persists while active is not the lock (e.g. an Android keystore that cannot
+  // decrypt). Waiting for an unlock that is not coming is a spinner forever; signed out at least
+  // lets them sign in.
+  it("treats refusals that persist while active as signed out", async () => {
     Object.defineProperty(AppState, "currentState", { value: "active", configurable: true });
     store.getItemAsync.mockRejectedValue(new Error("decrypt failed"));
 
     expect(await getTokenWhenReadable()).toBeNull();
-  });
+    expect(store.getItemAsync.mock.calls.length).toBeGreaterThanOrEqual(5);
+  }, 10_000);
 
   // The keychain refusing a read is not "signed out". Treating it as anon would put a locked-launch
   // user on the login screen; leaving it thrown left them on a spinner. Wait for the app to be

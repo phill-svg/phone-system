@@ -37,5 +37,11 @@ export function createScreenExit(opts: { isFocused: () => boolean; back: () => v
     onFocus() {
       if (pending) this.leave();
     },
+    // Call on unmount. A screen already popped (Android hardware back) must never pop again: its
+    // call's Disconnected still reaches finish(), with the last focus value it saw.
+    dispose() {
+      left = true;
+      pending = false;
+    },
   };
 }

@@ -35,6 +35,16 @@ describe("createScreenExit", () => {
     expect(state.backs).toBe(0);
   });
 
+  // Android hardware back pops the screen mid-call; unmount disconnects, finish() runs on the dead
+  // screen with its last focus value (true), and 600ms later popped the screen the user went back to.
+  it("never leaves once disposed", () => {
+    const { state, exit } = harness(true);
+    exit.dispose();
+    exit.leave();
+    exit.onFocus();
+    expect(state.backs).toBe(0);
+  });
+
   it("End pressed before the scheduled exit still leaves only once", () => {
     const { state, exit } = harness(true);
     exit.leave(); // End

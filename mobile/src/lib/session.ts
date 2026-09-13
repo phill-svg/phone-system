@@ -29,28 +29,23 @@ async function readToken(): Promise<string | null> {
   return legacy;
 }
 
-// A refused read is not "signed out": wait until the app is active (unlocked) and read again. If it
-// is ALREADY active, no change event will come -- retry at once, and a second refusal while active
-// is not the lock (an Android keystore that cannot decrypt), so it counts as signed out rather than
-// a spinner forever.
+// A refused read is not "signed out": wait until the app is active (unlocked) and read again.
 //
-// Only a read that STARTED while active counts: one that started locked and landed after an unlock
-// was still the lock. And the retry waits a moment, because iOS can report active slightly before
-// protected data is readable -- counting that as a real refusal signed out a valid token.
-const RETRY_DELAY_MS = 300;
+// While active, back off and retry rather than judging any single refusal: iOS can report active a
+// moment before protected data is readable, whether the read started locked or right after a wake,
+// and each "count only some refusals" rule tried here signed out a valid token in one order or the
+// other. Refusal that outlasts the backoff (~3s) is not the lock -- an Android keystore that cannot
+// decrypt -- so it counts as signed out rather than a spinner forever.
+const ACTIVE_RETRY_DELAYS_MS = [200, 400, 800, 1600];
 export async function getTokenWhenReadable(): Promise<string | null> {
-  let refusedWhileActive = false;
+  let activeRefusals = 0;
   for (;;) {
-    const activeAtStart = AppState.currentState === "active";
     try {
       return await getToken();
     } catch {
       if (AppState.currentState === "active") {
-        if (activeAtStart) {
-          if (refusedWhileActive) return null;
-          refusedWhileActive = true;
-        }
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        if (activeRefusals >= ACTIVE_RETRY_DELAYS_MS.length) return null;
+        await new Promise((r) => setTimeout(r, ACTIVE_RETRY_DELAYS_MS[activeRefusals++]));
         continue;
       }
       await new Promise<void>((resolve) => {
