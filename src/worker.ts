@@ -932,7 +932,18 @@ export default {
             customerNumber,
           })
             .then(async (sid) => {
-              if (!sid) return;
+              if (!sid) {
+                // Twilio refused or could not be reached (INTELLIGENCE_CREATE_FAILED carries the HTTP
+                // status). Leaving the row unmarked made this invisible to Health Checks, which
+                // reported "no answered call has been transcribed yet" indefinitely. Same NULL guard
+                // as the mono marker, so a redelivery never relabels a transcript that completed.
+                await env.DB.prepare(
+                  "UPDATE calls SET intelligence_status = 'request_failed' WHERE id = ? AND intelligence_status IS NULL"
+                )
+                  .bind(callSid)
+                  .run();
+                return;
+              }
               await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
                 .bind(sid, callSid)
                 .run();

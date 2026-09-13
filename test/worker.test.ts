@@ -681,6 +681,56 @@ describe("Task 8 queue/ring webhook routes", () => {
       });
     });
 
+    // A dual-channel recording whose submission to Twilio FAILS used to leave no trace but a log
+    // line: requestTranscript returned null and nothing was written, so Health Checks -- counting
+    // only rows with a status -- kept saying "no answered call has been transcribed yet" while 76
+    // recordings in production never got a sid.
+    describe("a transcript request Twilio refuses", () => {
+      async function seedCall(id: string, status: string | null = null) {
+        await env.DB.prepare(
+          "INSERT INTO calls (id, caller_number, called_number, started_at, direction, intelligence_status) VALUES (?, '+61400000000', '+61261059771', ?, 'inbound', ?)"
+        )
+          .bind(id, Date.now(), status)
+          .run();
+      }
+      const statusOf = (id: string) =>
+        env.DB.prepare("SELECT intelligence_status FROM calls WHERE id = ?")
+          .bind(id)
+          .first<{ intelligence_status: string | null }>()
+          .then((r) => r?.intelligence_status ?? null);
+
+      beforeEach(() => {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (input: RequestInfo | URL) =>
+            String(input).includes("intelligence.twilio.com")
+              ? new Response("unauthorized", { status: 401 })
+              : new Response("", { status: 200 })
+          )
+        );
+      });
+
+      it("records request_failed so the health check can see it", async () => {
+        await seedCall("CA-rec-reqfail");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-reqfail&conference=1&rec=dual", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-reqfail",
+          RecordingChannels: "2",
+        });
+        expect(await statusOf("CA-rec-reqfail")).toBe("request_failed");
+      });
+
+      it("never overwrites a status that is already set", async () => {
+        await seedCall("CA-rec-reqfail-done", "completed");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-reqfail-done&conference=1&rec=dual", {
+          RecordingUrl: "https://api.twilio.com/rec.mp3",
+          RecordingSid: "RE-reqfail-done",
+          RecordingChannels: "2",
+        });
+        expect(await statusOf("CA-rec-reqfail-done")).toBe("completed");
+      });
+    });
+
     // A duration we already stored must survive a later callback that omits it -- otherwise the
     // player would flip back to showing 0:00 after a second status POST.
     it("does not blank an already-stored duration when a later callback omits it", async () => {

@@ -205,6 +205,19 @@ describe("admin diagnostics", () => {
       expect(find(await run(ON()), "transcripts").status).toBe("fail");
     });
 
+    // Twilio refusing the transcript request left the row with no status at all, so this check said
+    // "no answered call has been transcribed yet" forever. Not masked by successes either: N calls
+    // that were never submitted is a fault however many others worked.
+    it("FAILS when recordings could not be submitted to Twilio", async () => {
+      await seed("CA-diag-tr-req1", "request_failed", null);
+      await seed("CA-diag-tr-req2", "request_failed", null);
+      await seed("CA-diag-tr-req-ok", "completed", "GT-ok2");
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("2 recording(s) could not be submitted to Twilio");
+    });
+
     it("goes green again once a labelled transcript lands, without clearing the old mono rows", async () => {
       await seed("CA-diag-tr-mono2", "single_channel", null);
       await seed("CA-diag-tr-done", "completed", "GT1");
