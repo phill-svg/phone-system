@@ -894,10 +894,22 @@ export class CallSession extends DurableObject<Env> {
       // Softphone outbound: if the agent's leg ended, cancel the dialed-out (target) leg so it
       // stops ringing the callee. No-op if that leg already answered/ended (cancel then errors,
       // which we swallow). Skip when it's the target's own status firing this callback.
-      const outbound = await this.env.DB.prepare("SELECT outbound_target_sid FROM calls WHERE id = ?")
-        .bind(body.callSid)
-        .first<{ outbound_target_sid: string | null }>();
-      const targetSid = outbound?.outbound_target_sid ?? null;
+      //
+      // Never throws. An escape here reaches the DO catch-all, which answers agent_status with a
+      // plain 200 -- Twilio never retries, the ring-plan advance below never runs, and an inbound
+      // caller hears ringback forever. Losing this cancel costs a softphone callee a few more rings.
+      let targetSid: string | null = null;
+      try {
+        const outbound = await this.env.DB.prepare("SELECT outbound_target_sid FROM calls WHERE id = ?")
+          .bind(body.callSid)
+          .first<{ outbound_target_sid: string | null }>();
+        targetSid = outbound?.outbound_target_sid ?? null;
+      } catch (err) {
+        console.log(
+          "AGENT_STATUS_OUTBOUND_LOOKUP_FAILED",
+          JSON.stringify({ callSid: body.callSid, error: err instanceof Error ? err.message : String(err) })
+        );
+      }
       if (targetSid && targetSid !== body.agentCallSid) {
         try {
           await this.cancelStaff(targetSid);

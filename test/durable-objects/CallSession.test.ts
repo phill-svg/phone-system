@@ -1746,6 +1746,40 @@ describe("CallSession", () => {
     expect(answer.xml).toContain("<Dial");
   });
 
+  // The softphone-outbound lookup at the top of handleAgentStatus used to be unguarded. A transient
+  // D1 failure there threw to the DO catch-all, which answers agent_status with a plain 200 -- so
+  // Twilio never retried, the leg was never removed from attemptSids, and the plan sat in DIALING
+  // for good: the caller heard ringback until they gave up. The column is renamed so the read
+  // genuinely throws inside the DO.
+  it("still advances the ring plan when the outbound-target lookup throws", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const stub = stubFor("CA-outbound-lookup-throws");
+    await send(stub, mainEvent("CA-outbound-lookup-throws"));
+    await send(stub, mainEvent("CA-outbound-lookup-throws", { digits: "1" }));
+    expect(outboundDials(fetchMock).length).toBe(2);
+
+    await env.DB.prepare("ALTER TABLE calls RENAME COLUMN outbound_target_sid TO outbound_target_sid_broken").run();
+    try {
+      await send(stub, agentStatus("CA-outbound-lookup-throws", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+      await send(stub, agentStatus("CA-outbound-lookup-throws", "sid-client:sam@b.com?CallerNumber=61400000000", "busy"));
+    } finally {
+      await env.DB.prepare("ALTER TABLE calls RENAME COLUMN outbound_target_sid_broken TO outbound_target_sid").run();
+    }
+
+    // Both legs failed, so the plan is exhausted and the caller is released to the no-answer branch.
+    const poll = await send(stub, {
+      kind: "hold_poll",
+      callSid: "CA-outbound-lookup-throws",
+      webhookUrl: `${ORIGIN}/webhooks/twilio/hold`,
+    });
+    expect(poll.xml).toContain("<Leave/>");
+  });
+
   // ---- callback node -----------------------------------------------------
   //
   // Until this node type existed the callback feature was only reachable by pressing * while held
