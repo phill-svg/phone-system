@@ -17,6 +17,8 @@ const ALLOWED = new Map<string, string>([
   ["call-active.tsx", "is the in-call screen itself"],
   ["call-incoming.tsx", "answers an INBOUND call, which is always a VoIP leg"],
   ["transfer.tsx", "completes a mid-call transfer, which must stay on the existing VoIP leg"],
+  // Basename-keyed, so this covers every _layout.tsx; only (tabs)/_layout.tsx navigates there today.
+  ["_layout.tsx", "(tabs) opens an INBOUND call already answered from the lock screen, a live VoIP leg"],
 ]);
 
 function walk(dir: string): string[] {
