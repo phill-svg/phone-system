@@ -277,12 +277,10 @@ export async function getConversations(): Promise<Conversation[]> {
   }
 }
 
+// Throws rather than returning []: the open thread polls, and React Query keeps the last good data
+// on an error, whereas [] blanked the conversation to "No Messages Yet" on every failed poll.
 export async function getThread(number: string): Promise<Message[]> {
-  try {
-    return await apiFetch<Message[]>(`/api/messages/${encodeURIComponent(number)}`);
-  } catch {
-    return [];
-  }
+  return apiFetch<Message[]>(`/api/messages/${encodeURIComponent(number)}`);
 }
 
 // Throws on failure, deliberately: the reason (not configured, Twilio rejected it, no signal) is

@@ -33,7 +33,9 @@ export default function ThreadScreen() {
   const textInputRef = useRef<TextInput>(null);
 
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
-  const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2 });
+  // Polled: a reply arriving while the thread is open has no other way onto the screen. Paused while
+  // the app is in the background (queryFocus.ts).
+  const thread = useQuery({ queryKey: ["thread", to], queryFn: () => getThread(to), enabled: !isNew && to.length > 2, refetchInterval: 15_000 });
   const numbers = useQuery({ queryKey: ["numbers"], queryFn: getNumbers, staleTime: 300_000 });
 
   // Loading a thread marks its inbound messages read server-side (GET /api/messages/:number), so

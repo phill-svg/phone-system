@@ -11,8 +11,11 @@ import { useTheme, ThemeProvider } from "../theme/theme";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { installCrashReporter, flushCrashQueue, setCurrentScreen } from "../lib/crashReport";
 import { primePushRegistry } from "../lib/voice";
+import { wireQueryFocusToAppState } from "../lib/queryFocus";
 
 const queryClient = new QueryClient();
+// Without this nothing refetches when the app comes back to the foreground (see queryFocus.ts).
+wireQueryFocusToAppState();
 
 // Installed at module scope, before any component renders, so an error thrown while the tree is
 // first mounting is still caught -- that is precisely when the worst ones happen.
