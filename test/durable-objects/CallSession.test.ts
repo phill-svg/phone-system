@@ -882,6 +882,48 @@ describe("CallSession", () => {
     expect(cancelHits(fetchMock).length).toBe(2);
   });
 
+  // Cancelling the siblings on answer makes Twilio post each one's terminal `canceled` status. Those
+  // callbacks ran cleanupLoneConference against the caller's conference, which ends it at <=1
+  // participant -- and in the gap after the caller is redirected in but before the answering staff
+  // leg has joined, that is exactly one. The customer was dropped at the moment of answer. A leg
+  // that never answered was never a participant, so only `completed` may clean up.
+  it("a cancelled sibling's status callback does not end the conference the caller is joining", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { strategy: "simultaneous", noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await seedStaff("sam@b.com");
+
+    const previous = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
+      const u = String(input);
+      // One participant so far: the caller, redirected in ahead of the staff leg.
+      if (u.includes("/Conferences.json")) return new Response(JSON.stringify({ conferences: [{ sid: "CF1" }] }), { status: 200 });
+      if (u.includes("/Participants.json")) return new Response(JSON.stringify({ participants: [{ call_sid: "CA-conf-race" }] }), { status: 200 });
+      return previous(input, init);
+    });
+    const endConferenceHits = () =>
+      fetchMock.mock.calls.filter(
+        (c) =>
+          String(c[0]).endsWith("/Conferences/CF1.json") &&
+          new URLSearchParams((c[1] as RequestInit).body as string).get("Status") === "completed"
+      ).length;
+
+    const stub = stubFor("CA-conf-race");
+    await send(stub, mainEvent("CA-conf-race"));
+    await send(stub, mainEvent("CA-conf-race", { digits: "1" }));
+    await send(stub, agentAnswer("CA-conf-race", "sid-client:phill@b.com?CallerNumber=61400000000"));
+
+    for (const status of ["canceled", "no-answer", "busy", "failed"]) {
+      await send(stub, agentStatus("CA-conf-race", "sid-client:sam@b.com?CallerNumber=61400000000", status));
+    }
+    expect(endConferenceHits()).toBe(0);
+
+    // A leg that WAS in the conference still cleans up after itself when it hangs up.
+    await send(stub, agentStatus("CA-conf-race", "sid-client:phill@b.com?CallerNumber=61400000000", "completed"));
+    expect(endConferenceHits()).toBe(1);
+  });
+
   // A sibling leg that just went to voicemail, was declined, or answered a fraction of a second
   // earlier answers Twilio's Status=canceled with a 400; an already torn-down one answers 404. That
   // is an ordinary race in a ring-all, and it used to throw straight out of the answer handler --

@@ -907,10 +907,16 @@ export class CallSession extends DurableObject<Env> {
   // forward (cascade to next number, or detect simultaneous exhaustion).
   // -------------------------------------------------------------------------
   private async handleAgentStatus(body: AgentStatusEvent): Promise<Response> {
-    // Any terminal agent-leg status (including a normal post-bridge hangup, which the ring-plan
-    // logic below deliberately ignores) may have left a lone participant behind.
-    if (body.callStatus === "completed" || (body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus))) {
+    // Only a leg that ANSWERED can have left a lone participant behind, and only an answered leg
+    // reports `completed` (including a normal post-bridge hangup, which the ring-plan logic below
+    // deliberately ignores). A canceled/no-answer/busy/failed leg was never in the conference -- and
+    // cleaning up on one is actively harmful: answering cancels the siblings, and their `canceled`
+    // callbacks land while the caller has been redirected in but the answering staff leg has not yet
+    // joined, when "<=1 participant" is true and ending the conference drops the customer.
+    if (body.callStatus === "completed") {
       await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+    }
+    if (body.callStatus === "completed" || (body.callStatus && AGENT_FAILURE_STATUSES.has(body.callStatus))) {
       // Softphone outbound: if the agent's leg ended, cancel the dialed-out (target) leg so it
       // stops ringing the callee. No-op if that leg already answered/ended (cancel then errors,
       // which we swallow). Skip when it's the target's own status firing this callback.
