@@ -56,6 +56,8 @@ export async function getTokenWhenReadable(): Promise<string | null> {
           }
         });
       });
+      // A fresh unlock gets the full backoff, not what the last one left over.
+      activeRefusals = 0;
     }
   }
 }

@@ -99,6 +99,31 @@ describe("getTokenWhenReadable", () => {
     expect(await getTokenWhenReadable()).toBe("abc.def");
   }, 10_000);
 
+  // Refusals from one unlock must not eat into the next unlock's retries.
+  it("starts the retry budget afresh after waiting for the next unlock", async () => {
+    let listener: ((s: string) => void) | undefined;
+    jest.spyOn(AppState, "addEventListener").mockImplementation(((_: string, fn: (s: string) => void) => {
+      listener = fn;
+      return { remove: jest.fn() };
+    }) as never);
+    const setState = (value: string) => Object.defineProperty(AppState, "currentState", { value, configurable: true });
+    setState("active");
+    let reads = 0;
+    store.getItemAsync.mockImplementation(async () => {
+      reads++;
+      if (reads === 4) setState("background"); // locked again during the 4th read
+      if (reads <= 8) throw new Error("User interaction is not allowed.");
+      return "abc.def";
+    });
+
+    const pending = getTokenWhenReadable();
+    while (!listener) await new Promise((r) => setTimeout(r, 20));
+    setState("active");
+    listener("active");
+
+    expect(await pending).toBe("abc.def");
+  }, 15_000);
+
   // Refusal that persists while active is not the lock (e.g. an Android keystore that cannot
   // decrypt). Waiting for an unlock that is not coming is a spinner forever; signed out at least
   // lets them sign in.
