@@ -27,6 +27,13 @@ function normalizeNumber(raw: string): string {
   return trimmed;
 }
 
+// The key a thread is stored under. Sending normalises the number before storing it, so looking a
+// thread up by the number as typed ("0412 345 678") found nothing: a new message sent fine and then
+// showed an empty thread. A Messenger peer is an opaque id and passes through untouched.
+export function threadPeer(raw: string): string {
+  return raw.startsWith("messenger:") ? raw : normalizeNumber(raw);
+}
+
 export async function handleListConversations(db: D1Database): Promise<Response> {
   return jsonResponse(await listConversations(db));
 }

@@ -1368,6 +1368,33 @@ describe("GET /admin/live", () => {
   });
 });
 
+// Sending normalises "0412 345 678" to +61412345678 before storing, but the thread was matched on the
+// number exactly as typed -- so a new message sent fine and then showed "No messages yet", which
+// invites a resend, and Contacts > Message (?to=) opened an existing conversation empty.
+describe("GET /api/messages/:number with a locally formatted number", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM messages").run();
+  });
+
+  it("finds the thread stored under the normalised number", async () => {
+    await insertMessage(env.DB, {
+      id: "wt-local-format-1",
+      direction: "outbound",
+      peer_number: "+61412345678",
+      our_number: "+61485034869",
+      body: "Booked in for Tuesday",
+      status: "sent",
+      read: 1,
+      createdAt: Date.now(),
+    });
+
+    const res = await SELF.fetch("https://example.com/api/messages/" + encodeURIComponent("0412 345 678"));
+    expect(res.status).toBe(200);
+    const thread = (await res.json()) as { body: string }[];
+    expect(thread.map((m) => m.body)).toEqual(["Booked in for Tuesday"]);
+  });
+});
+
 // The demo swap only covers /api/. These pages render real D1 on the server, so the App Review
 // login would read real callers, transcripts and callbacks. A web login lands on /admin/live first.
 describe("App Review demo account on /admin pages", () => {

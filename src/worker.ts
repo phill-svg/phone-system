@@ -44,7 +44,7 @@ import {
   handleGetStaffRoster, handleGetStaffAdminList, handlePutStaffSchedule, handlePutStaffPriority,
   handlePutStaffStatus, handleInviteStaff, handleResendInvite, handleSendReset, handleRemoveStaff,
 } from "./api/staff";
-import { handleListConversations, handleGetThread, handleSendMessage } from "./api/messages";
+import { handleListConversations, handleGetThread, handleSendMessage, threadPeer } from "./api/messages";
 import { insertMessage, updateMessageStatus } from "./db/messages";
 import { syncPendingCallsToServiceM8 } from "./servicem8/syncQueue";
 import { handleGetDiagnostics, handleTestPush, handleTestEmail } from "./api/diagnostics";
@@ -1378,7 +1378,7 @@ export default {
       const threadRestoreMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/restore$/);
       if (threadRestoreMatch && request.method === "POST") {
         try {
-          return handleRestoreThread(request, env.DB, decodeURIComponent(threadRestoreMatch[1]), staff);
+          return handleRestoreThread(request, env.DB, threadPeer(decodeURIComponent(threadRestoreMatch[1])), staff);
         } catch (e) {
           if (e instanceof URIError) return new Response("not found", { status: 404 });
           throw e;
@@ -1389,7 +1389,7 @@ export default {
       if (messageThreadMatch) {
         let peerNumber: string;
         try {
-          peerNumber = decodeURIComponent(messageThreadMatch[1]);
+          peerNumber = threadPeer(decodeURIComponent(messageThreadMatch[1]));
         } catch (e) {
           if (e instanceof URIError) return new Response("not found", { status: 404 });
           throw e;
