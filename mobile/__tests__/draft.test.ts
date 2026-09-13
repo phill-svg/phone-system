@@ -42,19 +42,32 @@ describe("reseedDraft", () => {
   // Field by field: keeping the WHOLE draft kept fields nobody touched. Card B had an unsaved label
   // and was the default; card A was saved as the new default, the server cleared B's flag, B kept
   // "default" in its draft -- and saving B's label later silently took the default back.
-  it("takes server-owned fields from the reload even when other fields are edited", () => {
+  it("lets an untouched field follow the reload even when another field is edited", () => {
     const b = { label: "Office", default_voice: true };
     const edited = { label: "Office (typing)", default_voice: true };
-    expect(reseedDraft(edited, b, { label: "Office", default_voice: false }, ["default_voice"])).toEqual({
+    expect(reseedDraft(edited, b, { label: "Office", default_voice: false })).toEqual({
       label: "Office (typing)",
       default_voice: false,
     });
+  });
+
+  // And a field the admin DID change is theirs, flags included: flipping "Default for calls" on and
+  // then saving a different card must not silently flip it back.
+  it("keeps a toggled but unsaved flag through another card's reload", () => {
+    const b = { label: "Office", default_voice: false };
+    expect(reseedDraft({ label: "Office", default_voice: true }, b, { ...b })).toEqual({ label: "Office", default_voice: true });
   });
 
   // The server trims the label. "Office " saved came back "Office", which differed from both the
   // draft and the seed, so the card stayed on Save forever re-sending the untrimmed value.
   it("treats a value the server only trimmed as saved", () => {
     expect(reseedDraft({ label: "Office " }, { label: "Old" }, { label: "Office" })).toEqual({ label: "Office" });
+  });
+
+  // But a reload that changed nothing must not eat a space still being typed ("Office " on the way
+  // to "Office Main"), or the rest comes out "OfficeMain".
+  it("keeps a trailing space mid-typing when the server copy did not change", () => {
+    expect(reseedDraft({ label: "Office " }, { label: "Office" }, { label: "Office" })).toEqual({ label: "Office " });
   });
 
   // After this card's own save the reload carries exactly the draft, and the seed moves with it,

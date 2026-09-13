@@ -12,22 +12,19 @@ export function wholeNumberInput(raw: string, min: number): { text: string; valu
 }
 
 // Field by field, not the whole draft: keeping every field of an edited draft kept ones nobody
-// touched. A field follows the reload when it is untouched, when the reload already holds what was
-// typed (a string the server only trimmed counts -- otherwise a saved card stays on "Save" forever),
-// or when it is `serverOwned`: a value other cards' saves change, like which number is the default.
-export function reseedDraft<T extends Record<string, unknown>>(
-  current: T,
-  lastSeeded: T,
-  incoming: T,
-  serverOwned: (keyof T)[] = []
-): T {
-  const same = (a: unknown, b: unknown) =>
-    typeof a === "string" && typeof b === "string" ? a.trim() === b.trim() : JSON.stringify(a) === JSON.stringify(b);
+// touched -- a default flag another card's save had moved came back on the next save of this one.
+// A field follows the reload when it is untouched, or when the server copy CHANGED to what was typed
+// give or take surrounding spaces (the server trims, and a saved card otherwise stays on "Save"
+// forever). Only when it changed: a reload that moved nothing must not eat a space still being typed.
+export function reseedDraft<T extends Record<string, unknown>>(current: T, lastSeeded: T, incoming: T): T {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const trimmedSame = (a: unknown, b: unknown) =>
+    typeof a === "string" && typeof b === "string" ? a.trim() === b.trim() : same(a, b);
   const out = { ...current };
   for (const key of Object.keys(incoming) as (keyof T)[]) {
-    if (serverOwned.includes(key) || same(current[key], lastSeeded[key]) || same(current[key], incoming[key])) {
-      out[key] = incoming[key];
-    }
+    const untouched = same(current[key], lastSeeded[key]);
+    const savedAsTyped = !same(incoming[key], lastSeeded[key]) && trimmedSame(current[key], incoming[key]);
+    if (untouched || savedAsTyped) out[key] = incoming[key];
   }
   return out;
 }
