@@ -1393,6 +1393,25 @@ describe("GET /api/messages/:number with a locally formatted number", () => {
     const thread = (await res.json()) as { body: string }[];
     expect(thread.map((m) => m.body)).toEqual(["Booked in for Tuesday"]);
   });
+
+  // Inbound rows keep Twilio's From as sent, and an alphanumeric sender ID can contain a space.
+  // Stripping it looked up "ServiceNSW" and the thread went empty with an uncleared badge.
+  it("leaves an alphanumeric sender as it is", async () => {
+    await insertMessage(env.DB, {
+      id: "wt-alpha-sender-1",
+      direction: "inbound",
+      peer_number: "Service NSW",
+      our_number: "+61485034869",
+      body: "Your licence renewal",
+      status: "received",
+      read: 0,
+      createdAt: Date.now(),
+    });
+
+    const res = await SELF.fetch("https://example.com/api/messages/" + encodeURIComponent("Service NSW"));
+    const thread = (await res.json()) as { body: string }[];
+    expect(thread.map((m) => m.body)).toEqual(["Your licence renewal"]);
+  });
 });
 
 // The demo swap only covers /api/. These pages render real D1 on the server, so the App Review
