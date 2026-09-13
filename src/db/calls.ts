@@ -204,8 +204,19 @@ export async function getCallStats(db: D1Database, sinceMs: number): Promise<Cal
 export async function getCallDetail(
   db: D1Database,
   callId: string
-): Promise<{ call: CallSummary; events: CallEventRow[] } | null> {
-  const call = await db.prepare("SELECT * FROM calls WHERE id = ? AND deleted_at IS NULL").bind(callId).first<CallSummary>();
+): Promise<{ call: CallListRow; events: CallEventRow[] } | null> {
+  // Same derived columns as listCalls: the detail pane runs the one missed-call rule on them, and
+  // without them labelled every answered inbound call "Abandoned".
+  const call = await db
+    .prepare(
+      `SELECT c.*,
+              EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'answered') AS answered,
+              (SELECT COUNT(*) FROM call_events e WHERE e.call_id = c.id) AS event_count
+         FROM calls c
+        WHERE c.id = ? AND c.deleted_at IS NULL`
+    )
+    .bind(callId)
+    .first<CallListRow>();
   if (!call) return null;
   const events = await db
     .prepare("SELECT * FROM call_events WHERE call_id = ? ORDER BY ts ASC")
