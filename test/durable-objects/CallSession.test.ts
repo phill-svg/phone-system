@@ -891,12 +891,16 @@ describe("CallSession", () => {
   // An outbound softphone call's CUSTOMER leg reports to the same status webhook. If the customer is
   // busy or never answers, the staff member is alone in the conference hearing ringback -- that one
   // must still be ended, or they wait forever believing the number is still ringing.
-  it("a failed outbound customer leg still ends the staff member's lone conference", async () => {
+  //
+  // It hangs up the staff member's own leg rather than ending the conference: a number that fails
+  // instantly reports before the staff leg has even joined, when there is no conference to end yet
+  // and they would join an empty one and hear ringback until they gave up.
+  it("a failed outbound customer leg ends the staff member's call, even before they joined", async () => {
     const previous = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
       const u = String(input);
-      if (u.includes("/Conferences.json")) return new Response(JSON.stringify({ conferences: [{ sid: "CF1" }] }), { status: 200 });
-      if (u.includes("/Participants.json")) return new Response(JSON.stringify({ participants: [{ call_sid: "CA-agent-out" }] }), { status: 200 });
+      // No conference yet: the customer leg failed before the staff leg's TwiML joined it.
+      if (u.includes("/Conferences.json")) return new Response(JSON.stringify({ conferences: [] }), { status: 200 });
       return previous(input, init);
     });
     await env.DB.prepare(
@@ -911,7 +915,7 @@ describe("CallSession", () => {
     expect(
       fetchMock.mock.calls.filter(
         (c) =>
-          String(c[0]).endsWith("/Conferences/CF1.json") &&
+          String(c[0]).endsWith("/Calls/CA-agent-out.json") &&
           new URLSearchParams((c[1] as RequestInit).body as string).get("Status") === "completed"
       ).length
     ).toBe(1);

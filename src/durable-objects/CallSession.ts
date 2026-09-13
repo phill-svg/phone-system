@@ -909,13 +909,25 @@ export class CallSession extends DurableObject<Env> {
         );
       }
     }
-    // A leg that was IN the call (`completed`) may have left a lone participant behind. So may an
-    // outbound customer leg that failed: the staff member is alone hearing ringback. An inbound
+    // A leg that was IN the call (`completed`) may have left a lone participant behind. An inbound
     // sibling that failed never joined -- answering cancels the siblings, and their `canceled`
     // callbacks land while the caller has been redirected in but the answering staff leg has not
     // yet joined, when "<=1 participant" is true and ending the conference drops the customer.
-    if (body.callStatus === "completed" || (terminal && targetSid !== null && targetSid === body.agentCallSid)) {
+    if (body.callStatus === "completed") {
       await cleanupLoneConference(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+    } else if (terminal && targetSid !== null && targetSid === body.agentCallSid) {
+      // An outbound softphone customer was busy, never answered, or failed. End the staff member's
+      // own leg (the conference is named after it) rather than the conference: a number that fails
+      // instantly reports before the staff leg has joined, when there is no conference yet, and they
+      // would join an empty one and hear ringback until they gave up.
+      try {
+        await hangupCall(this.env.TWILIO_ACCOUNT_SID, this.env.TWILIO_AUTH_TOKEN, body.callSid);
+      } catch (err) {
+        console.log(
+          "OUTBOUND_AGENT_HANGUP_FAILED",
+          JSON.stringify({ callSid: body.callSid, error: err instanceof Error ? err.message : String(err) })
+        );
+      }
     }
     if (terminal) {
       // Softphone outbound: if the agent's leg ended, cancel the dialed-out (target) leg so it
