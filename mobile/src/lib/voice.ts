@@ -210,19 +210,41 @@ export function getPushRegistryError(): string | null {
 // initialize PushKit device token". Retry with backoff on that specific error; anything else
 // (bad access token, network) fails fast.
 const PUSHKIT_BACKOFF_MS = [0, 1000, 2000, 3000, 5000, 8000, 10000];
-async function registerWithRetry(token: string): Promise<void> {
+
+// Raised by every unregisterFromIncoming. A registration captures it when it starts and stops the
+// moment it moves: the retries above run for ~29s with a token already minted, so a sign-out inside
+// that window unregistered successfully and the pending retry then registered the signed-out handset
+// again -- which kept receiving VoIP pushes that CallKit rings natively. Monotonic, so a registration
+// started after the sign-out (the next person signing in) is unaffected.
+//
+// Raised only by the unregister, not by the last invite subscriber leaving: a registration's own
+// subscriber stays in the stack until registerForIncoming returns, so that can never happen while a
+// retry is pending -- and the tabs layout's cleanup runs AFTER performSignOut's unregister anyway.
+let registrationGeneration = 0;
+
+// False when a sign-out overtook it: nothing is registered and the status must not say otherwise.
+async function registerWithRetry(token: string, generation: number): Promise<boolean> {
   for (let attempt = 0; attempt < PUSHKIT_BACKOFF_MS.length; attempt++) {
     if (PUSHKIT_BACKOFF_MS[attempt] > 0) await sleep(PUSHKIT_BACKOFF_MS[attempt]);
+    if (generation !== registrationGeneration) return false;
     try {
       await voice.register(token);
-      return;
+      // Already in flight when the unregister ran, and landed after it: undo it. Best-effort, the
+      // same as the sign-out's own unregister.
+      if (generation !== registrationGeneration) {
+        await voice.unregister(token).catch(() => {});
+        return false;
+      }
+      return true;
     } catch (e) {
+      if (generation !== registrationGeneration) return false;
       const isPushKitRace = e instanceof Error && e.message.includes("PushKit device token");
       const isLastAttempt = attempt === PUSHKIT_BACKOFF_MS.length - 1;
       if (!isPushKitRace || isLastAttempt) throw e;
       setRegStatus(`registering… (retry ${attempt + 1})`);
     }
   }
+  return false; // unreachable: the last attempt returns or throws
 }
 
 // ---- Outbound ----
@@ -268,6 +290,7 @@ export async function registerForIncoming(
   onInvite: (from: string) => void,
   onAdopted?: (from: string) => void
 ): Promise<() => void> {
+  const generation = registrationGeneration;
   // Android 13+ needs notification permission to show the incoming-call banner. Best-effort —
   // registration still proceeds if declined (the call just won't post a heads-up notification).
   if (Platform.OS === "android" && Number(Platform.Version) >= 33) {
@@ -346,11 +369,14 @@ export async function registerForIncoming(
     const primeError = getPushRegistryError();
     if (primeError !== null) throw new Error("PushKit registry unavailable: " + primeError);
     const token = await getSoftphoneToken(tokenPlatform());
-    await registerWithRetry(token);
+    const registered = await registerWithRetry(token, generation);
     // Some SDK versions resolve register() without emitting Registered; treat a clean resolve as ok.
-    if (regStatus === "registering…") setRegStatus("registered ✓");
+    if (registered && regStatus === "registering…") setRegStatus("registered ✓");
   } catch (e) {
-    setRegStatus("register failed: " + (e instanceof Error ? e.message : String(e)));
+    // Signed out meanwhile (the token request 401s, say): the sign-out's own status stands.
+    if (generation === registrationGeneration) {
+      setRegStatus("register failed: " + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   return () => {
@@ -439,6 +465,8 @@ function handleInvite(invite: CallInvite): void {
 const UNREGISTER_TIMEOUT_MS = 5000;
 
 export async function unregisterFromIncoming(): Promise<boolean> {
+  // First, before any await: a registration still retrying must not register again behind this.
+  registrationGeneration++;
   // A phone that is RINGING as its owner signs out has to stop, and the caller has to fall through
   // to the next person rather than wait out the whole ring window behind a leg nobody is going to
   // answer. Unregistering alone does not do that -- the invite is already delivered and the CallKit

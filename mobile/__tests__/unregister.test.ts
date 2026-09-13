@@ -22,7 +22,12 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
     on() { return this; }
     off() { return this; }
     async initializePushRegistry() {}
-    async register() {}
+    registerCalls: string[] = [];
+    registerImpl: (t: string) => Promise<void> = async () => {};
+    async register(token: string) {
+      this.registerCalls.push(token);
+      return this.registerImpl(token);
+    }
     async unregister(token: string) {
       this.unregisterCalls.push(token);
       return this.unregisterImpl(token);
@@ -116,5 +121,74 @@ describe("unregisterFromIncoming", () => {
     mockGetToken.mockRejectedValue(new Error("401 unauthorized"));
     await expect(voiceLib.unregisterFromIncoming()).resolves.toBe(false);
     expect(mockVoiceRef.current.unregisterCalls).toEqual([]);
+  });
+});
+
+// Registration retries the PushKit token race for ~29s with an access token already minted. Signing
+// out inside that window unregistered successfully -- and then the pending retry called register()
+// again, leaving a signed-out handset receiving VoIP pushes that CallKit rings natively.
+describe("signing out while registration is still retrying", () => {
+  const drain = async () => {
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+  };
+  const pushKitRace = async () => {
+    throw new Error("Failed to initialize PushKit device token");
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockGetToken.mockReset().mockResolvedValue("tok-abc");
+    const v = mockVoiceRef.current;
+    v.registerCalls = [];
+    v.registerImpl = async () => {};
+    v.unregisterCalls = [];
+    v.unregisterImpl = async () => {};
+  });
+  afterEach(() => jest.useRealTimers());
+
+  async function runOutTheBackoff(pending: Promise<() => void>) {
+    for (let i = 0; i < 12; i++) {
+      jest.advanceTimersByTime(10000);
+      await drain();
+    }
+    (await pending)();
+  }
+
+  it("never calls register() again once unregistered", async () => {
+    mockVoiceRef.current.registerImpl = pushKitRace;
+    const pending = voiceLib.registerForIncoming(() => {});
+    await drain();
+    expect(mockVoiceRef.current.registerCalls).toHaveLength(1);
+
+    await expect(voiceLib.unregisterFromIncoming()).resolves.toBe(true);
+    await runOutTheBackoff(pending);
+
+    expect(mockVoiceRef.current.registerCalls).toHaveLength(1);
+    // And it does not overwrite the sign-out's result with a registration failure.
+    expect(voiceLib.getRegStatus()).toBe("unregistered");
+  });
+
+  it("undoes a register() that was already in flight when the unregister ran", async () => {
+    let land!: () => void;
+    mockVoiceRef.current.registerImpl = () => new Promise<void>((res) => (land = res));
+    const pending = voiceLib.registerForIncoming(() => {});
+    await drain();
+    expect(mockVoiceRef.current.registerCalls).toHaveLength(1);
+
+    await voiceLib.unregisterFromIncoming();
+    expect(mockVoiceRef.current.unregisterCalls).toHaveLength(1);
+    land();
+    await runOutTheBackoff(pending);
+
+    expect(mockVoiceRef.current.unregisterCalls).toHaveLength(2);
+    expect(voiceLib.getRegStatus()).not.toBe("registered ✓");
+  });
+
+  it("a registration started after the sign-out still registers", async () => {
+    await voiceLib.unregisterFromIncoming();
+    const pending = voiceLib.registerForIncoming(() => {});
+    await runOutTheBackoff(pending);
+    expect(mockVoiceRef.current.registerCalls).toEqual(["tok-abc"]);
+    expect(voiceLib.getRegStatus()).toBe("registered ✓");
   });
 });
