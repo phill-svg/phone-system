@@ -247,6 +247,17 @@ export async function placeCall(to: string, from?: string): Promise<Call> {
   return call;
 }
 
+// Makes an answered call the one the in-call screen drives, and lets go of it when it ends.
+function adoptCall(call: Call): void {
+  activeCall = call;
+  call.on(Call.Event.Disconnected, () => {
+    if (activeCall === call) activeCall = null;
+  });
+  call.on(Call.Event.ConnectFailure, () => {
+    if (activeCall === call) activeCall = null;
+  });
+}
+
 // ---- Incoming registration ----
 // Register this device to receive incoming calls via push, and wire the CallInvite handler.
 // `onInvite` is called (with the caller's number) when a call comes in, so the UI can navigate
@@ -288,15 +299,7 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
     // second accept can reach the native layer, and tell the ringing screen to get out of the way.
     invite.on(CallInvite.Event.Accepted, (call: Call) => {
       if (pendingInvite === invite) pendingInvite = null;
-      if (call) {
-        activeCall = call;
-        call.on(Call.Event.Disconnected, () => {
-          if (activeCall === call) activeCall = null;
-        });
-        call.on(Call.Event.ConnectFailure, () => {
-          if (activeCall === call) activeCall = null;
-        });
-      }
+      if (call) adoptCall(call);
       notifyInviteAccepted();
     });
     onInvite(invite.getFrom());
@@ -311,13 +314,25 @@ export async function registerForIncoming(onInvite: (from: string) => void): Pro
   // button" report. The SDK keeps pending invites, so ask for the one already in flight.
   // Deliberately not awaited: registration must not wait on it, and a missing method (an older
   // SDK) must degrade to today's behaviour rather than break registering entirely.
+  //
+  // An invite already ANSWERED from CallKit is not waiting: on iOS the SDK keeps it in
+  // getCallInvites(), rebuilt as Pending, until the call ends. Announcing it rang a live call, every
+  // Pending guard passed, and Decline hung up on the customer. Its Call sits in getCalls() under the
+  // same uuid, so adopt that instead.
   void Promise.resolve()
-    .then(() => voice.getCallInvites())
-    .then((invites) => {
+    .then(() => Promise.all([voice.getCallInvites(), voice.getCalls()]))
+    .then(([invites, calls]) => {
       // Only when nothing came through the event first, so an invite is never announced twice.
       if (pendingInvite) return;
-      const [waiting] = Array.from(invites.values());
-      if (waiting) handler(waiting);
+      for (const [uuid, invite] of invites) {
+        const answered = calls.get(uuid);
+        if (answered) {
+          if (!activeCall) adoptCall(answered);
+          continue;
+        }
+        handler(invite);
+        return;
+      }
     })
     .catch(() => {});
   const onRegistered = () => setRegStatus("registered ✓");

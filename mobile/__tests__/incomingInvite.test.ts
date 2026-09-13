@@ -38,6 +38,10 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
     async getCallInvites() {
       return this.pendingInvites;
     }
+    calls = new Map<string, any>();
+    async getCalls() {
+      return this.calls;
+    }
   }
   const Voice: any = jest.fn().mockImplementation(() => {
     mockVoiceRef.current = new FakeVoice();
@@ -232,6 +236,36 @@ describe("incoming invite lifecycle", () => {
     expect(voiceLib.getPendingInvite()).toBe(invite);
     expect(onInvite).toHaveBeenCalledWith("+61400000000");
     unsub();
+  });
+
+  // The replay's own target case: answered from the CallKit screen before JS subscribed. On iOS the
+  // SDK keeps that invite in getCallInvites() -- rebuilt as Pending -- until the call ends, so the
+  // replay announced a LIVE call as ringing, every Pending guard passed, and Decline hung up on the
+  // customer. The answered call is in getCalls() under the same uuid; adopt it instead.
+  it("adopts a call already answered from the lock screen instead of ringing for it again", async () => {
+    // Clear module state an earlier test left behind (an un-cancelled pending invite).
+    mockVoiceRef.current.pendingInvites = new Map();
+    const clear = await voiceLib.registerForIncoming(() => {});
+    const stale = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", stale);
+    stale.fire(CallInviteEvent.Cancelled);
+    clear();
+
+    const invite = makeInvite(CallInviteState.Pending);
+    const call = { on: jest.fn() };
+    const onInvite = jest.fn();
+    mockVoiceRef.current.pendingInvites = new Map([["uuid-2", invite]]);
+    mockVoiceRef.current.calls = new Map([["uuid-2", call]]);
+
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    await new Promise((r) => setImmediate(r));
+
+    expect(onInvite).not.toHaveBeenCalled();
+    expect(voiceLib.getPendingInvite()).toBeNull();
+    expect(voiceLib.getActiveCall()).toBe(call);
+    unsub();
+    mockVoiceRef.current.pendingInvites = new Map();
+    mockVoiceRef.current.calls = new Map();
   });
 
   it("does not announce an invite twice when the event arrived first", async () => {
