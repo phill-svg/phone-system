@@ -122,11 +122,13 @@ export async function touchHeartbeat(db: D1Database, email: string): Promise<voi
   await db.prepare("UPDATE staff_users SET last_heartbeat_at = ? WHERE email = ?").bind(Date.now(), email).run();
 }
 
-export async function createInvitedStaff(db: D1Database, email: string, role: "admin" | "staff"): Promise<void> {
-  await db
+// False when the address was already a staff member (the INSERT was ignored).
+export async function createInvitedStaff(db: D1Database, email: string, role: "admin" | "staff"): Promise<boolean> {
+  const res = await db
     .prepare("INSERT OR IGNORE INTO staff_users (email, role, created_at) VALUES (?, ?, ?)")
     .bind(email, role, Date.now())
     .run();
+  return res.meta.changes > 0;
 }
 
 export async function deleteStaff(db: D1Database, email: string): Promise<void> {
