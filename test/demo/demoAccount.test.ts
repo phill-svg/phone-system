@@ -73,6 +73,13 @@ describe("demo request handling", () => {
     expect(miss!.status).toBe(404);
   });
 
+  it("404s a malformed escape in a thread or call id instead of throwing", () => {
+    for (const path of ["/api/messages/%E0%A4%A", "/api/calls/%E0%A4%A"]) {
+      const res = handleDemoRequest(new URL("https://x" + path), req(path), NOW);
+      expect(res!.status, path).toBe(404);
+    }
+  });
+
   // "live" is not a call id. Without its own rule it falls into the /api/calls/:id matcher and the
   // app's live-call poll starts 404ing.
   it("answers the live-calls poll with an empty list, not a 404", async () => {

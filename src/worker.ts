@@ -7,6 +7,7 @@ import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
 import { handleLogoAsset } from "./html/logoAsset";
 import { handleDesktopUpdateAsset } from "./api/desktopUpdates";
+import { safeDecode } from "./api/respond";
 import { renderPrivacyPolicyPage, renderTermsOfServicePage, renderSupportPage } from "./html/pages/legal";
 import { handleMe } from "./api/me";
 import {
@@ -180,7 +181,9 @@ export default {
     // a session -- and read-only over a validated filename under R2's desktop/ prefix.
     const desktopUpdateMatch = url.pathname.match(/^\/desktop\/([^/]+)$/);
     if (desktopUpdateMatch && (request.method === "GET" || request.method === "HEAD")) {
-      return handleDesktopUpdateAsset(env.AUDIO_ASSETS, decodeURIComponent(desktopUpdateMatch[1]));
+      const name = safeDecode(desktopUpdateMatch[1]);
+      if (name === null) return new Response("not found", { status: 404 });
+      return handleDesktopUpdateAsset(env.AUDIO_ASSETS, name);
     }
 
     // Public legal pages (no auth) — linked from the mobile app Settings and the app-store listings.
@@ -970,15 +973,9 @@ export default {
     if (url.pathname.startsWith("/media/")) {
       // Public route, intentionally NOT staff-gated: Twilio fetches this URL directly
       // to stream IVR audio into a live call and cannot present an Access credential.
-      try {
-        const key = decodeURIComponent(url.pathname.slice("/media/".length));
-        return await handleGetMedia(env.AUDIO_ASSETS, key);
-      } catch (e) {
-        if (e instanceof URIError) {
-          return new Response("not found", { status: 404 });
-        }
-        throw e;
-      }
+      const key = safeDecode(url.pathname.slice("/media/".length));
+      if (key === null) return new Response("not found", { status: 404 });
+      return handleGetMedia(env.AUDIO_ASSETS, key);
     }
 
     // Inbound SMS from a customer -> stored as a message. Public webhook, whsec-authed like the
@@ -1127,42 +1124,27 @@ export default {
       // two never shadow each other. Streams the call's Twilio recording through our own auth.
       const recordingMatch = url.pathname.match(/^\/api\/calls\/([^/]+)\/recording$/);
       if (recordingMatch && request.method === "GET") {
-        try {
-          const callId = decodeURIComponent(recordingMatch[1]);
-          return handleGetRecording(env, env.DB, callId, request);
-        } catch (e) {
-          if (e instanceof URIError) {
-            return new Response("not found", { status: 404 });
-          }
-          throw e;
-        }
+        const callId = safeDecode(recordingMatch[1]);
+        if (callId === null) return new Response("not found", { status: 404 });
+        return handleGetRecording(env, env.DB, callId, request);
       }
 
       // Undo for a deleted call log. Longer than the id-only match below, so it is tested first.
       const callRestoreMatch = url.pathname.match(/^\/api\/calls\/([^/]+)\/restore$/);
       if (callRestoreMatch && request.method === "POST") {
-        try {
-          return handleRestoreCall(env.DB, decodeURIComponent(callRestoreMatch[1]), staff);
-        } catch (e) {
-          if (e instanceof URIError) return new Response("not found", { status: 404 });
-          throw e;
-        }
+        const callId = safeDecode(callRestoreMatch[1]);
+        if (callId === null) return new Response("not found", { status: 404 });
+        return handleRestoreCall(env.DB, callId, staff);
       }
 
       const callIdMatch = url.pathname.match(/^\/api\/calls\/([^/]+)$/);
       if (callIdMatch) {
-        try {
-          const callId = decodeURIComponent(callIdMatch[1]);
-          if (request.method === "DELETE") return handleDeleteCall(env.DB, callId, staff);
-          return request.method === "PUT"
-            ? handleUpdateCallMeta(request, env.DB, callId)
-            : handleCallDetail(env.DB, callId);
-        } catch (e) {
-          if (e instanceof URIError) {
-            return new Response("not found", { status: 404 });
-          }
-          throw e;
-        }
+        const callId = safeDecode(callIdMatch[1]);
+        if (callId === null) return new Response("not found", { status: 404 });
+        if (request.method === "DELETE") return handleDeleteCall(env.DB, callId, staff);
+        return request.method === "PUT"
+          ? handleUpdateCallMeta(request, env.DB, callId)
+          : handleCallDetail(env.DB, callId);
       }
 
       if (url.pathname === "/api/settings/business-hours") {
@@ -1213,17 +1195,11 @@ export default {
       // disjoint path segments so there's no shadowing risk between the two.
       const ivrFlowMatch = url.pathname.match(/^\/api\/ivr\/flows\/([^/]+)$/);
       if (ivrFlowMatch) {
-        try {
-          const flow = decodeURIComponent(ivrFlowMatch[1]);
-          return request.method === "PUT"
-            ? handlePutFlow(request, env.DB, flow, staff)
-            : handleGetFlow(env.DB, flow);
-        } catch (e) {
-          if (e instanceof URIError) {
-            return new Response("not found", { status: 404 });
-          }
-          throw e;
-        }
+        const flow = safeDecode(ivrFlowMatch[1]);
+        if (flow === null) return new Response("not found", { status: 404 });
+        return request.method === "PUT"
+          ? handlePutFlow(request, env.DB, flow, staff)
+          : handleGetFlow(env.DB, flow);
       }
 
       // PATCH-only endpoint (drag-to-reposition on the flow canvas). Disjoint from ivrFlowMatch
@@ -1232,16 +1208,10 @@ export default {
       // /api/ivr/audio-vs-/api/ivr/flows comment above it.
       const ivrNodePositionMatch = url.pathname.match(/^\/api\/ivr\/flows\/([^/]+)\/nodes\/([^/]+)\/position$/);
       if (ivrNodePositionMatch) {
-        try {
-          const flow = decodeURIComponent(ivrNodePositionMatch[1]);
-          const nodeId = decodeURIComponent(ivrNodePositionMatch[2]);
-          return handlePatchNodePosition(request, env.DB, flow, nodeId, staff);
-        } catch (e) {
-          if (e instanceof URIError) {
-            return new Response("not found", { status: 404 });
-          }
-          throw e;
-        }
+        const flow = safeDecode(ivrNodePositionMatch[1]);
+        const nodeId = safeDecode(ivrNodePositionMatch[2]);
+        if (flow === null || nodeId === null) return new Response("not found", { status: 404 });
+        return handlePatchNodePosition(request, env.DB, flow, nodeId, staff);
       }
 
       // Dial without using VoIP at all: Twilio rings this staff member's mobile, then bridges the
@@ -1301,31 +1271,23 @@ export default {
         if (request.method === "GET") return handleGetStaffRoster(env.DB, demoEmails(env));
         if (request.method === "POST") return handleInviteStaff(request, env, staff, url.origin);
       }
-      const staffScheduleMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/schedule$/);
-      if (staffScheduleMatch && request.method === "PUT") {
-        return handlePutStaffSchedule(request, env.DB, decodeURIComponent(staffScheduleMatch[1]), staff);
-      }
-      const staffPriorityMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/priority$/);
-      if (staffPriorityMatch && request.method === "PUT") {
-        return handlePutStaffPriority(request, env.DB, decodeURIComponent(staffPriorityMatch[1]), staff);
-      }
-      const staffStatusMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/status$/);
-      if (staffStatusMatch && request.method === "PUT") {
-        return handlePutStaffStatus(request, env.DB, decodeURIComponent(staffStatusMatch[1]), staff);
-      }
-      const staffInviteMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/invite$/);
-      if (staffInviteMatch && request.method === "POST") {
-        return handleResendInvite(env, staff, decodeURIComponent(staffInviteMatch[1]).toLowerCase(), url.origin);
-      }
-      const staffResetMatch = url.pathname.match(/^\/api\/staff\/([^/]+)\/reset$/);
-      if (staffResetMatch && request.method === "POST") {
-        return handleSendReset(env, staff, decodeURIComponent(staffResetMatch[1]).toLowerCase(), url.origin);
-      }
-      // DELETE-only, and the [^/]+$ segment terminates at the email — it can't match the longer
-      // /schedule, /priority, /invite, /reset paths above (those are checked first anyway).
-      const staffRemoveMatch = url.pathname.match(/^\/api\/staff\/([^/]+)$/);
-      if (staffRemoveMatch && request.method === "DELETE") {
-        return handleRemoveStaff(env, staff, decodeURIComponent(staffRemoveMatch[1]).toLowerCase());
+      // /api/staff/:email and its sub-actions. The email is decoded once, and a malformed escape is a
+      // 404 whatever the action.
+      const staffMemberMatch = url.pathname.match(/^\/api\/staff\/([^/]+)(?:\/(schedule|priority|status|invite|reset))?$/);
+      if (staffMemberMatch) {
+        const email = safeDecode(staffMemberMatch[1]);
+        if (email === null) return new Response("not found", { status: 404 });
+        const action = staffMemberMatch[2];
+        if (request.method === "PUT") {
+          if (action === "schedule") return handlePutStaffSchedule(request, env.DB, email, staff);
+          if (action === "priority") return handlePutStaffPriority(request, env.DB, email, staff);
+          if (action === "status") return handlePutStaffStatus(request, env.DB, email, staff);
+        }
+        if (request.method === "POST") {
+          if (action === "invite") return handleResendInvite(env, staff, email.toLowerCase(), url.origin);
+          if (action === "reset") return handleSendReset(env, staff, email.toLowerCase(), url.origin);
+        }
+        if (request.method === "DELETE" && action === undefined) return handleRemoveStaff(env, staff, email.toLowerCase());
       }
 
       // Contact book (softphone). The literal /api/contacts and /api/contacts/import paths are
@@ -1388,23 +1350,16 @@ export default {
       // Undo for a deleted conversation. Checked before the id-only match, which is $-anchored.
       const threadRestoreMatch = url.pathname.match(/^\/api\/messages\/([^/]+)\/restore$/);
       if (threadRestoreMatch && request.method === "POST") {
-        try {
-          return handleRestoreThread(request, env.DB, threadPeer(decodeURIComponent(threadRestoreMatch[1])), staff);
-        } catch (e) {
-          if (e instanceof URIError) return new Response("not found", { status: 404 });
-          throw e;
-        }
+        const peer = safeDecode(threadRestoreMatch[1]);
+        if (peer === null) return new Response("not found", { status: 404 });
+        return handleRestoreThread(request, env.DB, threadPeer(peer), staff);
       }
 
       const messageThreadMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
       if (messageThreadMatch) {
-        let peerNumber: string;
-        try {
-          peerNumber = threadPeer(decodeURIComponent(messageThreadMatch[1]));
-        } catch (e) {
-          if (e instanceof URIError) return new Response("not found", { status: 404 });
-          throw e;
-        }
+        const decodedPeer = safeDecode(messageThreadMatch[1]);
+        if (decodedPeer === null) return new Response("not found", { status: 404 });
+        const peerNumber = threadPeer(decodedPeer);
         if (request.method === "DELETE") return handleDeleteThread(env.DB, peerNumber, staff);
         if (request.method === "GET") {
           // ?peek=1 fetches the thread WITHOUT marking it read (used by the call detail preview,
@@ -1465,17 +1420,12 @@ export default {
 
       const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
       if (callIdMatch) {
-        try {
-          const detail = await getCallDetail(env.DB, decodeURIComponent(callIdMatch[1]));
-          if (!detail) return new Response("not found", { status: 404 });
-          const html = renderCallDetailPage(detail.call, detail.events, staffOrResponse.role);
-          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
-        } catch (e) {
-          if (e instanceof URIError) {
-            return new Response("not found", { status: 404 });
-          }
-          throw e;
-        }
+        const callId = safeDecode(callIdMatch[1]);
+        if (callId === null) return new Response("not found", { status: 404 });
+        const detail = await getCallDetail(env.DB, callId);
+        if (!detail) return new Response("not found", { status: 404 });
+        const html = renderCallDetailPage(detail.call, detail.events, staffOrResponse.role);
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
       if (url.pathname === "/admin/settings") {
@@ -1524,26 +1474,20 @@ export default {
 
       const ivrAdminMatch = url.pathname.match(/^\/admin\/ivr\/([^/]+)$/);
       if (ivrAdminMatch) {
-        try {
-          const flow = decodeURIComponent(ivrAdminMatch[1]);
-          const [nodes, audioAssets, staffRoster] = await Promise.all([
-            listNodesForFlow(env.DB, flow),
-            listAudioAssets(env.DB),
-            getStaffRoster(env.DB),
-          ]);
-          const html = renderIvrFlowPage(
-            flow,
-            nodes,
-            audioAssets.map((a) => ({ id: a.id, label: a.label })),
-            staffRoster.map((s) => s.email)
-          );
-          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
-        } catch (e) {
-          if (e instanceof URIError) {
-            return new Response("not found", { status: 404 });
-          }
-          throw e;
-        }
+        const flow = safeDecode(ivrAdminMatch[1]);
+        if (flow === null) return new Response("not found", { status: 404 });
+        const [nodes, audioAssets, staffRoster] = await Promise.all([
+          listNodesForFlow(env.DB, flow),
+          listAudioAssets(env.DB),
+          getStaffRoster(env.DB),
+        ]);
+        const html = renderIvrFlowPage(
+          flow,
+          nodes,
+          audioAssets.map((a) => ({ id: a.id, label: a.label })),
+          staffRoster.map((s) => s.email)
+        );
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
       return new Response("not found", { status: 404 });

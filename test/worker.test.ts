@@ -1497,6 +1497,18 @@ describe("GET /api/calls/:id with malformed URL encoding", () => {
     const response = await SELF.fetch("https://example.com/api/calls/%zz");
     expect(response.status).toBe(404);
   });
+
+  // decodeURIComponent throws URIError on a truncated escape; unguarded, that was an unhandled 500 --
+  // on /desktop/ for anyone, no session needed.
+  it("returns 404, not 500, on the unauthenticated desktop update route", async () => {
+    const response = await SELF.fetch("https://example.com/desktop/%E0%A4%A");
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 404, not 500, on a staff route", async () => {
+    const response = await SELF.fetch("https://example.com/api/staff/%E0%A4%A/schedule", { method: "PUT", body: "{}" });
+    expect(response.status).toBe(404);
+  });
 });
 
 describe("POST/GET /api/ivr/audio and public GET /media/:key", () => {
