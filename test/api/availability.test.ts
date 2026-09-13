@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setStaffStatus, resetAvailabilityForNewDay } from "../../src/db/staff";
 import { localDateKey } from "../../src/ivr/businessHours";
 import { handleMe } from "../../src/api/me";
+import { handlePutStaffStatus } from "../../src/api/staff";
 
 const TODAY = localDateKey(new Date());
 const YESTERDAY = localDateKey(new Date(Date.now() - 24 * 60 * 60 * 1000));
@@ -86,6 +87,20 @@ describe("resetAvailabilityForNewDay", () => {
     await seed("c@b.com", "away", TODAY);
     await seed("d@b.com", "available", null);
     expect(await resetAvailabilityForNewDay(env.DB, TODAY)).toBe(2);
+  });
+
+  // The admin override went through the same setStaffStatus with no date, so the next 5-minute
+  // tick read it as a forgotten row and put the person straight back on the ring roster.
+  it("keeps an admin-set Away for the rest of the day", async () => {
+    await seed("tech@b.com", "available", null);
+    const req = new Request("https://x/api/staff/tech@b.com/status", {
+      method: "PUT",
+      body: JSON.stringify({ status: "away" }),
+    });
+    const res = await handlePutStaffStatus(req, env.DB, "tech@b.com", { email: "boss@b.com", role: "admin" });
+    expect(res.status).toBe(200);
+    await resetAvailabilityForNewDay(env.DB, TODAY);
+    expect(await read("tech@b.com")).toMatchObject({ status: "away", status_set_on: TODAY });
   });
 });
 
