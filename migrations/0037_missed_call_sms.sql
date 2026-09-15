@@ -1,0 +1,11 @@
+-- Dedup marker for the auto missed-call SMS.
+--
+-- Whether a call ever gets an auto-text is decided at the call's own status webhook, once it is
+-- genuinely over (see sendMissedCallSmsIfDue) -- the same webhook already refuses to double-fire
+-- for a redelivered terminal status (guarded on `ended_at IS NULL`), but this column gives that
+-- guarantee a second, independent leg: an atomic claim (`UPDATE ... WHERE missed_sms_sent_at IS
+-- NULL`) before the send, so nothing can text a customer twice for the same call. It also leaves a
+-- durable, queryable record of whether the text actually went out, which the DO-storage flag this
+-- codebase otherwise uses for "notify once per call" (see CallSession.notifyMissedOnce) cannot
+-- offer -- that flag dies with the Durable Object.
+ALTER TABLE calls ADD COLUMN missed_sms_sent_at INTEGER;

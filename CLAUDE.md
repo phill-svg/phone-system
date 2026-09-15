@@ -1165,3 +1165,49 @@ before adding one, or you will duplicate a path that already works.
   before shift or availability is even considered (and out of `/api/staff` likewise). An earlier
   note here claimed only a stale heartbeat kept it from ringing; that was wrong. Emptying that var
   is what would make it ring.
+- **A ring node's `timeoutSeconds` has to beat the staff member's own carrier voicemail, or calls
+  land there instead of business voicemail.** Reported 2026-09-15 as "calls are going through to my
+  mobile voicemail, not the business". Live D1 had the SECOND `main` ring node (`n_e6wrtx7`, reached
+  after the callback/continue gather) at **`timeoutSeconds: 500`** -- almost certainly a fat-fingered
+  edit, since the mobile step editor's `NumberField` for this field has a `min` but no `max` (the
+  web editor's `<input>` caps at 120 client-side only, never enforced server-side). At 500s, Phill's
+  own mobile carrier answers the PSTN leg with his personal voicemail (typically ~15-20s) long before
+  Twilio's own Dial timeout ever has a chance to fire -- and Twilio counts that as *answered*, not a
+  timeout, so async AMD is the only thing left to notice and rescue the caller, 2-4s later, by which
+  point the caller has already heard Phill's personal greeting. The FIRST `main` ring node
+  (`n_5frbzxd`) was already at 15s and never showed this symptom in the event log -- proof that 15s
+  reliably loses the race against the carrier before it can answer. Both `main` ring nodes are now
+  15s. `isRingConfig`'s validator (`src/api/ivrFlow.ts`) now rejects any `timeoutSeconds` over
+  `RING_TIMEOUT_MAX_SECONDS` (120, matching the web editor's unenforced client-side cap) from EITHER
+  client, with a test that fails against the old code. The mobile `NumberField` itself was
+  deliberately left alone: giving it a `max` risks the exact divergence bug documented on that
+  component (a clamp that fires mid-typing, before the field is "finished") for a case the server
+  now guards regardless of which client sends it.
+- **Auto missed-call SMS, added 2026-09-15 (migration `0037`, `/admin/settings`, admin-only, OFF by
+  default).** When a call ends having never produced an `answered` event, `sendMissedCallSmsIfDue`
+  (`src/api/missedCallSms.ts`) texts the caller from the business number. It is hooked into
+  `/webhooks/twilio/status` -- the CALLER's own top-level status callback, configured directly on
+  the Twilio number, not `CallSession`'s per-ring-round `notifyMissedOnce` -- and that distinction
+  is the whole design. A ring node's no-answer branch can lead to ANOTHER ring node (`main` has
+  two), so `notifyMissedOnce` fires at the first round that times out, whether or not a later round
+  bridges; hooking the SMS there would occasionally text a customer "sorry we missed you" while
+  they were being connected. The status webhook only ever reaches this after the call is genuinely
+  over (`ended_at IS NULL` already guards against a redelivered terminal status running it twice),
+  so the auto-text can only ever answer "did anyone ever pick up, for the whole call" -- checked the
+  same way `src/db/calls.ts` already defines "missed" elsewhere (`EXISTS ... event_type = 'answered'`),
+  plus one addition: the call must have reached a `ring_started` event, or a wrong number who hangs
+  up during the greeting gets texted too. Direction is checked too -- an outbound call (call-via-mobile)
+  going unanswered is a staff member's target not picking up, not a customer TCB missed.
+  `calls.missed_sms_sent_at` is claimed with an atomic `UPDATE ... WHERE missed_sms_sent_at IS NULL`
+  **after** a successful Twilio send, not before -- claiming first would let a Twilio failure
+  permanently mark a call "texted" when nothing went out, and nothing here retries a failure, so
+  that mark would be a lie forever. The column is real belt-and-suspenders, not the primary
+  guarantee: the caller already runs this at most once per call. The text itself is recorded via
+  the ordinary `insertMessage`/`threadPeer` path so it shows up in that caller's inbox thread like
+  any other message, in its own try/catch exactly like `handleSendMessage` -- Twilio has already
+  accepted the send by that point, so a D1 failure there must never be reported as a send failure.
+  Settings (`getMissedCallSms`/`setMissedCallSms`, key `missed_call_sms`) follow the exact
+  `getDivertCallerId` shape: a JSON blob in the generic `settings` table, admin-only PUT, and a
+  template capped at 320 chars (roughly two GSM-7 SMS segments) so an admin can't accidentally wire
+  up a message that bills for a small novel on every missed call. Enabling it with a blank template
+  is refused at save time, the same "validate on write" rule as everywhere else in this file.

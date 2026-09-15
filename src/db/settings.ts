@@ -183,3 +183,37 @@ export async function getDivertCallerIdRejection(db: D1Database): Promise<Divert
     return null;
   }
 }
+
+// Auto-SMS sent to a caller whose call was never answered (see sendMissedCallSmsIfDue). Off by
+// default -- texting every caller who doesn't get through is a real behaviour change to a customer
+// relationship, not a safe default the way a 15s ring timeout is, so it's opt-in the way recording
+// is not.
+const MISSED_CALL_SMS_KEY = "missed_call_sms";
+
+export type MissedCallSmsSetting = { enabled: boolean; template: string };
+
+const DEFAULT_MISSED_CALL_SMS_TEMPLATE =
+  "Sorry we missed your call! We'll call you back as soon as we can. - TCB Pest Control Canberra";
+
+const DEFAULT_MISSED_CALL_SMS: MissedCallSmsSetting = { enabled: false, template: DEFAULT_MISSED_CALL_SMS_TEMPLATE };
+
+export async function getMissedCallSms(db: D1Database): Promise<MissedCallSmsSetting> {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(MISSED_CALL_SMS_KEY).first<{ value: string }>();
+  if (!row) return DEFAULT_MISSED_CALL_SMS;
+  try {
+    const parsed = JSON.parse(row.value) as Partial<MissedCallSmsSetting>;
+    return {
+      enabled: parsed.enabled === true,
+      template: typeof parsed.template === "string" && parsed.template ? parsed.template : DEFAULT_MISSED_CALL_SMS_TEMPLATE,
+    };
+  } catch {
+    return DEFAULT_MISSED_CALL_SMS;
+  }
+}
+
+export async function setMissedCallSms(db: D1Database, value: MissedCallSmsSetting): Promise<void> {
+  await db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(MISSED_CALL_SMS_KEY, JSON.stringify(value))
+    .run();
+}

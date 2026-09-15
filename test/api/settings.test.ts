@@ -7,6 +7,8 @@ import {
   handlePutRecordingSetting,
   handleGetDivertCallerIdSetting,
   handlePutDivertCallerIdSetting,
+  handleGetMissedCallSmsSetting,
+  handlePutMissedCallSmsSetting,
 } from "../../src/api/settings";
 import { getCallBlocklist } from "../../src/db/settings";
 
@@ -98,6 +100,50 @@ describe("/api/settings/divert-caller-id", () => {
   });
   it("rejects a non-boolean body rather than storing it", async () => {
     expect((await handlePutDivertCallerIdSetting(putDivert({ divert_caller_id: "yes" }), env.DB, admin)).status).toBe(400);
+  });
+});
+
+function putMissedCallSms(body: unknown) {
+  return new Request("https://x/api/settings/missed-call-sms", { method: "PUT", body: JSON.stringify(body) });
+}
+
+describe("/api/settings/missed-call-sms", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'missed_call_sms'").run();
+  });
+  // Off by default: texting every caller who doesn't get through is a real behaviour change to a
+  // customer relationship, not a safe default.
+  it("GET returns disabled with a default template", async () => {
+    const body = await (await handleGetMissedCallSmsSetting(env.DB)).json<{ enabled: boolean; template: string }>();
+    expect(body.enabled).toBe(false);
+    expect(body.template.length).toBeGreaterThan(0);
+  });
+  it("admin PUT sets it; staff PUT is forbidden", async () => {
+    expect(
+      (await handlePutMissedCallSmsSetting(putMissedCallSms({ enabled: true, template: "sorry we missed you" }), env.DB, admin)).status
+    ).toBe(200);
+    expect(await (await handleGetMissedCallSmsSetting(env.DB)).json()).toEqual({ enabled: true, template: "sorry we missed you" });
+    expect(
+      (await handlePutMissedCallSmsSetting(putMissedCallSms({ enabled: false, template: "x" }), env.DB, staff)).status
+    ).toBe(403);
+  });
+  it("rejects a malformed body rather than storing it", async () => {
+    expect((await handlePutMissedCallSmsSetting(putMissedCallSms({ enabled: "yes", template: "x" }), env.DB, admin)).status).toBe(400);
+    expect((await handlePutMissedCallSmsSetting(putMissedCallSms({ enabled: true, template: 5 }), env.DB, admin)).status).toBe(400);
+  });
+  // Turning it on with nothing to send would silently never text anyone -- refuse it at save time
+  // instead, the same reasoning as every other "validate on write" rule in this codebase.
+  it("refuses to enable with a blank template", async () => {
+    const res = await handlePutMissedCallSmsSetting(putMissedCallSms({ enabled: true, template: "   " }), env.DB, admin);
+    expect(res.status).toBe(400);
+  });
+  it("allows saving a blank template while disabled", async () => {
+    const res = await handlePutMissedCallSmsSetting(putMissedCallSms({ enabled: false, template: "   " }), env.DB, admin);
+    expect(res.status).toBe(200);
+  });
+  it("rejects a template over the length cap", async () => {
+    const res = await handlePutMissedCallSmsSetting(putMissedCallSms({ enabled: true, template: "x".repeat(321) }), env.DB, admin);
+    expect(res.status).toBe(400);
   });
 });
 

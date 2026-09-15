@@ -26,7 +26,10 @@ import {
   handlePutRecordingSetting,
   handleGetDivertCallerIdSetting,
   handlePutDivertCallerIdSetting,
+  handleGetMissedCallSmsSetting,
+  handlePutMissedCallSmsSetting,
 } from "./api/settings";
+import { sendMissedCallSmsIfDue } from "./api/missedCallSms";
 import { handleGetOnCall, handlePutOnCall, handlePutOnCallOverride } from "./api/onCall";
 import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
@@ -85,7 +88,7 @@ import {
 } from "./db/calls";
 import { handleGetRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
-import { getBusinessHours, getCallBlocklist, getRecordingEnabled, getDivertCallerId } from "./db/settings";
+import { getBusinessHours, getCallBlocklist, getRecordingEnabled, getDivertCallerId, getMissedCallSms } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
 import { resetAvailabilityForNewDay } from "./db/staff";
 import { localDateKey } from "./ivr/businessHours";
@@ -300,6 +303,11 @@ export default {
           // searched for a record that did not exist yet and gave up for good. The row is left
           // with servicem8_synced_at NULL and the cron picks it up a few minutes later --
           // see src/servicem8/syncQueue.ts.
+
+          // Genuinely the call's own end, not a ring round's -- see sendMissedCallSmsIfDue for why
+          // that distinction matters (a caller bridged on a LATER ring round must never get "sorry
+          // we missed you"). Best-effort and never throws; nothing here can fail this webhook.
+          await sendMissedCallSmsIfDue(env, params.CallSid);
         }
         // The caller's leg ending may strand the agent alone in the conference (named by
         // this same CallSid) -- end it if at most one participant remains.
@@ -1164,6 +1172,11 @@ export default {
           ? handlePutDivertCallerIdSetting(request, env.DB, staff)
           : handleGetDivertCallerIdSetting(env.DB);
       }
+      if (url.pathname === "/api/settings/missed-call-sms") {
+        return request.method === "PUT"
+          ? handlePutMissedCallSmsSetting(request, env.DB, staff)
+          : handleGetMissedCallSmsSetting(env.DB);
+      }
       if (url.pathname === "/api/settings/me") {
         return request.method === "PUT"
           ? handlePutUserSettings(request, env.DB, staff)
@@ -1429,14 +1442,15 @@ export default {
       }
 
       if (url.pathname === "/admin/settings") {
-        const [schedule, blocklist, staffRoster, staffAccess, divertCallerId] = await Promise.all([
+        const [schedule, blocklist, staffRoster, staffAccess, divertCallerId, missedCallSms] = await Promise.all([
           getBusinessHours(env.DB),
           getCallBlocklist(env.DB),
           getStaffRoster(env.DB),
           listStaffAccess(env.DB),
           getDivertCallerId(env.DB),
+          getMissedCallSms(env.DB),
         ]);
-        const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role, divertCallerId);
+        const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role, divertCallerId, missedCallSms);
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 

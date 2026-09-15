@@ -16,6 +16,7 @@ import { renderSettingsPage } from "../../src/html/pages/settings";
 // Nothing else catches this. It typechecks, it renders, every string assertion about the page still
 // passes, and the failure only exists in a browser. So: parse what we actually emit.
 const leadingArgs = [/* schedule */ {}, /* blocklist */ [], /* staffRoster */ []] as [any, any, any];
+const MISSED = { enabled: false, template: "" };
 
 function scriptsFrom(html: string): string[] {
   const out: string[] = [];
@@ -30,7 +31,7 @@ describe("the settings page's inline script", () => {
   // a broken escape could live in either half.
   for (const role of ["admin", "staff"] as const) {
     it(`parses as valid JavaScript for a ${role}`, () => {
-      const scripts = scriptsFrom(renderSettingsPage(...leadingArgs, [], role, true));
+      const scripts = scriptsFrom(renderSettingsPage(...leadingArgs, [], role, true, MISSED));
       expect(scripts.length).toBeGreaterThan(0);
       for (const src of scripts) {
         // Function() parses without executing -- exactly what the browser does before running any
@@ -43,7 +44,7 @@ describe("the settings page's inline script", () => {
   // The two handlers that were dead, pinned by behaviour rather than by source text: if the block
   // stops parsing again, these disappear from the page along with everything else.
   it("wires up the handlers the syntax error was silently removing", () => {
-    const html = renderSettingsPage(...leadingArgs, [], "admin", true);
+    const html = renderSettingsPage(...leadingArgs, [], "admin", true, MISSED);
     expect(html).toContain("document.getElementById('business-hours-form').addEventListener");
     expect(html).toContain("loadOnCall();");
   });

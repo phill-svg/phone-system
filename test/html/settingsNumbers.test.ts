@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { renderSettingsPage } from "../../src/html/pages/settings";
 
 const leadingArgs = [/* schedule */ {}, /* blocklist */ [], /* staffRoster */ []] as [any, any, any];
-const adminPage = () => renderSettingsPage(...leadingArgs, [], "admin", true);
+const MISSED = { enabled: false, template: "" };
+const adminPage = () => renderSettingsPage(...leadingArgs, [], "admin", true, MISSED);
 
 describe("phone numbers region control", () => {
   it("offers a region on each row and on the add form", () => {
@@ -33,20 +34,48 @@ describe("phone numbers region control", () => {
   });
 
   it("keeps the numbers section admin-only", () => {
-    expect(renderSettingsPage(...leadingArgs, [], "staff", true)).not.toContain('id="num-add-region"');
+    expect(renderSettingsPage(...leadingArgs, [], "staff", true, MISSED)).not.toContain('id="num-add-region"');
   });
 });
 
 describe("divert caller ID toggle", () => {
   it("reflects the stored value", () => {
-    expect(renderSettingsPage(...leadingArgs, [], "admin", true)).toContain('id="divert-callerid" checked');
-    expect(renderSettingsPage(...leadingArgs, [], "admin", false)).toContain('id="divert-callerid">');
-    expect(renderSettingsPage(...leadingArgs, [], "admin", false)).not.toContain('id="divert-callerid" checked');
+    expect(renderSettingsPage(...leadingArgs, [], "admin", true, MISSED)).toContain('id="divert-callerid" checked');
+    expect(renderSettingsPage(...leadingArgs, [], "admin", false, MISSED)).toContain('id="divert-callerid">');
+    expect(renderSettingsPage(...leadingArgs, [], "admin", false, MISSED)).not.toContain('id="divert-callerid" checked');
   });
 
   it("saves to the settings endpoint and stays admin-only", () => {
-    const html = renderSettingsPage(...leadingArgs, [], "admin", true);
+    const html = renderSettingsPage(...leadingArgs, [], "admin", true, MISSED);
     expect(html).toContain("'/api/settings/divert-caller-id'");
-    expect(renderSettingsPage(...leadingArgs, [], "staff", true)).not.toContain('id="divert-callerid"');
+    expect(renderSettingsPage(...leadingArgs, [], "staff", true, MISSED)).not.toContain('id="divert-callerid"');
+  });
+});
+
+describe("missed-call SMS toggle", () => {
+  it("reflects the stored enabled state and template", () => {
+    const on = renderSettingsPage(...leadingArgs, [], "admin", true, { enabled: true, template: "Call you back soon" });
+    expect(on).toContain('id="missed-call-sms-enabled" checked');
+    expect(on).toContain("Call you back soon");
+
+    const off = renderSettingsPage(...leadingArgs, [], "admin", true, { enabled: false, template: "Call you back soon" });
+    expect(off).toContain('id="missed-call-sms-enabled">');
+    expect(off).not.toContain('id="missed-call-sms-enabled" checked');
+  });
+
+  // The stored template is admin-entered text spliced straight into a <textarea>; an unescaped
+  // quote or angle bracket there is the same class of hole the IVR mailbox-name escapers exist
+  // for. escapeHtml handles quotes as well as & < >.
+  it("escapes the template so it cannot break out of the textarea", () => {
+    const html = renderSettingsPage(...leadingArgs, [], "admin", true, { enabled: true, template: `<script>alert(1)</script> & "quoted"` });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("&quot;quoted&quot;");
+  });
+
+  it("saves to the settings endpoint and stays admin-only", () => {
+    const html = renderSettingsPage(...leadingArgs, [], "admin", true, MISSED);
+    expect(html).toContain("'/api/settings/missed-call-sms'");
+    expect(renderSettingsPage(...leadingArgs, [], "staff", true, MISSED)).not.toContain('id="missed-call-sms-enabled"');
   });
 });
