@@ -15,15 +15,31 @@ type Env = {
   TWILIO_SMS_NUMBER?: string;
 };
 
-// Called from the caller-leg's own status webhook once a call is genuinely OVER (CallStatus
-// completed/etc, and only on the first terminal delivery -- see the `ended_at IS NULL` guard at
-// the call site). "Missed" here is the one definition this system already uses for a missed call
-// (src/db/calls.ts: inbound, no `answered` event) plus one addition: the call must have actually
-// reached a ring (`ring_started`), so a wrong number who hangs up during the greeting -- or a call
-// this DID answer, just on a LATER ring round than the one that first timed out -- never gets
-// texted. Hooking here rather than CallSession's `notifyMissedOnce` (which fires at the first
-// no-answer ROUND, not the call's actual end) is deliberate: a caller who presses on and gets
-// bridged on a second ring round must never receive "sorry we missed you" mid-conversation.
+// Called from every place a call reaches its actual end -- the caller-leg's own status webhook
+// (CallStatus completed/etc, on the first terminal delivery only -- see the `ended_at IS NULL`
+// guard at each call site) AND the two paths in CallSession that end a call directly, WITHOUT ever
+// going through that webhook: the voicemail `<Record>` handoff and `recordCallbackRequest` both set
+// `calls.ended_at` themselves the instant they run, well before Twilio's own terminal status
+// callback arrives -- so by the time that callback lands, `ended_at IS NULL` is already false and
+// the status-webhook call site never fires. A caller who left a voicemail or asked for a callback
+// therefore got NO text at all until this function was reachable from all three places.
+//
+// "Missed" is four shapes, not one:
+//   1. `voicemail_left` -- reached a mailbox and recorded something. Never requires `ring_started`:
+//      a flow can route straight to voicemail with no ring at all.
+//   2. `callback_requested` -- asked for a callback, from a `callback` node OR the * shortcut while
+//      held. Also no `ring_started` requirement, for the same reason.
+//   3. A `no_answer` logged with reason `mobile_voicemail_answered` -- the async-AMD rescue fired:
+//      a staff member's own carrier voicemail picked up the pstn mobile leg, and the caller was
+//      pulled back out. That path ALSO writes a real `answered` event (Twilio reports the leg as
+//      answered before the AMD verdict is known -- see CallSession.handleAgentAnswer), so shape 4
+//      below would otherwise wrongly treat this as "answered" and skip it entirely.
+//   4. Reached a ring (`ring_started`) and never got a genuine `answered` event at all -- the plain
+//      "rang out, nobody picked up" case, `src/db/calls.ts`'s own definition of missed.
+// Hooking the plain webhook alone (shape 4) is deliberate for a DIFFERENT reason: a ring node's
+// no-answer branch can lead to ANOTHER ring node, so a caller bridged on a LATER round must never
+// be texted "sorry we missed you" mid-conversation -- that call's `answered` event is the real one
+// and none of shapes 1-3 will have fired for it.
 export async function sendMissedCallSmsIfDue(env: Env, callSid: string): Promise<void> {
   try {
     const setting = await getMissedCallSms(env.DB);
@@ -33,8 +49,15 @@ export async function sendMissedCallSmsIfDue(env: Env, callSid: string): Promise
     const row = await env.DB.prepare(
       `SELECT caller_number FROM calls c
        WHERE c.id = ? AND c.direction = 'inbound' AND c.missed_sms_sent_at IS NULL
-         AND EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'ring_started')
-         AND NOT EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'answered')`
+         AND (
+           EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'voicemail_left')
+           OR EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'callback_requested')
+           OR EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'no_answer' AND e.detail LIKE '%mobile_voicemail_answered%')
+           OR (
+             EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'ring_started')
+             AND NOT EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'answered')
+           )
+         )`
     )
       .bind(callSid)
       .first<{ caller_number: string }>();

@@ -32,6 +32,7 @@ import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
 import { notifyCallbackRequest, notifyIncomingCall, notifyMissedCall, notifyVoicemail } from "../api/push";
+import { sendMissedCallSmsIfDue } from "../api/missedCallSms";
 
 type Env = {
   DB: D1Database;
@@ -41,6 +42,10 @@ type Env = {
   TWILIO_API_KEY_SECRET: string;
   TWILIO_WEBHOOK_SECRET?: string;
   TWILIO_FROM_NUMBER: string;
+  // US1-region API key, needed only by sendMissedCallSmsIfDue -- the Messages API is US1-only.
+  TWILIO_US1_API_KEY_SID?: string;
+  TWILIO_US1_API_KEY_SECRET?: string;
+  TWILIO_SMS_NUMBER?: string;
   DEMO_ACCOUNT_EMAILS?: string;
 };
 
@@ -206,8 +211,12 @@ export class CallSession extends DurableObject<Env> {
         const config = await this.loadNodeConfig(nodeId);
         mailboxLabel = (config.mailboxLabel as string | undefined) ?? null;
       }
-      await this.env.DB.prepare(
-        "UPDATE calls SET status = 'completed', ended_at = ?, recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration), mailbox_label = ? WHERE id = ?"
+      // `ended_at IS NULL` guards this exactly like the caller-leg status webhook does: this write
+      // (not that webhook) is what first marks a voicemail call ended -- Twilio's own terminal
+      // status callback for it arrives later and finds `changes = 0` there, so the missed-call SMS
+      // must fire from HERE, on this update's first success, or it never fires at all.
+      const ended = await this.env.DB.prepare(
+        "UPDATE calls SET status = 'completed', ended_at = ?, recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration), mailbox_label = ? WHERE id = ? AND ended_at IS NULL"
       )
         .bind(
           Date.now(),
@@ -224,6 +233,7 @@ export class CallSession extends DurableObject<Env> {
       } catch {
         /* notifications are best-effort */
       }
+      if ((ended.meta.changes ?? 0) > 0) await sendMissedCallSmsIfDue(this.env, callSid);
       return this.xml(wrapResponse("<Say>Thanks, goodbye.</Say><Hangup/>"));
     }
 
@@ -507,7 +517,10 @@ export class CallSession extends DurableObject<Env> {
       callId: callSid,
       callerNumber: row?.caller_number ?? "",
     });
-    await this.env.DB.prepare("UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ?")
+    // `ended_at IS NULL` guards this exactly like the caller-leg status webhook does: this write is
+    // what first marks a callback-requested call ended -- Twilio's own terminal status callback for
+    // it arrives later and finds `changes = 0` there, so the missed-call SMS must fire from HERE.
+    const ended = await this.env.DB.prepare("UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ? AND ended_at IS NULL")
       .bind(Date.now(), callSid)
       .run();
     await this.logEvent(callSid, "callback_requested", { callerNumber: row?.caller_number ?? null });
@@ -516,6 +529,7 @@ export class CallSession extends DurableObject<Env> {
     if (row?.caller_number) {
       await notifyCallbackRequest(this.env.DB, row.caller_number).catch(() => {});
     }
+    if ((ended.meta.changes ?? 0) > 0) await sendMissedCallSmsIfDue(this.env, callSid);
     // Harmless when there is no active ring (the flow-node route); required on the * route.
     await this.ctx.storage.delete("activeRing");
     return ackFragment

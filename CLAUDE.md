@@ -1220,3 +1220,28 @@ before adding one, or you will duplicate a path that already works.
   admin setting shipped on only one of web/mobile is an incomplete feature, not a web feature** —
   check both surfaces before calling one done, the same rule already written down for the on-call
   rota's web/mobile split.
+- **The missed-call SMS's first version only ever fired from `/webhooks/twilio/status`, so it
+  silently never fired for the two cases Phill actually cared about.** Reported the same day as
+  "sms not working if they request a call back or leave a voicemail". Both the voicemail `<Record>`
+  handoff and `recordCallbackRequest` (`CallSession.ts`) set `calls.ended_at` **themselves**, the
+  instant they run — well before Twilio's own terminal status callback for that call arrives — so
+  by the time that callback lands, `ended_at IS NULL` is already false, `changes = 0`, and the
+  status-webhook's own call into `sendMissedCallSmsIfDue` never runs. `sendMissedCallSmsIfDue` is
+  now also called from both of those two call sites directly, each guarded the same way (`UPDATE
+  ... WHERE ended_at IS NULL`, only call the hook if `changes > 0`) so a redelivered TwiML callback
+  can't double-fire it.
+  That fix alone would still have missed most real cases, for a second, independent reason: the
+  async-AMD rescue (see the bullet on it above) makes Twilio report a real `answered` event for the
+  call the moment ANY leg picks up — a staff member's own carrier voicemail included, since
+  `AnsweredBy` isn't known until the separate async verdict lands 2-4s later (`handleAgentAnswer`
+  only skips logging `answered` when it already knows synchronously it's a machine). So a caller
+  rescued from a staff mobile's voicemail and then left a business voicemail carries BOTH an
+  `answered` event and a `voicemail_left` event — and the original "ring_started AND NOT answered"
+  rule read the `answered` event as decisive and skipped every one of these, which in live D1 was
+  most of the real missed calls this feature exists for. `voicemail_left` and `callback_requested`
+  are now decisive on their own regardless of what else is on the call, and a `no_answer` logged
+  with reason `mobile_voicemail_answered` (the rescue fired but the caller hung up before recording
+  anything) counts too. The plain "reached a ring, never answered" rule is now the fourth, narrower
+  case, kept for exactly the reason it existed originally: a caller bridged on a LATER ring round
+  must never be texted "sorry we missed you" mid-conversation, and none of the other three shapes
+  will have fired for that call.
