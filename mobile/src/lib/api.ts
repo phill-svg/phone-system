@@ -376,6 +376,18 @@ export async function setDivertCallerIdSetting(enabled: boolean): Promise<void> 
   await apiFetch("/api/settings/divert-caller-id", { method: "PUT", body: JSON.stringify({ divert_caller_id: enabled }) });
 }
 
+// ---- Auto missed-call SMS (admin-editable) ----
+// Off by default. When on, a caller whose call ends without anyone ever answering is texted the
+// template from the business number, once the call is genuinely over -- see
+// sendMissedCallSmsIfDue on the worker for why that timing matters.
+export type MissedCallSmsSetting = { enabled: boolean; template: string };
+export async function getMissedCallSmsSetting(): Promise<MissedCallSmsSetting> {
+  return apiFetch<MissedCallSmsSetting>("/api/settings/missed-call-sms");
+}
+export async function setMissedCallSmsSetting(value: MissedCallSmsSetting): Promise<void> {
+  await apiFetch("/api/settings/missed-call-sms", { method: "PUT", body: JSON.stringify(value) });
+}
+
 // ---- Call via my mobile ----
 // Asks the server to ring this staff member's mobile and bridge the customer on answer. There is no
 // VoIP leg and no in-call screen: the native dialler owns the call once the phone rings.

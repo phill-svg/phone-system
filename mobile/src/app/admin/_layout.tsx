@@ -28,6 +28,7 @@ export const ADMIN_SCREENS: { name: string; options: { title: string; headerLeft
   { name: "business-hours", options: { title: "Business Hours" } },
   { name: "blocklist", options: { title: "Call Blocklist" } },
   { name: "numbers", options: { title: "Phone Numbers" } },
+  { name: "missed-call-sms", options: { title: "Missed-Call SMS" } },
   { name: "on-call", options: { title: "After-hours On Call" } },
   { name: "ivr/index", options: { title: "Phone Menu" } },
   { name: "ivr/[nodeId]", options: { title: "Step" } },
