@@ -5,6 +5,7 @@ import {
   setDivertCallerId,
   recordDivertCallerIdRejection,
   getDivertCallerIdRejection,
+  setMissedCallSms,
 } from "../../src/db/settings";
 import { setUserSettings } from "../../src/db/userSettings";
 import { createAudioAsset } from "../../src/db/audioAssets";
@@ -1801,6 +1802,35 @@ describe("CallSession", () => {
     expect(row?.ivr_path).toBe("main_vm");
   });
 
+  // Reported live: a caller who left a voicemail or requested a callback never got the auto
+  // missed-call text, because both paths set `calls.ended_at` THEMSELVES (here, and in
+  // recordCallbackRequest) rather than through the caller-leg status webhook -- so by the time
+  // Twilio's own terminal status callback arrived, `ended_at IS NULL` was already false and the
+  // webhook's own call to sendMissedCallSmsIfDue never ran. This pins that the voicemail handoff
+  // itself now calls it (see missedCallSms.test.ts for the full "is this call missed" logic --
+  // TWILIO_US1_API_KEY_SID is a worker secret, absent from these test bindings, so the send itself
+  // safely no-ops here; what this test actually pins is that the new call site doesn't throw and
+  // doesn't disturb the voicemail flow it was added to).
+  it("leaving a voicemail with the missed-call SMS setting on does not disturb the voicemail flow", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm", retryLimit: 0 });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-vm-sms");
+    await send(stub, mainEvent("CA-vm-sms"));
+    await send(stub, mainEvent("CA-vm-sms", { digits: "9" }));
+    const rec = await send(stub, recordingEvent("CA-vm-sms", "https://api.twilio.com/rec/RE-sms", "RE-sms"));
+    expect(rec.xml).toContain("<Hangup/>");
+
+    const row = await env.DB.prepare("SELECT status, ended_at FROM calls WHERE id = ?")
+      .bind("CA-vm-sms")
+      .first<{ status: string; ended_at: number | null }>();
+    expect(row?.status).toBe("completed");
+    expect(row?.ended_at).toBeGreaterThan(0);
+  });
+
   // --- uploaded audio playback (Task 2's audio assets + PLAY commands) ---
 
   it("PLAY command referencing an uploaded audio asset's id renders <Play> with the asset's REAL r2Key, not the bare id", async () => {
@@ -2217,6 +2247,26 @@ describe("CallSession", () => {
       .bind("CA-cb")
       .all<{ event_type: string }>();
     expect(events.results.map((e) => e.event_type)).toContain("callback_requested");
+  });
+
+  // Same reasoning as the voicemail test above: recordCallbackRequest sets `calls.ended_at` itself,
+  // so the missed-call SMS has to be called from here too, not just from the status webhook.
+  it("requesting a callback with the missed-call SMS setting on does not disturb the callback flow", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await seedEntryGather({ option1: "main_callback", defaultNextNodeId: "main_vm" });
+    await seedNode({ id: "main_callback", type: "callback", config: { audioAssetId: null, ttsText: null } });
+    await seedVoicemail("main_vm", "voicemail");
+
+    const stub = stubFor("CA-cb-sms");
+    await send(stub, mainEvent("CA-cb-sms", { from: "+61455512346" }));
+    const res = await send(stub, mainEvent("CA-cb-sms", { digits: "1" }));
+    expect(res.xml).toContain("<Hangup/>");
+
+    const call = await env.DB.prepare("SELECT status, ended_at FROM calls WHERE id = ?")
+      .bind("CA-cb-sms")
+      .first<{ status: string; ended_at: number | null }>();
+    expect(call?.status).toBe("completed");
+    expect(call?.ended_at).toBeGreaterThan(0);
   });
 
   it("a callback request pushes a notification, so it is not just a silent row in a table", async () => {

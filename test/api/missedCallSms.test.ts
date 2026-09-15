@@ -169,4 +169,85 @@ describe("sendMissedCallSmsIfDue", () => {
     const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?").bind("CA-unconfigured").first<{ missed_sms_sent_at: number | null }>();
     expect(row?.missed_sms_sent_at).toBeNull();
   });
+
+  // The live bug this whole file exists to catch: reported as "sms not working if they request a
+  // call back or leave a voicemail". A caller whose ring round times out and gets rescued from a
+  // staff member's own carrier voicemail (async AMD, see CallSession.handleAmdStatus) ALSO gets a
+  // real `answered` event -- Twilio reports the leg as answered before the AMD verdict is known --
+  // so the plain "ring_started AND NOT answered" rule wrongly treated every one of these as
+  // answered and skipped it, even though the caller then left a voicemail with nobody ever picking
+  // up. `voicemail_left` and `callback_requested` are decisive on their own regardless of what else
+  // happened on the call.
+  it("sends even when an 'answered' event exists, if the caller left a voicemail", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-rescued-vm");
+    await appendCallEvent(env.DB, "CA-rescued-vm", "ring_started");
+    await appendCallEvent(env.DB, "CA-rescued-vm", "answered");
+    await appendCallEvent(env.DB, "CA-rescued-vm", "mobile_machine_answered");
+    await appendCallEvent(env.DB, "CA-rescued-vm", "voicemail_left");
+    stubTwilio(() => new Response(JSON.stringify({ sid: "SM-rescued-vm" }), { status: 201 }));
+
+    await sendMissedCallSmsIfDue(SMS_ENV, "CA-rescued-vm");
+
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?").bind("CA-rescued-vm").first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeGreaterThan(0);
+  });
+
+  it("sends when the caller requested a callback, even with no ring at all", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-cb-no-ring");
+    await appendCallEvent(env.DB, "CA-cb-no-ring", "callback_requested");
+    stubTwilio(() => new Response(JSON.stringify({ sid: "SM-cb" }), { status: 201 }));
+
+    await sendMissedCallSmsIfDue(SMS_ENV, "CA-cb-no-ring");
+
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?").bind("CA-cb-no-ring").first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeGreaterThan(0);
+  });
+
+  it("sends when the caller left a voicemail with no ring at all", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-vm-no-ring");
+    await appendCallEvent(env.DB, "CA-vm-no-ring", "voicemail_left");
+    stubTwilio(() => new Response(JSON.stringify({ sid: "SM-vm" }), { status: 201 }));
+
+    await sendMissedCallSmsIfDue(SMS_ENV, "CA-vm-no-ring");
+
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?").bind("CA-vm-no-ring").first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeGreaterThan(0);
+  });
+
+  // The rescue path (see above) logs `no_answer` with this reason even when the caller hangs up
+  // right after being pulled out, before recording anything -- no voicemail_left, but still someone
+  // TCB never actually talked to.
+  it("sends when the rescue fires but the caller hangs up before leaving a message", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-rescued-hangup");
+    await appendCallEvent(env.DB, "CA-rescued-hangup", "ring_started");
+    await appendCallEvent(env.DB, "CA-rescued-hangup", "answered");
+    await appendCallEvent(env.DB, "CA-rescued-hangup", "mobile_machine_answered");
+    await appendCallEvent(env.DB, "CA-rescued-hangup", "no_answer", { reason: "mobile_voicemail_answered" });
+    stubTwilio(() => new Response(JSON.stringify({ sid: "SM-rescued-hangup" }), { status: 201 }));
+
+    await sendMissedCallSmsIfDue(SMS_ENV, "CA-rescued-hangup");
+
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?").bind("CA-rescued-hangup").first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeGreaterThan(0);
+  });
+
+  // A PLAIN no_answer (no reason -- the ordinary ring-timeout case) must not be confused with the
+  // rescue's reason-qualified one.
+  it("does not send for a plain no_answer alongside an unrelated answered event", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-plain-no-answer");
+    await appendCallEvent(env.DB, "CA-plain-no-answer", "ring_started");
+    await appendCallEvent(env.DB, "CA-plain-no-answer", "no_answer");
+    await appendCallEvent(env.DB, "CA-plain-no-answer", "answered");
+    stubTwilio(() => new Response(JSON.stringify({ sid: "SM-should-not-send" }), { status: 201 }));
+
+    await sendMissedCallSmsIfDue(SMS_ENV, "CA-plain-no-answer");
+
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?").bind("CA-plain-no-answer").first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeNull();
+  });
 });
