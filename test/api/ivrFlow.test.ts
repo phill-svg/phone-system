@@ -243,6 +243,44 @@ describe("handlePutFlow", () => {
     expect(response.status).toBe(400);
   });
 
+  it("refuses a ring node whose timeoutSeconds is over 120, naming the field and why", async () => {
+    const response = await handlePutFlow(
+      putRequest({
+        entryNodeId: "n1",
+        nodes: [
+          {
+            id: "n1",
+            type: "ring",
+            config: { target: "all", strategy: "cascade", timeoutSeconds: 500, noAnswerNextNodeId: "n1" },
+          },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(response.status).toBe(400);
+    const body = await response.json<{ error?: string }>();
+    expect(body.error).toContain("n1");
+    expect(body.error).toContain("timeoutSeconds");
+    const ok = await handlePutFlow(
+      putRequest({
+        entryNodeId: "n1",
+        nodes: [
+          {
+            id: "n1",
+            type: "ring",
+            config: { target: "all", strategy: "cascade", timeoutSeconds: 120, noAnswerNextNodeId: "n1" },
+          },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(ok.status).toBe(200);
+  });
+
   it("accepts a ring node targeting a specific list of staff emails", async () => {
     const response = await handlePutFlow(
       putRequest({

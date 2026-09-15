@@ -37,6 +37,14 @@ function isPositiveInteger(value: unknown): value is number {
 // The one numeric field per type that must be at least 1, checked by name so the 400 says which.
 const POSITIVE_INT_FIELD: Partial<Record<NodeType, string>> = { input: "numDigits", ring: "timeoutSeconds" };
 
+// A ring leg's own no-answer timeout has to beat the staff member's carrier voicemail, or that
+// carrier answers the PSTN leg first: Twilio counts it as answered (not a timeout), so the ring
+// node's own timeout never gets a chance to fire and the caller sits in a staff member's personal
+// voicemail greeting until async AMD notices and rescues them seconds later -- if it notices at
+// all. 120s (matching the web editor's own <input max>, which was never enforced server-side) is
+// already generous; a mistyped 500 shipped exactly this, unrescued, until AMD fired minutes later.
+const RING_TIMEOUT_MAX_SECONDS = 120;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -231,6 +239,9 @@ export async function handlePutFlow(
     const intField = POSITIVE_INT_FIELD[type];
     if (intField && isPlainObject(raw.config) && !isPositiveInteger(raw.config[intField])) {
       return badRequest(`node '${raw.id}': ${intField} must be a whole number of at least 1`);
+    }
+    if (type === "ring" && isPlainObject(raw.config) && typeof raw.config.timeoutSeconds === "number" && raw.config.timeoutSeconds > RING_TIMEOUT_MAX_SECONDS) {
+      return badRequest(`node '${raw.id}': timeoutSeconds must be ${RING_TIMEOUT_MAX_SECONDS} or less -- a longer ring lets a staff member's own mobile voicemail answer the call before this timeout ever fires`);
     }
     if (!isValidConfigForType(type, raw.config)) {
       return badRequest(`node '${raw.id}' has an invalid config shape for type '${type}'`);

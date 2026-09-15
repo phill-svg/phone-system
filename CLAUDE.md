@@ -1165,3 +1165,21 @@ before adding one, or you will duplicate a path that already works.
   before shift or availability is even considered (and out of `/api/staff` likewise). An earlier
   note here claimed only a stale heartbeat kept it from ringing; that was wrong. Emptying that var
   is what would make it ring.
+- **A ring node's `timeoutSeconds` has to beat the staff member's own carrier voicemail, or calls
+  land there instead of business voicemail.** Reported 2026-09-15 as "calls are going through to my
+  mobile voicemail, not the business". Live D1 had the SECOND `main` ring node (`n_e6wrtx7`, reached
+  after the callback/continue gather) at **`timeoutSeconds: 500`** -- almost certainly a fat-fingered
+  edit, since the mobile step editor's `NumberField` for this field has a `min` but no `max` (the
+  web editor's `<input>` caps at 120 client-side only, never enforced server-side). At 500s, Phill's
+  own mobile carrier answers the PSTN leg with his personal voicemail (typically ~15-20s) long before
+  Twilio's own Dial timeout ever has a chance to fire -- and Twilio counts that as *answered*, not a
+  timeout, so async AMD is the only thing left to notice and rescue the caller, 2-4s later, by which
+  point the caller has already heard Phill's personal greeting. The FIRST `main` ring node
+  (`n_5frbzxd`) was already at 15s and never showed this symptom in the event log -- proof that 15s
+  reliably loses the race against the carrier before it can answer. Both `main` ring nodes are now
+  15s. `isRingConfig`'s validator (`src/api/ivrFlow.ts`) now rejects any `timeoutSeconds` over
+  `RING_TIMEOUT_MAX_SECONDS` (120, matching the web editor's unenforced client-side cap) from EITHER
+  client, with a test that fails against the old code. The mobile `NumberField` itself was
+  deliberately left alone: giving it a `max` risks the exact divergence bug documented on that
+  component (a clamp that fires mid-typing, before the field is "finished") for a case the server
+  now guards regardless of which client sends it.
