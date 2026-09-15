@@ -1211,3 +1211,12 @@ before adding one, or you will duplicate a path that already works.
   template capped at 320 chars (roughly two GSM-7 SMS segments) so an admin can't accidentally wire
   up a message that bills for a small novel on every missed call. Enabling it with a blank template
   is refused at save time, the same "validate on write" rule as everywhere else in this file.
+  **Shipped web-only at first, which Phill caught within the hour ("I can't see it in settings" —
+  he was on the app, not the browser).** Mobile now carries it too: `Admin > Missed-Call SMS`
+  (`mobile/src/app/admin/missed-call-sms.tsx`), registered in `_layout.tsx`'s `ADMIN_SCREENS` and
+  linked from the hub with an On/Off summary, the same shape as every other settings sub-screen
+  (Business Hours, Call Blocklist). `getMissedCallSmsSetting`/`setMissedCallSmsSetting` in
+  `mobile/src/lib/api.ts` mirror the web pair exactly. The lesson generalizes: **a business-wide
+  admin setting shipped on only one of web/mobile is an incomplete feature, not a web feature** —
+  check both surfaces before calling one done, the same rule already written down for the on-call
+  rota's web/mobile split.

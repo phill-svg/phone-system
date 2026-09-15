@@ -9,6 +9,7 @@ import {
   getCallBlocklist,
   getDivertCallerIdSetting,
   getIvrFlow,
+  getMissedCallSmsSetting,
   getNumbers,
   getOnCall,
   getRecordingSetting,
@@ -32,6 +33,7 @@ export default function AdminHomeScreen() {
   const [divertCallerId, setDivertCallerId] = useState<boolean | null>(null);
   const [onCall, setOnCall] = useState<string>("…");
   const [menuSteps, setMenuSteps] = useState<string>("…");
+  const [missedCallSms, setMissedCallSms] = useState<string>("…");
 
   // Refetch on focus so the summaries are right after editing one of the sub-screens.
   useFocusEffect(
@@ -67,6 +69,9 @@ export default function AdminHomeScreen() {
       getIvrFlow("main")
         .then((f) => alive && setMenuSteps(`${f.nodes.length} steps`))
         .catch(() => alive && setMenuSteps("—"));
+      getMissedCallSmsSetting()
+        .then((s) => alive && setMissedCallSms(s.enabled ? "On" : "Off"))
+        .catch(() => alive && setMissedCallSms("—"));
       return () => {
         alive = false;
       };
@@ -105,6 +110,8 @@ export default function AdminHomeScreen() {
             onPress={() => router.push("/admin/ivr")} />
           <Row icon="record.circle" iconFallback="radio-button-on" iconColor="#FF9F0A" label="Call Recording"
             toggle={recording ?? false} onToggle={onToggleRecording} toggleDisabled={recording === null} />
+          <Row icon="message.fill" iconFallback="chatbubble" iconColor="#34C759" label="Missed-Call SMS" value={missedCallSms} chevron
+            onPress={() => router.push("/admin/missed-call-sms")} />
         </Group>
 
         <Group
