@@ -1183,3 +1183,31 @@ before adding one, or you will duplicate a path that already works.
   deliberately left alone: giving it a `max` risks the exact divergence bug documented on that
   component (a clamp that fires mid-typing, before the field is "finished") for a case the server
   now guards regardless of which client sends it.
+- **Auto missed-call SMS, added 2026-09-15 (migration `0037`, `/admin/settings`, admin-only, OFF by
+  default).** When a call ends having never produced an `answered` event, `sendMissedCallSmsIfDue`
+  (`src/api/missedCallSms.ts`) texts the caller from the business number. It is hooked into
+  `/webhooks/twilio/status` -- the CALLER's own top-level status callback, configured directly on
+  the Twilio number, not `CallSession`'s per-ring-round `notifyMissedOnce` -- and that distinction
+  is the whole design. A ring node's no-answer branch can lead to ANOTHER ring node (`main` has
+  two), so `notifyMissedOnce` fires at the first round that times out, whether or not a later round
+  bridges; hooking the SMS there would occasionally text a customer "sorry we missed you" while
+  they were being connected. The status webhook only ever reaches this after the call is genuinely
+  over (`ended_at IS NULL` already guards against a redelivered terminal status running it twice),
+  so the auto-text can only ever answer "did anyone ever pick up, for the whole call" -- checked the
+  same way `src/db/calls.ts` already defines "missed" elsewhere (`EXISTS ... event_type = 'answered'`),
+  plus one addition: the call must have reached a `ring_started` event, or a wrong number who hangs
+  up during the greeting gets texted too. Direction is checked too -- an outbound call (call-via-mobile)
+  going unanswered is a staff member's target not picking up, not a customer TCB missed.
+  `calls.missed_sms_sent_at` is claimed with an atomic `UPDATE ... WHERE missed_sms_sent_at IS NULL`
+  **after** a successful Twilio send, not before -- claiming first would let a Twilio failure
+  permanently mark a call "texted" when nothing went out, and nothing here retries a failure, so
+  that mark would be a lie forever. The column is real belt-and-suspenders, not the primary
+  guarantee: the caller already runs this at most once per call. The text itself is recorded via
+  the ordinary `insertMessage`/`threadPeer` path so it shows up in that caller's inbox thread like
+  any other message, in its own try/catch exactly like `handleSendMessage` -- Twilio has already
+  accepted the send by that point, so a D1 failure there must never be reported as a send failure.
+  Settings (`getMissedCallSms`/`setMissedCallSms`, key `missed_call_sms`) follow the exact
+  `getDivertCallerId` shape: a JSON blob in the generic `settings` table, admin-only PUT, and a
+  template capped at 320 chars (roughly two GSM-7 SMS segments) so an admin can't accidentally wire
+  up a message that bills for a small novel on every missed call. Enabling it with a blank template
+  is refused at save time, the same "validate on write" rule as everywhere else in this file.

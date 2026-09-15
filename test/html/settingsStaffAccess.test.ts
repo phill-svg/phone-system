@@ -4,6 +4,7 @@ import { renderSettingsPage } from "../../src/html/pages/settings";
 // Leading args match the current renderSettingsPage signature:
 // (schedule: BusinessHoursSchedule, blocklist: string[], staffRoster: StaffPresenceRow[])
 const leadingArgs = [/* schedule */ {}, /* blocklist */ [], /* staffRoster */ []] as [any, any, any];
+const MISSED = { enabled: false, template: "" };
 
 describe("settings staff access section", () => {
   it("admins see an invite control and the staff list with status", () => {
@@ -11,7 +12,8 @@ describe("settings staff access section", () => {
       ...leadingArgs,
       [{ email: "jake@example.com", role: "staff", hasPassword: false }],
       "admin",
-      true
+      true,
+      MISSED
     );
     expect(html).toContain("Staff access");
     expect(html).toContain("jake@example.com");
@@ -20,7 +22,7 @@ describe("settings staff access section", () => {
   });
 
   it("non-admins do not see the staff access section", () => {
-    const html = renderSettingsPage(...leadingArgs, [], "staff", true);
+    const html = renderSettingsPage(...leadingArgs, [], "staff", true, MISSED);
     expect(html).not.toContain("Staff access");
   });
 });

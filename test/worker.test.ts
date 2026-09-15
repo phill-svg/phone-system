@@ -135,6 +135,42 @@ describe("POST /webhooks/twilio/status", () => {
     expect(row?.ended_at).toBeGreaterThan(0);
   });
 
+  // TWILIO_US1_API_KEY_SID is a worker secret, absent from test bindings -- exactly the
+  // "SMS is not configured" case sendMissedCallSmsIfDue is built to no-op on. This pins that the
+  // status webhook still succeeds and still marks the call completed even with the missed-call SMS
+  // setting turned on, i.e. the new hook can never break the webhook Twilio is waiting on.
+  it("still completes the call when missed-call SMS is enabled but unconfigured", async () => {
+    const { setMissedCallSms } = await import("../src/db/settings");
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, direction) VALUES (?, ?, ?, ?, 'inbound')"
+    )
+      .bind("CA-status-missed-sms", "+61400000003", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare("INSERT INTO call_events (call_id, ts, event_type) VALUES (?, ?, 'ring_started')")
+      .bind("CA-status-missed-sms", Date.now())
+      .run();
+
+    const url = "https://example.com/webhooks/twilio/status";
+    const params = { CallSid: "CA-status-missed-sms", CallStatus: "completed" };
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+
+    const response = await SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+    expect(response.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT status, missed_sms_sent_at FROM calls WHERE id = ?")
+      .bind("CA-status-missed-sms")
+      .first<{ status: string; missed_sms_sent_at: number | null }>();
+    expect(row?.status).toBe("completed");
+    expect(row?.missed_sms_sent_at).toBeNull();
+
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'missed_call_sms'").run();
+  });
+
   it("does not update on a non-terminal CallStatus", async () => {
     await env.DB.prepare(
       "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"

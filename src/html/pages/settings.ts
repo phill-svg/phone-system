@@ -1,6 +1,7 @@
 import { escapeHtml, renderLayout } from "../layout";
 import type { BusinessHoursSchedule } from "../../ivr/businessHours";
 import type { StaffPresenceRow } from "../../dial/presence";
+import type { MissedCallSmsSetting } from "../../db/settings";
 
 const DAYS: (keyof BusinessHoursSchedule)[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABELS: Record<string, string> = {
@@ -105,7 +106,8 @@ export function renderSettingsPage(
   staffRoster: StaffPresenceRow[],
   staffAccess: { email: string; role: string; hasPassword: boolean }[],
   currentRole: "admin" | "staff",
-  divertCallerId: boolean
+  divertCallerId: boolean,
+  missedCallSms: MissedCallSmsSetting
 ): string {
   const dayRows = renderDayRows(schedule, "hours");
 
@@ -192,6 +194,16 @@ export function renderSettingsPage(
       <label><input type="checkbox" id="divert-callerid"${divertCallerId ? " checked" : ""}> Show the customer's number</label>
       <button type="submit">Save</button>
       <span id="divert-callerid-status"></span>
+    </form>
+    <form class="settings-form" id="missed-call-sms-form">
+      <h3>Auto Missed-Call SMS</h3>
+      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">When a call rings out with nobody answering, automatically text the caller from the business number. This fires once the call is fully over — a caller who gets through on a second ring round is never texted mid-conversation — and only for a call that actually reached a ring (a wrong number who hangs up during the greeting is not "missed"). Off by default.</p>
+      <label><input type="checkbox" id="missed-call-sms-enabled"${missedCallSms.enabled ? " checked" : ""}> Send an automatic text on a missed call</label>
+      <label style="display:block;margin-top:0.6rem">Message
+        <textarea id="missed-call-sms-template" rows="3" maxlength="320">${escapeHtml(missedCallSms.template)}</textarea>
+      </label>
+      <button type="submit">Save</button>
+      <span id="missed-call-sms-status"></span>
     </form>
     <section class="settings-form" id="numbers-section">
       <h3>Phone Numbers</h3>
@@ -295,6 +307,28 @@ export function renderSettingsPage(
             body: JSON.stringify({ divert_caller_id: document.getElementById('divert-callerid').checked }),
           });
           status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
+        });
+      }
+
+      var missedCallSmsForm = document.getElementById('missed-call-sms-form');
+      if (missedCallSmsForm) {
+        missedCallSmsForm.addEventListener('submit', async function (e) {
+          e.preventDefault();
+          const status = document.getElementById('missed-call-sms-status');
+          const res = await fetch('/api/settings/missed-call-sms', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              enabled: document.getElementById('missed-call-sms-enabled').checked,
+              template: document.getElementById('missed-call-sms-template').value,
+            }),
+          });
+          if (res.ok) {
+            status.textContent = 'Saved.';
+          } else {
+            const body = await res.json().catch(function () { return null; });
+            status.textContent = (body && body.error) || 'Failed to save.';
+          }
         });
       }
 

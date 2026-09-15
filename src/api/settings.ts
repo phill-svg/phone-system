@@ -8,6 +8,8 @@ import {
   setRecordingEnabled,
   getDivertCallerId,
   setDivertCallerId,
+  getMissedCallSms,
+  setMissedCallSms,
 } from "../db/settings";
 import { isBusinessHoursSchedule } from "../ivr/businessHours";
 import type { BusinessHoursSchedule } from "../ivr/businessHours";
@@ -101,5 +103,38 @@ export async function handlePutDivertCallerIdSetting(request: Request, db: D1Dat
     return INVALID_BODY_RESPONSE();
   }
   await setDivertCallerId(db, (body as { divert_caller_id: boolean }).divert_caller_id);
+  return jsonResponse({ ok: true });
+}
+
+// SMS segments bill per ~160 (GSM-7) or ~70 (with an emoji/non-GSM char) characters, so an
+// unbounded template is an unbounded per-missed-call cost. 320 is roughly two GSM-7 segments --
+// generous for "sorry we missed you, we'll call back" without leaving the field able to bill for
+// a small novel on every miss.
+const MAX_MISSED_CALL_SMS_TEMPLATE = 320;
+
+export async function handleGetMissedCallSmsSetting(db: D1Database): Promise<Response> {
+  return jsonResponse(await getMissedCallSms(db));
+}
+
+export async function handlePutMissedCallSmsSetting(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
+  const forbidden = forbiddenUnlessAdmin(staff);
+  if (forbidden) return forbidden;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return INVALID_BODY_RESPONSE();
+  }
+  if (typeof body !== "object" || body === null) return INVALID_BODY_RESPONSE();
+  const { enabled, template } = body as { enabled?: unknown; template?: unknown };
+  if (typeof enabled !== "boolean" || typeof template !== "string") return INVALID_BODY_RESPONSE();
+  const trimmed = template.trim();
+  if (trimmed.length > MAX_MISSED_CALL_SMS_TEMPLATE) {
+    return jsonResponse({ error: `Message must be ${MAX_MISSED_CALL_SMS_TEMPLATE} characters or fewer.` }, 400);
+  }
+  if (enabled && !trimmed) {
+    return jsonResponse({ error: "Enter a message to send before turning this on." }, 400);
+  }
+  await setMissedCallSms(db, { enabled, template: trimmed });
   return jsonResponse({ ok: true });
 }
