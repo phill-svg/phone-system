@@ -1608,14 +1608,27 @@ describe("CallSession", () => {
     // Queue action fires after the caller leaves.
     const left = await send(stub, queueLeft("CA-cb", "leave"));
     expect(left.xml).toContain("call you back");
+    // Same as a voicemail node now: a message is recorded, not an immediate hangup.
+    expect(left.xml).toContain("<Record");
 
     const cb = await env.DB.prepare("SELECT call_id, caller_number, status FROM callback_requests WHERE call_id = ?")
       .bind("CA-cb")
       .first<{ call_id: string; caller_number: string; status: string }>();
     expect(cb).toMatchObject({ call_id: "CA-cb", caller_number: "+61400000000", status: "open" });
 
-    const row = await env.DB.prepare("SELECT status FROM calls WHERE id = ?").bind("CA-cb").first<{ status: string }>();
+    // The callback_requests row (the task for staff) exists immediately, but the CALL itself is not
+    // completed until the recording lands -- exactly like a voicemail node.
+    const beforeRecording = await env.DB.prepare("SELECT status FROM calls WHERE id = ?").bind("CA-cb").first<{ status: string }>();
+    expect(beforeRecording?.status).not.toBe("completed");
+
+    const rec = await send(stub, recordingEvent("CA-cb", "https://api.twilio.com/rec/RE-cb", "RE-cb"));
+    expect(rec.xml).toContain("<Hangup/>");
+    const row = await env.DB.prepare("SELECT status, recording_url, mailbox_label FROM calls WHERE id = ?")
+      .bind("CA-cb")
+      .first<{ status: string; recording_url: string; mailbox_label: string }>();
     expect(row?.status).toBe("completed");
+    expect(row?.recording_url).toBe("https://api.twilio.com/rec/RE-cb");
+    expect(row?.mailbox_label).toBe("Callback request");
   });
 
   // playFromConfig is the twin of flowEngine's playCommandFor, and it runs INSIDE startRing -- so a
@@ -2215,7 +2228,7 @@ describe("CallSession", () => {
   // in a wait node, which the live flow never uses -- so it was dead code in practice. These cover
   // the menu route: press a key, get logged as a callback task, hang up.
 
-  it("a gather option pointing at a callback node logs the callback request and hangs up", async () => {
+  it("a gather option pointing at a callback node logs the callback request and records a message", async () => {
     await seedEntryGather({ option1: "main_callback", defaultNextNodeId: "main_vm" });
     await seedNode({ id: "main_callback", type: "callback", config: { audioAssetId: null, ttsText: null } });
     await seedVoicemail("main_vm", "voicemail");
@@ -2224,33 +2237,47 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-cb", { from: "+61455512345" }));
     const res = await send(stub, mainEvent("CA-cb", { digits: "1" }));
 
-    // Caller hears the default acknowledgement, then the call ends -- no <Record>, no <Enqueue>.
+    // Caller hears the default acknowledgement, then a message is recorded -- same shape as a
+    // voicemail node, not an immediate hangup.
     expect(res.xml).toContain("Thanks, we&apos;ll call you back soon.");
-    expect(res.xml).toContain("<Hangup/>");
-    expect(res.xml).not.toContain("<Record");
+    expect(res.xml).toContain("<Record");
+    expect(res.xml).not.toContain("<Hangup/>");
     expect(res.xml).not.toContain("<Enqueue");
 
-    // The number is captured as an open task for /admin/callbacks.
+    // The number is captured as an open task for /admin/callbacks, immediately -- before the
+    // recording, so it exists even if the caller hangs up before the beep.
     const cb = await env.DB.prepare("SELECT call_id, caller_number, status FROM callback_requests").all();
     expect(cb.results).toEqual([
       { call_id: "CA-cb", caller_number: "+61455512345", status: "open" },
     ]);
 
-    // And the call itself is closed out and attributed to the callback node.
-    const call = await env.DB.prepare("SELECT status, ivr_path FROM calls WHERE id = ?")
+    // The call itself is NOT closed out yet -- that waits for the recording, like a voicemail node.
+    const beforeRecording = await env.DB.prepare("SELECT status FROM calls WHERE id = ?").bind("CA-cb").first<{ status: string }>();
+    expect(beforeRecording?.status).not.toBe("completed");
+
+    const rec = await send(stub, recordingEvent("CA-cb", "https://api.twilio.com/rec/RE-cb2", "RE-cb2"));
+    expect(rec.xml).toContain("<Hangup/>");
+
+    // NOW the call is closed out, attributed to the callback node, and labelled a mailbox -- so it
+    // surfaces in the mobile Inbox's Voicemail list, playable, same as any other recorded message.
+    const call = await env.DB.prepare("SELECT status, ivr_path, recording_url, mailbox_label FROM calls WHERE id = ?")
       .bind("CA-cb")
-      .first<{ status: string; ivr_path: string }>();
+      .first<{ status: string; ivr_path: string; recording_url: string; mailbox_label: string }>();
     expect(call?.status).toBe("completed");
     expect(call?.ivr_path).toBe("main_callback");
+    expect(call?.recording_url).toBe("https://api.twilio.com/rec/RE-cb2");
+    expect(call?.mailbox_label).toBe("Callback request");
 
     const events = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ?")
       .bind("CA-cb")
       .all<{ event_type: string }>();
     expect(events.results.map((e) => e.event_type)).toContain("callback_requested");
+    expect(events.results.map((e) => e.event_type)).toContain("voicemail_left");
   });
 
-  // Same reasoning as the voicemail test above: recordCallbackRequest sets `calls.ended_at` itself,
-  // so the missed-call SMS has to be called from here too, not just from the status webhook.
+  // Same reasoning as the voicemail test above: the recording-complete handler sets `calls.ended_at`
+  // itself, so the missed-call SMS has to be called from there too, not just from the status
+  // webhook -- and now that a callback records a message, that is the SAME code path voicemail uses.
   it("requesting a callback with the missed-call SMS setting on does not disturb the callback flow", async () => {
     await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
     await seedEntryGather({ option1: "main_callback", defaultNextNodeId: "main_vm" });
@@ -2260,7 +2287,10 @@ describe("CallSession", () => {
     const stub = stubFor("CA-cb-sms");
     await send(stub, mainEvent("CA-cb-sms", { from: "+61455512346" }));
     const res = await send(stub, mainEvent("CA-cb-sms", { digits: "1" }));
-    expect(res.xml).toContain("<Hangup/>");
+    expect(res.xml).toContain("<Record");
+
+    const rec = await send(stub, recordingEvent("CA-cb-sms", "https://api.twilio.com/rec/RE-cb-sms", "RE-cb-sms"));
+    expect(rec.xml).toContain("<Hangup/>");
 
     const call = await env.DB.prepare("SELECT status, ended_at FROM calls WHERE id = ?")
       .bind("CA-cb-sms")
@@ -2304,7 +2334,8 @@ describe("CallSession", () => {
 
     // The asset id must be resolved to its R2 key, not used raw -- a raw id 404s at Twilio.
     expect(res.xml).toContain("<Play>https://tcb-voip.example.workers.dev/media/ivr-audio/cb-asset</Play>");
-    expect(res.xml).toContain("<Hangup/>");
+    expect(res.xml).toContain("<Record");
+    expect(res.xml).not.toContain("<Hangup/>");
     expect(res.xml).not.toContain("Thanks, we&apos;ll call you back soon.");
 
     const cb = await env.DB.prepare("SELECT caller_number FROM callback_requests").all();

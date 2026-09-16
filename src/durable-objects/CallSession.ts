@@ -5,7 +5,6 @@ import {
   renderEnqueue,
   renderHold,
   renderLeave,
-  renderCallbackAck,
 } from "../twilio/queueTwiml";
 import { resolveRingTargets, type RingNodeTarget } from "../dial/ringQueue";
 import { demoEmails } from "../demo";
@@ -203,13 +202,22 @@ export class CallSession extends DurableObject<Env> {
     // minutes-old token that Twilio rejects.
     if (body.callToken) await this.ctx.storage.put("callToken", body.callToken);
 
-    // (a) Voicemail <Record> action callback lands here on the SAME route/CallSid.
+    // (a) Voicemail <Record> action callback lands here on the SAME route/CallSid -- and so does a
+    // callback node's Record now, which is why `mailbox_label`'s existing rule ("a voicemail is a
+    // call with a mailbox_label, not one with a transcript") still holds without the mobile Inbox's
+    // Voicemail filter needing to know the difference: a fixed label rather than a node lookup,
+    // since a callback node has no mailboxLabel field of its own to read.
     if (body.recordingUrl) {
-      const nodeId = await this.ctx.storage.get<string>("awaitingVoicemailNodeId");
+      const isCallback = await this.ctx.storage.get<boolean>("awaitingCallbackRecording");
       let mailboxLabel: string | null = null;
-      if (nodeId) {
-        const config = await this.loadNodeConfig(nodeId);
-        mailboxLabel = (config.mailboxLabel as string | undefined) ?? null;
+      if (isCallback) {
+        mailboxLabel = "Callback request";
+      } else {
+        const nodeId = await this.ctx.storage.get<string>("awaitingVoicemailNodeId");
+        if (nodeId) {
+          const config = await this.loadNodeConfig(nodeId);
+          mailboxLabel = (config.mailboxLabel as string | undefined) ?? null;
+        }
       }
       // `ended_at IS NULL` guards this exactly like the caller-leg status webhook does: this write
       // (not that webhook) is what first marks a voicemail call ended -- Twilio's own terminal
@@ -228,10 +236,14 @@ export class CallSession extends DurableObject<Env> {
         )
         .run();
       await this.logEvent(callSid, "voicemail_left", { mailboxLabel, recordingSid: body.recordingSid });
-      try {
-        await notifyVoicemail(this.env.DB, from);
-      } catch {
-        /* notifications are best-effort */
+      // Skipped for a callback: notifyCallbackRequest already told staff about this call, at the
+      // moment the request was logged. Sending notifyVoicemail too would push twice for one call.
+      if (!isCallback) {
+        try {
+          await notifyVoicemail(this.env.DB, from);
+        } catch {
+          /* notifications are best-effort */
+        }
       }
       if ((ended.meta.changes ?? 0) > 0) await sendMissedCallSmsIfDue(this.env, callSid);
       return this.xml(wrapResponse("<Say>Thanks, goodbye.</Say><Hangup/>"));
@@ -317,15 +329,16 @@ export class CallSession extends DurableObject<Env> {
       return this.startRing(callSid, walkResult, hasEnqueue, isAfterHours, origin);
     }
 
-    // Callback node: take the caller's number as a callback task instead of recording them.
-    // Any PLAY that walked into this node is the acknowledgement ("we'll call you back"); when the
-    // node configures none, recordCallbackRequest speaks the default line.
+    // Callback node: logs the caller's number as a callback task AND records a message, same as a
+    // voicemail node -- the number alone told staff someone called, not what they wanted. Any PLAY
+    // that walked into this node is the acknowledgement ("we'll call you back"); when the node
+    // configures none, recordCallbackRequest speaks the default line.
     if (walkResult.commands.some((c) => c.type === "CALLBACK_HANDOFF")) {
       await this.env.DB.prepare("UPDATE calls SET ivr_path = ? WHERE id = ?")
         .bind(walkResult.nextNodeId, callSid)
         .run();
       const resolvedAck = await this.resolveAudioCommands(walkResult.commands);
-      return this.recordCallbackRequest(callSid, renderFlowCommandsFragment(resolvedAck, { baseUrl: origin }));
+      return this.recordCallbackRequest(callSid, renderFlowCommandsFragment(resolvedAck, { baseUrl: origin }), origin);
     }
 
     if (walkResult.commands.some((c) => c.type === "VOICEMAIL_HANDOFF")) {
@@ -502,14 +515,21 @@ export class CallSession extends DurableObject<Env> {
 
   // -------------------------------------------------------------------------
   // Logs a callback request for this call and returns the caller-leg TwiML that acknowledges it and
-  // hangs up. THE single implementation behind both routes into the feature -- pressing * while held
-  // (handleQueueLeft's callback_requested outcome) and reaching a `callback` flow node -- so the two
-  // can never drift apart on what gets written or what the caller hears.
+  // records a message, same as a voicemail node. THE single implementation behind both routes into
+  // the feature -- pressing * while held (handleQueueLeft's callback_requested outcome) and reaching
+  // a `callback` flow node -- so the two can never drift apart on what gets written or what the
+  // caller hears.
   //
   // `ackFragment` is already-rendered prompt TwiML from the node's own audio/TTS; empty means the
   // node configured none (or we came from the * route), so speak the default line.
+  //
+  // The callback_requests row is created and its push sent IMMEDIATELY -- a caller's number is
+  // worth having even if the recording that follows fails or they hang up before the beep. The
+  // CALL itself is not marked completed here, though: that now waits for the recording, exactly
+  // like a voicemail node, so `ended_at`/`sendMissedCallSmsIfDue` fire once, at the true end,
+  // instead of a moment before the caller has actually finished.
   // -------------------------------------------------------------------------
-  private async recordCallbackRequest(callSid: string, ackFragment: string): Promise<string> {
+  private async recordCallbackRequest(callSid: string, ackFragment: string, origin: string): Promise<string> {
     const row = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
       .bind(callSid)
       .first<{ caller_number: string }>();
@@ -517,24 +537,26 @@ export class CallSession extends DurableObject<Env> {
       callId: callSid,
       callerNumber: row?.caller_number ?? "",
     });
-    // `ended_at IS NULL` guards this exactly like the caller-leg status webhook does: this write is
-    // what first marks a callback-requested call ended -- Twilio's own terminal status callback for
-    // it arrives later and finds `changes = 0` there, so the missed-call SMS must fire from HERE.
-    const ended = await this.env.DB.prepare("UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ? AND ended_at IS NULL")
-      .bind(Date.now(), callSid)
-      .run();
     await this.logEvent(callSid, "callback_requested", { callerNumber: row?.caller_number ?? null });
     // Fire-and-forget, like the voicemail and missed-call notifications: a push failure must never
     // stop us returning TwiML, or the caller hears an application error after asking for a callback.
+    // This is the ONLY push for this call -- the recording-complete handler below skips
+    // notifyVoicemail for a callback so staff are not told about the same call twice.
     if (row?.caller_number) {
       await notifyCallbackRequest(this.env.DB, row.caller_number).catch(() => {});
     }
-    if ((ended.meta.changes ?? 0) > 0) await sendMissedCallSmsIfDue(this.env, callSid);
     // Harmless when there is no active ring (the flow-node route); required on the * route.
     await this.ctx.storage.delete("activeRing");
-    return ackFragment
-      ? wrapResponse(ackFragment + "<Hangup/>")
-      : renderCallbackAck("Thanks, we'll call you back soon.");
+    // Read the same way the voicemail node's Record action is found on the next webhook: the
+    // recording lands on this same callSid/route, and this flag is how that handler tells a
+    // callback message apart from an ordinary voicemail (see the `body.recordingUrl` branch of
+    // handleMainWebhook).
+    await this.ctx.storage.put("awaitingCallbackRecording", true);
+    const greeting = ackFragment || `<Say>${escapeXml("Thanks, we'll call you back soon.")}</Say>`;
+    const recordingStatusCb = appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${callSid}&vm=1`, this.env.TWILIO_WEBHOOK_SECRET);
+    const recordAction = appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET);
+    const record = `<Record action="${escapeXml(recordAction)}" method="POST" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="${escapeXml(recordingStatusCb)}" recordingStatusCallbackEvent="completed"/>`;
+    return wrapResponse(greeting + record);
   }
 
   // -------------------------------------------------------------------------
@@ -694,7 +716,7 @@ export class CallSession extends DurableObject<Env> {
 
     if (outcome === "callback_requested") {
       // The caller pressed * while held. Same feature, same bookkeeping as a `callback` flow node.
-      return this.xml(await this.recordCallbackRequest(body.callSid, ""));
+      return this.xml(await this.recordCallbackRequest(body.callSid, "", origin));
     }
 
     // no_answer, OR the caller hung up mid-ring (plan still DIALING with outstanding legs).
