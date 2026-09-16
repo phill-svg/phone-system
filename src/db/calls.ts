@@ -69,7 +69,11 @@ export type CallEventRow = {
 // read as missed.
 export type CallListRow = CallSummary & { answered: number; event_count: number };
 
-export async function listCalls(db: D1Database, limit = 50): Promise<CallListRow[]> {
+// 2000 rather than unbounded: cheap insurance against a runaway query years from now, but at
+// ~220 calls total today this is "all of them" for a long while yet -- which is the actual ask
+// (reported live: Recents only ever showed the newest 50, with no way to reach older calls at all
+// short of the by-number lookup added for a single contact's history).
+export async function listCalls(db: D1Database, limit = 2000): Promise<CallListRow[]> {
   const result = await db
     .prepare(
       `SELECT c.*,
