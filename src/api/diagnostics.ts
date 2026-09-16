@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { authHeader } from "../twilio/conferenceClient";
+import { authHeader, globalAuthHeader } from "../twilio/conferenceClient";
 import { listPhoneNumbers } from "../db/phoneNumbers";
 import { blankToNull } from "../db/calls";
 import { getStaffRoster } from "../db/staff";
@@ -245,13 +245,10 @@ async function checkTwilioCredentials(env: Env): Promise<Check> {
 type GlobalAuth = { header: string; us1: boolean };
 
 function globalAuth(env: Env): GlobalAuth {
-  if (env.TWILIO_US1_API_KEY_SID && env.TWILIO_US1_API_KEY_SECRET) {
-    return {
-      header: authHeader(env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET),
-      us1: true,
-    };
-  }
-  return { header: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN), us1: false };
+  return {
+    header: globalAuthHeader(env),
+    us1: !!(env.TWILIO_US1_API_KEY_SID && env.TWILIO_US1_API_KEY_SECRET),
+  };
 }
 
 // What a 401 from one of those hosts MEANS depends entirely on which credential we just sent, and

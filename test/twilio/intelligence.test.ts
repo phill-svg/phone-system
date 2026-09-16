@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { formatLabelledTranscript, intelligenceEnabled, type Sentence } from "../../src/twilio/intelligence";
+import { describe, expect, it, vi } from "vitest";
+import { formatLabelledTranscript, intelligenceEnabled, requestTranscript, type Sentence } from "../../src/twilio/intelligence";
 
 const s = (channel: number, text: string, i: number): Sentence => ({
   media_channel: channel,
@@ -15,6 +15,40 @@ describe("intelligenceEnabled", () => {
     expect(intelligenceEnabled(base)).toBe(false);
     expect(intelligenceEnabled({ ...base, TWILIO_INTELLIGENCE_SERVICE_SID: "" })).toBe(false);
     expect(intelligenceEnabled({ ...base, TWILIO_INTELLIGENCE_SERVICE_SID: "GA123" })).toBe(true);
+  });
+});
+
+describe("requestTranscript auth", () => {
+  // intelligence.twilio.com is a GLOBAL (implicitly US1) host. TWILIO_AUTH_TOKEN is this account's
+  // AU1 token and 401s there every time -- the exact bug that left every inbound transcript as
+  // `request_failed`. Asserting the header VALUE, not just that the call succeeded, is the point:
+  // a revert back to TWILIO_AUTH_TOKEN would still return a sid from this mock and pass a looser
+  // test, the same way the fallback branch alone would.
+  const env = {
+    TWILIO_ACCOUNT_SID: "ACxxx",
+    TWILIO_AUTH_TOKEN: "au1tok",
+    TWILIO_US1_API_KEY_SID: "SKus1",
+    TWILIO_US1_API_KEY_SECRET: "shh",
+    TWILIO_INTELLIGENCE_SERVICE_SID: "GA123",
+  };
+
+  it("authenticates with the US1 API key, not the AU1 auth token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: "GT123" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const sid = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    expect(sid).toBe("GT123");
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Basic ${btoa("SKus1:shh")}`);
+    expect(headers.Authorization).not.toBe(`Basic ${btoa("ACxxx:au1tok")}`);
+  });
+
+  it("falls back to the AU1 token only when no US1 key is configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: "GT123" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { TWILIO_US1_API_KEY_SID, TWILIO_US1_API_KEY_SECRET, ...noUs1 } = env;
+    await requestTranscript(noUs1, "RExxx", { staffChannel: 2 });
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Basic ${btoa("ACxxx:au1tok")}`);
   });
 });
 

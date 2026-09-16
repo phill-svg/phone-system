@@ -1,4 +1,4 @@
-import { authHeader } from "./conferenceClient";
+import { globalAuthHeader } from "./conferenceClient";
 
 // Twilio Conversational Intelligence: a transcript that says WHO SAID WHAT.
 //
@@ -14,11 +14,21 @@ import { authHeader } from "./conferenceClient";
 //
 // Deliberately NOT on the au1 host in restClient.ts: Intelligence is a global service on its own
 // domain, and pointing it at api.sydney.au1.twilio.com 404s.
+//
+// Being off the au1 host also means TWILIO_AUTH_TOKEN (the AU1 token) is not a credential here
+// either -- it 401s, the same way it 401s against notify.twilio.com and api.twilio.com/Messages.
+// Every request below goes through globalAuthHeader, which prefers TWILIO_US1_API_KEY_SID/SECRET.
+// This bug predates #106 -- it just had no marker before then, so the same 401 read as the row
+// silently staying unmarked (Health Checks: "no answered call has been transcribed yet") instead
+// of the `request_failed` status #106 introduced. Every inbound transcript since this feature
+// shipped used the AU1 token here and was refused, every single time.
 const INTELLIGENCE_BASE = "https://intelligence.twilio.com/v2";
 
 export type IntelligenceEnv = {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
+  TWILIO_US1_API_KEY_SID?: string;
+  TWILIO_US1_API_KEY_SECRET?: string;
   TWILIO_INTELLIGENCE_SERVICE_SID?: string;
 };
 
@@ -87,13 +97,17 @@ export async function requestTranscript(
     const res = await fetch(`${INTELLIGENCE_BASE}/Transcripts`, {
       method: "POST",
       headers: {
-        Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN),
+        Authorization: globalAuthHeader(env),
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body,
     });
     if (!res.ok) {
-      console.log("INTELLIGENCE_CREATE_FAILED", JSON.stringify({ recordingSid, status: res.status }));
+      // us1:false means the AU1 token went out and got refused -- the exact bug this file's top
+      // comment documents. Carrying it here is what makes that diagnosable from a log line rather
+      // than requiring a re-read of the source to notice the fallback fired.
+      const us1 = !!(env.TWILIO_US1_API_KEY_SID && env.TWILIO_US1_API_KEY_SECRET);
+      console.log("INTELLIGENCE_CREATE_FAILED", JSON.stringify({ recordingSid, status: res.status, us1 }));
       return null;
     }
     const json = (await res.json()) as { sid?: string };
@@ -109,7 +123,7 @@ export type TranscriptStatus = "queued" | "in-progress" | "completed" | "failed"
 export async function fetchTranscriptStatus(env: IntelligenceEnv, transcriptSid: string): Promise<TranscriptStatus> {
   try {
     const res = await fetch(`${INTELLIGENCE_BASE}/Transcripts/${encodeURIComponent(transcriptSid)}`, {
-      headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) },
+      headers: { Authorization: globalAuthHeader(env) },
     });
     if (!res.ok) return res.status === 404 ? "failed" : "unknown";
     const json = (await res.json()) as { status?: string };
@@ -157,7 +171,7 @@ export async function fetchSentences(env: IntelligenceEnv, transcriptSid: string
   try {
     for (let page = 0; url && page < MAX_SENTENCE_PAGES; page++) {
       const res: Response = await fetch(url, {
-        headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) },
+        headers: { Authorization: globalAuthHeader(env) },
       });
       if (!res.ok) {
         console.log("INTELLIGENCE_SENTENCES_FAILED", JSON.stringify({ transcriptSid, status: res.status }));
