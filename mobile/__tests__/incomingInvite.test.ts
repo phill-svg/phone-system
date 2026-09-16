@@ -71,6 +71,7 @@ function makeInvite(state: string) {
     accepted: false,
     rejected: false,
     getFrom: () => "+61400000000",
+    getCustomParameters: () => ({}),
     getState() { return this.state; },
     on(e: string, fn: (...a: any[]) => void) { (listeners[e] ||= []).push(fn); return this; },
     fire(e: string) { (listeners[e] || []).forEach((f) => f()); },
@@ -234,6 +235,48 @@ describe("incoming invite lifecycle", () => {
     await new Promise((r) => setImmediate(r));
 
     expect(voiceLib.getPendingInvite()).toBe(invite);
+    expect(onInvite).toHaveBeenCalledWith("+61400000000");
+    unsub();
+  });
+
+  // Reported live as "it's showing the business number when calling in the app, not the
+  // customer's". Twilio's own `From` on a softphone (`client:`) leg is always the BUSINESS
+  // number -- CallSession.ts's dialStaff never risks the real caller's number there -- and the
+  // actual caller rides along as a "CallerNumber" custom Client parameter instead, which nothing
+  // read until now: getFrom() was used unconditionally. The custom parameter must win.
+  it("shows the caller's real number from the CallerNumber custom parameter, not Twilio's own From", async () => {
+    const onInvite = jest.fn();
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    const invite = { ...makeInvite(CallInviteState.Pending), getCustomParameters: () => ({ CallerNumber: "61455512345" }) };
+
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    expect(onInvite).toHaveBeenCalledWith("+61455512345");
+    unsub();
+  });
+
+  // Twilio's two native SDKs are not proven to agree on the case of a custom parameter's key, and
+  // getting it wrong silently falls back to the business number -- the exact bug being fixed here.
+  it("matches the CallerNumber custom parameter case-insensitively", async () => {
+    const onInvite = jest.fn();
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    const invite = { ...makeInvite(CallInviteState.Pending), getCustomParameters: () => ({ callernumber: "61455512345" }) };
+
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    expect(onInvite).toHaveBeenCalledWith("+61455512345");
+    unsub();
+  });
+
+  // No custom parameter at all (an older TwiML build, or a future non-softphone invite shape)
+  // must still fall back to getFrom() rather than showing nothing.
+  it("falls back to getFrom() when no CallerNumber custom parameter is present", async () => {
+    const onInvite = jest.fn();
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    const invite = makeInvite(CallInviteState.Pending);
+
+    mockVoiceRef.current.emit("callInvite", invite);
+
     expect(onInvite).toHaveBeenCalledWith("+61400000000");
     unsub();
   });

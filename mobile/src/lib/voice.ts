@@ -3,6 +3,7 @@ import { Voice, Call, CallInvite, PreflightTest } from "@twilio/voice-react-nati
 import { getSoftphoneToken } from "./api";
 import { chooseAudioDevice, type AudioRoutePref, type AudioDeviceLike } from "./audioRouting";
 import { getPref, getPrefBool } from "./prefs";
+import { toE164 } from "./phone";
 
 // Single Voice instance for the app. Handles outbound dialing and, once registered, incoming
 // calls (the server's TwiML app bridges `To` out to the PSTN; incoming arrives via FCM push).
@@ -341,7 +342,7 @@ export async function registerForIncoming(
         if (answered) {
           if (!activeCall) {
             adoptCall(answered);
-            currentSubscriber()?.onAdopted?.(invite.getFrom());
+            currentSubscriber()?.onAdopted?.(callerNumberFromInvite(invite));
           }
           continue;
         }
@@ -405,6 +406,22 @@ const onRegError = (e: unknown) => setRegStatus("error: " + ((e as { message?: s
 // How the most recent invite ended, for a ringing screen that mounts after the fact.
 let lastInviteOutcome: "accepted" | "cancelled" | null = null;
 
+// The caller's REAL number for an incoming softphone call. Twilio's own `From` on a `client:`
+// invite is always the BUSINESS number -- CallSession.ts's dialStaff never risks the real caller's
+// number there, since Twilio's caller-ID-ownership rules are murky for a `client:` destination.
+// The actual caller instead rides along as a custom Client parameter ("CallerNumber", set as a
+// query param on the client URI), which is exactly what getCustomParameters() surfaces. Without
+// this, every incoming call in the app showed the business's own number instead of who was
+// actually calling -- the custom parameter was being sent all along and never read.
+// Case-insensitive key match: this codebase has no prior evidence of which case the two native
+// SDKs (iOS/Android) preserve it in, and a customer's number is worth a defensive lookup either way.
+function callerNumberFromInvite(invite: CallInvite): string {
+  const params = invite.getCustomParameters();
+  const key = Object.keys(params).find((k) => k.toLowerCase() === "callernumber");
+  const raw = key ? params[key] : undefined;
+  return raw ? toE164(raw) : invite.getFrom();
+}
+
 function handleInvite(invite: CallInvite): void {
   pendingInvite = invite;
   lastInviteOutcome = null;
@@ -432,7 +449,7 @@ function handleInvite(invite: CallInvite): void {
     if (call) adoptCall(call);
     notifyInviteAccepted();
   });
-  currentSubscriber()?.onInvite(invite.getFrom());
+  currentSubscriber()?.onInvite(callerNumberFromInvite(invite));
 }
 
 // Tell Twilio to stop sending this device incoming calls.
