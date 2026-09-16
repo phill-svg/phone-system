@@ -251,11 +251,12 @@ before adding one, or you will duplicate a path that already works.
     cause and the lead is the VoIP push credential (see that bullet below). A locked-phone test call
     is still the proof, but only once `TWILIO_PUSH_CREDENTIAL_SID_IOS` is confirmed set and not
     sandbox; until then there is nothing for the handset to be woken BY.
-  * **The on-call rotation is LIVE BUT EMPTY, and the IVR's after-hours branch is still not wired to
-    it**, so after-hours callers still reach voicemail. Health Checks now names both gaps in one
-    line rather than making you find them one at a time.
-  * `staff_users` holds only Phill plus the demo reviewer account, so there is nobody to rotate
-    between.
+  * ~~The on-call rotation is LIVE BUT EMPTY, and the IVR's after-hours branch is still not wired to
+    it.~~ **Resolved 2026-09-16** — see the on-call-wiring bullet lower in this file. The rotation
+    holds Phill (anchor `2026-09-07`) and the closed branch of `main` now reaches a `ring` node
+    targeting `on_call`.
+  * `staff_users` still holds only Phill plus the demo reviewer account, so there is nobody ELSE to
+    rotate between — the rota rings the one person there is until a second tech is added.
   * ~~Speaker-labelled transcripts need the Console's **Dual-channel Recording for Conference**
     switch.~~ **Resolved 2026-09-12 by not depending on it**: that switch was Enabled and saved and
     Twilio was still returning mono, so the recording moved to `record-from-answer-dual` on the
@@ -658,12 +659,32 @@ before adding one, or you will duplicate a path that already works.
   this system overrides a staff preference: the softphone leg depends on a backgrounded app being
   woken by a VoIP push, which is the weakest link at 2am and is exactly what iOS was killing on
   2026-09-10. No mobile saved falls back to the softphone rather than to nobody.
-- **The rota does NOTHING until the IVR points at it, and as of 2026-09-10 it does not.** There is
-  no `after_hours` flow in D1 at all (only `main`), and `main`'s closed branch is `n_7lrp841`, a
-  voicemail node. The ring node has to be added on the closed branch with "Whoever is on call" as
-  its target — web-only, `/admin/ivr/main`. The recommended shape is a `gather` first ("press 1 if
-  this is urgent, otherwise leave a message") so routine after-hours enquiries still go to voicemail
-  and the rota survives past a month.
+- **The rota does NOTHING until the IVR points at it — wired 2026-09-16.** There is still no
+  `after_hours` flow in D1 (only `main`), so the closed branch lives on `main` itself. Its entry
+  (`business_hours` node `n_7lk2oio`) had `openNextNodeId === closedNextNodeId`, both pointing at
+  the SAME node (`n_lrn2fhs`, the daytime greeting → ring-all chain) — so an after-hours call rang
+  "all" on-shift staff (zero, by construction), fell through the existing callback/ring2 gather, and
+  landed on the shared voicemail node `n_pkqmsmd`. The old `n_7lrp841` this bullet used to name does
+  not exist in the live flow; do not go looking for it.
+  `closedNextNodeId` now points at a NEW gather node (`n_1m36drd`, TTS "If this is urgent, press 1
+  to speak with our on call technician. Otherwise, please leave a message after the tone.") — the
+  `openNextNodeId` daytime chain is untouched. Digit 1 goes to a new ring node (`n_nc3xde0`,
+  `target: "on_call"`, `strategy: "simultaneous"`, `timeoutSeconds: 20`) whose `noAnswerNextNodeId`,
+  and the gather's own `defaultNextNodeId` (timeout/no press), both land on the SAME existing
+  `n_pkqmsmd` voicemail node the daytime overflow already uses — so routine after-hours enquiries
+  reach voicemail either way, and a mistyped digit never straps the caller. This is the exact shape
+  this bullet used to recommend. `src/ivr/onCallWiring.ts`'s `isRingNodeReachingOnCall` (which Admin
+  > Health Checks calls) walks `main`'s entry via `closedNextNodeId` only, follows a `gather`'s
+  `defaultNextNodeId` AND every option's `nextNodeId`, and confirms it finds a `ring` node with
+  `target === "on_call"` — this wiring satisfies that walk. Written directly via D1 (not the
+  `PUT /api/ivr/flows/main` editor) matching `replaceFlowNodes`'s exact schema and every validator
+  in `src/api/ivrFlow.ts` (`isGatherConfig`, `isRingConfig` incl. `RING_TIMEOUT_MAX_SECONDS`,
+  `isBusinessHoursConfig`) by hand, since a live phone system's entry node is not something to
+  delete-and-reinsert with a swapped auth session — an INSERT of the two new rows plus one UPDATE
+  of the entry node's config only, no DELETE, so there is never a window with fewer nodes than
+  before. `settings.on_call_rotation` already had one member (`phill@tcbpestcontrolcanberra.com.au`,
+  anchor `2026-09-07`) by this point — the "LIVE BUT EMPTY" state noted elsewhere in this file was
+  already stale before this fix.
 - **Rotation weeks run Monday→Monday in Australia/Sydney, and the anchor MUST be a Monday.**
   `weekStartKey` resolves the Sydney calendar date FIRST and only then shifts back to Monday: read
   the UTC weekday first and Monday 09:00 in Canberra (Sunday 23:00 UTC) counts into the previous
