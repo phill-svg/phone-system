@@ -185,13 +185,18 @@ export async function handlePostTransfer(
   if (!participants.some((p) => p.callSid === agentCallSid)) {
     return new Response("not a participant in this conference", { status: 403 });
   }
+  // Same source as every other outbound leg -- TWILIO_FROM_NUMBER is the original build number and
+  // stopped being the business's caller ID when the landline ported in. Shape-checked for the same
+  // reason as the ring path: phone_numbers is admin-editable and nothing validates a row against
+  // Twilio, so a typo'd default would 400 every transfer.
+  const fromNumber = validCallerId(await resolveSendingNumber(db, "voice", null)) ?? env.TWILIO_FROM_NUMBER;
   const { sid } = await deps.createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
-    to: `client:${targetEmail}`,
-    // Same source as every other outbound leg -- TWILIO_FROM_NUMBER is the original build number and
-    // stopped being the business's caller ID when the landline ported in. Shape-checked for the same
-    // reason as the ring path: phone_numbers is admin-editable and nothing validates a row against
-    // Twilio, so a typo'd default would 400 every transfer.
-    from: validCallerId(await resolveSendingNumber(db, "voice", null)) ?? env.TWILIO_FROM_NUMBER,
+    // CallerNumber rides along the same way dialStaff sends it -- the mobile app's native call
+    // notification template (setIncomingCallContactHandleTemplate) reads this key globally, on
+    // every client: leg, incoming or transferred. Without it a transfer invite renders blank
+    // instead of the business number a colleague would otherwise see here.
+    to: `client:${targetEmail}?CallerNumber=${encodeURIComponent(fromNumber.replace(/^\+/, ""))}`,
+    from: fromNumber,
     url: appendWebhookSecret(`${origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
   });
   // Staff-gate the transferred-to leg for the TARGET staff member, before they even exist as a
