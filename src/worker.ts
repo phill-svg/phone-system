@@ -160,6 +160,12 @@ function normalizeAuNumber(raw: string | undefined): string | undefined {
   if (trimmed.startsWith("+") || trimmed.startsWith("client:")) return trimmed;
   const digits = trimmed.replace(/[\s()-]/g, "");
   if (/^0[2-9]\d{8}$/.test(digits)) return "+61" + digits.slice(1);
+  // 13/1300/1800 numbers carry no trunk prefix, so unlike an "02..." landline there is no leading 0
+  // to strip -- "1300 123 456" is +611300123456. Falling through to the bare-digits return below
+  // sent Twilio "1300123456" with no "+", which it rejects outright: 1300/1800/13xx numbers could
+  // not be dialled from the softphone at all. See the identical fix and comment in
+  // callViaMobile.ts's normalizeDialTarget -- keep the two in lock-step.
+  if (/^1[38]00\d{6}$/.test(digits) || /^13\d{4}$/.test(digits)) return "+61" + digits;
   if (/^61\d{9}$/.test(digits)) return "+" + digits;
   return trimmed;
 }

@@ -1263,3 +1263,17 @@ before adding one, or you will duplicate a path that already works.
   to `getFrom()` only when it's absent, run through `toE164` (the AU phone-number module already
   handled the backend's bare-digits shape correctly, per the comment left in `dialStaff` -- it was
   only ever unread, not unhandled).
+- **1300/1800/13xx numbers could not be dialled from the softphone at all, and the fix for it
+  already existed elsewhere in the codebase, unapplied to this path.** Reported 2026-09-16 as "i
+  want to be able to call 1300 numbers". `normalizeAuNumber` in `worker.ts` (the gate in front of
+  every softphone dial, `/twiml/voice-app`) only recognised `0[2-9]xxxxxxxx` geographic numbers and
+  `61xxxxxxxxx`; a 1300/1800/13xx number typed the way anyone actually dials one ("1300 123 456", no
+  leading 0 -- these carry no trunk prefix to strip) matched neither pattern and fell through to
+  being returned as bare digits with **no `+` at all**, which Twilio rejects outright as not E.164.
+  `callViaMobile.ts`'s `normalizeDialTarget` already carries the correct fix, with a comment naming
+  this exact trap ("Slicing here produced +61300123456, a number that does not exist") -- it was
+  only ever applied to the call-via-mobile path, never to the primary VoIP dial path these two
+  functions otherwise mirror. `normalizeAuNumber` now matches it. `src/db/contacts.ts`'s
+  `normalizePhone` (contact-matching only, unrelated to dialing) has the same gap -- a 1300 contact
+  saved from one number shape won't match a lookup from another -- and was deliberately left alone
+  here as a narrower, separate bug from "can't call the number at all".
