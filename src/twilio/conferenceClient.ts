@@ -7,6 +7,25 @@ export function authHeader(accountSid: string, authToken: string): string {
   return `Basic ${btoa(`${accountSid}:${authToken}`)}`;
 }
 
+export type GlobalAuthEnv = {
+  TWILIO_ACCOUNT_SID: string;
+  TWILIO_AUTH_TOKEN: string;
+  TWILIO_US1_API_KEY_SID?: string;
+  TWILIO_US1_API_KEY_SECRET?: string;
+};
+
+// TWILIO_AUTH_TOKEN is the AU1 token (this account is au1-homed) and 401s against any GLOBAL
+// (implicitly US1) Twilio host -- api.twilio.com/Messages, notify.twilio.com, routes.twilio.com,
+// and intelligence.twilio.com all reject it every single time. TWILIO_US1_API_KEY_SID/SECRET is
+// the credential that actually works there (see sendSms); fall back to the AU1 token only when
+// that is unset, so a missing secret reads as "not configured" rather than a silent 401.
+export function globalAuthHeader(env: GlobalAuthEnv): string {
+  if (env.TWILIO_US1_API_KEY_SID && env.TWILIO_US1_API_KEY_SECRET) {
+    return authHeader(env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET);
+  }
+  return authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+}
+
 export async function findConferenceSid(
   accountSid: string,
   authToken: string,
