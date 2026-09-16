@@ -87,7 +87,7 @@ import {
   blankToNull,
   parseRecordingDuration,
 } from "./db/calls";
-import { handleGetRecording } from "./api/recordings";
+import { handleGetRecording, handleRecoverRecording } from "./api/recordings";
 import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist, getRecordingEnabled, getDivertCallerId, getMissedCallSms } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
@@ -1177,6 +1177,17 @@ export default {
         const callId = safeDecode(recordingMatch[1]);
         if (callId === null) return new Response("not found", { status: 404 });
         return handleGetRecording(env, env.DB, callId, request);
+      }
+
+      // Admin recovery for a call whose recording never got linked (the recording-status callback
+      // was dropped, redelivered wrong, or failed) -- asks Twilio directly by CallSid rather than
+      // trusting anything already in D1. See handleRecoverRecording.
+      const recoverMatch = url.pathname.match(/^\/api\/calls\/([^/]+)\/recover-recording$/);
+      if (recoverMatch && request.method === "POST") {
+        if (staff.role !== "admin") return new Response("Forbidden", { status: 403 });
+        const callId = safeDecode(recoverMatch[1]);
+        if (callId === null) return new Response("not found", { status: 404 });
+        return handleRecoverRecording(env, env.DB, callId);
       }
 
       // Undo for a deleted call log. Longer than the id-only match below, so it is tested first.

@@ -1,5 +1,6 @@
 import { getCallDetail } from "../db/calls";
 import { authHeader } from "../twilio/conferenceClient";
+import { jsonResponse } from "./respond";
 
 type RecordingEnv = { TWILIO_ACCOUNT_SID: string; TWILIO_AUTH_TOKEN: string };
 
@@ -72,6 +73,40 @@ export async function handleGetRecording(
 
   headers.set("Content-Length", String(total));
   return new Response(body, { status: 200, headers });
+}
+
+// Admin recovery for a call whose `recording_url`/`recording_sid` never got written -- the
+// recording-status callback can be dropped or fail, and this codebase already documents several
+// ways that happens (a redelivery racing a real write, a mono skip, a 5xx on our end). Twilio keeps
+// the recording under the CALL itself regardless of whether that callback ever landed, so this asks
+// Twilio directly by CallSid rather than trusting anything already in D1. `PSTN"`/conference/DialVerb
+// recordings all answer the same Recordings.json query -- there's nothing route-specific to branch on.
+export async function handleRecoverRecording(
+  env: RecordingEnv,
+  db: D1Database,
+  callId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<Response> {
+  const res = await fetchImpl(
+    `${TWILIO_API_BASE}/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Recordings.json?CallSid=${encodeURIComponent(callId)}`,
+    { headers: { Authorization: authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) } }
+  );
+  if (!res.ok) return jsonResponse({ error: `Twilio answered ${res.status}` }, 502);
+  const json = await res.json<{ recordings?: { sid: string; duration?: string }[] }>();
+  const recordings = json.recordings ?? [];
+  if (recordings.length === 0) {
+    return jsonResponse({ recovered: false, reason: "Twilio has no recording for this call" });
+  }
+  // More than one is possible on a call with several legs recording independently (see the
+  // CLAUDE.md note on the pre-2026-09-12 staff-leg placement); the longest is the real conversation,
+  // never a false-start fragment.
+  const best = recordings.reduce((a, b) => (Number(b.duration ?? 0) > Number(a.duration ?? 0) ? b : a));
+  const mediaUrl = `${TWILIO_API_BASE}/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Recordings/${best.sid}`;
+  await db
+    .prepare("UPDATE calls SET recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration) WHERE id = ?")
+    .bind(mediaUrl, best.sid, Number(best.duration) || null, callId)
+    .run();
+  return jsonResponse({ recovered: true, recordingSid: best.sid, recordingCount: recordings.length });
 }
 
 // Minimal single-range parser for "bytes=start-end", "bytes=start-" and "bytes=-suffixLength".

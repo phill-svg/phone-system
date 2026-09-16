@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import { handleGetRecording } from "../../src/api/recordings";
+import { handleGetRecording, handleRecoverRecording } from "../../src/api/recordings";
 
 const testEnv = { TWILIO_ACCOUNT_SID: "ACtest", TWILIO_AUTH_TOKEN: "tok-secret" };
 
@@ -139,6 +139,58 @@ describe("handleGetRecording", () => {
       "CA_err",
       new Request("https://x/"),
       (async () => new Response("nope", { status: 404 })) as unknown as typeof fetch
+    );
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("handleRecoverRecording", () => {
+  it("asks Twilio by CallSid and backfills the longest recording found", async () => {
+    await insertCall("CA_lost", null);
+    let capturedUrl = "";
+    const fakeFetch = (async (url: string | URL | Request) => {
+      capturedUrl = String(url);
+      return new Response(
+        JSON.stringify({ recordings: [{ sid: "REshort", duration: "5" }, { sid: "RElong", duration: "141" }] }),
+        { status: 200 }
+      );
+    }) as unknown as typeof fetch;
+
+    const res = await handleRecoverRecording(testEnv, env.DB, "CA_lost", fakeFetch);
+    const body = (await res.json()) as { recovered: boolean; recordingSid: string };
+    expect(body).toMatchObject({ recovered: true, recordingSid: "RElong" });
+    expect(capturedUrl).toBe("https://api.sydney.au1.twilio.com/2010-04-01/Accounts/ACtest/Recordings.json?CallSid=CA_lost");
+
+    const row = await env.DB.prepare("SELECT recording_url, recording_sid, recording_duration FROM calls WHERE id = ?")
+      .bind("CA_lost")
+      .first<{ recording_url: string; recording_sid: string; recording_duration: number }>();
+    expect(row?.recording_sid).toBe("RElong");
+    expect(row?.recording_url).toBe("https://api.sydney.au1.twilio.com/2010-04-01/Accounts/ACtest/Recordings/RElong");
+    expect(row?.recording_duration).toBe(141);
+  });
+
+  it("reports recovered: false when Twilio genuinely has nothing for this call", async () => {
+    await insertCall("CA_gone", null);
+    const res = await handleRecoverRecording(
+      testEnv,
+      env.DB,
+      "CA_gone",
+      (async () => new Response(JSON.stringify({ recordings: [] }), { status: 200 })) as unknown as typeof fetch
+    );
+    const body = (await res.json()) as { recovered: boolean };
+    expect(body.recovered).toBe(false);
+
+    const row = await env.DB.prepare("SELECT recording_sid FROM calls WHERE id = ?").bind("CA_gone").first<{ recording_sid: string | null }>();
+    expect(row?.recording_sid).toBeNull();
+  });
+
+  it("502s when Twilio itself errors, without touching the row", async () => {
+    await insertCall("CA_twilio_err", null);
+    const res = await handleRecoverRecording(
+      testEnv,
+      env.DB,
+      "CA_twilio_err",
+      (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch
     );
     expect(res.status).toBe(502);
   });
