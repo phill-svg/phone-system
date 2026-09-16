@@ -10,6 +10,7 @@ import { Avatar } from "../components/ui/Avatar";
 import { useContactName } from "../lib/useContactName";
 import { formatPhone } from "../lib/phone";
 import { acceptIncoming, acceptWaitingCall, ringingScreenOnMount, rejectIncoming, onInviteCancelled, onInviteAccepted } from "../lib/voice";
+import { reportError } from "../lib/crashReport";
 import { haptics } from "../theme/haptics";
 import { type } from "../theme/theme";
 
@@ -56,8 +57,11 @@ export default function IncomingCallScreen() {
   async function answer() {
     if (actedRef.current) return;
     actedRef.current = true;
-    haptics.success();
     try {
+      // Inside the try, not before it: anything that can throw ahead of the actual accept() call
+      // (haptics included) must never be able to abort this handler before it runs -- that is what
+      // left the screen looking frozen with no feedback at all and no call connected.
+      haptics.success();
       // Call waiting ends the current call, but only once the new invite is known to be answerable.
       const call = await (isWaiting ? acceptWaitingCall() : acceptIncoming());
       if (call) {
@@ -68,13 +72,20 @@ export default function IncomingCallScreen() {
       // Was a bare `catch {}`. The SDK throws InvalidStateError here when the invite was already
       // accepted natively, which used to dismiss the screen silently and strand a live call.
       console.warn("[call-incoming] accept failed", e);
+      // console.warn alone reaches nobody -- non-fatal, so it queues locally and sends on next
+      // launch the same way a crash report does, without needing this to have killed the app.
+      reportError(e, false).catch(() => {});
     }
     dismiss();
   }
   function decline() {
     if (actedRef.current) return;
     actedRef.current = true;
-    haptics.medium();
+    try {
+      haptics.medium();
+    } catch {
+      // A failure to buzz must never stop the decline itself from running.
+    }
     rejectIncoming().catch(() => {});
     dismiss();
   }
