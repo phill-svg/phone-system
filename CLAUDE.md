@@ -1245,3 +1245,21 @@ before adding one, or you will duplicate a path that already works.
   case, kept for exactly the reason it existed originally: a caller bridged on a LATER ring round
   must never be texted "sorry we missed you" mid-conversation, and none of the other three shapes
   will have fired for that call.
+- **The app showed the BUSINESS number for every incoming call, never the customer's — a real bug,
+  and it predates this session.** Reported 2026-09-15/16 as "it's showing the business number when
+  calling in the app, not the customer's, wtf". Twilio's own `From` on a softphone (`client:`) leg
+  is deliberately always the business number (`dialStaff` in `CallSession.ts`: caller-ID-ownership
+  rules for a `client:` destination are murky, so the raw caller is never risked there); the ACTUAL
+  caller rides along as a `CallerNumber` custom Client parameter instead, read via
+  `CallInvite.getCustomParameters()` — Twilio's own documented mechanism for exactly this. Grepping
+  the whole mobile app found **zero** references to `getCustomParameters` or `CallerNumber`: the
+  backend had been sending it since the softphone shipped, and nothing on the client had ever read
+  it. `voice.ts` used `invite.getFrom()` unconditionally in both places an incoming number is
+  surfaced (`handleInvite` and the "already answered before JS subscribed" adopt path), so every
+  ringing screen and every in-call screen (which take their number from the same route params) has
+  shown "TCB Phone"/the business number since the softphone existed. Fixed with a `callerNumberFromInvite`
+  helper that prefers the custom parameter (case-insensitive key match — no prior evidence either
+  native SDK preserves case, and a customer's number is worth the defensive lookup) and falls back
+  to `getFrom()` only when it's absent, run through `toE164` (the AU phone-number module already
+  handled the backend's bare-digits shape correctly, per the comment left in `dialStaff` -- it was
+  only ever unread, not unhandled).
