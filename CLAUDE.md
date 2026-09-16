@@ -251,10 +251,10 @@ before adding one, or you will duplicate a path that already works.
     cause and the lead is the VoIP push credential (see that bullet below). A locked-phone test call
     is still the proof, but only once `TWILIO_PUSH_CREDENTIAL_SID_IOS` is confirmed set and not
     sandbox; until then there is nothing for the handset to be woken BY.
-  * ~~The on-call rotation is LIVE BUT EMPTY, and the IVR's after-hours branch is still not wired to
-    it.~~ **Resolved 2026-09-16** — see the on-call-wiring bullet lower in this file. The rotation
-    holds Phill (anchor `2026-09-07`) and the closed branch of `main` now reaches a `ring` node
-    targeting `on_call`.
+  * **The IVR's after-hours branch was wired to the on-call rotation on 2026-09-16, then UNWIRED
+    the same night** after it AMD-misfired a live caller into voicemail mid-conversation — see the
+    on-call-wiring bullet lower in this file. `main`'s closed branch is back to plain voicemail.
+    The rotation itself still holds Phill (anchor `2026-09-07`) but nothing in the IVR reaches it.
   * `staff_users` still holds only Phill plus the demo reviewer account, so there is nobody ELSE to
     rotate between — the rota rings the one person there is until a second tech is added.
   * ~~Speaker-labelled transcripts need the Console's **Dual-channel Recording for Conference**
@@ -659,32 +659,28 @@ before adding one, or you will duplicate a path that already works.
   this system overrides a staff preference: the softphone leg depends on a backgrounded app being
   woken by a VoIP push, which is the weakest link at 2am and is exactly what iOS was killing on
   2026-09-10. No mobile saved falls back to the softphone rather than to nobody.
-- **The rota does NOTHING until the IVR points at it — wired 2026-09-16.** There is still no
-  `after_hours` flow in D1 (only `main`), so the closed branch lives on `main` itself. Its entry
-  (`business_hours` node `n_7lk2oio`) had `openNextNodeId === closedNextNodeId`, both pointing at
-  the SAME node (`n_lrn2fhs`, the daytime greeting → ring-all chain) — so an after-hours call rang
-  "all" on-shift staff (zero, by construction), fell through the existing callback/ring2 gather, and
-  landed on the shared voicemail node `n_pkqmsmd`. The old `n_7lrp841` this bullet used to name does
-  not exist in the live flow; do not go looking for it.
-  `closedNextNodeId` now points at a NEW gather node (`n_1m36drd`, TTS "If this is urgent, press 1
-  to speak with our on call technician. Otherwise, please leave a message after the tone.") — the
-  `openNextNodeId` daytime chain is untouched. Digit 1 goes to a new ring node (`n_nc3xde0`,
-  `target: "on_call"`, `strategy: "simultaneous"`, `timeoutSeconds: 20`) whose `noAnswerNextNodeId`,
-  and the gather's own `defaultNextNodeId` (timeout/no press), both land on the SAME existing
-  `n_pkqmsmd` voicemail node the daytime overflow already uses — so routine after-hours enquiries
-  reach voicemail either way, and a mistyped digit never straps the caller. This is the exact shape
-  this bullet used to recommend. `src/ivr/onCallWiring.ts`'s `isRingNodeReachingOnCall` (which Admin
-  > Health Checks calls) walks `main`'s entry via `closedNextNodeId` only, follows a `gather`'s
-  `defaultNextNodeId` AND every option's `nextNodeId`, and confirms it finds a `ring` node with
-  `target === "on_call"` — this wiring satisfies that walk. Written directly via D1 (not the
-  `PUT /api/ivr/flows/main` editor) matching `replaceFlowNodes`'s exact schema and every validator
-  in `src/api/ivrFlow.ts` (`isGatherConfig`, `isRingConfig` incl. `RING_TIMEOUT_MAX_SECONDS`,
-  `isBusinessHoursConfig`) by hand, since a live phone system's entry node is not something to
-  delete-and-reinsert with a swapped auth session — an INSERT of the two new rows plus one UPDATE
-  of the entry node's config only, no DELETE, so there is never a window with fewer nodes than
-  before. `settings.on_call_rotation` already had one member (`phill@tcbpestcontrolcanberra.com.au`,
-  anchor `2026-09-07`) by this point — the "LIVE BUT EMPTY" state noted elsewhere in this file was
-  already stale before this fix.
+- **The rota was wired to the IVR on 2026-09-16, and UNWIRED again a few hours later.** Wired
+  version: `main`'s entry (`business_hours` node `n_7lk2oio`) had its `closedNextNodeId` pointed at
+  a new gather ("If this is urgent, press 1 to speak with our on call technician...") whose digit-1
+  option rang a new node targeting `on_call`. First real after-hours call through it (00:50,
+  2026-09-17) exposed why this needs to wait: `MachineDetection=Enable` on the on-call mobile leg
+  runs Twilio's default heuristic with no tuned thresholds, and it misfired ~4.6s after Phill
+  genuinely answered — `answered` then `mobile_machine_answered` then the AMD rescue (correctly, by
+  its own logic) redirected a LIVE caller to business voicemail mid-conversation. The orphaned
+  recording's transcript: "Could be, though." — a conversation fragment, not a greeting.
+  Reverted the same way it was wired: directly via D1, not a deploy. `closedNextNodeId` back to
+  `n_pkqmsmd` (the shared voicemail node); the gather and on-call ring node it pointed at
+  (`n_1m36drd`, `n_nc3xde0`) DELETED rather than left dangling, since nothing referenced them once
+  unwired. `settings.on_call_rotation` (one member, `phill@tcbpestcontrolcanberra.com.au`, anchor
+  `2026-09-07`) and the on-call admin screens are untouched — only the IVR wiring was pulled, so
+  Admin > Health Checks will go back to reporting the rota as not reachable from the IVR, correctly.
+  Re-wiring needs the AMD false-positive addressed first: either tune
+  `MachineDetectionSpeechEndThreshold`/`MachineDetectionSilenceTimeout` on that leg (untuned
+  today — see the mobile-leg dial site), or drop `MachineDetection` entirely on the on-call leg and
+  accept that a call to a genuinely-unreachable phone rings out instead of rescuing to business
+  voicemail. Also worth revisiting then: on-call overrides `ring_my_mobile` unconditionally (by
+  design, see the bullet above), which is what let the mobile ring at all despite Phill's own
+  toggle being off — surprising in the moment even though it's working as documented.
 - **Rotation weeks run Monday→Monday in Australia/Sydney, and the anchor MUST be a Monday.**
   `weekStartKey` resolves the Sydney calendar date FIRST and only then shifts back to Monday: read
   the UTC weekday first and Monday 09:00 in Canberra (Sunday 23:00 UTC) counts into the previous
