@@ -1051,6 +1051,49 @@ describe("POST /twiml/voice-app", () => {
     expect(row!.called_number).toBe("+61400000000");
   });
 
+  // 1300/1800/13xx numbers carry no trunk "0" to strip, unlike a geographic "02..." landline --
+  // "1300 123 456" is +611300123456, not +61300123456. normalizeAuNumber fell through to returning
+  // the bare digits with no "+" at all, which Twilio rejects outright: these numbers could not be
+  // dialled from the softphone. callViaMobile.ts's normalizeDialTarget already had this fix; this
+  // pins the same fix on the primary VoIP dial path.
+  it("normalizes a 1300 number typed with no country code to a dialable E.164 target", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ sid: "CAtarget" }), { status: 200 }))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CAagent-1300",
+      From: "client:a@b.com",
+      To: "1300 123 456",
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT called_number FROM calls WHERE id = 'CAagent-1300'").first<{
+      called_number: string;
+    }>();
+    expect(row!.called_number).toBe("+611300123456");
+  });
+
+  it("normalizes a 13xxxx number typed with no country code to a dialable E.164 target", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ sid: "CAtarget" }), { status: 200 }))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CAagent-13",
+      From: "client:a@b.com",
+      To: "13 11 14",
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare("SELECT called_number FROM calls WHERE id = 'CAagent-13'").first<{
+      called_number: string;
+    }>();
+    expect(row!.called_number).toBe("+61131114");
+  });
+
   it("records a softphone_call_legs row for the agent's own leg so hold/transfer can later verify ownership", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(
