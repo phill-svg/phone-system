@@ -1120,6 +1120,50 @@ describe("POST /twiml/voice-app", () => {
       conference_name: "CAagent",
     });
   });
+
+  // Twilio can refuse an outbound call for reasons entirely outside our control -- most concretely
+  // a geo-permission block (error 13227: an AU "High Risk: Special" destination like 1300/1800 not
+  // enabled on the account). Left uncaught that throw escaped to the Workers runtime's own error
+  // page (a bare 500, "error code: 1101" in the Twilio debugger) instead of TwiML, and the agent's
+  // own leg got no response and no explanation.
+  it("answers a Twilio create-call rejection with clean TwiML instead of a 500, and marks the call failed", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("No International Permission.", { status: 400 }))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CAagent-geoblocked",
+      From: "client:a@b.com",
+      To: "1300 669 664",
+    });
+    expect(res.status).toBe(200);
+    const xml = await res.text();
+    expect(xml).toContain("<Say>");
+    expect(xml).not.toContain("<Conference");
+
+    const row = await env.DB.prepare("SELECT status FROM calls WHERE id = 'CAagent-geoblocked'").first<{ status: string }>();
+    expect(row!.status).toBe("failed");
+  });
+
+  // Twilio retries an unanswered/erroring TwiML webhook once, with the SAME CallSid -- so a
+  // create-call failure that gets retried must not turn a clean failure into a SECOND crash from a
+  // duplicate primary key on the `calls` insert.
+  it("survives a Twilio retry of the same CallSid after a create-call rejection", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("No International Permission.", { status: 400 }))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const params = { CallSid: "CAagent-retried", From: "client:a@b.com", To: "1300 669 664" };
+    const first = await postSigned("https://example.com/twiml/voice-app", params);
+    const second = await postSigned("https://example.com/twiml/voice-app", params);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    const rows = await env.DB.prepare("SELECT id FROM calls WHERE id = 'CAagent-retried'").all();
+    expect(rows.results.length).toBe(1);
+  });
 });
 
 describe("GET /api/me and /api/calls*", () => {

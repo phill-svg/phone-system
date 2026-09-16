@@ -1277,3 +1277,30 @@ before adding one, or you will duplicate a path that already works.
   `normalizePhone` (contact-matching only, unrelated to dialing) has the same gap -- a 1300 contact
   saved from one number shape won't match a lookup from another -- and was deliberately left alone
   here as a narrower, separate bug from "can't call the number at all".
+- **Dialling a 1300/1800/13xx number is ALSO blocked by a Twilio ACCOUNT setting, entirely separate
+  from the formatting bug above, and no code fix can clear it.** Even with `normalizeAuNumber`
+  fixed, every attempt to `+611300669664` came back Twilio error **13227**: *"No International
+  Permission. To call this phone number you must enable the High Risk:Special permission for AU"*.
+  Twilio classifies AU 1300/1800/13xx destinations as **High Risk: Special** (a toll-fraud
+  safeguard) and it is OFF by default, separately from ordinary AU mobile/landline permissions.
+  Fixed 2026-09-16 by enabling it at
+  `https://www.twilio.com/console/voice/calls/geo-permissions/high-risk?countryIsoCode=AU` (needs
+  the account's Owner or Administrator role). Read Health Checks or the Twilio debugger for error
+  13227/21215 before re-diagnosing this as a code bug again -- it looks identical to a formatting
+  bug (the call is simply refused) but no amount of `normalizeAuNumber` correctness fixes it.
+- **That geo-permission rejection was ALSO an unhandled crash in `/twiml/voice-app`, and Twilio's
+  own retry turned one failure into two.** `createOutboundCall`'s throw on a Twilio 4xx/5xx had no
+  try/catch on this route (unlike `callViaMobile.ts`, which already wraps the identical call) --
+  so it escaped straight to the Workers runtime's own error page: a bare 500, logged in the Twilio
+  debugger as **error 1101** ("Got HTTP 500 response to .../twiml/voice-app") with no explanation
+  reaching the agent's own leg or the app. Twilio then retries that same webhook ONCE with the
+  SAME CallSid, and the retry's `INSERT INTO calls` collided on the primary key with the row the
+  first attempt had already written -- guaranteeing a SECOND crash regardless of what the first
+  one was. Fixed with `INSERT OR IGNORE` (matching the pattern `recordCallLeg` already used for the
+  same reason) plus try/catch around `createOutboundCall` and everything after it: a create-call
+  rejection now marks the call `failed` and answers with `<Say>Sorry, that call could not be
+  placed.</Say><Hangup/>` instead of a raw 500, and a failure AFTER the target call was already
+  created best-effort cancels it rather than stranding the callee on a live call nobody joins.
+  This is a general robustness fix -- it fires for ANY Twilio rejection (a rotated key, a 429, a
+  different geo-permission gap), not just this one -- logged as `VOICE_APP_DIAL_FAILED` /
+  `VOICE_APP_SETUP_FAILED` so the next one is a log line instead of a bare Cloudflare error page.
