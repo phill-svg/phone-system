@@ -1249,9 +1249,13 @@ export class CallSession extends DurableObject<Env> {
       // times before we read it back client-side is unverified, and a "+" is ambiguous either way (it
       // can decode to a literal space). Digits-only survives both interpretations identically, and the
       // client-side normalizer/formatter both already handle a bare-digits "61..." number correctly.
-      to = callerRow?.caller_number
-        ? `${number}?CallerNumber=${encodeURIComponent(callerRow.caller_number.replace(/^\+/, ""))}`
-        : number;
+      // ALWAYS present, even without a matching row (falls back to our own caller ID): the mobile
+      // app's native call notification (Android heads-up / iOS CallKit banner) is built by the SDK
+      // BEFORE any JS runs, from a single global template set on this exact key -- see
+      // setIncomingCallContactHandleTemplate in mobile/src/lib/voice.ts. A leg with no CallerNumber
+      // param leaves that template unresolved, which is worse than the business number it replaces.
+      const displayNumber = callerRow?.caller_number ?? callerId;
+      to = `${number}?CallerNumber=${encodeURIComponent(displayNumber.replace(/^\+/, ""))}`;
     }
     // One attempt at creating the leg, parameterised by which caller ID it presents. `whisper`
     // rides along in the answer webhook's query: it is true only when the staff member's screen

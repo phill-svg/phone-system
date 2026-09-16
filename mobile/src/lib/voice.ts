@@ -9,6 +9,18 @@ import { toE164 } from "./phone";
 // calls (the server's TwiML app bridges `To` out to the PSTN; incoming arrives via FCM push).
 const voice = new Voice();
 
+// The OS-level call notification (Android's heads-up notification, iOS CallKit's banner/lock-screen
+// UI) is built by the native SDK straight from the invite's own signalling data, before JS ever
+// runs -- so callerNumberFromInvite() below, which only fixes what OUR ringing/in-call screens
+// render, can never reach it. Twilio's own answer is this template: it substitutes a named custom
+// Client parameter into the native notification/handle text. The server attaches a "CallerNumber"
+// parameter to every client: leg now (see dialStaff in CallSession.ts and handlePostTransfer in
+// softphone.ts) specifically so this always resolves -- an unresolved key here would be worse than
+// the business number it replaces. Fire-and-forget: a failure here must not stop the app opening,
+// same reasoning as primePushRegistry, and per Twilio's docs the value is cached natively so it
+// survives a cold launch where JS has not run yet.
+voice.setIncomingCallContactHandleTemplate("${CallerNumber}").catch(() => {});
+
 // The call/invite currently in play, shared across screens (there is only ever one at a time).
 let activeCall: Call | null = null;
 let pendingInvite: CallInvite | null = null;
@@ -254,7 +266,10 @@ async function registerWithRetry(token: string, generation: number): Promise<boo
 export async function placeCall(to: string, from?: string): Promise<Call> {
   await ensureMicPermission();
   const token = await getSoftphoneToken(tokenPlatform());
-  const params: Record<string, string> = { To: to };
+  // CallerNumber isn't about caller ID here -- it's what setIncomingCallContactHandleTemplate reads
+  // to fill in Android's outgoing/answered call notification (that template is global, so leaving
+  // this one leg without the key it expects would render blank instead of the dialled number).
+  const params: Record<string, string> = { To: to, CallerNumber: to };
   if (from) params.CallerId = from;
   const call = await voice.connect(token, { params });
   activeCall = call;
