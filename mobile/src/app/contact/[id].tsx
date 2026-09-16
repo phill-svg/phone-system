@@ -10,8 +10,8 @@ import { Avatar } from "../../components/ui/Avatar";
 import { Icon } from "../../components/ui/Icon";
 import { Group, Row } from "../../components/ui/Grouped";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { getContacts, getCalls } from "../../lib/api";
-import { formatPhone, normalizePhone } from "../../lib/phone";
+import { getContacts, getCallsForNumber } from "../../lib/api";
+import { formatPhone } from "../../lib/phone";
 import { haptics } from "../../theme/haptics";
 import { useTheme, type } from "../../theme/theme";
 
@@ -32,14 +32,18 @@ export default function ContactDetailScreen() {
   const t = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts });
-  const calls = useQuery({ queryKey: ["calls"], queryFn: getCalls });
   const contact = (contacts.data ?? []).find((c) => String(c.id) === String(id));
+  // A DEDICATED query, not a filter over the capped ["calls"] list that Recents uses -- that list
+  // only ever holds the 50 most recent calls from EVERYONE, so a contact's own calls silently
+  // vanished from here the moment enough other calls pushed theirs past the cutoff. Its own query
+  // key, or this would overwrite Recents' cached ["calls"] entry with just this contact's calls.
+  const calls = useQuery({
+    queryKey: ["calls", "byNumber", contact?.phone_normalized],
+    queryFn: () => getCallsForNumber(contact!.phone),
+    enabled: !!contact,
+  });
 
-  const history = useMemo(() => {
-    if (!contact) return [];
-    const digits = contact.phone_normalized;
-    return (calls.data ?? []).filter((c) => normalizePhone(c.caller_number) === digits || normalizePhone(c.called_number) === digits).slice(0, 8);
-  }, [calls.data, contact]);
+  const history = useMemo(() => (calls.data ?? []).slice(0, 8), [calls.data]);
 
   if (!contact) {
     return (

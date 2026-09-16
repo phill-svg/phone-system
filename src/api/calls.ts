@@ -1,9 +1,19 @@
 import { jsonResponse } from "./respond";
-import { getCallDetail, listCalls, listLiveCalls, updateCallMeta } from "../db/calls";
+import { getCallDetail, listCalls, listCallsForNumber, listLiveCalls, updateCallMeta } from "../db/calls";
+import { normalizePhone } from "../db/contacts";
 import { normalizeCallStatus } from "../twilio/statusCallback";
 import { authHeader } from "../twilio/conferenceClient";
 
-export async function handleListCalls(db: D1Database): Promise<Response> {
+// `number`, when present, switches from the capped recent-calls list to a specific number's full
+// history (see listCallsForNumber) -- the fix for a contact's call history going missing once
+// enough OTHER calls pushed theirs past the top 50. `number` can arrive in any shape (a contact's
+// stored `phone` is already "+61..." but this stays defensive); calls always store the full E.164
+// form, so an unparseable number can only ever match nothing, not something wrong.
+export async function handleListCalls(db: D1Database, number?: string | null): Promise<Response> {
+  if (number) {
+    const digits = normalizePhone(number);
+    return jsonResponse(digits ? await listCallsForNumber(db, `+${digits}`) : []);
+  }
   return jsonResponse(await listCalls(db));
 }
 

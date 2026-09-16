@@ -85,6 +85,30 @@ export async function listCalls(db: D1Database, limit = 50): Promise<CallListRow
   return result.results;
 }
 
+// A specific number's call history, unbounded by listCalls' 50-row cap. Reported live: a contact's
+// "Recent Calls" section (which used to just filter the capped list client-side) came back empty for
+// a real caller with real calls, because 54 MORE RECENT calls from other numbers had pushed every one
+// of theirs past the top 50 -- the contact page was never wrong about matching, there was simply
+// nothing left in `calls.data` to match against. `e164Number` must be the exact stored form
+// ("+61421022938"): calls always write it that way (Twilio's own From/To), unlike contacts or
+// ServiceM8 where a number can be typed in several shapes.
+export async function listCallsForNumber(db: D1Database, e164Number: string, limit = 20): Promise<CallListRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT c.*,
+              EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.event_type = 'answered') AS answered,
+              (SELECT COUNT(*) FROM call_events e WHERE e.call_id = c.id) AS event_count
+         FROM calls c
+        WHERE c.deleted_at IS NULL
+          AND (c.caller_number = ? OR c.called_number = ?)
+        ORDER BY c.started_at DESC
+        LIMIT ?`
+    )
+    .bind(e164Number, e164Number, limit)
+    .all<CallListRow>();
+  return result.results;
+}
+
 // Appends a row to the per-call event timeline (rendered on the call-detail page and in the
 // softphone's call detail pane). Best-effort: callers wrap this so a logging failure never breaks
 // live call handling.

@@ -1168,7 +1168,7 @@ export default {
         return handleLiveCalls(env);
       }
       if (url.pathname === "/api/calls") {
-        return handleListCalls(env.DB);
+        return handleListCalls(env.DB, url.searchParams.get("number"));
       }
       // Longer than the /api/calls/:id match below (which is $-anchored right after the id), so the
       // two never shadow each other. Streams the call's Twilio recording through our own auth.

@@ -167,6 +167,17 @@ export async function getCalls(): Promise<Call[]> {
   return apiFetch<Call[]>("/api/calls");
 }
 
+// A specific number's FULL call history instead of the capped recent-calls list `getCalls()`
+// returns -- see listCallsForNumber on the server. Without this, a contact's older calls silently
+// drop out of `calls.data` the moment 50 more recent calls (from anyone) happen, with no error and
+// nothing to say why: the contact page was filtering correctly, there was just nothing left to
+// find. Kept as its own function rather than an optional param on getCalls() -- react-query infers
+// `queryFn: getCalls`'s signature directly at its other call sites, and an optional argument there
+// broke that inference for all of them.
+export async function getCallsForNumber(number: string): Promise<Call[]> {
+  return apiFetch<Call[]>(`/api/calls?number=${encodeURIComponent(number)}`);
+}
+
 export async function getCallDetail(id: string): Promise<{ call: Call; events: CallEvent[] }> {
   return apiFetch<{ call: Call; events: CallEvent[] }>(`/api/calls/${encodeURIComponent(id)}`);
 }

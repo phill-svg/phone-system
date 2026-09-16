@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   getCallDetail,
   listCalls,
+  listCallsForNumber,
   listLiveCalls,
   listVoicemails,
   updateCallMeta,
@@ -10,6 +11,7 @@ import {
   appendCallEvent,
   parseRecordingDuration,
 } from "../../src/db/calls";
+import { handleListCalls } from "../../src/api/calls";
 
 async function seedCall(id: string, overrides: Partial<{ startedAt: number; status: string }> = {}) {
   await env.DB.prepare(
@@ -32,6 +34,43 @@ describe("db/calls", () => {
 
     const result = await listCalls(env.DB, 2);
     expect(result.map((c) => c.id)).toEqual(["CA-3", "CA-2"]);
+  });
+
+  // Reported live: a contact's own call history was empty despite real calls existing, because
+  // `listCalls`' cap (50 by default) had been pushed past by enough OTHER calls -- the contact page
+  // was filtering that capped list correctly, there was just nothing of theirs left in it.
+  // listCallsForNumber must find a number's calls regardless of how many other calls exist.
+  it("listCallsForNumber finds a number's calls even when listCalls' cap would have pushed them out", async () => {
+    await seedCall("CA-old-dix", { startedAt: 1000 }); // "+61400000000" (seedCall's fixed number)
+    // 5 more recent calls from a DIFFERENT number -- a stand-in for "enough other calls to exceed
+    // the cap". seedCall always uses the same caller_number, so a raw INSERT is needed here or
+    // these would match the search too and the test would prove nothing.
+    for (let i = 0; i < 5; i++) {
+      await env.DB.prepare(
+        "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, ?)"
+      )
+        .bind(`CA-other-${i}`, "+61999999999", "+61200000000", 2000 + i, "completed")
+        .run();
+    }
+
+    // With a cap smaller than the total, the old call is invisible to listCalls...
+    const capped = await listCalls(env.DB, 3);
+    expect(capped.map((c) => c.id)).not.toContain("CA-old-dix");
+
+    // ...but listCallsForNumber finds it directly, unaffected by that cap.
+    const forNumber = await listCallsForNumber(env.DB, "+61400000000");
+    expect(forNumber.map((c) => c.id)).toEqual(["CA-old-dix"]);
+  });
+
+  it("listCallsForNumber matches on either side of the call (caller or called)", async () => {
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, status, direction) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+      .bind("CA-outbound", "+61261059771", "+61421022938", 1000, "completed", "outbound")
+      .run();
+
+    const result = await listCallsForNumber(env.DB, "+61421022938");
+    expect(result.map((c) => c.id)).toEqual(["CA-outbound"]);
   });
 
   // Recents marks a missed call from these two columns, because `status` cannot answer it: Twilio
@@ -178,5 +217,41 @@ describe("parseRecordingDuration", () => {
     for (const bad of [null, undefined, "", "abc", "-5", "1.5", "NaN"]) {
       expect(parseRecordingDuration(bad as string | null | undefined)).toBeNull();
     }
+  });
+});
+
+describe("handleListCalls", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM call_events").run();
+    await env.DB.prepare("DELETE FROM calls").run();
+  });
+
+  it("with a number, returns that number's calls instead of the capped recent list", async () => {
+    await seedCall("CA-target", { startedAt: 1000 }); // "+61400000000" (seedCall's fixed number)
+    await env.DB.prepare(
+      "INSERT INTO calls (id, caller_number, called_number, started_at, status) VALUES (?, ?, ?, ?, ?)"
+    )
+      .bind("CA-other", "+61999999999", "+61200000000", 2000, "completed")
+      .run();
+    const res = await handleListCalls(env.DB, "+61400000000");
+    const body = (await res.json()) as { id: string }[];
+    expect(body.map((c) => c.id)).toEqual(["CA-target"]);
+  });
+
+  // A contact's `phone` field can arrive in whatever shape it was typed/imported in (a leading 0,
+  // no country code) -- normalizePhone is what makes that match the "+61..." form calls always
+  // store, the same way it already does for contact matching.
+  it("normalizes the number before matching, so a non-E.164 shape still finds the call", async () => {
+    await seedCall("CA-national", { startedAt: 1000 });
+    const res = await handleListCalls(env.DB, "0400 000 000");
+    const body = (await res.json()) as { id: string }[];
+    expect(body.map((c) => c.id)).toEqual(["CA-national"]);
+  });
+
+  it("without a number, falls back to the ordinary capped recent-calls list", async () => {
+    await seedCall("CA-recent", { startedAt: 1000 });
+    const res = await handleListCalls(env.DB, null);
+    const body = (await res.json()) as { id: string }[];
+    expect(body.map((c) => c.id)).toEqual(["CA-recent"]);
   });
 });
