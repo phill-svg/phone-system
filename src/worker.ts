@@ -1,7 +1,8 @@
 import { authorizeTwilioWebhook, appendWebhookSecret } from "./twilio/webhookAuth";
 import { isDemoUser, handleDemoRequest, demoEmails } from "./demo";
 import { renderJoinConference, renderDialAgentIntoConference, renderListenConference, renderBridgeToCustomer, renderAbandonToVoicemail } from "./twilio/conferenceTwiml";
-import { createOutboundCall } from "./twilio/restClient";
+import { createOutboundCall, cancelCall, TwilioApiError } from "./twilio/restClient";
+import { wrapResponse } from "./twilio/flowTwiml";
 import { cleanupLoneConference } from "./twilio/conferenceClient";
 import { normalizeCallStatus } from "./twilio/statusCallback";
 import { requireStaffUser } from "./access/requireStaffUser";
@@ -648,8 +649,11 @@ export default {
       // History/Live Calls, and the recording-status callback (which matches on this same
       // conferenceName as `calls.id`) silently discards the recording. Mirrors the inbound
       // insert in CallSession.ts's handleMainWebhook.
+      // `OR IGNORE`: Twilio retries an unanswered/erroring webhook once with the SAME CallSid, so
+      // a failure below that gets retried must not turn a plain "couldn't dial" into a second crash
+      // from a duplicate primary key on this INSERT.
       await env.DB.prepare(
-        "INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours, status, direction) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO calls (id, caller_number, called_number, started_at, is_after_hours, status, direction) VALUES (?, ?, ?, ?, ?, ?, ?)"
       )
         .bind(conferenceName, fromNumber, target, Date.now(), 0, "in_progress", "outbound")
         .run();
@@ -660,35 +664,67 @@ export default {
       const fromEmail = params.From.startsWith("client:") ? params.From.slice("client:".length) : params.From;
       await recordCallLeg(env.DB, conferenceName, fromEmail, conferenceName);
 
-      const { sid: targetSid } = await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
-        to: target,
-        from: fromNumber,
-        // `rec=conf` because THIS is the leg that must record on an outbound softphone call: the
-        // customer is dialled, so there is no caller-owned <Dial> to hang a dual recording on and
-        // the conference recording is the only one. handleTransfer deliberately omits it -- see the
-        // transfer-answer route.
-        url: appendWebhookSecret(
-          `${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}&rec=conf`,
-          env.TWILIO_WEBHOOK_SECRET
-        ),
-        statusCallback: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
-        statusCallbackEvent: ["completed"],
-      });
+      // Twilio can refuse this for reasons entirely outside our control -- a geo-permission block
+      // (error 13227, e.g. AU "High Risk: Special" numbers like 1300/1800 not enabled on the
+      // account), a rotated key, a 429. Left uncaught, that throw escapes to the Workers runtime's
+      // own error page (a bare 500, "error code: 1101" in the Twilio debugger) instead of valid
+      // TwiML -- so the agent's own leg gets no response at all and the app shows a raw failure with
+      // no explanation. Worse, Twilio then retries this same webhook once, which without `OR IGNORE`
+      // above would ALSO throw (duplicate id), guaranteeing two crashes for one failed dial.
+      let targetSid: string;
+      try {
+        ({ sid: targetSid } = await createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
+          to: target,
+          from: fromNumber,
+          // `rec=conf` because THIS is the leg that must record on an outbound softphone call: the
+          // customer is dialled, so there is no caller-owned <Dial> to hang a dual recording on and
+          // the conference recording is the only one. handleTransfer deliberately omits it -- see
+          // the transfer-answer route.
+          url: appendWebhookSecret(
+            `${url.origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}&rec=conf`,
+            env.TWILIO_WEBHOOK_SECRET
+          ),
+          statusCallback: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+          statusCallbackEvent: ["completed"],
+        }));
+      } catch (e) {
+        const detail = e instanceof TwilioApiError ? `${e.status} ${e.body}` : e instanceof Error ? e.message : String(e);
+        console.log("VOICE_APP_DIAL_FAILED", JSON.stringify({ conferenceName, target, detail }));
+        await env.DB.prepare("UPDATE calls SET status = 'failed', ended_at = ? WHERE id = ?").bind(Date.now(), conferenceName).run();
+        return new Response(
+          wrapResponse("<Say>Sorry, that call could not be placed.</Say><Hangup/>"),
+          { headers: { "Content-Type": "text/xml" } }
+        );
+      }
 
-      // Remember the dialed-out leg so an agent hang-up (before the callee answers) can cancel it,
-      // instead of leaving the callee's phone ringing. Recorded on the call row we just inserted.
-      await env.DB.prepare("UPDATE calls SET outbound_target_sid = ? WHERE id = ?").bind(targetSid, conferenceName).run();
+      try {
+        // Remember the dialed-out leg so an agent hang-up (before the callee answers) can cancel
+        // it, instead of leaving the callee's phone ringing. Recorded on the call row we just
+        // inserted.
+        await env.DB.prepare("UPDATE calls SET outbound_target_sid = ? WHERE id = ?").bind(targetSid, conferenceName).run();
 
-      const record = await getRecordingEnabled(env.DB);
-      return new Response(
-        renderDialAgentIntoConference({
-          conferenceName,
-          actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
-          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1`, env.TWILIO_WEBHOOK_SECRET),
-          record,
-        }),
-        { headers: { "Content-Type": "text/xml" } }
-      );
+        const record = await getRecordingEnabled(env.DB);
+        return new Response(
+          renderDialAgentIntoConference({
+            conferenceName,
+            actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
+            recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1`, env.TWILIO_WEBHOOK_SECRET),
+            record,
+          }),
+          { headers: { "Content-Type": "text/xml" } }
+        );
+      } catch (e) {
+        // The target leg was already created and is ringing/connecting -- left alone it would
+        // strand the callee on a live call nobody joins, since the agent's own leg is about to
+        // fail below too. Best-effort: a call that already answered can't be cancelled (Twilio
+        // 400s), which is fine -- it hangs up with the agent leg gone from the conference anyway.
+        await cancelCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, targetSid).catch(() => {});
+        console.log("VOICE_APP_SETUP_FAILED", JSON.stringify({ conferenceName, targetSid, error: e instanceof Error ? e.message : String(e) }));
+        return new Response(
+          wrapResponse("<Say>Sorry, that call could not be placed.</Say><Hangup/>"),
+          { headers: { "Content-Type": "text/xml" } }
+        );
+      }
     }
 
     // Staff-leg status callback: lifecycle of the outbound staff call. Caller's CallSid from the query.
