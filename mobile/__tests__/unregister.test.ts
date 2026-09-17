@@ -22,6 +22,7 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
     on() { return this; }
     off() { return this; }
     async initializePushRegistry() {}
+    async setIncomingCallContactHandleTemplate() {}
     registerCalls: string[] = [];
     registerImpl: (t: string) => Promise<void> = async () => {};
     async register(token: string) {

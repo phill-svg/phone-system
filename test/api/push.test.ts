@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handleRegisterPushToken, notifyMissedCall, notifyVoicemail } from "../../src/api/push";
 import { upsertPushToken } from "../../src/db/pushTokens";
 import { setUserSettings } from "../../src/db/userSettings";
+import { createSession, destroySession, destroySessionsForEmail } from "../../src/access/session";
+import { sha256Hex } from "../../src/access/crypto";
+import { handleTestPush } from "../../src/api/diagnostics";
 
 async function addToken(token: string, email: string) {
   await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1) ON CONFLICT(email) DO NOTHING").bind(email).run();
@@ -103,5 +106,91 @@ describe("recording which build a handset is running", () => {
     const row = await stored();
     expect(row?.ota_build).toBe("67");
     expect(row?.native_build?.length).toBe(32);
+  });
+});
+
+// A push token belongs to the SESSION that registered it. Every business push carries a customer's
+// name and the first 240 characters of their text, and it used to reach a handset forever after
+// sign-out or a password reset, because nothing tied the token to anyone still signed in.
+describe("push tokens bound to the registering session", () => {
+  const OWNER = "bound@n.test";
+
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM push_tokens").run();
+    await env.DB.prepare("DELETE FROM user_settings").run();
+    await env.DB.prepare("DELETE FROM sessions WHERE email = ?").bind(OWNER).run();
+    await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1) ON CONFLICT(email) DO NOTHING").bind(OWNER).run();
+  });
+
+  async function register(token: string, session: string) {
+    const res = await handleRegisterPushToken(
+      new Request("https://x/api/push/register", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session}` },
+        body: JSON.stringify({ token, platform: "ios" }),
+      }),
+      env.DB,
+      { email: OWNER, role: "staff" }
+    );
+    expect(res.status).toBe(200);
+  }
+
+  async function recipients(): Promise<string> {
+    const fetchMock = vi.fn(async (_input: unknown, _init: unknown) => new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await notifyMissedCall(env.DB, "+61400000000");
+    vi.unstubAllGlobals();
+    return String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body ?? "");
+  }
+
+  it("records which session registered the token", async () => {
+    const session = await createSession(env.DB, OWNER);
+    await register("ExponentPushToken[rec]", session);
+    const row = await env.DB.prepare("SELECT session_hash FROM push_tokens WHERE token = ?").bind("ExponentPushToken[rec]").first<{ session_hash: string }>();
+    expect(row?.session_hash).toBe(await sha256Hex(session));
+  });
+
+  it("stops pushing to a handset once its session is logged out, and keeps pushing to a live one", async () => {
+    const gone = await createSession(env.DB, OWNER);
+    const live = await createSession(env.DB, OWNER);
+    await register("ExponentPushToken[gone]", gone);
+    await register("ExponentPushToken[live]", live);
+    await destroySession(env.DB, gone);
+    const body = await recipients();
+    expect(body).toContain("live");
+    expect(body).not.toContain("gone");
+  });
+
+  it("stops pushing after a password reset revokes every session", async () => {
+    await register("ExponentPushToken[reset]", await createSession(env.DB, OWNER));
+    await destroySessionsForEmail(env.DB, OWNER);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await notifyMissedCall(env.DB, "+61400000000");
+    vi.unstubAllGlobals();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rebinds the token when a new session registers it", async () => {
+    const first = await createSession(env.DB, OWNER);
+    await register("ExponentPushToken[rebind]", first);
+    await destroySession(env.DB, first);
+    await register("ExponentPushToken[rebind]", await createSession(env.DB, OWNER));
+    expect(await recipients()).toContain("rebind");
+  });
+
+  // Rows written before this shipped have no session. They keep receiving until the handset next
+  // opens and re-registers, or every phone would go quiet on deploy.
+  it("keeps pushing to a legacy row with no recorded session", async () => {
+    await addToken("ExponentPushToken[legacy]", OWNER);
+    expect(await recipients()).toContain("legacy");
+  });
+
+  it("Test Push skips a signed-out handset too, so it cannot report a phone as fine that real pushes skip", async () => {
+    const gone = await createSession(env.DB, OWNER);
+    await register("ExponentPushToken[tp-gone]", gone);
+    await destroySession(env.DB, gone);
+    const res = await handleTestPush(env, { email: OWNER, role: "staff" });
+    expect(res.status).toBe(400);
   });
 });

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { AppState } from "react-native";
 import { getTokenWhenReadable, setToken } from "./session";
 import { login as apiLogin, getMe, setUnauthorizedHandler, type StaffUser } from "./api";
 import { performSignOut } from "./signOut";
@@ -39,6 +40,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
     return () => setUnauthorizedHandler(null);
   }, []);
+
+  // Signed in on a restored token but the launch lookup failed (no signal on a VoIP-push wake, say).
+  // Without a retry `user` stayed null for the life of the process: no Administration section for an
+  // admin, and the transfer picker offered the holder their own phone. Ask again whenever the app
+  // comes to the foreground until it works. `alive` stops a late answer landing after sign-out.
+  useEffect(() => {
+    if (status !== "authed" || user) return;
+    let alive = true;
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s !== "active") return;
+      getMe()
+        .then((u) => { if (alive) setUser(u); })
+        .catch(() => {});
+    });
+    return () => {
+      alive = false;
+      sub.remove();
+    };
+  }, [status, user]);
 
   const value = useMemo<AuthValue>(() => ({
     status,

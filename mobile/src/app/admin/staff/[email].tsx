@@ -73,7 +73,8 @@ export default function StaffMemberScreen() {
     setSavingSchedule(true);
     try {
       await setStaffSchedule(member.email, schedule);
-      setMember({ ...member, schedule });
+      // Functional: two saves in flight must not undo each other's field on screen.
+      setMember((m) => (m ? { ...m, schedule } : m));
     } catch (e) {
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
     } finally {
@@ -93,7 +94,7 @@ export default function StaffMemberScreen() {
     setSavingPriority(true);
     try {
       await setStaffRingPriority(member.email, priority);
-      setMember({ ...member, ringPriority: priority });
+      setMember((m) => (m ? { ...m, ringPriority: priority } : m));
     } catch (e) {
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
     } finally {
@@ -104,11 +105,11 @@ export default function StaffMemberScreen() {
   async function changeAvailability(next: "available" | "away") {
     if (!member || next === member.status) return;
     const previous = member.status;
-    setMember({ ...member, status: next }); // optimistic
+    setMember((m) => (m ? { ...m, status: next } : m)); // optimistic
     try {
       await setStaffAvailability(member.email, next);
     } catch (e) {
-      setMember({ ...member, status: previous });
+      setMember((m) => (m ? { ...m, status: previous } : m));
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
     }
   }

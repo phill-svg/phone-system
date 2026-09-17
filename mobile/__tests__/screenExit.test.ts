@@ -1,4 +1,6 @@
-import { createScreenExit } from "../src/lib/nav";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { blocksLeaving, createScreenExit } from "../src/lib/nav";
 
 // The in-call screen leaves once its call ends. router.back() pops whatever is on TOP, so leaving
 // while another screen covers this one pops the wrong screen, and leaving twice pops two. Each of
@@ -51,5 +53,19 @@ describe("createScreenExit", () => {
     exit.leave(); // the 600ms timer
     exit.onFocus();
     expect(state.backs).toBe(1);
+  });
+});
+
+describe("blocksLeaving", () => {
+  it("blocks Back while the call is being placed or is live, and lets an ended call go", () => {
+    expect(blocksLeaving("calling")).toBe(true);
+    expect(blocksLeaving("connected")).toBe(true);
+    expect(blocksLeaving("ended")).toBe(false);
+  });
+
+  // Rule alone is not the fix: the screen has to hand it to usePreventRemove.
+  it("is what the in-call screen uses to block removal", () => {
+    const src = readFileSync(join(__dirname, "..", "src", "app", "call-active.tsx"), "utf8");
+    expect(src).toMatch(/usePreventRemove\(\s*blocksLeaving\(state\)/);
   });
 });

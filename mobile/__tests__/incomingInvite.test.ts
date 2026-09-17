@@ -33,6 +33,7 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
       (this.handlers[e] || []).forEach((f) => f(...a));
     }
     async initializePushRegistry() {}
+    async setIncomingCallContactHandleTemplate() {}
     async register() {}
     pendingInvites = new Map<string, any>();
     async getCallInvites() {
@@ -164,6 +165,23 @@ describe("incoming invite lifecycle", () => {
     invite.fire(CallInviteEvent.Cancelled);
 
     expect(seen).toHaveBeenCalledTimes(1);
+    off();
+    unsub();
+  });
+
+  // Declining on the CallKit banner or the Android notification raises Rejected, never Cancelled.
+  it("drops an invite declined from the native UI and notifies so the ringing screen dismisses", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const seen = jest.fn();
+    const off = track(voiceLib.onInviteCancelled(seen));
+
+    const invite = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", invite);
+    invite.state = CallInviteState.Rejected;
+    invite.fire(CallInviteEvent.Rejected);
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(voiceLib.getPendingInvite()).toBeNull();
     off();
     unsub();
   });

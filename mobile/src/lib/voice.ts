@@ -446,13 +446,19 @@ function handleInvite(invite: CallInvite): void {
   // at :34 and the process died at :35 inside -[CXProvider performAction:] -> TVOAcceptOptions.
   // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
   // live the whole time the screen is up.
-  invite.on(CallInvite.Event.Cancelled, () => {
+  const withdrawn = () => {
     if (pendingInvite === invite) {
       pendingInvite = null;
       lastInviteOutcome = "cancelled";
     }
     notifyInviteCancelled();
-  });
+  };
+  invite.on(CallInvite.Event.Cancelled, withdrawn);
+  // Declined from the native UI (the CallKit banner or lock screen, the Android call notification).
+  // The SDK raises Rejected for that, never Cancelled, so without this the ringing screen stayed up
+  // with live buttons for a call that no longer existed. Our own Decline also raises it; the screen's
+  // actedRef makes the second dismiss a no-op.
+  invite.on(CallInvite.Event.Rejected, withdrawn);
   // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
   // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
   // second accept can reach the native layer, and tell the ringing screen to get out of the way.

@@ -3,6 +3,8 @@ import { upsertPushToken, deletePushTokens, getPushTokensForType } from "../db/p
 import { findContactByPhone } from "../db/contacts";
 import { sendExpoPush } from "../push/expoPush";
 import type { StaffUser } from "../access/requireStaffUser";
+import { parseBearerToken, parseSessionCookie } from "../access/session";
+import { sha256Hex } from "../access/crypto";
 
 // A build identifier is a short token ("67", "5"), and whatever arrives here is read back into
 // every line of Admin > Health Checks. Cap it rather than store an unbounded string a client chose:
@@ -28,7 +30,10 @@ export async function handleRegisterPushToken(request: Request, db: D1Database, 
   // installed -- an OTA can never deliver the CallKit AppDelegate patch, so the OTA number alone
   // cannot answer "why didn't my phone ring?". Both are optional: an older handset simply omits
   // them and upsertPushToken keeps whatever it already knew.
+  // The bearer (handset) or cookie session this request came in on. Absent only under AUTH_MODE=dev.
+  const session = parseSessionCookie(request) ?? parseBearerToken(request);
   await upsertPushToken(db, {
+    sessionHash: session ? await sha256Hex(session) : null,
     token,
     platform,
     staffEmail: staff.email,

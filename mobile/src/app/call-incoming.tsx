@@ -89,6 +89,13 @@ export default function IncomingCallScreen() {
     rejectIncoming().catch(() => {});
     dismiss();
   }
+  // Decline, then open the conversation with the caller so a text can go out while the call rings on
+  // to the team. Both buttons here used to only decline; "Remind Me" was removed rather than faked.
+  function message() {
+    if (actedRef.current) return;
+    decline();
+    router.push({ pathname: "/thread/[number]", params: { number } });
+  }
 
   // The invite can already be settled by the time this mounts, and the listeners below only hear
   // about changes AFTER they subscribe -- which left a live Answer button on a dead invite. The
@@ -159,8 +166,9 @@ export default function IncomingCallScreen() {
 
       <View style={[styles.actions, { paddingBottom: insets.bottom + 28 }]}>
         <View style={styles.secondaryRow}>
-          <SecondaryAction icon="alarm.fill" fallback="alarm" label="Remind Me" onPress={decline} />
-          <SecondaryAction icon="message.fill" fallback="chatbubble" label="Message" onPress={decline} />
+          {/* Not during call waiting: dismissing drops back to the live call, and a thread pushed on
+              top would cover it. */}
+          {!isWaiting && <SecondaryAction icon="message.fill" fallback="chatbubble" label="Message" onPress={message} />}
         </View>
         <View style={styles.primaryRow}>
           <View style={styles.primaryCol}>
@@ -185,7 +193,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#0C0C0E" },
   header: { alignItems: "center", paddingHorizontal: 24 },
   actions: { marginTop: "auto", paddingHorizontal: 40, gap: 34 },
-  secondaryRow: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 20 },
+  secondaryRow: { flexDirection: "row", justifyContent: "center", paddingHorizontal: 20 },
   secondary: { alignItems: "center", gap: 7 },
   secondaryIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: "rgba(255,255,255,0.14)", alignItems: "center", justifyContent: "center" },
   secondaryLabel: { color: "#FFFFFF", fontSize: 12.5 },

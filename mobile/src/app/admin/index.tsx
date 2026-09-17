@@ -10,7 +10,7 @@ import {
   getDivertCallerIdSetting,
   getIvrFlow,
   getMissedCallSmsSetting,
-  getNumbers,
+  fetchNumbers,
   getOnCall,
   getRecordingSetting,
   setDivertCallerIdSetting,
@@ -48,7 +48,7 @@ export default function AdminHomeScreen() {
       getAdminStaff()
         .then((s) => alive && setStaffCount(`${s.length}`))
         .catch(() => alive && setStaffCount("—"));
-      getNumbers()
+      fetchNumbers()
         .then((n) => alive && setNumberCount(`${n.length}`))
         .catch(() => alive && setNumberCount("—"));
       getRecordingSetting()

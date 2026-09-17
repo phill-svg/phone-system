@@ -1,0 +1,11 @@
+-- Which session registered each push token.
+--
+-- Every business push goes to every row in push_tokens, and a push carries a customer's name and the
+-- first 240 characters of their text. Nothing tied a token to anyone still signed in: signing out
+-- destroyed the session and left the token, and a password reset did the same, so a signed-out
+-- handset kept showing customer messages on its lock screen indefinitely.
+--
+-- Senders now skip a row whose session no longer exists. NULL is a handset that has not re-registered
+-- since this shipped; those keep receiving, or every phone would go quiet the moment this deployed.
+-- Handsets re-register every time the app opens, so NULL rows fade out on their own.
+ALTER TABLE push_tokens ADD COLUMN session_hash TEXT;

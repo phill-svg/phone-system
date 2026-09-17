@@ -280,12 +280,10 @@ export type Conversation = {
   unread: number;
 };
 
+// Throws, like getThread below: a swallowed failure resolved [], which React Query stored as
+// success -- one failed refetch on returning to the tab replaced the whole list with "No Messages".
 export async function getConversations(): Promise<Conversation[]> {
-  try {
-    return await apiFetch<Conversation[]>("/api/messages");
-  } catch {
-    return [];
-  }
+  return apiFetch<Conversation[]>("/api/messages");
 }
 
 // Throws rather than returning []: the open thread polls, and React Query keeps the last good data
@@ -313,12 +311,15 @@ export type PhoneNumber = {
   region: string | null;
 };
 
+// Throws. For Admin > Phone Numbers and the hub count, where an empty list reads as "no numbers
+// configured" and invites re-adding one that exists.
+export async function fetchNumbers(): Promise<PhoneNumber[]> {
+  return apiFetch<PhoneNumber[]>("/api/numbers");
+}
+
+// Never throws: the sending-number pickers just offer no choice when the load fails.
 export async function getNumbers(): Promise<PhoneNumber[]> {
-  try {
-    return await apiFetch<PhoneNumber[]>("/api/numbers");
-  } catch {
-    return [];
-  }
+  return fetchNumbers().catch(() => []);
 }
 
 // Register this device's Expo push token so the server can notify it of inbound SMS.
