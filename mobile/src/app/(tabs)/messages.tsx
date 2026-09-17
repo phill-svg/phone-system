@@ -80,6 +80,12 @@ export default function MessagesScreen() {
       <LargeHeader title="Messages" right={header} />
       {convos.isLoading ? (
         <ActivityIndicator color={t.colors.accent} style={{ marginTop: 48 }} />
+      ) : convos.isError && !convos.data ? (
+        <EmptyState
+          icon="message"
+          title="Couldn't Load Messages"
+          message="Check your connection. The list reloads when you come back to this tab."
+        />
       ) : (convos.data ?? []).length === 0 ? (
         <EmptyState
           icon="message"

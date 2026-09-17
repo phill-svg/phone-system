@@ -24,7 +24,7 @@ describe("inbound message notification titles", () => {
     await env.DB.prepare("DELETE FROM push_tokens").run();
     await env.DB.prepare("DELETE FROM contacts").run();
     await env.DB.prepare(
-      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[abc]', 'ios', NULL, 1, 1)"
+      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[abc]', 'ios', NULL, 1, strftime('%s','now') * 1000)"
     ).run();
   });
   afterEach(() => {

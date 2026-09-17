@@ -10,7 +10,8 @@ export function Segmented<T extends string>({
   onChange,
 }: {
   options: { label: string; value: T }[];
-  value: T;
+  // null selects nothing.
+  value: T | null;
   onChange: (v: T) => void;
 }) {
   const t = useTheme();

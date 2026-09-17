@@ -5,7 +5,7 @@ import { Group, Row } from "../../components/ui/Grouped";
 import { PrimaryButton } from "../../components/ui/PrimaryButton";
 import { Segmented } from "../../components/ui/Segmented";
 import {
-  getNumbers,
+  fetchNumbers,
   createNumber,
   updateNumber,
   deleteNumber,
@@ -54,9 +54,12 @@ export default function NumbersScreen() {
 
   async function load() {
     try {
-      setNumbers(await getNumbers());
+      setNumbers(await fetchNumbers());
     } catch {
-      setError("Couldn't load the phone numbers.");
+      // A failed RELOAD (after a save, remove or add) keeps the list on screen: replacing it would
+      // unmount every card and throw away edits still unsaved on the others.
+      if (numbers === null) setError("Couldn't load the phone numbers.");
+      else Alert.alert("Couldn't refresh", "The list may be out of date. Reopen this screen to reload it.");
     }
   }
   useEffect(() => {
@@ -126,7 +129,7 @@ export default function NumbersScreen() {
           </View>
           <Row label="Voice" toggle={draft.voice_enabled} onToggle={(v) => setDraft({ ...draft, voice_enabled: v })} />
           <Row label="SMS" toggle={draft.sms_enabled} onToggle={(v) => setDraft({ ...draft, sms_enabled: v })} />
-          <RegionPicker value={(draft.region as Region) ?? "au1"} onChange={(r) => setDraft({ ...draft, region: r })} />
+          <RegionPicker value={(draft.region as Region | null) ?? "au1"} onChange={(r) => setDraft({ ...draft, region: r })} />
         </Group>
 
         <View style={{ paddingHorizontal: 16, marginTop: 20 }}>
@@ -205,7 +208,7 @@ function NumberCard({ number, onChanged }: { number: PhoneNumber; onChanged: () 
       <Row label="SMS" toggle={input.sms_enabled} onToggle={(v) => setInput({ ...input, sms_enabled: v })} />
       <Row label="Default for calls" toggle={input.is_default_voice} onToggle={(v) => setInput({ ...input, is_default_voice: v })} />
       <Row label="Default for texts" toggle={input.is_default_sms} onToggle={(v) => setInput({ ...input, is_default_sms: v })} />
-      <RegionPicker value={(input.region as Region) ?? "au1"} onChange={(r) => setInput({ ...input, region: r })} />
+      <RegionPicker value={input.region as Region | null} onChange={(r) => setInput({ ...input, region: r })} />
       {wrongRegion ? (
         <Row icon="exclamationmark.triangle.fill" iconColor={t.colors.warning} label="Voice number is not in au1" />
       ) : null}
@@ -221,7 +224,9 @@ function NumberCard({ number, onChanged }: { number: PhoneNumber; onChanged: () 
   );
 }
 
-function RegionPicker({ value, onChange }: { value: Region; onChange: (r: Region) => void }) {
+// `value` is null for a number whose region was never recorded. No segment is selected then:
+// showing au1 highlighted beside a "not in au1" warning claimed a region nothing had stored.
+function RegionPicker({ value, onChange }: { value: Region | null; onChange: (r: Region) => void }) {
   return (
     <View style={{ paddingHorizontal: 14, paddingVertical: 12 }}>
       <Segmented<Region>

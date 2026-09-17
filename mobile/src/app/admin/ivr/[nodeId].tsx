@@ -207,7 +207,7 @@ export default function IvrNodeScreen() {
   const others = flow.nodes.filter((n) => n.id !== node.id);
   const nameOf = (id: unknown) => {
     const target = flow.nodes.find((n) => n.id === id);
-    return target ? nodePickerLabel(target) : "Not set — callers fall through";
+    return target ? nodePickerLabel(target) : "Not set — callers reaching this are cut off";
   };
 
   // A "go to" field. Expands in place rather than pushing a picker screen: the list is short, and

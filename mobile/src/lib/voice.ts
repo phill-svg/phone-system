@@ -263,7 +263,13 @@ async function registerWithRetry(token: string, generation: number): Promise<boo
 // ---- Outbound ----
 // `from` optionally sets the caller-ID (validated server-side in /twiml/voice-app against the
 // business's voice-enabled numbers); omit to use the default number.
+// Bumped whenever a call becomes, or starts becoming, the active one. A placeCall that settles after
+// a newer call has started (End tapped mid-placement, then a redial) hands its call back to the
+// screen to hang up, but must not take `activeCall` from the newer call.
+let callGeneration = 0;
+
 export async function placeCall(to: string, from?: string): Promise<Call> {
+  const generation = ++callGeneration;
   await ensureMicPermission();
   const token = await getSoftphoneToken(tokenPlatform());
   // CallerNumber isn't about caller ID here -- it's what setIncomingCallContactHandleTemplate reads
@@ -272,6 +278,7 @@ export async function placeCall(to: string, from?: string): Promise<Call> {
   const params: Record<string, string> = { To: to, CallerNumber: to };
   if (from) params.CallerId = from;
   const call = await voice.connect(token, { params });
+  if (generation !== callGeneration) return call;
   activeCall = call;
   // Identity-guarded: if a call-waiting swap has already moved `activeCall` to a newer
   // call by the time this call terminates, don't clobber it.
@@ -287,6 +294,7 @@ export async function placeCall(to: string, from?: string): Promise<Call> {
 
 // Makes an answered call the one the in-call screen drives, and lets go of it when it ends.
 function adoptCall(call: Call): void {
+  callGeneration++;
   activeCall = call;
   call.on(Call.Event.Disconnected, () => {
     if (activeCall === call) activeCall = null;
@@ -446,13 +454,19 @@ function handleInvite(invite: CallInvite): void {
   // at :34 and the process died at :35 inside -[CXProvider performAction:] -> TVOAcceptOptions.
   // The window is easy to hit: auto-answer fires on a timer, and CallKit's own Answer button is
   // live the whole time the screen is up.
-  invite.on(CallInvite.Event.Cancelled, () => {
+  const withdrawn = () => {
     if (pendingInvite === invite) {
       pendingInvite = null;
       lastInviteOutcome = "cancelled";
     }
     notifyInviteCancelled();
-  });
+  };
+  invite.on(CallInvite.Event.Cancelled, withdrawn);
+  // Declined from the native UI (the CallKit banner or lock screen, the Android call notification).
+  // The SDK raises Rejected for that, never Cancelled, so without this the ringing screen stayed up
+  // with live buttons for a call that no longer existed. Our own Decline also raises it; the screen's
+  // actedRef makes the second dismiss a no-op.
+  invite.on(CallInvite.Event.Rejected, withdrawn);
   // Answered somewhere other than our own screen -- CallKit's native UI, or the SDK auto-accepting.
   // Adopt the resulting Call so the in-call screen has something to drive, drop the invite so no
   // second accept can reach the native layer, and tell the ringing screen to get out of the way.
@@ -562,6 +576,7 @@ export async function acceptIncoming(): Promise<Call | null> {
     return liveCall();
   }
   const call = await invite.accept();
+  callGeneration++;
   activeCall = call;
   // Identity-guarded: if a call-waiting swap has already moved `activeCall` to a newer
   // call by the time this call terminates, don't clobber it.

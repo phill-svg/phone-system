@@ -1330,7 +1330,7 @@ describe("CallSession", () => {
     await seedStaff("phill@b.com");
     await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
     await env.DB.prepare(
-      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[t1]', 'ios', 'phill@b.com', 1, 1)"
+      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[t1]', 'ios', 'phill@b.com', 1, strftime('%s','now') * 1000)"
     ).run();
 
     const stub = stubFor("CA-divert-push");
@@ -1359,7 +1359,7 @@ describe("CallSession", () => {
     await seedStaff("phill@b.com");
     await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
     await env.DB.prepare(
-      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[t2]', 'ios', 'phill@b.com', 1, 1)"
+      "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[t2]', 'ios', 'phill@b.com', 1, strftime('%s','now') * 1000)"
     ).run();
 
     const stub = stubFor("CA-nodivert-push");

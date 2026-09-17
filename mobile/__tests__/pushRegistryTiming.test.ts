@@ -24,6 +24,7 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
       if (mockRegistry.fail) throw new Error(mockRegistry.fail);
     }
     async register() {}
+    async setIncomingCallContactHandleTemplate() {}
   }
   const Voice: any = jest.fn().mockImplementation(() => new FakeVoice());
   Voice.Event = { CallInvite: "callInvite", Registered: "registered", Error: "error" };

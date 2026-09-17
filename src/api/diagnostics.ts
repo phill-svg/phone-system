@@ -2,6 +2,7 @@ import { jsonResponse } from "./respond";
 import { authHeader, globalAuthHeader } from "../twilio/conferenceClient";
 import { listPhoneNumbers } from "../db/phoneNumbers";
 import { blankToNull } from "../db/calls";
+import { LIVE_PUSH_TOKENS } from "../db/pushTokens";
 import { getStaffRoster } from "../db/staff";
 import { getDivertCallerId, getDivertCallerIdRejection } from "../db/settings";
 import { isStaffAvailable } from "../dial/presence";
@@ -440,7 +441,7 @@ async function checkPushTokens(env: Env, staff: StaffUser): Promise<Check> {
   let rows: DeviceRow[];
   try {
     const res = await env.DB.prepare(
-      "SELECT platform, ota_build, native_build, last_seen FROM push_tokens WHERE staff_email = ? ORDER BY last_seen DESC"
+      `SELECT p.platform, p.ota_build, p.native_build, p.last_seen FROM ${LIVE_PUSH_TOKENS} AND p.staff_email = ? ORDER BY p.last_seen DESC`
     )
       .bind(staff.email)
       .all<DeviceRow>();
@@ -806,7 +807,7 @@ export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<
 // End-to-end push: the only proof that the whole chain works is a phone buzzing. Deliberately sent
 // only to the CALLER's own devices -- a test button that pages the whole team would not get used.
 export async function handleTestPush(env: Env, staff: StaffUser): Promise<Response> {
-  const rows = await env.DB.prepare("SELECT token FROM push_tokens WHERE staff_email = ?")
+  const rows = await env.DB.prepare(`SELECT p.token FROM ${LIVE_PUSH_TOKENS} AND p.staff_email = ?`)
     .bind(staff.email)
     .all<{ token: string }>();
   const tokens = rows.results.map((r) => r.token);

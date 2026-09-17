@@ -15,6 +15,9 @@ export async function upsertPushToken(
     // -- an OTA reaches every binary on the same runtimeVersion, so otaBuild cannot answer it.
     otaBuild?: string | null;
     nativeBuild?: string | null;
+    // sha256 of the session token that registered it (sessions.token_hash). Overwritten, never
+    // COALESCEd: a new session registering this token is exactly the rebinding that has to win.
+    sessionHash?: string | null;
   }
 ): Promise<void> {
   // COALESCE, so a client that does not send them -- an older handset, or one whose
@@ -24,16 +27,17 @@ export async function upsertPushToken(
   // COALESCE and blanks the column just as destructively as NULL would have.
   await db
     .prepare(
-      `INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen, ota_build, native_build)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen, ota_build, native_build, session_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(token) DO UPDATE SET
          platform = excluded.platform,
          staff_email = excluded.staff_email,
          last_seen = excluded.last_seen,
+         session_hash = excluded.session_hash,
          ota_build = COALESCE(excluded.ota_build, push_tokens.ota_build),
          native_build = COALESCE(excluded.native_build, push_tokens.native_build)`
     )
-    .bind(t.token, t.platform, t.staffEmail, t.now, t.now, blankToNull(t.otaBuild), blankToNull(t.nativeBuild))
+    .bind(t.token, t.platform, t.staffEmail, t.now, t.now, blankToNull(t.otaBuild), blankToNull(t.nativeBuild), t.sessionHash ?? null)
     .run();
 }
 
@@ -46,9 +50,25 @@ export async function deletePushTokens(db: D1Database, tokens: string[]): Promis
 // Tokens to notify for a given push type. A token is included when its owner has NOT disabled that
 // type (default is on) — and tokens with no known owner are always included. `value = 'false'` is the
 // JSON encoding a disabled boolean is stored as (see userSettings).
+// The push_tokens rows that may still be pushed to, as a FROM clause aliased `p`: the session that
+// registered the token still exists. Logout, a password reset and staff removal all delete sessions,
+// so each of them stops the pushes.
+//
+// A NULL session_hash predates migration 0039. A signed-in handset replaces it the next time the app
+// opens; a handset signed out before 0039 never registers again, so its row would receive forever.
+// NULL rows are therefore live only while last_seen is under 30 days old, the same window Health
+// Checks already uses to call a device inactive. (Not Date.now() in a module constant: a Worker's
+// clock reads 0 at module scope.)
+// EVERY reader that sends, or reports what would be sent, uses this -- Health Checks and Test Push
+// included, or they call a phone fine that real pushes skip.
+export const LIVE_PUSH_TOKENS =
+  "push_tokens p LEFT JOIN sessions s ON s.token_hash = p.session_hash WHERE (" +
+  "s.token_hash IS NOT NULL OR " +
+  "(p.session_hash IS NULL AND p.last_seen >= CAST(strftime('%s','now') AS INTEGER) * 1000 - 2592000000))";
+
 export async function getPushTokensForType(db: D1Database, key: NotifKey): Promise<string[]> {
   const tokens = await db
-    .prepare("SELECT token, staff_email FROM push_tokens")
+    .prepare(`SELECT p.token, p.staff_email FROM ${LIVE_PUSH_TOKENS}`)
     .all<{ token: string; staff_email: string | null }>();
   const disabled = await db
     .prepare("SELECT email FROM user_settings WHERE key = ? AND value = 'false'")

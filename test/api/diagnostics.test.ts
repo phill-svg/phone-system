@@ -310,12 +310,17 @@ describe("admin diagnostics", () => {
   describe("which build a handset is running", () => {
     // `last_seen` is now load-bearing: a device nobody has opened in a month is not judged, so a
     // test device has to look like it checked in today rather than at the epoch.
-    const register = (platform: string, ota: string | null, native: string | null, token = TOKEN, lastSeen = Date.now()) =>
-      env.DB.prepare(
-        "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen, ota_build, native_build) VALUES (?, ?, ?, 1, ?, ?, ?)"
+    // Bound to a live session, as every row registered since migration 0039 is: a NULL session_hash
+    // row older than 30 days is treated as a signed-out handset and never reaches this check.
+    const register = async (platform: string, ota: string | null, native: string | null, token = TOKEN, lastSeen = Date.now()) => {
+      await env.DB.prepare("INSERT OR IGNORE INTO staff_users (email, role, created_at) VALUES (?, 'admin', 1)").bind(ADMIN.email).run();
+      await env.DB.prepare("INSERT OR IGNORE INTO sessions (token_hash, email, created_at, expires_at) VALUES ('diag-live', ?, 1, 9999999999999)").bind(ADMIN.email).run();
+      await env.DB.prepare(
+        "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen, ota_build, native_build, session_hash) VALUES (?, ?, ?, 1, ?, ?, ?, 'diag-live')"
       )
         .bind(token, platform, ADMIN.email, lastSeen, ota, native)
         .run();
+    };
 
     it("fails an iPhone on a binary older than the CallKit fix", async () => {
       await register("ios", "67", "4");
@@ -993,8 +998,8 @@ describe("test push", () => {
   });
 
   it("sends only to the caller's own devices, never a colleague's", async () => {
-    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)").bind(TOKEN, ADMIN.email).run();
-    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[someone-else]', 'android', 'mate@example.com', 1, 1)").run();
+    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, strftime('%s','now') * 1000)").bind(TOKEN, ADMIN.email).run();
+    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[someone-else]', 'android', 'mate@example.com', 1, strftime('%s','now') * 1000)").run();
     const fetchMock = stubFetch();
     const res = await handleTestPush(baseEnv(), ADMIN);
     expect(res.status).toBe(200);
@@ -1005,7 +1010,7 @@ describe("test push", () => {
 
   // A dead token means a phone that will never buzz; leaving it in the count is a lie.
   it("prunes a device Expo reports as dead", async () => {
-    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)").bind(TOKEN, ADMIN.email).run();
+    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, strftime('%s','now') * 1000)").bind(TOKEN, ADMIN.email).run();
     stubFetch({ expo: { data: [{ status: "error", message: "gone", details: { error: "DeviceNotRegistered" } }] } });
     const res = await handleTestPush(baseEnv(), ADMIN);
     expect((await res.json<{ pruned: number }>()).pruned).toBe(1);

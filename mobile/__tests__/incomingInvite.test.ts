@@ -33,6 +33,7 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
       (this.handlers[e] || []).forEach((f) => f(...a));
     }
     async initializePushRegistry() {}
+    async setIncomingCallContactHandleTemplate() {}
     async register() {}
     pendingInvites = new Map<string, any>();
     async getCallInvites() {
@@ -41,6 +42,10 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
     calls = new Map<string, any>();
     async getCalls() {
       return this.calls;
+    }
+    connectQueue: ((call: any) => void)[] = [];
+    connect() {
+      return new Promise((resolve) => this.connectQueue.push(resolve));
     }
   }
   const Voice: any = jest.fn().mockImplementation(() => {
@@ -164,6 +169,47 @@ describe("incoming invite lifecycle", () => {
     invite.fire(CallInviteEvent.Cancelled);
 
     expect(seen).toHaveBeenCalledTimes(1);
+    off();
+    unsub();
+  });
+
+  // End tapped while an outbound call is still being placed leaves the screen at once, so the user
+  // can dial again before the first placeCall settles. The late first call must not become the
+  // active call over the one actually live, or the next incoming call is not seen as call waiting.
+  it("a late outbound call does not replace a newer active call", async () => {
+    Platform.OS = "ios";
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const fake = mockVoiceRef.current;
+    const call = (name: string) => ({ name, on: jest.fn(), getState: () => "connected" });
+
+    const first = voiceLib.placeCall("+61400000001");
+    await new Promise((r) => setTimeout(r, 0));
+    const second = voiceLib.placeCall("+61400000002");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const live = call("second");
+    fake.connectQueue[1](live);
+    await second;
+    fake.connectQueue[0](call("first"));
+    await first;
+
+    expect(voiceLib.getActiveCall()).toBe(live);
+    unsub();
+  });
+
+  // Declining on the CallKit banner or the Android notification raises Rejected, never Cancelled.
+  it("drops an invite declined from the native UI and notifies so the ringing screen dismisses", async () => {
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const seen = jest.fn();
+    const off = track(voiceLib.onInviteCancelled(seen));
+
+    const invite = makeInvite(CallInviteState.Pending);
+    mockVoiceRef.current.emit("callInvite", invite);
+    invite.state = CallInviteState.Rejected;
+    invite.fire(CallInviteEvent.Rejected);
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(voiceLib.getPendingInvite()).toBeNull();
     off();
     unsub();
   });

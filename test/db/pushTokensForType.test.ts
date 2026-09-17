@@ -5,7 +5,7 @@ import { setUserSettings } from "../../src/db/userSettings";
 
 async function addToken(token: string, email: string | null) {
   await env.DB.prepare(
-    "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)"
+    "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, strftime('%s','now') * 1000)"
   ).bind(token, email).run();
 }
 

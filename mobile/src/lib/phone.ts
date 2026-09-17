@@ -18,9 +18,14 @@ export function normalizePhone(raw: string): string {
 // E.164 form ("+61400123456"). Twilio reports a call's `From` this way, and the call blocklist is
 // matched as a literal string against it (src/worker.ts: blocklist.includes(params.From)) -- so an
 // entry typed as "0400 123 456" only ever blocks anyone once it is stored in this shape.
+//
+// 1300/1800 and 13xx numbers carry no trunk 0, so normalizePhone leaves them bare and they would come
+// out as "+1300...". Fixed HERE rather than in normalizePhone, which has to stay identical to the
+// backend copy that wrote every stored contact's phone_normalized.
 export function toE164(raw: string): string {
   const digits = normalizePhone(raw);
-  return digits ? `+${digits}` : "";
+  if (!digits) return "";
+  return /^(1[38]00\d{6}|13\d{4})$/.test(digits) ? `+61${digits}` : `+${digits}`;
 }
 
 // Pretty display for AU numbers; falls back to loose 3/4 grouping otherwise.

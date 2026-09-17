@@ -127,4 +127,12 @@ describe("toE164", () => {
     expect(toE164("61400123456")).toBe("+61400123456");
     expect(toE164("")).toBe("");
   });
+
+  // No trunk 0 to rewrite, so these became "+1300..." -- a North American number no caller has.
+  it("keeps 1300, 1800 and 13xx numbers Australian", () => {
+    expect(toE164("1300 123 456")).toBe("+611300123456");
+    expect(toE164("1800123456")).toBe("+611800123456");
+    expect(toE164("13 14 50")).toBe("+61131450");
+    expect(toE164("+611300123456")).toBe("+611300123456");
+  });
 });

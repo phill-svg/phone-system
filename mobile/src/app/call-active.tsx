@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import { router, useLocalSearchParams } from "expo-router";
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused, usePreventRemove } from "@react-navigation/native";
 import { type SymbolViewProps } from "expo-symbols";
 import { Icon } from "../components/ui/Icon";
 import { useContactName } from "../lib/useContactName";
@@ -14,7 +14,7 @@ import { formatPhone } from "../lib/phone";
 import { placeCall, getActiveCall, listAudioDevices, selectAudioRoute, onAudioDevicesUpdated } from "../lib/voice";
 import { setPref } from "../lib/prefs";
 import { holdCall, getRecordingSetting } from "../lib/api";
-import { createScreenExit } from "../lib/nav";
+import { blocksLeaving, createScreenExit, leaveAfterFailedHangup } from "../lib/nav";
 import type { AudioDeviceLike, AudioRoutePref } from "../lib/audioRouting";
 import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
 import { haptics } from "../theme/haptics";
@@ -88,6 +88,9 @@ export default function ActiveCallScreen() {
   const isIncoming = params.direction === "incoming";
 
   const [state, setState] = useState<CallState>("calling");
+  // Android Back and the edge gesture pop this screen, and the unmount below hangs up. Back does
+  // nothing until the call has ended; End is the way out.
+  usePreventRemove(blocksLeaving(state), () => {});
   const [seconds, setSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
   // Read when the Call attaches: mute tapped while an outbound call is still being placed had no
@@ -118,6 +121,10 @@ export default function ActiveCallScreen() {
   const [errorText, setErrorText] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const callRef = useRef<TwilioCall | null>(null);
+  // End tapped before an outbound call attached (token fetch, mic permission prompt). The call is
+  // hung up the moment placeCall hands it over, instead of going on to ring the customer.
+  const endRequestedRef = useRef(false);
+  const hangupFailuresRef = useRef(0);
 
   // Tracks whether THIS call-active screen is the one on top of the stack. When a call-waiting
   // accept pushes a second call-active screen on top of this one, this screen gets blurred but
@@ -162,7 +169,7 @@ export default function ActiveCallScreen() {
           finish();
           return;
         }
-        if (!mounted) {
+        if (!mounted || endRequestedRef.current) {
           call.disconnect();
           return;
         }
@@ -183,7 +190,7 @@ export default function ActiveCallScreen() {
     })();
     return () => {
       mounted = false;
-      callRef.current?.disconnect();
+      if (callRef.current) Promise.resolve(callRef.current.disconnect()).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -231,17 +238,28 @@ export default function ActiveCallScreen() {
     }
     const call = callRef.current;
     if (!call) {
-      // No Call object attached to this screen: leaving would strand a live call with no UI, so
-      // say so instead of silently navigating away.
-      console.warn("[call-active] end pressed with no active call object");
-      setErrorText("Can't end this call from here - use the other device.");
+      // Still being placed: nothing is ringing yet. Leave now and hang up whatever placeCall hands
+      // over. This used to say "use the other device" and let the call go on to ring the customer.
+      endRequestedRef.current = true;
+      finish();
       return;
     }
     // disconnect() is async and CAN reject; unawaited it fails silently and the button looks dead.
     // The screen still closes on the Disconnected event, not here.
     Promise.resolve(call.disconnect()).catch((e: unknown) => {
       console.warn("[call-active] disconnect failed", e);
-      setErrorText((e as { message?: string })?.message ?? "Couldn't end the call");
+      hangupFailuresRef.current += 1;
+      let callState = "";
+      try {
+        callState = String(call.getState());
+      } catch {
+        // Unknown state: treat it as possibly live.
+      }
+      if (leaveAfterFailedHangup(hangupFailuresRef.current, callState)) {
+        finish();
+      } else {
+        setErrorText(`${(e as { message?: string })?.message ?? "Couldn't end the call"} - tap End to try again`);
+      }
     });
   }
 
@@ -297,7 +315,7 @@ export default function ActiveCallScreen() {
         ) : null}
         <Avatar name={displayName || undefined} size={104} />
         <Text style={[type.title1, { color: C.text, marginTop: 20 }]} numberOfLines={1}>{title}</Text>
-        {name ? <Text style={[type.callout, { color: C.sub, marginTop: 2 }]}>{formatPhone(number)}</Text> : null}
+        {displayName ? <Text style={[type.callout, { color: C.sub, marginTop: 2 }]}>{formatPhone(number)}</Text> : null}
         <Text style={[type.body, { color: state === "calling" ? C.sub : C.text, marginTop: 10, fontVariant: ["tabular-nums"] }]}>
           {statusLine}
         </Text>

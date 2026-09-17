@@ -45,3 +45,19 @@ export function createScreenExit(opts: { isFocused: () => boolean; back: () => v
     },
   };
 }
+
+// Whether the in-call screen may be removed by navigation it did not ask for. On Android the
+// hardware Back button and the edge back gesture pop it, and its unmount hangs up the call, so a
+// stray Back press hung up on the customer. Only "ended" may leave: finish() sets it before
+// exit.leave() runs, and End reaches it even when no call ever attached.
+export function blocksLeaving(state: "calling" | "connected" | "ended"): boolean {
+  return state !== "ended";
+}
+
+// After End's disconnect() rejects. Leaving closes the only in-app hang-up button, so it waits until
+// the call really is disconnected. A SECOND failed End leaves anyway: with Back blocked that screen
+// would otherwise have no way out, the call's own system UI (CallKit, the Android call notification)
+// still offers hang-up, and the unmount retries disconnect() -- which is where Back used to leave.
+export function leaveAfterFailedHangup(failures: number, callState: string): boolean {
+  return callState === "disconnected" || failures >= 2;
+}
