@@ -1,8 +1,10 @@
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, shell, session, Tray, Menu, ipcMain, Notification, powerMonitor } = require("electron");
+const { app, BrowserWindow, dialog, shell, session, Tray, Menu, ipcMain, Notification, powerMonitor } = require("electron");
 const { autoUpdater } = require("electron-updater");
+const { notesToShow } = require("./releaseNotes");
 
 // Single source of truth for the dashboard URL. If the worker is ever moved
 // to a custom domain, update this one line.
@@ -288,6 +290,7 @@ app.whenReady().then(() => {
 
   createWindow();
   createTray();
+  showReleaseNotes();
   setUpAutoUpdate();
 
   app.on("activate", () => {
@@ -301,6 +304,46 @@ app.whenReady().then(() => {
     }
   });
 });
+
+// Updates install silently in the background, so the app can change under someone mid-shift with
+// nothing said. Record the running version in userData and, when a launch finds a lower one there,
+// show what changed since. The record is written even when there is nothing to show, or a desk that
+// skips a quiet release would be told about it at the release after that.
+function showReleaseNotes() {
+  const file = path.join(app.getPath("userData"), "shell-state.json");
+  let previous = null;
+  try {
+    previous = JSON.parse(fs.readFileSync(file, "utf8")).lastVersion ?? null;
+  } catch (e) {
+    // No file yet (fresh install) or unreadable: treated as "nothing to compare against".
+  }
+  const version = app.getVersion();
+  try {
+    fs.writeFileSync(file, JSON.stringify({ lastVersion: version }));
+  } catch (e) {
+    // A locked-down profile just means the notes may show again next launch. Not worth failing for.
+  }
+
+  const notes = notesToShow(previous, version);
+  if (!notes.length) return;
+
+  const show = () => {
+    dialog
+      .showMessageBox(mainWindow, {
+        type: "info",
+        title: "TCB Phone updated",
+        message: `Updated to version ${version}`,
+        detail: notes.map((n) => "• " + n).join("\n\n"),
+        buttons: ["OK"],
+        noLink: true,
+      })
+      .catch(() => {});
+  };
+  // At login the app comes up straight into the tray on purpose, and a modal nobody is looking at
+  // is exactly what that avoids -- wait until the window is actually put on screen.
+  if (mainWindow?.isVisible()) show();
+  else mainWindow?.once("show", show);
+}
 
 app.on("before-quit", () => {
   // Runs before app.quit() closes any windows, so the flag is already set
