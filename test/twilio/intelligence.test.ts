@@ -35,7 +35,7 @@ describe("requestTranscript auth", () => {
   it("authenticates with the US1 API key, not the AU1 auth token", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: "GT123" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    const result = await requestTranscript(env, "RExxx");
     expect(result).toEqual({ sid: "GT123", error: null });
     const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Basic ${btoa("SKus1:shh")}`);
@@ -46,7 +46,7 @@ describe("requestTranscript auth", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: "GT123" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const { TWILIO_US1_API_KEY_SID, TWILIO_US1_API_KEY_SECRET, ...noUs1 } = env;
-    await requestTranscript(noUs1, "RExxx", { staffChannel: 2 });
+    await requestTranscript(noUs1, "RExxx");
     const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Basic ${btoa("ACxxx:au1tok")}`);
   });
@@ -60,7 +60,7 @@ describe("requestTranscript auth", () => {
       .fn()
       .mockResolvedValue(new Response('{"code":20003,"message":"Authenticate"}', { status: 401 }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    const result = await requestTranscript(env, "RExxx");
     expect(result.sid).toBeNull();
     expect(result.error).toContain("401");
     expect(result.error).toContain("US1 key");
@@ -71,7 +71,7 @@ describe("requestTranscript auth", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 403 }));
     vi.stubGlobal("fetch", fetchMock);
     const { TWILIO_US1_API_KEY_SID, TWILIO_US1_API_KEY_SECRET, ...noUs1 } = env;
-    const result = await requestTranscript(noUs1, "RExxx", { staffChannel: 2 });
+    const result = await requestTranscript(noUs1, "RExxx");
     expect(result.sid).toBeNull();
     expect(result.error).toContain("403");
     expect(result.error).toContain("AU1 token");
@@ -82,7 +82,7 @@ describe("requestTranscript auth", () => {
       "fetch",
       vi.fn().mockRejectedValue(new Error("network down"))
     );
-    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    const result = await requestTranscript(env, "RExxx");
     expect(result.sid).toBeNull();
     expect(result.error).toContain("network down");
   });
@@ -93,8 +93,28 @@ describe("requestTranscript auth", () => {
   it("truncates an oversized error body", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("x".repeat(2000), { status: 500 }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    const result = await requestTranscript(env, "RExxx");
     expect(result.error?.length).toBeLessThanOrEqual(300);
+  });
+
+  // The whole-request rejection that left EVERY inbound call `request_failed`:
+  //   400: The media_participant_id can only be set for transcript with media url
+  // Twilio accepts a `participants` override only on a media_url transcript; we always create from
+  // a recording sid. Nothing reads Twilio's own participant roles back -- the stored transcript is
+  // labelled from `transcript_staff_channel` at collection time -- so the array is not sent at all.
+  //
+  // Asserted on the BYTES actually posted, not through a helper: a test that checks only the
+  // returned sid against a stubbed 200 passes against the broken code exactly as it did for a year.
+  it("posts only the service sid and the recording, with no participant overrides", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: "GT123" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await requestTranscript(env, "RE9876");
+    const sent = fetchMock.mock.calls[0][1].body as URLSearchParams;
+    const raw = sent.toString();
+    expect(raw).not.toContain("media_participant_id");
+    expect(raw).not.toContain("participants");
+    expect(sent.get("ServiceSid")).toBe("GA123");
+    expect(JSON.parse(sent.get("Channel") as string)).toEqual({ media_properties: { source_sid: "RE9876" } });
   });
 });
 

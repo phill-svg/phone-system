@@ -100,7 +100,6 @@ import { recordCallLeg } from "./db/callLegs";
 import { transcribeCallRecording, backfillTranscripts } from "./transcribe";
 import { intelligenceEnabled, isDualChannelRecording, requestTranscript } from "./twilio/intelligence";
 import { collectPendingTranscripts } from "./twilio/intelligenceQueue";
-import { getTranscriptStaffChannel } from "./db/settings";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
 import { resolveSendingNumber } from "./db/phoneNumbers";
 import { getFacebookName, upsertFacebookName, noteTwilioMessengerFields } from "./db/fbContacts";
@@ -970,20 +969,9 @@ export default {
           }
         }
         if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && isDualChannelRecording(params.RecordingChannels)) {
-          // The CUSTOMER is whichever end is not us, and that flips with direction: both outbound
-          // paths store the business number as caller_number and the customer as called_number, so
-          // reading caller_number unconditionally told Twilio the office landline was the customer.
-          const row = await env.DB.prepare("SELECT caller_number, called_number, direction FROM calls WHERE id = ?")
-            .bind(callSid)
-            .first<{ caller_number: string; called_number: string; direction: string }>();
-          const customerNumber =
-            row === null ? null : row.direction === "outbound" ? row.called_number : row.caller_number;
           // NOT named `request`: the fetch handler's own `request: Request` is in scope here, and
           // shadowing it in a webhook handler is a trap for whoever next reads a header in this block.
-          const intelligenceJob = requestTranscript(env, params.RecordingSid, {
-            staffChannel: await getTranscriptStaffChannel(env.DB),
-            customerNumber,
-          })
+          const intelligenceJob = requestTranscript(env, params.RecordingSid)
             .then(async ({ sid, error }) => {
               if (!sid) {
                 // Twilio refused or could not be reached. `error` is Twilio's own answer (or the
