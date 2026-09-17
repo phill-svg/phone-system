@@ -30,7 +30,8 @@ export async function handleRegisterPushToken(request: Request, db: D1Database, 
   // installed -- an OTA can never deliver the CallKit AppDelegate patch, so the OTA number alone
   // cannot answer "why didn't my phone ring?". Both are optional: an older handset simply omits
   // them and upsertPushToken keeps whatever it already knew.
-  // The bearer (handset) or cookie session this request came in on. Absent only under AUTH_MODE=dev.
+  // The bearer (handset) or cookie session this request came in on, resolved in the same order as
+  // requireStaffUser. Under AUTH_MODE=dev no session row matches it, so local pushes are skipped.
   const session = parseSessionCookie(request) ?? parseBearerToken(request);
   await upsertPushToken(db, {
     sessionHash: session ? await sha256Hex(session) : null,

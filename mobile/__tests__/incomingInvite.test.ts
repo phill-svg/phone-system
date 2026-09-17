@@ -43,6 +43,10 @@ jest.mock("@twilio/voice-react-native-sdk", () => {
     async getCalls() {
       return this.calls;
     }
+    connectQueue: ((call: any) => void)[] = [];
+    connect() {
+      return new Promise((resolve) => this.connectQueue.push(resolve));
+    }
   }
   const Voice: any = jest.fn().mockImplementation(() => {
     mockVoiceRef.current = new FakeVoice();
@@ -166,6 +170,30 @@ describe("incoming invite lifecycle", () => {
 
     expect(seen).toHaveBeenCalledTimes(1);
     off();
+    unsub();
+  });
+
+  // End tapped while an outbound call is still being placed leaves the screen at once, so the user
+  // can dial again before the first placeCall settles. The late first call must not become the
+  // active call over the one actually live, or the next incoming call is not seen as call waiting.
+  it("a late outbound call does not replace a newer active call", async () => {
+    Platform.OS = "ios";
+    const unsub = track(await voiceLib.registerForIncoming(() => {}));
+    const fake = mockVoiceRef.current;
+    const call = (name: string) => ({ name, on: jest.fn(), getState: () => "connected" });
+
+    const first = voiceLib.placeCall("+61400000001");
+    await new Promise((r) => setTimeout(r, 0));
+    const second = voiceLib.placeCall("+61400000002");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const live = call("second");
+    fake.connectQueue[1](live);
+    await second;
+    fake.connectQueue[0](call("first"));
+    await first;
+
+    expect(voiceLib.getActiveCall()).toBe(live);
     unsub();
   });
 
