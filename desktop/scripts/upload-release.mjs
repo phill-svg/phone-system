@@ -40,6 +40,26 @@ for (const name of files) {
   }
 }
 
+// The manifest is the switch that makes a version visible to every running copy, and it is the one
+// file here whose CONTENTS are not derived from the version above -- release/ is gitignored, so a
+// stale latest.yml from an abandoned build can outlive the exe it names. Publishing that advertises
+// a version whose installer was never uploaded, and every desk phone then retries a 404 forever.
+// (That exact pair sat in release/ after the 1.3.0 desktop-icon feature was reverted.)
+const manifest = readFileSync(join(releaseDir, "latest.yml"), "utf8");
+const manifestVersion = /^version:\s*(\S+)\s*$/m.exec(manifest)?.[1];
+// `path:` as well as `version:`, because a rebuild of the SAME version writes a new exe and a new
+// sha512: a manifest left from the earlier build passes a version-only check, and electron-updater
+// then downloads the installer and fails the hash. That failure surfaces only in
+// autoUpdater.on("error") -> console.warn, which nobody is attached to on a tray app.
+const manifestPath = /^path:\s*(\S+)\s*$/m.exec(manifest)?.[1];
+if (manifestVersion !== version || manifestPath !== installer) {
+  console.error(
+    `release/latest.yml names ${manifestVersion ?? "(unreadable)"} / ${manifestPath ?? "(unreadable)"}, ` +
+      `package.json says ${version} / ${installer}. Delete desktop/release/ and run "npm run build" again.`
+  );
+  process.exit(1);
+}
+
 const useShell = process.platform === "win32"; // npx.cmd needs a shell
 // A shell re-splits arguments on whitespace, so anything that could contain a space is quoted.
 const quote = (value) => (useShell ? JSON.stringify(value) : value);

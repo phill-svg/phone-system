@@ -21,7 +21,11 @@ const startHidden =
 // The app lives in the tray, so launching the shortcut again while it's hidden
 // must surface the existing window -- NOT start a second instance sharing the
 // same profile (which would register two Twilio Devices under one identity).
-if (!app.requestSingleInstanceLock()) {
+// app.quit() is asynchronous and does NOT stop this module from finishing, so without the flag the
+// losing instance still ran whenReady(): a second window, a second tray icon, and a second Twilio
+// Device registered under the same identity -- exactly what the lock exists to prevent.
+const isSecondInstance = !app.requestSingleInstanceLock();
+if (isSecondInstance) {
   app.quit();
 }
 app.on("second-instance", () => {
@@ -60,6 +64,14 @@ function scheduleReload() {
   }, delay);
 }
 
+function safeProtocol(url) {
+  try {
+    return new URL(url).protocol;
+  } catch (e) {
+    return "";
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -93,7 +105,9 @@ function createWindow() {
   // standard security practice against a page that could change in the
   // future, not a response to a current requirement.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    // Only ever hand http(s) to the OS. The URL comes from the page, and openExternal on a
+    // file:// or custom-protocol URL asks Windows to launch whatever is registered for it.
+    if (/^https?:$/.test(safeProtocol(url))) shell.openExternal(url);
     return { action: "deny" };
   });
 
@@ -251,6 +265,8 @@ function restartToUpdate() {
 }
 
 app.whenReady().then(() => {
+  if (isSecondInstance) return;
+
   // Windows groups taskbar buttons and attributes notifications by this ID.
   // Set it to the packaged appId so the app shows as "TCB Phone" with its own
   // icon rather than being grouped under the generic Electron identity.
