@@ -311,10 +311,28 @@ before adding one, or you will duplicate a path that already works.
 - **Transcripts: a refused request is marked `request_failed` and reported.** It fails Health Checks
   when nothing was transcribed and warns alongside working transcripts (the marker is permanent and a
   single 5xx sets it). Live D1 on 2026-09-13: 76 recorded calls, **zero** ever given a transcript sid.
-  The likely cause, unverified, is the AU1 `TWILIO_AUTH_TOKEN` being sent to the US1 host
-  `intelligence.twilio.com` (tokens are per-region, and classic Intelligence is listed as unsupported
-  in AU1). One `wrangler tail | grep INTELLIGENCE_CREATE_FAILED` after an answered call settles it:
-  401 is the credential, 400/404 means US1 cannot read an AU1 recording at all.
+  **Three separate causes, each hiding the next, and `intelligence_error` is what made them
+  legible.** Read that column on the newest recorded call before diagnosing anything here — it holds
+  Twilio's own words, and the answer has changed twice.
+  (1) The AU1 `TWILIO_AUTH_TOKEN` was being sent to the US1 host `intelligence.twilio.com` (tokens
+  are per-region). Real, fixed in **#115** (`globalAuthHeader`).
+  (2) `TWILIO_INTELLIGENCE_SERVICE_SID` was stored **with a stray quote** —
+  `400: {"code":1302,"message":"GAfa08e9518a03474beb8a4c6b9c07b412\" is invalid"}` on 2026-09-17.
+  Re-saved unquoted with `npx wrangler secret put` (effective immediately, no deploy). A Cloudflare
+  secret can never be read back, so this was only ever confirmable by the error going away — which
+  it did: the next call carried a different 400.
+  (3) The request itself was malformed, and had been since the feature shipped. The 21:34 call on
+  2026-09-17 reads
+  `400: The media_participant_id can only be set for transcript with media url`. We create from a
+  recording sid, and Twilio documents the `participants` override only with `media_url`. It is a
+  WHOLE-REQUEST rejection, so the call got no transcript at all. The array is gone entirely — it only
+  labelled channels in Twilio's own viewer, and nothing reads those roles back (see the staff-channel
+  bullet below). Dropping `role` with it means no second media-url-only field can take its place.
+  Do not widen the search: voicemail transcripts work (under ~5s legitimately comes back empty) and
+  plain unlabelled call transcripts work on nearly every answered call, both directions; it is only
+  the SPEAKER-LABELLED ones that have never once succeeded. The 14 rows already at `request_failed`
+  are terminal — the sweep selects on `intelligence_sid IS NOT NULL` — so nothing retries them and
+  those calls have no labelled transcript, permanently.
 - **The App Review demo account is denied by default on `/admin/`**, except `/admin/phone` and
   `/admin/messages`, which render from the substituted `/api/`; everything else read real D1 and a web
   login lands on `/admin/live`. Its `POST /api/push/register` is swallowed too, since every push goes
@@ -537,10 +555,13 @@ before adding one, or you will duplicate a path that already works.
   where the join order genuinely is a race, and because the cost of being wrong is a transcript that
   confidently attributes the customer's words to staff. Read one real transcript and flip it if the
   labels come out the wrong way round.
-  `getTranscriptStaffChannel` **catches `JSON.parse`**: it is awaited inline on the recording-status
-  webhook *after* `recording_url` has been written, so a hand-edited junk row would 500 a callback
-  whose work is half done. The first test for that seeded `'7'` — valid JSON, so the guard was never
-  executed and deleting it left the test green.
+  It is read in **exactly one place**: the sweep, at collection time (`intelligenceQueue.ts`). The
+  recording-status webhook used to read it too, to label the channels in the transcript CREATE — that
+  went with the `participants` array, since Twilio refused the request that carried it. So Twilio's
+  own participant roles are never set and never read; the labels in `call_transcript` come from this
+  setting alone. `getTranscriptStaffChannel` still **catches `JSON.parse`**, because a hand-edited
+  junk row would otherwise throw inside the cron tick. The first test for that seeded `'7'` — valid
+  JSON, so the guard was never executed and deleting it left the test green.
 - **Whisper and the Twilio sweep both write `call_transcript`, in the same cron tick.**
   `backfillTranscripts` can select a row with a NULL transcript, spend 10-30s in Workers AI, and land
   after the labelled text was written -- destroying it permanently, since the row is by then out of
