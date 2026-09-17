@@ -170,6 +170,42 @@ function normalizeAuNumber(raw: string | undefined): string | undefined {
   return trimmed;
 }
 
+// Twilio's own parameters on a voice webhook. Anything outside this set on the agent-answer leg is
+// a custom Client parameter that Twilio carried through from the dialled `To`.
+const TWILIO_STANDARD_CALL_PARAMS = new Set([
+  "AccountSid",
+  "ApiVersion",
+  "ApplicationSid",
+  "CallSid",
+  "CallStatus",
+  "CallToken",
+  "Called",
+  "CalledCity",
+  "CalledCountry",
+  "CalledState",
+  "CalledZip",
+  "Caller",
+  "CallerCity",
+  "CallerCountry",
+  "CallerState",
+  "CallerZip",
+  "Direction",
+  "ForwardedFrom",
+  "From",
+  "FromCity",
+  "FromCountry",
+  "FromState",
+  "FromZip",
+  "StirVerstat",
+  "To",
+  "ToCity",
+  "ToCountry",
+  "ToState",
+  "ToZip",
+  "AnsweredBy",
+  "MachineDetectionDuration",
+]);
+
 export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -436,6 +472,21 @@ export default {
       if (!callSid) {
         return new Response("missing callSid", { status: 400 });
       }
+
+      // Every incoming call shows the BUSINESS number on the handset instead of the customer, on
+      // every iOS surface. dialStaff attaches the real caller as a `CallerNumber` custom Client
+      // parameter on the `To` (`client:{email}?CallerNumber=...`), which is Twilio's own documented
+      // mechanism, and all three readers -- the mobile ringing screen, the CallKit handle template,
+      // and the web banner -- read it correctly. So the open question is whether Twilio carries it
+      // at all, and nothing anywhere records what actually arrives on this leg. This names the
+      // non-standard keys Twilio posts here, which is the one observation that settles it: a
+      // `CallerNumber` in this list proves Twilio carries it, so the fault is client-side. Absence is
+      // evidence, not proof: Twilio may deliver custom parameters to the SDK endpoint without also
+      // posting them to this leg's own Url. Read it that way round.
+      console.log(
+        "AGENT_ANSWER_PARAMS",
+        JSON.stringify({ callSid, keys: Object.keys(params).filter((k) => !TWILIO_STANDARD_CALL_PARAMS.has(k)) })
+      );
 
       const id = env.CALL_SESSION.idFromName(callSid);
       const stub = env.CALL_SESSION.get(id);
