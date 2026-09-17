@@ -1284,6 +1284,15 @@ export class CallSession extends DurableObject<Env> {
       // param leaves that template unresolved, which is worse than the business number it replaces.
       const displayNumber = callerRow?.caller_number ?? callerId;
       to = `${number}?CallerNumber=${encodeURIComponent(displayNumber.replace(/^\+/, ""))}`;
+      // Every incoming call shows the BUSINESS number on the handset rather than the customer, and
+      // the two candidate causes look identical from the outside: either `displayNumber` is already
+      // wrong here (the calls row read above missing, which falls back to our own caller ID), or it
+      // is right and Twilio never carries the parameter. This separates them on EVERY ring, without
+      // waiting for someone to answer -- unlike AGENT_ANSWER_PARAMS, which needs an answered leg.
+      console.log(
+        "DIAL_STAFF_CLIENT",
+        JSON.stringify({ callSid, displayNumber, fromRow: callerRow !== null })
+      );
     }
     // One attempt at creating the leg, parameterised by which caller ID it presents. `whisper`
     // rides along in the answer webhook's query: it is true only when the staff member's screen
