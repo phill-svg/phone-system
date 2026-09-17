@@ -55,22 +55,16 @@ export function intelligenceEnabled(env: IntelligenceEnv): boolean {
 // Ask Twilio to transcribe a recording. Returns the GT... transcript sid, or null on any failure --
 // a transcript is a nicety and must never break the recording webhook that calls this.
 //
-// `participants` only LABELS the channels for Twilio's own viewer -- it does not choose them. Which
-// channel is staff is a SETTING (getTranscriptStaffChannel), read at collection time and defaulting
-// to 2.
-//
-// For an INBOUND call that 2 is structural, not a guess: the recording is `record-from-answer-dual`
-// on the CALLER's own <Dial> (renderJoinConference), and a <Dial> recording puts channel 1 on the
-// parent call -- the customer. Channel 2 is whoever they are speaking to, across a transfer
-// included, because the caller's leg never changes.
-//
-// It stays a setting because an OUTBOUND softphone call is recorded conference-level instead, where
-// channel 1 goes to whoever joined first and that genuinely is a race. Those come back mono in
-// practice and are discarded unlabelled rather than guessed at.
-//
-// Do not hardcode this. It was briefly 1 on 2026-09-12, when the recording sat on the STAFF leg's
-// <Dial>; /code-review found that placement recorded a transferred call twice and labelled every
-// outbound transcript backwards, and both went back.
+// NO `participants` array is sent, and that is deliberate. It only ever LABELLED the channels for
+// Twilio's own viewer -- the stored transcript is labelled by formatLabelledTranscript from
+// `transcript_staff_channel`, read at COLLECTION time (intelligenceQueue), so nothing here reads
+// Twilio's roles back. It is also the field that broke this feature: a `media_participant_id` on a
+// participant is refused outright for a transcript created from a recording sid --
+//   400: The media_participant_id can only be set for transcript with media url
+// -- which is a whole-request rejection, so every inbound call from the day this shipped came back
+// `request_failed` with no transcript at all. Twilio documents that field, and the participant
+// overrides around it, only with `media_url`; we always send `source_sid`. Sending nothing we do
+// not read removes the rejection and cannot resurrect it.
 // A create failure that a caller can persist alongside `intelligence_status = 'request_failed'`.
 // Kept as one short line (truncated) rather than the raw response, because this rides in a TEXT
 // column read back on a Health Checks screen, not a log viewer.
@@ -80,25 +74,13 @@ const MAX_ERROR_LEN = 300;
 
 export async function requestTranscript(
   env: IntelligenceEnv,
-  recordingSid: string,
-  opts: { staffChannel: 1 | 2; customerNumber?: string | null }
+  recordingSid: string
 ): Promise<TranscriptRequestResult> {
   const serviceSid = env.TWILIO_INTELLIGENCE_SERVICE_SID;
   if (!serviceSid) return { sid: null, error: null };
-  const customerChannel = opts.staffChannel === 1 ? 2 : 1;
   const body = new URLSearchParams({
     ServiceSid: serviceSid,
-    Channel: JSON.stringify({
-      media_properties: { source_sid: recordingSid },
-      participants: [
-        { channel_participant: opts.staffChannel, role: "Agent" },
-        {
-          channel_participant: customerChannel,
-          role: "Customer",
-          ...(opts.customerNumber ? { media_participant_id: opts.customerNumber } : {}),
-        },
-      ],
-    }),
+    Channel: JSON.stringify({ media_properties: { source_sid: recordingSid } }),
   });
   try {
     const res = await fetch(`${INTELLIGENCE_BASE}/Transcripts`, {
