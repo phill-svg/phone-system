@@ -170,7 +170,8 @@ export default function ActiveCallScreen() {
           return;
         }
         if (!mounted || endRequestedRef.current) {
-          call.disconnect();
+          // Caught like every other hang-up here: this screen is gone, so a rejection has nowhere to show.
+          Promise.resolve(call.disconnect()).catch((e: unknown) => console.warn("[call-active] late disconnect failed", e));
           return;
         }
         callRef.current = call;
