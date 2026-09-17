@@ -1447,6 +1447,15 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         document.getElementById('incoming-banner').style.display = 'block';
         // Fire the OS/desktop notification RIGHT NOW, off the Twilio Device's real-time incoming
         // event — not the layout poller, which lagged 6s and could arrive after the call ended.
+        // In the Electron shell the toast is raised by the main process instead, so that it can
+        // focus the window on click: firing both gave two toasts for one call, and the bridge was
+        // being handed the raw number while the web one showed the contact name. NOTE the desktop
+        // branch RETURNS -- anything added below it runs in the browser only, and desktop is the
+        // one surface no test covers.
+        if (window.desktopBridge && window.desktopBridge.notifyIncomingCall) {
+          try { window.desktopBridge.notifyIncomingCall(label); } catch (e) {}
+          return;
+        }
         try {
           if (window.Notification && Notification.permission === 'granted') {
             var n = new Notification('Incoming call', { body: label, icon: '/logo.png', tag: 'tcb-incoming' });
@@ -1732,7 +1741,6 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           device.on('incoming', function (call) {
             activeCall = call;
             showIncomingBanner(call);
-            window.desktopBridge?.notifyIncomingCall(incomingCallerNumber(call));
             call.on('accept', onCallConnected);
             call.on('disconnect', onCallEnded);
             call.on('cancel', function () { onIncomingGone(call); });
