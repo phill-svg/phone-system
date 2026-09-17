@@ -10,3 +10,8 @@ mobile/credentials/
 play-service-account*.json
 *.keystore
 *.jks
+
+# Locally installed agent skills (npx skills add)
+.agents/
+skills-lock.json
+.claude/skills/
