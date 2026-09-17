@@ -341,6 +341,47 @@ describe("CallSession", () => {
     });
   });
 
+  // A number we hold for SMS only must never take a voice call. Twilio's own config is what routes
+  // the call and ours is a separate switch, so a leftover voice webhook on an SMS-only number kept
+  // sending calls here -- and an SMS number lives in its own region, so the answer-time redirect
+  // 404s against au1 and the catch-all hangs up on caller and staff alike (live, 2026-09-18).
+  it("rejects a call to a number whose voice is switched off, before any flow runs", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await env.DB.prepare(
+      "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, created_at) VALUES (?, 'SMS only', 0, 1, 2)"
+    )
+      .bind("+61200000009")
+      .run();
+
+    const stub = stubFor("CA-smsonly");
+    const { status, xml } = await send(stub, mainEvent("CA-smsonly", { to: "+61200000009" }));
+
+    expect(status).toBe(200);
+    expect(xml).toContain("<Reject");
+    expect(xml).not.toContain("<Gather");
+    // No row and no ring: the call is turned away at the front door, not part-way through a flow.
+    const row = await env.DB.prepare("SELECT * FROM calls WHERE id = ?").bind("CA-smsonly").first();
+    expect(row).toBeNull();
+  });
+
+  // Fails OPEN. A number that is not ours at all must still connect -- refusing a real customer is
+  // far worse than the config mismatch the guard exists for.
+  it("still connects a call to a number that has no phone_numbers row", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-unknownnum");
+    const { xml } = await send(stub, mainEvent("CA-unknownnum", { to: "+61299999999" }));
+
+    expect(xml).toContain("<Gather");
+    expect(xml).not.toContain("<Reject");
+  });
+
   it("gather → cascade ring (no wait): digit 1 enqueues the caller and fires one outbound staff call", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
