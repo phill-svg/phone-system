@@ -341,6 +341,34 @@ describe("CallSession", () => {
     });
   });
 
+  // Reported as "it's still showing the business number when someone calls, not theirs", on every
+  // iOS surface. Twilio's `From` on a client: leg is always OUR number, so CallerNumber is the only
+  // thing that says who is calling -- and every reader PREFERS it over `From`. #116 made a missed
+  // caller lookup fall back to our own caller ID, which does not paper over the gap, it asserts
+  // that the business number IS the caller and overrides the correct fallback on every surface.
+  it("never advertises the business number as the caller on a softphone leg", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-nocallerrow");
+    await send(stub, mainEvent("CA-nocallerrow"));
+    // The call row is what dialStaff used to read the caller from. Remove it so the only remaining
+    // source is the stash taken on the first webhook -- exactly the gap #116 filled with our own
+    // number.
+    await env.DB.prepare("DELETE FROM call_events WHERE call_id = ?").bind("CA-nocallerrow").run();
+    await env.DB.prepare("DELETE FROM calls WHERE id = ?").bind("CA-nocallerrow").run();
+    await send(stub, mainEvent("CA-nocallerrow", { digits: "1" }));
+
+    const dialled = outboundDials(fetchMock).filter((d) => d.startsWith("client:"));
+    expect(dialled).toHaveLength(1);
+    expect(dialled[0]).not.toContain("61866108941");
+    expect(dialled[0]).not.toContain("61200000000");
+    // The caller stashed on the first webhook is still the right answer.
+    expect(dialled[0]).toBe("client:phill@b.com?CallerNumber=61400000000");
+  });
+
   // A number we hold for SMS only must never take a voice call. Twilio's own config is what routes
   // the call and ours is a separate switch, so a leftover voice webhook on an SMS-only number kept
   // sending calls here -- and an SMS number lives in its own region, so the answer-time redirect

@@ -202,6 +202,12 @@ export class CallSession extends DurableObject<Env> {
     // minutes-old token that Twilio rejects.
     if (body.callToken) await this.ctx.storage.put("callToken", body.callToken);
 
+    // The real caller, kept for dialStaff's CallerNumber parameter. Twilio's own `From` on a
+    // `client:` leg is always OUR business number (see dialStaff), so this parameter is the only
+    // thing that tells a handset who is actually calling. It used to be read back out of D1 at ring
+    // time, several webhook turns later; DO storage is per-call by construction and cannot miss.
+    if (from) await this.ctx.storage.put("callerNumber", from);
+
     // (a) Voicemail <Record> action callback lands here on the SAME route/CallSid -- and so does a
     // callback node's Record now, which is why `mailbox_label`'s existing rule ("a voicemail is a
     // call with a mailbox_label, not one with a transcript") still holds without the mobile Inbox's
@@ -1270,6 +1276,10 @@ export class CallSession extends DurableObject<Env> {
       // mechanism for this: "Sending Custom Parameters to Clients"), which the softphone reads via
       // call.customParameters.get('CallerNumber') to show the actual caller instead of our own number.
       ownerEmail = number.startsWith("client:") ? number.slice("client:".length) : number;
+      // Stored on this call's first webhook, so it is present long before D1 is consulted. The D1
+      // read stays as the fallback for a session whose storage predates this (a call already in
+      // flight across a deploy).
+      const stashedCaller = await this.ctx.storage.get<string>("callerNumber");
       const callerRow = await this.env.DB.prepare("SELECT caller_number FROM calls WHERE id = ?")
         .bind(callSid)
         .first<{ caller_number: string }>();
@@ -1277,13 +1287,21 @@ export class CallSession extends DurableObject<Env> {
       // times before we read it back client-side is unverified, and a "+" is ambiguous either way (it
       // can decode to a literal space). Digits-only survives both interpretations identically, and the
       // client-side normalizer/formatter both already handle a bare-digits "61..." number correctly.
-      // ALWAYS present, even without a matching row (falls back to our own caller ID): the mobile
-      // app's native call notification (Android heads-up / iOS CallKit banner) is built by the SDK
-      // BEFORE any JS runs, from a single global template set on this exact key -- see
+      // The mobile app's native call notification (Android heads-up / iOS CallKit banner) is built
+      // by the SDK BEFORE any JS runs, from a global template keyed on this exact parameter -- see
       // setIncomingCallContactHandleTemplate in mobile/src/lib/voice.ts. A leg with no CallerNumber
-      // param leaves that template unresolved, which is worse than the business number it replaces.
-      const displayNumber = callerRow?.caller_number ?? callerId;
-      to = `${number}?CallerNumber=${encodeURIComponent(displayNumber.replace(/^\+/, ""))}`;
+      // leaves that template unresolved, so it is worth sending whenever we know the caller.
+      // NEVER fall back to `callerId` here. That is OUR business number, and every reader --
+      // the CallKit handle template, the mobile ringing screen, the web banner -- PREFERS this
+      // parameter over Twilio's `From`. So a fallback does not paper over a missing lookup, it
+      // actively overrides a correct answer with the wrong one, on every surface at once. That is
+      // the "it shows the business number when someone calls" regression: before #116 a missed
+      // lookup simply omitted the parameter and the client fell back to `From`; #116 made a missed
+      // lookup assert that the business number IS the caller.
+      const displayNumber = stashedCaller ?? callerRow?.caller_number ?? null;
+      to = displayNumber
+        ? `${number}?CallerNumber=${encodeURIComponent(displayNumber.replace(/^\+/, ""))}`
+        : number;
       // Every incoming call shows the BUSINESS number on the handset rather than the customer, and
       // the two candidate causes look identical from the outside: either `displayNumber` is already
       // wrong here (the calls row read above missing, which falls back to our own caller ID), or it
