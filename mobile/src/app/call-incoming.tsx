@@ -167,8 +167,8 @@ export default function IncomingCallScreen() {
       <View style={[styles.actions, { paddingBottom: insets.bottom + 28 }]}>
         <View style={styles.secondaryRow}>
           {/* Not during call waiting: dismissing drops back to the live call, and a thread pushed on
-              top would cover it. */}
-          {!isWaiting && <SecondaryAction icon="message.fill" fallback="chatbubble" label="Message" onPress={message} />}
+              top would cover it. Nor for a withheld caller: there is no number to text. */}
+          {!isWaiting && /^\+\d{8,15}$/.test(number) && <SecondaryAction icon="message.fill" fallback="chatbubble" label="Message" onPress={message} />}
         </View>
         <View style={styles.primaryRow}>
           <View style={styles.primaryCol}>

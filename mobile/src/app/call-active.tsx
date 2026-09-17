@@ -248,6 +248,9 @@ export default function ActiveCallScreen() {
     Promise.resolve(call.disconnect()).catch((e: unknown) => {
       console.warn("[call-active] disconnect failed", e);
       setErrorText((e as { message?: string })?.message ?? "Couldn't end the call");
+      // Back is blocked until "ended", so without this a Call the SDK has lost (no Disconnected
+      // event ever comes) left no way off this screen. Leaving still retries the hang-up on unmount.
+      finish();
     });
   }
 

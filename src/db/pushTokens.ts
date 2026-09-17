@@ -52,7 +52,8 @@ export async function deletePushTokens(db: D1Database, tokens: string[]): Promis
 // JSON encoding a disabled boolean is stored as (see userSettings).
 // The push_tokens rows that may still be pushed to, as a FROM clause aliased `p`: the session that
 // registered the token still exists. Logout, a password reset and staff removal all delete sessions,
-// so each of them stops the pushes. A NULL session_hash predates migration 0039 and still receives.
+// so each of them stops the pushes. A NULL session_hash predates migration 0039 and still receives
+// until that handset re-registers; 0039 deleted the NULL rows whose owner had no session left.
 // EVERY reader that sends, or reports what would be sent, uses this -- Health Checks and Test Push
 // included, or they call a phone fine that real pushes skip.
 export const LIVE_PUSH_TOKENS =
