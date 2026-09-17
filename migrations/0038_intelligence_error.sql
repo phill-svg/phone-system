@@ -1,0 +1,16 @@
+-- migrations/0038_intelligence_error.sql
+-- What Twilio actually said the last time this call's transcript request was refused.
+--
+-- #115 fixed intelligence.ts authenticating against the global intelligence.twilio.com host with
+-- the AU1 auth token (which 401s there every time) instead of the US1 API key. Real calls right
+-- after that deploy still came back `intelligence_status = 'request_failed'`, with nothing anywhere
+-- saying WHAT Twilio answered this time -- only a console.log (INTELLIGENCE_CREATE_FAILED) that
+-- nobody was tailing. This is the same shape of silence that let the AU1/US1 bug itself go
+-- undiagnosed as "check the worker logs" for two days.
+--
+-- Per-call rather than a single "last error" setting: a systemwide blob only ever shows the MOST
+-- RECENT failure, and different calls can fail for different reasons (a rotated key vs. a
+-- transient 5xx). Written in the SAME statement that already sets intelligence_status =
+-- 'request_failed' -- one D1 round trip, not two -- so this never becomes an ordering hazard
+-- against the Whisper transcription job that runs concurrently off the same webhook.
+ALTER TABLE calls ADD COLUMN intelligence_error TEXT;

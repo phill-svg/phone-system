@@ -71,13 +71,20 @@ export function intelligenceEnabled(env: IntelligenceEnv): boolean {
 // Do not hardcode this. It was briefly 1 on 2026-09-12, when the recording sat on the STAFF leg's
 // <Dial>; /code-review found that placement recorded a transferred call twice and labelled every
 // outbound transcript backwards, and both went back.
+// A create failure that a caller can persist alongside `intelligence_status = 'request_failed'`.
+// Kept as one short line (truncated) rather than the raw response, because this rides in a TEXT
+// column read back on a Health Checks screen, not a log viewer.
+export type TranscriptRequestResult = { sid: string | null; error: string | null };
+
+const MAX_ERROR_LEN = 300;
+
 export async function requestTranscript(
   env: IntelligenceEnv,
   recordingSid: string,
   opts: { staffChannel: 1 | 2; customerNumber?: string | null }
-): Promise<string | null> {
+): Promise<TranscriptRequestResult> {
   const serviceSid = env.TWILIO_INTELLIGENCE_SERVICE_SID;
-  if (!serviceSid) return null;
+  if (!serviceSid) return { sid: null, error: null };
   const customerChannel = opts.staffChannel === 1 ? 2 : 1;
   const body = new URLSearchParams({
     ServiceSid: serviceSid,
@@ -107,14 +114,22 @@ export async function requestTranscript(
       // comment documents. Carrying it here is what makes that diagnosable from a log line rather
       // than requiring a re-read of the source to notice the fallback fired.
       const us1 = !!(env.TWILIO_US1_API_KEY_SID && env.TWILIO_US1_API_KEY_SECRET);
-      console.log("INTELLIGENCE_CREATE_FAILED", JSON.stringify({ recordingSid, status: res.status, us1 }));
-      return null;
+      // Twilio's error body (a 401/403/404 all say WHY in JSON) is the difference between "check
+      // the logs" and knowing immediately what's wrong -- #115 fixed the AU1-vs-US1 host mismatch,
+      // but real calls right after that deploy still came back request_failed with nothing saying
+      // what Twilio actually answered THIS time. Best-effort: a body read that itself fails must
+      // never turn a reportable failure into an unhandled one.
+      const responseBody = await res.text().catch(() => "");
+      console.log("INTELLIGENCE_CREATE_FAILED", JSON.stringify({ recordingSid, status: res.status, us1, body: responseBody }));
+      const detail = `${res.status}${us1 ? " (US1 key)" : " (AU1 token -- no US1 key set)"}: ${responseBody || "(no body)"}`;
+      return { sid: null, error: detail.slice(0, MAX_ERROR_LEN) };
     }
     const json = (await res.json()) as { sid?: string };
-    return json.sid ?? null;
+    return { sid: json.sid ?? null, error: null };
   } catch (e) {
-    console.log("INTELLIGENCE_CREATE_FAILED", JSON.stringify({ recordingSid, error: e instanceof Error ? e.message : String(e) }));
-    return null;
+    const message = e instanceof Error ? e.message : String(e);
+    console.log("INTELLIGENCE_CREATE_FAILED", JSON.stringify({ recordingSid, error: message }));
+    return { sid: null, error: message.slice(0, MAX_ERROR_LEN) };
   }
 }
 

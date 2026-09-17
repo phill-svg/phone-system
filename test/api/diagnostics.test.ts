@@ -187,11 +187,11 @@ describe("admin diagnostics", () => {
       await env.DB.prepare("DELETE FROM calls WHERE id LIKE 'CA-diag-tr%'").run();
     });
 
-    async function seed(id: string, status: string | null, sid: string | null) {
+    async function seed(id: string, status: string | null, sid: string | null, error: string | null = null) {
       await env.DB.prepare(
-        "INSERT INTO calls (id, caller_number, called_number, started_at, intelligence_status, intelligence_sid) VALUES (?, '+61400000000', '+61200000000', ?, ?, ?)"
+        "INSERT INTO calls (id, caller_number, called_number, started_at, intelligence_status, intelligence_sid, intelligence_error) VALUES (?, '+61400000000', '+61200000000', ?, ?, ?, ?)"
       )
-        .bind(id, Date.now(), status, sid)
+        .bind(id, Date.now(), status, sid, error)
         .run();
     }
 
@@ -249,6 +249,29 @@ describe("admin diagnostics", () => {
       const check = find(await run(ON()), "transcripts");
       expect(check.status).toBe("fail");
       expect(check.detail).toContain("2 recording(s) could not be submitted to Twilio");
+    });
+
+    // #115 fixed the AU1-vs-US1 host mismatch, but real calls right after that deploy still came
+    // back request_failed with nothing saying WHY -- "check the worker logs" was the only lead, and
+    // nobody was tailing them. When the webhook captured Twilio's actual answer, Health Checks
+    // should quote it instead.
+    it("quotes Twilio's actual response when the most recent failure captured one", async () => {
+      await seed("CA-diag-tr-req-detail", "request_failed", null, '401 (US1 key): {"code":20003,"message":"Authenticate"}');
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("401");
+      expect(check.detail).toContain("Authenticate");
+    });
+
+    // A row from before this was captured (or one that races the read) has no error text -- fall
+    // back to the log-pointer rather than quoting "null".
+    it("falls back to pointing at the worker logs when no error was captured", async () => {
+      await seed("CA-diag-tr-req-noerr", "request_failed", null, null);
+      stubFetch();
+      const check = find(await run(ON()), "transcripts");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("Check the worker logs");
     });
 
     // The marker is permanent and a network blip or one 5xx sets it too. Failing for seven days over

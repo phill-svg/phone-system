@@ -35,8 +35,8 @@ describe("requestTranscript auth", () => {
   it("authenticates with the US1 API key, not the AU1 auth token", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: "GT123" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const sid = await requestTranscript(env, "RExxx", { staffChannel: 2 });
-    expect(sid).toBe("GT123");
+    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    expect(result).toEqual({ sid: "GT123", error: null });
     const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Basic ${btoa("SKus1:shh")}`);
     expect(headers.Authorization).not.toBe(`Basic ${btoa("ACxxx:au1tok")}`);
@@ -49,6 +49,52 @@ describe("requestTranscript auth", () => {
     await requestTranscript(noUs1, "RExxx", { staffChannel: 2 });
     const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Basic ${btoa("ACxxx:au1tok")}`);
+  });
+
+  // #115 fixed the AU1-vs-US1 host mismatch, but real calls right after that deploy still came back
+  // request_failed with nothing saying WHAT Twilio actually answered THIS time -- only a console.log
+  // line nobody was tailing. `error` is what the recording-status webhook now persists alongside
+  // `intelligence_status = 'request_failed'`, so Health Checks can quote it directly.
+  it("returns Twilio's status and body when the create request is refused", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('{"code":20003,"message":"Authenticate"}', { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    expect(result.sid).toBeNull();
+    expect(result.error).toContain("401");
+    expect(result.error).toContain("US1 key");
+    expect(result.error).toContain("Authenticate");
+  });
+
+  it("says which credential went out when the request is refused with no US1 key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { TWILIO_US1_API_KEY_SID, TWILIO_US1_API_KEY_SECRET, ...noUs1 } = env;
+    const result = await requestTranscript(noUs1, "RExxx", { staffChannel: 2 });
+    expect(result.sid).toBeNull();
+    expect(result.error).toContain("403");
+    expect(result.error).toContain("AU1 token");
+  });
+
+  it("returns the fetch failure message when Twilio cannot be reached at all", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("network down"))
+    );
+    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    expect(result.sid).toBeNull();
+    expect(result.error).toContain("network down");
+  });
+
+  // A TEXT column read back on a Health Checks screen, not a log viewer -- Twilio's own error body
+  // is client-supplied-shaped content riding through OUR code, and there is no reason to let it grow
+  // that column without bound.
+  it("truncates an oversized error body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("x".repeat(2000), { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await requestTranscript(env, "RExxx", { staffChannel: 2 });
+    expect(result.error?.length).toBeLessThanOrEqual(300);
   });
 });
 
