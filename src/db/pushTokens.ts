@@ -52,12 +52,19 @@ export async function deletePushTokens(db: D1Database, tokens: string[]): Promis
 // JSON encoding a disabled boolean is stored as (see userSettings).
 // The push_tokens rows that may still be pushed to, as a FROM clause aliased `p`: the session that
 // registered the token still exists. Logout, a password reset and staff removal all delete sessions,
-// so each of them stops the pushes. A NULL session_hash predates migration 0039 and still receives
-// until that handset re-registers; 0039 deleted the NULL rows whose owner had no session left.
+// so each of them stops the pushes.
+//
+// A NULL session_hash predates migration 0039. A signed-in handset replaces it the next time the app
+// opens; a handset signed out before 0039 never registers again, so its row would receive forever.
+// NULL rows are therefore live only while last_seen is under 30 days old, the same window Health
+// Checks already uses to call a device inactive. (Not Date.now() in a module constant: a Worker's
+// clock reads 0 at module scope.)
 // EVERY reader that sends, or reports what would be sent, uses this -- Health Checks and Test Push
 // included, or they call a phone fine that real pushes skip.
 export const LIVE_PUSH_TOKENS =
-  "push_tokens p LEFT JOIN sessions s ON s.token_hash = p.session_hash WHERE (p.session_hash IS NULL OR s.token_hash IS NOT NULL)";
+  "push_tokens p LEFT JOIN sessions s ON s.token_hash = p.session_hash WHERE (" +
+  "s.token_hash IS NOT NULL OR " +
+  "(p.session_hash IS NULL AND p.last_seen >= CAST(strftime('%s','now') AS INTEGER) * 1000 - 2592000000))";
 
 export async function getPushTokensForType(db: D1Database, key: NotifKey): Promise<string[]> {
   const tokens = await db

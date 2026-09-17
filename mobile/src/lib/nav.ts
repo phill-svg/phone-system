@@ -53,3 +53,11 @@ export function createScreenExit(opts: { isFocused: () => boolean; back: () => v
 export function blocksLeaving(state: "calling" | "connected" | "ended"): boolean {
   return state !== "ended";
 }
+
+// After End's disconnect() rejects. Leaving closes the only in-app hang-up button, so it waits until
+// the call really is disconnected. A SECOND failed End leaves anyway: with Back blocked that screen
+// would otherwise have no way out, the call's own system UI (CallKit, the Android call notification)
+// still offers hang-up, and the unmount retries disconnect() -- which is where Back used to leave.
+export function leaveAfterFailedHangup(failures: number, callState: string): boolean {
+  return callState === "disconnected" || failures >= 2;
+}

@@ -116,7 +116,7 @@ describe("removing a staff member", () => {
   // all, indefinitely, with nothing anywhere saying so.
   it("takes the departing member's handset off the notification list", async () => {
     await env.DB
-      .prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)")
+      .prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, strftime('%s','now') * 1000)")
       .bind("ExponentPushToken[gone]", GONE)
       .run();
     await setUserSettings(env.DB, GONE, { ring_my_mobile: true, mobile_number: "0400000000" });

@@ -9,7 +9,7 @@ import { handleTestPush } from "../../src/api/diagnostics";
 
 async function addToken(token: string, email: string) {
   await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1) ON CONFLICT(email) DO NOTHING").bind(email).run();
-  await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, 1)").bind(token, email).run();
+  await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, 1, strftime('%s','now') * 1000)").bind(token, email).run();
 }
 
 describe("call notifications", () => {
@@ -192,5 +192,27 @@ describe("push tokens bound to the registering session", () => {
     await destroySession(env.DB, gone);
     const res = await handleTestPush(env, { email: OWNER, role: "staff" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("legacy push tokens with no recorded session", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM push_tokens").run();
+  });
+
+  // A handset signed out before migration 0039 never registers again, so its NULL row would receive
+  // forever, even while its owner is signed in on another device. It ages out after 30 days.
+  it("stops pushing to a legacy row once it is 30 days stale", async () => {
+    await env.DB.prepare("INSERT INTO staff_users (email, role, created_at) VALUES ('old@n.test', 'staff', 1) ON CONFLICT(email) DO NOTHING").run();
+    const stale = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[stale]', 'android', 'old@n.test', 1, ?)").bind(stale).run();
+    await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES ('ExponentPushToken[fresh]', 'ios', 'old@n.test', 1, ?)").bind(Date.now()).run();
+    const fetchMock = vi.fn(async (_input: unknown, _init: unknown) => new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await notifyMissedCall(env.DB, "+61400000000");
+    vi.unstubAllGlobals();
+    const body = String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body ?? "");
+    expect(body).toContain("fresh");
+    expect(body).not.toContain("stale");
   });
 });

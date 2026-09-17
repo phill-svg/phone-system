@@ -14,7 +14,7 @@ import { formatPhone } from "../lib/phone";
 import { placeCall, getActiveCall, listAudioDevices, selectAudioRoute, onAudioDevicesUpdated } from "../lib/voice";
 import { setPref } from "../lib/prefs";
 import { holdCall, getRecordingSetting } from "../lib/api";
-import { blocksLeaving, createScreenExit } from "../lib/nav";
+import { blocksLeaving, createScreenExit, leaveAfterFailedHangup } from "../lib/nav";
 import type { AudioDeviceLike, AudioRoutePref } from "../lib/audioRouting";
 import { Call as TwilioCall } from "@twilio/voice-react-native-sdk";
 import { haptics } from "../theme/haptics";
@@ -124,6 +124,7 @@ export default function ActiveCallScreen() {
   // End tapped before an outbound call attached (token fetch, mic permission prompt). The call is
   // hung up the moment placeCall hands it over, instead of going on to ring the customer.
   const endRequestedRef = useRef(false);
+  const hangupFailuresRef = useRef(0);
 
   // Tracks whether THIS call-active screen is the one on top of the stack. When a call-waiting
   // accept pushes a second call-active screen on top of this one, this screen gets blurred but
@@ -189,7 +190,7 @@ export default function ActiveCallScreen() {
     })();
     return () => {
       mounted = false;
-      callRef.current?.disconnect();
+      if (callRef.current) Promise.resolve(callRef.current.disconnect()).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -247,10 +248,18 @@ export default function ActiveCallScreen() {
     // The screen still closes on the Disconnected event, not here.
     Promise.resolve(call.disconnect()).catch((e: unknown) => {
       console.warn("[call-active] disconnect failed", e);
-      setErrorText((e as { message?: string })?.message ?? "Couldn't end the call");
-      // Back is blocked until "ended", so without this a Call the SDK has lost (no Disconnected
-      // event ever comes) left no way off this screen. Leaving still retries the hang-up on unmount.
-      finish();
+      hangupFailuresRef.current += 1;
+      let callState = "";
+      try {
+        callState = String(call.getState());
+      } catch {
+        // Unknown state: treat it as possibly live.
+      }
+      if (leaveAfterFailedHangup(hangupFailuresRef.current, callState)) {
+        finish();
+      } else {
+        setErrorText(`${(e as { message?: string })?.message ?? "Couldn't end the call"} - tap End to try again`);
+      }
     });
   }
 

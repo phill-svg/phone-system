@@ -10,9 +10,10 @@
 -- handset replaces NULL the next time the app opens.
 --
 -- A handset that was ALREADY signed out never registers again, so its NULL row would never be
--- replaced and would leak forever. Rows whose owner has no session at all are exactly those, and are
--- deleted here. (Checked live 2026-09-17: two rows, both owned by someone with live sessions, so this
--- deletes nothing today. It is here for any other copy of this database.)
+-- replaced. Senders stop using a NULL row once its last_seen is 30 days old (see LIVE_PUSH_TOKENS),
+-- which covers an owner still signed in elsewhere. Rows whose owner has no session at all cannot
+-- belong to a signed-in handset, so they go now rather than in 30 days. (Checked live 2026-09-17:
+-- two rows, both owned by someone with live sessions, so this deletes nothing today.)
 ALTER TABLE push_tokens ADD COLUMN session_hash TEXT;
 
 DELETE FROM push_tokens

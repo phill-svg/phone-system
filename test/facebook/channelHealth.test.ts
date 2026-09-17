@@ -20,7 +20,7 @@ async function seedDevice() {
   await env.DB.prepare(
     "INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'ios', ?, ?, ?)"
   )
-    .bind("ExponentPushToken[abc]", "a@b.com", NOW, NOW)
+    .bind("ExponentPushToken[abc]", "a@b.com", NOW, Date.now())
     .run();
 }
 
@@ -81,7 +81,7 @@ describe("checkMessengerChannelHealth", () => {
   it("does not arm the cooldown when Expo accepted none of the pushes, but still prunes dead tokens", async () => {
     await seedDevice();
     await env.DB.prepare("INSERT INTO push_tokens (token, platform, staff_email, created_at, last_seen) VALUES (?, 'android', ?, ?, ?)")
-      .bind("ExponentPushToken[def]", "c@d.com", NOW, NOW)
+      .bind("ExponentPushToken[def]", "c@d.com", NOW, Date.now())
       .run();
     vi.stubGlobal("fetch", async () =>
       new Response(
