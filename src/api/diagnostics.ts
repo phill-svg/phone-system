@@ -156,14 +156,24 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
     // FAIL alongside them either: the marker is permanent and a network blip or one 5xx sets it, and
     // a week of red over one blip teaches people to ignore this screen.
     if (requestFailed > 0) {
-      return {
-        ...base,
-        status: done === 0 ? "fail" : "warn",
-        detail:
-          `${requestFailed} recording(s) could not be submitted to Twilio for transcription in the last ` +
+      // What Twilio actually said on the MOST RECENT failure, if it was captured -- #115 fixed the
+      // AU1-vs-US1 host mismatch, but calls right after that deploy still came back request_failed
+      // with nothing here saying why, because nothing had persisted the response body. Falling back
+      // to "check the worker logs" only for a row from before this was captured.
+      const lastError = await env.DB.prepare(
+        `SELECT intelligence_error FROM calls
+         WHERE intelligence_status = 'request_failed' AND started_at > ?
+         ORDER BY started_at DESC LIMIT 1`
+      )
+        .bind(Date.now() - 7 * 24 * 60 * 60 * 1000)
+        .first<{ intelligence_error: string | null }>();
+      const detail = lastError?.intelligence_error
+        ? `${requestFailed} recording(s) could not be submitted to Twilio for transcription in the last ` +
+          `7 days. Twilio answered: ${lastError.intelligence_error}`
+        : `${requestFailed} recording(s) could not be submitted to Twilio for transcription in the last ` +
           `7 days. Check the worker logs for INTELLIGENCE_CREATE_FAILED, which carries the HTTP status ` +
-          `Twilio answered.`,
-      };
+          `Twilio answered.`;
+      return { ...base, status: done === 0 ? "fail" : "warn", detail };
     }
     // A mono CONFERENCE recording is the different, milder case: outbound softphone calls are
     // recorded conference-level, where the Console's dual-channel switch does still apply. Worth

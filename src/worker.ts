@@ -984,16 +984,20 @@ export default {
             staffChannel: await getTranscriptStaffChannel(env.DB),
             customerNumber,
           })
-            .then(async (sid) => {
+            .then(async ({ sid, error }) => {
               if (!sid) {
-                // Twilio refused or could not be reached (INTELLIGENCE_CREATE_FAILED carries the HTTP
-                // status). Leaving the row unmarked made this invisible to Health Checks, which
-                // reported "no answered call has been transcribed yet" indefinitely. Same NULL guard
-                // as the mono marker, so a redelivery never relabels a transcript that completed.
+                // Twilio refused or could not be reached. `error` is Twilio's own answer (or the
+                // fetch failure), persisted in the SAME statement as the status -- one D1 write,
+                // not two, so it can never land out of step with a concurrent job (Whisper's own
+                // transcribeCallRecording runs off this same webhook) the way a separate write
+                // to a different table once did. Leaving the row unmarked made this invisible to
+                // Health Checks, which reported "no answered call has been transcribed yet"
+                // indefinitely. Same NULL guard as the mono marker, so a redelivery never relabels
+                // a transcript that completed.
                 await env.DB.prepare(
-                  "UPDATE calls SET intelligence_status = 'request_failed' WHERE id = ? AND intelligence_status IS NULL"
+                  "UPDATE calls SET intelligence_status = 'request_failed', intelligence_error = ? WHERE id = ? AND intelligence_status IS NULL"
                 )
-                  .bind(callSid)
+                  .bind(error, callSid)
                   .run();
                 return;
               }
