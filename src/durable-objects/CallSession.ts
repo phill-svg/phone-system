@@ -253,6 +253,20 @@ export class CallSession extends DurableObject<Env> {
 
     // (b) First-ever webhook for this call.
     if (!stored) {
+      // A number we hold for SMS only must not take voice calls. Twilio's own number config is the
+      // only thing that actually routes a call, and ours is a separate switch that nothing enforced
+      // -- so a leftover voice webhook on an SMS-only number kept sending calls here. That is not a
+      // cosmetic mismatch: an SMS number is homed in its own region, and `restClient.ts` talks only
+      // to au1, so the redirect that bridges the caller on answer 404s and the DO catch-all hangs up
+      // on BOTH of them. That happened live on +61485034869 on 2026-09-18 (agent_answer, "Twilio
+      // redirect-call failed: 404"). Reject at the front door instead of failing at the bridge.
+      //
+      // Fails OPEN in every uncertain case -- an unknown number, or a read that throws -- because
+      // refusing a real customer is far worse than the mismatch this guards.
+      if (await this.isVoiceDisabled(to)) {
+        console.log("VOICE_DISABLED_NUMBER", JSON.stringify({ callSid, to }));
+        return this.xml(wrapResponse('<Reject reason="rejected"/>'));
+      }
       const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
       await this.env.DB.prepare(
         "INSERT INTO calls (id, caller_number, called_number, started_at, is_after_hours, direction) VALUES (?, ?, ?, ?, ?, ?)"
@@ -291,6 +305,20 @@ export class CallSession extends DurableObject<Env> {
       stored.attempt
     );
     return this.xml(await this.applyWalkResult(callSid, result, isAfterHours, origin));
+  }
+
+  // True ONLY when this number is one of ours AND is explicitly marked as not taking voice.
+  // Anything else -- no row, a read that throws -- answers false, so the call proceeds.
+  private async isVoiceDisabled(to: string): Promise<boolean> {
+    try {
+      const row = await this.env.DB.prepare("SELECT voice_enabled FROM phone_numbers WHERE e164 = ?")
+        .bind(to)
+        .first<{ voice_enabled: number }>();
+      return row !== null && !row.voice_enabled;
+    } catch (err) {
+      console.log("VOICE_ENABLED_LOOKUP_FAILED", JSON.stringify({ to, error: err instanceof Error ? err.message : String(err) }));
+      return false;
+    }
   }
 
   // -------------------------------------------------------------------------
