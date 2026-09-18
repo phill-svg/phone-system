@@ -976,11 +976,22 @@ export default {
         // Anything else is ignored rather than stored: the value ends up choosing who gets quoted
         // saying what, and a junk one would do that silently. NULL then falls back to the
         // account-wide setting, which is what every pre-existing row uses.
+        //
+        // Caught, and not allowed to fail the callback: `recording_url` is already written by this
+        // point, so a throw here would 500 a callback whose work is half done -- and neither Whisper
+        // nor Twilio would ever be asked for this call. Losing the channel costs only the label
+        // direction (the sweep falls back to the setting); losing the transcript costs the call.
         const declaredStaffChannel = url.searchParams.get("staffch");
         if (declaredStaffChannel === "1" || declaredStaffChannel === "2") {
           await env.DB.prepare("UPDATE calls SET transcript_staff_channel = ? WHERE id = ?")
             .bind(Number(declaredStaffChannel), callSid)
-            .run();
+            .run()
+            .catch((e) => {
+              console.log(
+                "TRANSCRIPT_STAFF_CHANNEL_WRITE_FAILED",
+                JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) })
+              );
+            });
         }
         const column = isVoicemail ? "transcription" : "call_transcript";
         const job = transcribeCallRecording(env, callSid, params.RecordingUrl, column);

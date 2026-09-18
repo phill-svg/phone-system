@@ -538,6 +538,30 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(row?.transcript_staff_channel).toBe(1);
     });
 
+    // The channel write must never fail the callback. `recording_url` is already saved by then, so a
+    // 500 here leaves a recording that neither Whisper nor Twilio is ever asked about -- no
+    // transcript at all, to save a label direction the sweep can default anyway. The column is
+    // DROPPED so the write genuinely throws, the realistic case being a deploy that ran ahead of
+    // migration 0040.
+    it("still answers ok when the staff channel cannot be written", async () => {
+      await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+        .bind("CA-rec-nocol", "+61400000000", "+61200000000", Date.now())
+        .run();
+      await env.DB.prepare("ALTER TABLE calls DROP COLUMN transcript_staff_channel").run();
+
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-nocol&rec=dual&staffch=2",
+        { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE-nocol" }
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("ok");
+
+      const row = await env.DB.prepare("SELECT recording_sid FROM calls WHERE id = ?")
+        .bind("CA-rec-nocol")
+        .first<{ recording_sid: string | null }>();
+      expect(row?.recording_sid).toBe("RE-nocol");
+    });
+
     // Anything that is not 1 or 2 is ignored rather than stored. NULL falls back to the account-wide
     // setting; a junk value stored here would pick a speaker label with nothing to catch it.
     it("ignores a staff channel that is not 1 or 2", async () => {

@@ -563,10 +563,15 @@ before adding one, or you will duplicate a path that already works.
   channel 1 to whoever joined first, and the caller is redirected in before the staff leg answers,
   so the caller "usually" landed first. That was a race being read as a rule. It briefly became
   **1** on 2026-09-12 while the recording sat on the staff leg; when that placement was reverted so
-  was this. It stays a setting because an outbound softphone call is still recorded conference-level
-  where the join order genuinely is a race, and because the cost of being wrong is a transcript that
-  confidently attributes the customer's words to staff. Read one real transcript and flip it if the
-  labels come out the wrong way round.
+  was this.
+  **Flipping the setting no longer fixes a reversed transcript.** Every recorded flow declares
+  `staffch` now, and the per-call value always wins, so the setting only labels rows recorded
+  before migration `0040`. If a real transcript comes out with `Customer:`/`Staff:` swapped, the
+  fix is the `staffch=` value at THAT flow's call site (`worker.ts`: `renderJoinConference`,
+  `transfer-answer`, `mobile-bridge`; `CallSession.ts` for the inbound race-fallback) plus
+  `UPDATE calls SET transcript_staff_channel = …` for the calls already recorded wrong. Kept
+  deliberately rather than letting the setting override: which channel is staff differs by flow,
+  and one global override would re-break whichever flow was already right.
   The SETTING is read in **exactly one place**: the sweep, at collection time
   (`intelligenceQueue.ts`), and only when the call carries no per-call value. The recording-status
   webhook used to read it too, to label the channels in the transcript CREATE — that went with the
