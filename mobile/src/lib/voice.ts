@@ -11,15 +11,19 @@ const voice = new Voice();
 
 // The OS-level call notification (Android's heads-up notification, iOS CallKit's banner/lock-screen
 // UI) is built by the native SDK straight from the invite's own signalling data, before JS ever
-// runs -- so callerNumberFromInvite() below, which only fixes what OUR ringing/in-call screens
-// render, can never reach it. Twilio's own answer is this template: it substitutes a named custom
-// Client parameter into the native notification/handle text. The server attaches a "CallerNumber"
-// parameter to every client: leg now (see dialStaff in CallSession.ts and handlePostTransfer in
-// softphone.ts) specifically so this always resolves -- an unresolved key here would be worse than
-// the business number it replaces. Fire-and-forget: a failure here must not stop the app opening,
-// same reasoning as primePushRegistry, and per Twilio's docs the value is cached natively so it
-// survives a cold launch where JS has not run yet.
-voice.setIncomingCallContactHandleTemplate("${CallerNumber}").catch(() => {});
+// runs -- so callerFromInvite() below, which only fixes what OUR ringing/in-call screens render,
+// can never reach it. Twilio's own answer is this template: it substitutes a named custom Client
+// parameter into the native notification/handle text.
+//
+// It reads CallerName, not CallerNumber, so the lock screen shows the saved contact's name when
+// there is one. The server sends CallerName on every client: leg (clientDialTarget, used by both
+// dialStaff and handlePostTransfer) and falls back to the number when no contact matched, so this
+// key always resolves -- an unresolved key renders the template literally.
+//
+// Fire-and-forget: a failure here must not stop the app opening, same reasoning as
+// primePushRegistry, and per Twilio's docs the value is cached natively so it survives a cold
+// launch where JS has not run yet.
+voice.setIncomingCallContactHandleTemplate("${CallerName}").catch(() => {});
 
 // The call/invite currently in play, shared across screens (there is only ever one at a time).
 let activeCall: Call | null = null;
@@ -306,13 +310,13 @@ function adoptCall(call: Call): void {
 
 // ---- Incoming registration ----
 // Register this device to receive incoming calls via push, and wire the CallInvite handler.
-// `onInvite` is called (with the caller's number) when a call comes in, so the UI can navigate
-// to the ringing screen. Returns an unsubscribe function.
+// `onInvite` is called when a call comes in, with the caller's number and their saved name when
+// there is one, so the UI can navigate to the ringing screen. Returns an unsubscribe function.
 // `onAdopted` is called when a call was already answered (from CallKit) before JS subscribed, so the
 // UI can open the in-call screen for it -- otherwise it is live with no in-app controls.
 export async function registerForIncoming(
-  onInvite: (from: string) => void,
-  onAdopted?: (from: string) => void
+  onInvite: (caller: IncomingCaller) => void,
+  onAdopted?: (caller: IncomingCaller) => void
 ): Promise<() => void> {
   const generation = registrationGeneration;
   // Android 13+ needs notification permission to show the incoming-call banner. Best-effort —
@@ -365,7 +369,7 @@ export async function registerForIncoming(
         if (answered) {
           if (!activeCall) {
             adoptCall(answered);
-            currentSubscriber()?.onAdopted?.(callerNumberFromInvite(invite));
+            currentSubscriber()?.onAdopted?.(callerFromInvite(invite));
           }
           continue;
         }
@@ -420,7 +424,7 @@ export async function registerForIncoming(
 // registration whose unsubscribe was lost to an unmount mid-registration -- opened two ringing
 // screens per call, and with auto-answer on both accepted. The newest registration is the one told;
 // removing it hands invites back to the one beneath.
-type InviteSubscriber = { onInvite: (from: string) => void; onAdopted?: (from: string) => void };
+type InviteSubscriber = { onInvite: (caller: IncomingCaller) => void; onAdopted?: (caller: IncomingCaller) => void };
 const inviteSubscribers: InviteSubscriber[] = [];
 const currentSubscriber = (): InviteSubscriber | undefined => inviteSubscribers[inviteSubscribers.length - 1];
 const onRegistered = () => setRegStatus("registered ✓");
@@ -429,20 +433,30 @@ const onRegError = (e: unknown) => setRegStatus("error: " + ((e as { message?: s
 // How the most recent invite ended, for a ringing screen that mounts after the fact.
 let lastInviteOutcome: "accepted" | "cancelled" | null = null;
 
-// The caller's REAL number for an incoming softphone call. Twilio's own `From` on a `client:`
-// invite is always the BUSINESS number -- CallSession.ts's dialStaff never risks the real caller's
-// number there, since Twilio's caller-ID-ownership rules are murky for a `client:` destination.
-// The actual caller instead rides along as a custom Client parameter ("CallerNumber", set as a
-// query param on the client URI), which is exactly what getCustomParameters() surfaces. Without
-// this, every incoming call in the app showed the business's own number instead of who was
-// actually calling -- the custom parameter was being sent all along and never read.
+// Who is calling, for an incoming softphone call. Twilio's own `From` on a `client:` invite is
+// always the BUSINESS number -- CallSession.ts's dialStaff never risks the real caller's number
+// there, since Twilio's caller-ID-ownership rules are murky for a `client:` destination. The real
+// caller rides along as custom Client parameters instead, which is what getCustomParameters()
+// surfaces: CallerNumber to act on, CallerName to read.
 // Case-insensitive key match: this codebase has no prior evidence of which case the two native
-// SDKs (iOS/Android) preserve it in, and a customer's number is worth a defensive lookup either way.
-function callerNumberFromInvite(invite: CallInvite): string {
+// SDKs (iOS/Android) preserve them in, and a customer's number is worth a defensive lookup.
+export type IncomingCaller = { number: string; name: string | null };
+
+function inviteParam(invite: CallInvite, key: string): string | undefined {
   const params = invite.getCustomParameters();
-  const key = Object.keys(params).find((k) => k.toLowerCase() === "callernumber");
-  const raw = key ? params[key] : undefined;
-  return raw ? toE164(raw) : invite.getFrom();
+  const match = Object.keys(params).find((k) => k.toLowerCase() === key);
+  return match ? params[match] : undefined;
+}
+
+function callerFromInvite(invite: CallInvite): IncomingCaller {
+  const raw = inviteParam(invite, "callernumber");
+  const number = raw ? toE164(raw) : invite.getFrom();
+  const rawName = inviteParam(invite, "callername")?.trim();
+  // The server sends the NUMBER as CallerName when no contact matched, so that the native CallKit
+  // template always resolves. Treat that as "no name" here: our own screens format a number better
+  // than the bare digits the parameter carries.
+  const name = rawName && toE164(rawName) !== number ? rawName : null;
+  return { number, name };
 }
 
 function handleInvite(invite: CallInvite): void {
@@ -478,7 +492,7 @@ function handleInvite(invite: CallInvite): void {
     if (call) adoptCall(call);
     notifyInviteAccepted();
   });
-  currentSubscriber()?.onInvite(callerNumberFromInvite(invite));
+  currentSubscriber()?.onInvite(callerFromInvite(invite));
 }
 
 // Tell Twilio to stop sending this device incoming calls.

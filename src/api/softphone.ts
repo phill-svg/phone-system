@@ -3,6 +3,7 @@ import { mintAccessToken } from "../twilio/accessToken";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
 import { setStaffStatus, touchHeartbeat } from "../db/staff";
 import { resolveSendingNumber } from "../db/phoneNumbers";
+import { clientDialTarget } from "../twilio/clientTarget";
 
 // A resolved sending number, or null if it is not a plausible E.164 number Twilio would accept.
 export function validCallerId(resolved: string | null): string | null {
@@ -191,11 +192,12 @@ export async function handlePostTransfer(
   // Twilio, so a typo'd default would 400 every transfer.
   const fromNumber = validCallerId(await resolveSendingNumber(db, "voice", null)) ?? env.TWILIO_FROM_NUMBER;
   const { sid } = await deps.createOutboundCall(env.TWILIO_ACCOUNT_SID, env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
-    // CallerNumber rides along the same way dialStaff sends it -- the mobile app's native call
-    // notification template (setIncomingCallContactHandleTemplate) reads this key globally, on
-    // every client: leg, incoming or transferred. Without it a transfer invite renders blank
-    // instead of the business number a colleague would otherwise see here.
-    to: `client:${targetEmail}?CallerNumber=${encodeURIComponent(fromNumber.replace(/^\+/, ""))}`,
+    // The caller parameters ride along the same way dialStaff sends them -- the mobile app's native
+    // call notification template (setIncomingCallContactHandleTemplate) reads CallerName globally,
+    // on every client: leg, incoming or transferred, so a leg without it renders the template
+    // literally. A transfer invite is the business calling a colleague, so the business number is
+    // the honest value here, unlike on an inbound leg where it would overwrite the real caller.
+    to: clientDialTarget(targetEmail, { number: fromNumber, name: null }),
     from: fromNumber,
     url: appendWebhookSecret(`${origin}/webhooks/twilio/transfer-answer?conf=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
   });

@@ -281,7 +281,7 @@ describe("incoming invite lifecycle", () => {
     await new Promise((r) => setImmediate(r));
 
     expect(voiceLib.getPendingInvite()).toBe(invite);
-    expect(onInvite).toHaveBeenCalledWith("+61400000000");
+    expect(onInvite).toHaveBeenCalledWith({ number: "+61400000000", name: null });
     unsub();
   });
 
@@ -297,7 +297,7 @@ describe("incoming invite lifecycle", () => {
 
     mockVoiceRef.current.emit("callInvite", invite);
 
-    expect(onInvite).toHaveBeenCalledWith("+61455512345");
+    expect(onInvite).toHaveBeenCalledWith({ number: "+61455512345", name: null });
     unsub();
   });
 
@@ -310,7 +310,40 @@ describe("incoming invite lifecycle", () => {
 
     mockVoiceRef.current.emit("callInvite", invite);
 
-    expect(onInvite).toHaveBeenCalledWith("+61455512345");
+    expect(onInvite).toHaveBeenCalledWith({ number: "+61455512345", name: null });
+    unsub();
+  });
+
+  // "If it is saved as their name it should say the name, not the number." The server looks the
+  // contact up and sends it as CallerName; iOS also reads that key natively for the lock screen.
+  it("shows the saved contact name when the server sends one", async () => {
+    const onInvite = jest.fn();
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    const invite = {
+      ...makeInvite(CallInviteState.Pending),
+      getCustomParameters: () => ({ CallerNumber: "61455512345", CallerName: "Jane Customer" }),
+    };
+
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    expect(onInvite).toHaveBeenCalledWith({ number: "+61455512345", name: "Jane Customer" });
+    unsub();
+  });
+
+  // The server sends the NUMBER as CallerName when no contact matched, so that iOS's native
+  // template always resolves. Our own screens format a number better than those bare digits, so
+  // that case must arrive as "no name" rather than as a name that happens to be digits.
+  it("treats a CallerName that is just the number as no name", async () => {
+    const onInvite = jest.fn();
+    const unsub = track(await voiceLib.registerForIncoming(onInvite));
+    const invite = {
+      ...makeInvite(CallInviteState.Pending),
+      getCustomParameters: () => ({ CallerNumber: "61455512345", CallerName: "61455512345" }),
+    };
+
+    mockVoiceRef.current.emit("callInvite", invite);
+
+    expect(onInvite).toHaveBeenCalledWith({ number: "+61455512345", name: null });
     unsub();
   });
 
@@ -323,7 +356,7 @@ describe("incoming invite lifecycle", () => {
 
     mockVoiceRef.current.emit("callInvite", invite);
 
-    expect(onInvite).toHaveBeenCalledWith("+61400000000");
+    expect(onInvite).toHaveBeenCalledWith({ number: "+61400000000", name: null });
     unsub();
   });
 
@@ -355,7 +388,7 @@ describe("incoming invite lifecycle", () => {
     expect(voiceLib.getActiveCall()).toBe(call);
     // Adopting silently left a live call with no in-app End/Hold/keypad: the app has to be told so
     // it can open the in-call screen.
-    expect(onAdopted).toHaveBeenCalledWith("+61400000000");
+    expect(onAdopted).toHaveBeenCalledWith({ number: "+61400000000", name: null });
     unsub();
     mockVoiceRef.current.pendingInvites = new Map();
     mockVoiceRef.current.calls = new Map();
