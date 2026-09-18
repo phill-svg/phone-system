@@ -24,6 +24,7 @@ type PendingRow = {
   id: string;
   intelligence_sid: string;
   intelligence_status: string | null;
+  transcript_staff_channel: number | null;
   intelligence_polls: number | null;
 };
 
@@ -32,7 +33,7 @@ export async function collectPendingTranscripts(env: QueueEnv): Promise<number> 
 
   const rows = (
     await env.DB.prepare(
-      `SELECT id, intelligence_sid, intelligence_status, intelligence_polls
+      `SELECT id, intelligence_sid, intelligence_status, intelligence_polls, transcript_staff_channel
          FROM calls
         WHERE intelligence_sid IS NOT NULL
           AND deleted_at IS NULL
@@ -97,7 +98,16 @@ export async function collectPendingTranscripts(env: QueueEnv): Promise<number> 
       continue;
     }
 
-    const text = formatLabelledTranscript(sentences, await getTranscriptStaffChannel(env.DB));
+    // Per CALL first. Which channel carries staff depends on which leg recorded, and that differs
+    // between flows: the customer's leg on an inbound call and on an outbound softphone call
+    // (staff = 2), the staff member's own mobile on call-via-mobile (staff = 1). The leg that chose
+    // the recording declares it on the recording-status callback; the account-wide setting is the
+    // fallback for rows recorded before this existed.
+    const staffChannel =
+      row.transcript_staff_channel === 1 || row.transcript_staff_channel === 2
+        ? (row.transcript_staff_channel as 1 | 2)
+        : await getTranscriptStaffChannel(env.DB);
+    const text = formatLabelledTranscript(sentences, staffChannel);
     if (!text) {
       // Completed, but every sentence landed on one channel -- the recording was not dual-channel.
       // Labelling it would be a guess dressed as fact, so the Whisper transcript stands.

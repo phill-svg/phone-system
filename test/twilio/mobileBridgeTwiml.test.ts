@@ -28,8 +28,15 @@ describe("renderBridgeToCustomer", () => {
     expect(renderBridgeToCustomer(OPTS)).toContain('answerOnBridge="true"');
   });
 
-  it("records by default, and not when recording is off", () => {
-    expect(renderBridgeToCustomer(OPTS)).toContain('record="record-from-answer"');
+  // DUAL, so a call-via-mobile call gets a speaker-labelled transcript like every other flow. It
+  // was `record-from-answer` -- one mixed track, nothing to separate by, so Conversational
+  // Intelligence discarded it and the call kept Whisper's unlabelled blob.
+  //
+  // `record-from-answer` is a PREFIX of `record-from-answer-dual`, so a toContain of the old value
+  // still passes against the new document. Asserted exactly.
+  it("records both channels by default, and not when recording is off", () => {
+    expect(renderBridgeToCustomer(OPTS)).toContain('record="record-from-answer-dual"');
+    expect(renderBridgeToCustomer(OPTS)).not.toContain('record="record-from-answer"');
     expect(renderBridgeToCustomer({ ...OPTS, record: false })).not.toContain("record=");
   });
 

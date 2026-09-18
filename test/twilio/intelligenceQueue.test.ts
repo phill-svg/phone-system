@@ -7,12 +7,21 @@ const ON = { ...env, TWILIO_INTELLIGENCE_SERVICE_SID: "GA-test" } as never;
 
 async function seed(
   id: string,
-  opts: { sid?: string | null; status?: string | null; polls?: number } = {}
+  opts: { sid?: string | null; status?: string | null; polls?: number; staffChannel?: 1 | 2 | null } = {}
 ) {
   await env.DB.prepare(
-    "INSERT INTO calls (id, caller_number, called_number, started_at, status, call_transcript, intelligence_sid, intelligence_status, intelligence_polls) VALUES (?, ?, ?, ?, 'completed', 'whisper text', ?, ?, ?)"
+    "INSERT INTO calls (id, caller_number, called_number, started_at, status, call_transcript, intelligence_sid, intelligence_status, intelligence_polls, transcript_staff_channel) VALUES (?, ?, ?, ?, 'completed', 'whisper text', ?, ?, ?, ?)"
   )
-    .bind(id, "+61400000000", "+61261059771", Date.now(), opts.sid ?? null, opts.status ?? null, opts.polls ?? 0)
+    .bind(
+      id,
+      "+61400000000",
+      "+61261059771",
+      Date.now(),
+      opts.sid ?? null,
+      opts.status ?? null,
+      opts.polls ?? 0,
+      opts.staffChannel ?? null
+    )
     .run();
 }
 
@@ -183,6 +192,50 @@ describe("collectPendingTranscripts", () => {
     expect((await readCall("CA-swap"))?.call_transcript).toBe(
       "Staff: Would that be Phil?\n\nCustomer: Yes, speaking."
     );
+    await setTranscriptStaffChannel(env.DB, 2);
+  });
+
+  // The per-call value WINS over the setting, because which channel is staff is a property of the
+  // recording, not of the account. Every flow that records on the customer's own leg puts staff on
+  // channel 2; call-via-mobile records on the STAFF member's mobile leg, so staff is channel 1
+  // there. One account-wide number cannot be right for both, and being wrong is silent -- it quotes
+  // the customer's words as the staff member's.
+  //
+  // The setting is deliberately left on the OPPOSITE value: if the per-call column were ignored,
+  // this test would produce exactly the reversed transcript.
+  it("prefers the staff channel recorded on the call over the account setting", async () => {
+    await setTranscriptStaffChannel(env.DB, 2);
+    await seed("CA-viamobile", { sid: "GT-viamobile", status: "pending", staffChannel: 1 });
+    stub((url) =>
+      url.includes("/Sentences")
+        ? sentences([
+            { media_channel: 1, transcript: "TCB Pest Control, Phill speaking.", sentence_index: 0 },
+            { media_channel: 2, transcript: "Hi, I have ants in the kitchen.", sentence_index: 1 },
+          ])
+        : completed()
+    );
+
+    await collectPendingTranscripts(ON);
+    expect((await readCall("CA-viamobile"))?.call_transcript).toBe(
+      "Staff: TCB Pest Control, Phill speaking.\n\nCustomer: Hi, I have ants in the kitchen."
+    );
+  });
+
+  // NULL is every row recorded before the column existed, plus any flow that does not declare one.
+  it("falls back to the account setting when the call has no recorded channel", async () => {
+    await setTranscriptStaffChannel(env.DB, 1);
+    await seed("CA-nochan", { sid: "GT-nochan", status: "pending", staffChannel: null });
+    stub((url) =>
+      url.includes("/Sentences")
+        ? sentences([
+            { media_channel: 1, transcript: "Phill here.", sentence_index: 0 },
+            { media_channel: 2, transcript: "Hello.", sentence_index: 1 },
+          ])
+        : completed()
+    );
+
+    await collectPendingTranscripts(ON);
+    expect((await readCall("CA-nochan"))?.call_transcript).toBe("Staff: Phill here.\n\nCustomer: Hello.");
     await setTranscriptStaffChannel(env.DB, 2);
   });
 

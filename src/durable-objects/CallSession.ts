@@ -743,7 +743,7 @@ export class CallSession extends DurableObject<Env> {
           conferenceName: body.callSid,
           record: await getRecordingEnabled(this.env.DB),
           recordingStatusCallbackUrl: appendWebhookSecret(
-            `${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1&rec=dual`,
+            `${origin}/webhooks/twilio/recording-status?callSid=${body.callSid}&conference=1&rec=dual&staffch=2`,
             this.env.TWILIO_WEBHOOK_SECRET
           ),
         })

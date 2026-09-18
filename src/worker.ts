@@ -542,7 +542,7 @@ export default {
           conferenceName,
           record: joinRecord,
           recordingStatusCallbackUrl: appendWebhookSecret(
-            `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1&rec=dual`,
+            `${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1&rec=dual&staffch=2`,
             env.TWILIO_WEBHOOK_SECRET
           ),
         }),
@@ -591,8 +591,15 @@ export default {
         renderDialAgentIntoConference({
           conferenceName,
           actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
-          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1`, env.TWILIO_WEBHOOK_SECRET),
+          // `rec=dual` and no `conference=1`: this is a <Dial> recording on the CUSTOMER's own leg,
+          // not a <Conference> one, so mono coming back is a real fault rather than the Console's
+          // dual-channel switch being off. Same reasoning, and same flags, as the inbound caller leg.
+          recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&rec=dual&staffch=2`, env.TWILIO_WEBHOOK_SECRET),
           record,
+          // The leg reaching here with `rec=conf` IS the dialled customer, so its <Dial> is the
+          // customer's: channel 1 is the customer, channel 2 is whoever they are speaking to. The
+          // agent's own leg passes `record: false` for this, so there is still exactly one recording.
+          dual: true,
         }),
         { headers: { "Content-Type": "text/xml" } }
       );
@@ -629,8 +636,13 @@ export default {
         renderBridgeToCustomer({
           to,
           callerId,
+          // `staffch=1`, and this is the ONE flow where it is 1. The <Dial> below is executed by
+          // the STAFF member's own mobile leg, and a <Dial> recording puts channel 1 on the call
+          // that executed it -- so here channel 1 is staff and channel 2 is the customer, the
+          // inverse of every other recorded flow. `rec=dual` for the same reason it is set on the
+          // caller leg: this recording is two-channel by request, so mono coming back is a fault.
           recordingStatusCallbackUrl: appendWebhookSecret(
-            `${url.origin}/webhooks/twilio/recording-status?callSid=${encodeURIComponent(params.CallSid)}`,
+            `${url.origin}/webhooks/twilio/recording-status?callSid=${encodeURIComponent(params.CallSid)}&rec=dual&staffch=1`,
             env.TWILIO_WEBHOOK_SECRET
           ),
           record,
@@ -753,13 +765,19 @@ export default {
         // inserted.
         await env.DB.prepare("UPDATE calls SET outbound_target_sid = ? WHERE id = ?").bind(targetSid, conferenceName).run();
 
-        const record = await getRecordingEnabled(env.DB);
         return new Response(
           renderDialAgentIntoConference({
             conferenceName,
             actionUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/agent-status?callSid=${conferenceName}`, env.TWILIO_WEBHOOK_SECRET),
             recordingStatusCallbackUrl: appendWebhookSecret(`${url.origin}/webhooks/twilio/recording-status?callSid=${conferenceName}&conference=1`, env.TWILIO_WEBHOOK_SECRET),
-            record,
+            // `record: false` is load-bearing, not tidy-up. The dialled CUSTOMER's leg records this
+            // call on its own <Dial> (two channels, `rec=conf` -> `dual: true` in the transfer-answer
+            // route above). If this leg asked for a conference recording as well there would be TWO
+            // recordings for one call, both POSTing to the same callback where `recording_url` is
+            // last-write-wins -- half the conversation orphaned in Twilio and the labelled half the
+            // one likely to lose. Mirrors the inbound staff leg, which passes `record: false` for
+            // exactly the same reason.
+            record: false,
           }),
           { headers: { "Content-Type": "text/xml" } }
         );
@@ -950,6 +968,20 @@ export default {
         // recording silently un-transcribed while Health Checks called it expected.
         const isCallerDual = url.searchParams.get("rec") === "dual";
         const isConference = url.searchParams.get("conference") === "1";
+        // WHICH CHANNEL IS STAFF, declared by the leg that chose the recording -- the only place
+        // that knows. It is 2 wherever the recording sits on the customer's own <Dial> (inbound
+        // caller leg, outbound softphone customer leg) and 1 on call-via-mobile, where the staff
+        // mobile leg executes the <Dial>. Read back by the Intelligence sweep at collection time.
+        //
+        // Anything else is ignored rather than stored: the value ends up choosing who gets quoted
+        // saying what, and a junk one would do that silently. NULL then falls back to the
+        // account-wide setting, which is what every pre-existing row uses.
+        const declaredStaffChannel = url.searchParams.get("staffch");
+        if (declaredStaffChannel === "1" || declaredStaffChannel === "2") {
+          await env.DB.prepare("UPDATE calls SET transcript_staff_channel = ? WHERE id = ?")
+            .bind(Number(declaredStaffChannel), callSid)
+            .run();
+        }
         const column = isVoicemail ? "transcription" : "call_transcript";
         const job = transcribeCallRecording(env, callSid, params.RecordingUrl, column);
         if (ctx) ctx.waitUntil(job);
@@ -962,10 +994,10 @@ export default {
         // Voicemail is deliberately excluded. Only the caller is speaking, so there is nothing to
         // label and it would be paying per minute for the same text.
         //
-        // Only CONFERENCE recordings, which is what `RecordingChannels === "2"` identifies. A
-        // call-via-mobile leg is recorded by <Dial record="record-from-answer"> -- mono by
-        // construction, unaffected by any Console conference setting -- so every one of those
-        // transcripts would come back single-channel, be discarded, and still be billed per minute.
+        // Only TWO-CHANNEL recordings, which is what `RecordingChannels === "2"` identifies. Every
+        // recorded flow now asks for two channels -- inbound on the caller's leg, outbound softphone
+        // on the dialled customer's leg, call-via-mobile on the staff mobile leg -- so mono arriving
+        // here is a fault in all of them, not an expected shape to skip quietly.
         if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && !isDualChannelRecording(params.RecordingChannels)) {
           // Say so rather than going quiet. A mono recording here almost always means the Console's
           // dual-channel conference switch is off, which is the difference between this feature
