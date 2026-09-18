@@ -1,0 +1,15 @@
+-- Which audio channel carries the STAFF member, per call.
+--
+-- It used to be one account-wide setting (`transcript_staff_channel`, default 2), which held only
+-- while every dual-channel recording had the same shape: an inbound call recorded on the CALLER's
+-- own <Dial>, where the parent call is the customer, so channel 1 is the customer and channel 2 is
+-- staff.
+--
+-- Outbound breaks that. "Call via my mobile" records on the STAFF member's mobile leg -- that leg
+-- is the parent, so channel 1 is staff and channel 2 is the customer, the exact inverse. One global
+-- value cannot describe both, and being wrong does not fail loudly: it produces a confident
+-- transcript attributing the customer's words to staff.
+--
+-- NULL means "not recorded" -- old rows, and any flow that does not set it -- and falls back to the
+-- account-wide setting, which stays as the default for exactly that case.
+ALTER TABLE calls ADD COLUMN transcript_staff_channel INTEGER;

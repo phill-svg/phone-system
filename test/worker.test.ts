@@ -517,6 +517,69 @@ describe("Task 8 queue/ring webhook routes", () => {
       expect(row?.recording_sid).toBe("RE123");
     });
 
+    // WHICH CHANNEL IS STAFF, declared on the callback URL by the leg that chose the recording --
+    // the only place that knows. 2 where the recording sits on the customer's own <Dial> (inbound
+    // caller leg, outbound softphone customer leg), 1 on call-via-mobile, where the STAFF member's
+    // mobile leg executes the <Dial>. The Intelligence sweep reads it back to label the transcript,
+    // so getting it wrong quotes the customer's words as the staff member's, silently.
+    it("stores the staff channel the calling leg declared", async () => {
+      await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+        .bind("CA-rec-chan", "+61400000000", "+61200000000", Date.now())
+        .run();
+
+      await postSigned(
+        "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-chan&rec=dual&staffch=1",
+        { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE-chan" }
+      );
+
+      const row = await env.DB.prepare("SELECT transcript_staff_channel FROM calls WHERE id = ?")
+        .bind("CA-rec-chan")
+        .first<{ transcript_staff_channel: number | null }>();
+      expect(row?.transcript_staff_channel).toBe(1);
+    });
+
+    // The channel write must never fail the callback. `recording_url` is already saved by then, so a
+    // 500 here leaves a recording that neither Whisper nor Twilio is ever asked about -- no
+    // transcript at all, to save a label direction the sweep can default anyway. The column is
+    // DROPPED so the write genuinely throws, the realistic case being a deploy that ran ahead of
+    // migration 0040.
+    it("still answers ok when the staff channel cannot be written", async () => {
+      await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+        .bind("CA-rec-nocol", "+61400000000", "+61200000000", Date.now())
+        .run();
+      await env.DB.prepare("ALTER TABLE calls DROP COLUMN transcript_staff_channel").run();
+
+      const response = await postSigned(
+        "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-nocol&rec=dual&staffch=2",
+        { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE-nocol" }
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("ok");
+
+      const row = await env.DB.prepare("SELECT recording_sid FROM calls WHERE id = ?")
+        .bind("CA-rec-nocol")
+        .first<{ recording_sid: string | null }>();
+      expect(row?.recording_sid).toBe("RE-nocol");
+    });
+
+    // Anything that is not 1 or 2 is ignored rather than stored. NULL falls back to the account-wide
+    // setting; a junk value stored here would pick a speaker label with nothing to catch it.
+    it("ignores a staff channel that is not 1 or 2", async () => {
+      await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+        .bind("CA-rec-junk", "+61400000000", "+61200000000", Date.now())
+        .run();
+
+      await postSigned(
+        "https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-junk&rec=dual&staffch=7",
+        { RecordingUrl: "https://api.twilio.com/rec.mp3", RecordingSid: "RE-junk" }
+      );
+
+      const row = await env.DB.prepare("SELECT transcript_staff_channel FROM calls WHERE id = ?")
+        .bind("CA-rec-junk")
+        .first<{ transcript_staff_channel: number | null }>();
+      expect(row?.transcript_staff_channel).toBeNull();
+    });
+
     it("stores RecordingDuration so clients can show a real length", async () => {
       await env.DB.prepare(
         "INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)"
@@ -922,7 +985,7 @@ describe("POST /webhooks/twilio/transfer-answer", () => {
   // claimed to have made impossible, surviving in the one route nobody looked at.
   //
   // The dialled CUSTOMER on an outbound softphone call (/twiml/voice-app, `rec=conf`) is the
-  // opposite: no caller-owned <Dial> exists there, so this conference recording is the only one.
+  // opposite: it is the leg that owns the recording, and the agent's own leg passes `record: false`.
   it("records only when the URL asks it to, so a transferred call is not recorded twice", async () => {
     const target = await postSigned("https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller", {
       CallSid: "CA-transfer-notrec",
@@ -936,8 +999,83 @@ describe("POST /webhooks/twilio/transfer-answer", () => {
       { CallSid: "CA-transfer-rec" }
     );
     const outboundXml = await outbound.text();
-    expect(outboundXml).toContain('record="record-from-start"');
     expect(outboundXml).toContain("recordingStatusCallback");
+  });
+
+  // An outbound call's transcript is labelled or it is not, and this is where that is decided. The
+  // leg reaching here with `rec=conf` IS the dialled customer, so a `record-from-answer-dual` on
+  // its own <Dial> gives two channels with channel 1 the customer -- the same arrangement as an
+  // inbound call. A `record-from-start` on the <Conference> instead is ONE mixed track, which
+  // Conversational Intelligence discards: that is why every outbound call kept an unlabelled
+  // Whisper blob.
+  //
+  // Positional, because the two placements differ only in which tag carries the attribute.
+  it("records the customer leg's own Dial, dual-channel, declaring staff as channel 2", async () => {
+    const outbound = await postSigned(
+      "https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller&rec=conf",
+      { CallSid: "CA-transfer-dual" }
+    );
+    const xml = await outbound.text();
+    const dialTag = xml.slice(xml.indexOf("<Dial"), xml.indexOf(">", xml.indexOf("<Dial")) + 1);
+    const confTag = xml.slice(xml.indexOf("<Conference"), xml.indexOf(">", xml.indexOf("<Conference")) + 1);
+    expect(dialTag).toContain('record="record-from-answer-dual"');
+    expect(confTag).not.toContain("record");
+    // `staffch=2` is what the sweep reads back to label the transcript, and no `conference=1`:
+    // this is a <Dial> recording, so mono coming back is a fault rather than the Console's
+    // dual-channel conference switch being off.
+    expect(dialTag).toContain("staffch=2");
+    expect(dialTag).not.toContain("conference=1");
+  });
+});
+
+// ---- "Call via my mobile": the staff member's own mobile leg answered ----
+describe("POST /twiml/mobile-bridge", () => {
+  async function sign(url: string, params: Record<string, string>, authToken: string): Promise<string> {
+    const message =
+      url +
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}${params[key]}`)
+        .join("");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(authToken),
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  }
+
+  async function postSigned(url: string, params: Record<string, string>) {
+    const signature = await sign(url, params, env.TWILIO_AUTH_TOKEN);
+    return SELF.fetch(url, {
+      method: "POST",
+      headers: { "X-Twilio-Signature": signature, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  beforeEach(() => {
+    env.TWILIO_AUTH_TOKEN = "test-auth-token";
+  });
+
+  // The ONE flow where staff are channel 1. This <Dial> is executed by the staff member's own
+  // mobile leg, and a <Dial> recording puts channel 1 on the call that executed it -- the inverse
+  // of every other recorded flow, where the leg is the customer's. Declared on the callback URL
+  // because the sweep, reading it back hours later, has no way to work out which leg recorded.
+  it("records both channels and declares staff as channel 1", async () => {
+    const res = await postSigned(
+      "https://example.com/twiml/mobile-bridge?to=%2B61400000000&callerId=%2B61261059771",
+      { CallSid: "CA-viamobile", AnsweredBy: "human" }
+    );
+    expect(res.status).toBe(200);
+    const xml = await res.text();
+    expect(xml).toContain('record="record-from-answer-dual"');
+    expect(xml).toContain("staffch=1");
+    // Not 2: that would attribute every word the customer says to the staff member.
+    expect(xml).not.toContain("staffch=2");
   });
 });
 
@@ -996,6 +1134,35 @@ describe("POST /twiml/voice-app", () => {
     const body = await res.text();
     expect(body).toContain("<Conference");
     expect(body).toContain(">CAagent</Conference>");
+  });
+
+  // The agent's own leg must NOT record. The dialled CUSTOMER's leg does (transfer-answer with
+  // `rec=conf`), on its own <Dial>, dual-channel -- which is what makes an outbound transcript
+  // labellable. If this leg asked for a conference recording as well there would be two recordings
+  // for one call, both POSTing to the same callback where recording_url is last-write-wins: half
+  // the conversation orphaned in Twilio, and the labelled half the one likely to lose. The inbound
+  // staff leg passes `record: false` for exactly the same reason.
+  //
+  // Asserted on the agent leg's OWN document, because the two legs are served by different routes
+  // and testing the render helper in isolation does not test which document each leg is handed --
+  // which was the defect that shipped on 2026-09-12.
+  it("hands the agent leg a document that records nothing, so one call makes one recording", async () => {
+    vi.stubGlobal(
+      "fetch",
+      // A NEW Response per call: a body can only be read once, and this route makes more than one
+      // request when the Durable Object stub is exercised.
+      vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ sid: "CAtarget" }), { status: 200 })))
+    );
+
+    const res = await postSigned("https://example.com/twiml/voice-app", {
+      CallSid: "CAagent-norec",
+      From: "client:a@b.com",
+      To: "+61400000000",
+    });
+    const xml = await res.text();
+    expect(xml).toContain(">CAagent-norec</Conference>");
+    expect(xml).not.toContain("record");
+    expect(xml).not.toContain("recordingStatusCallback");
   });
 
   // Settings -> Test Connection runs the Voice SDK's PreflightTest, which places a real test call

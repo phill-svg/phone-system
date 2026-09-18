@@ -82,6 +82,43 @@ describe("renderDialAgentIntoConference", () => {
     expect(xml).not.toContain("record-from-answer-dual");
   });
 
+  // The outbound softphone flow. The dialled CUSTOMER's leg renders this document too, and with
+  // `dual` its own <Dial> carries the recording -- two channels, channel 1 the customer, exactly
+  // like an inbound call's caller leg. The agent's leg passes `record: false`, so there is still
+  // one recording for the call and the double-recording defect above cannot come back.
+  //
+  // Positional again: the two placements differ only in which tag the attribute lands on, and a
+  // substring assertion cannot tell them apart.
+  it("records dual-channel on the Dial, and not the Conference, when the leg is the customer's", () => {
+    const xml = renderDialAgentIntoConference({
+      conferenceName: "CAcaller",
+      actionUrl: "https://x/action",
+      recordingStatusCallbackUrl: "https://x/rec?rec=dual&staffch=2",
+      dual: true,
+    });
+    const dialTag = xml.slice(xml.indexOf("<Dial"), xml.indexOf(">", xml.indexOf("<Dial")) + 1);
+    const confTag = xml.slice(xml.indexOf("<Conference"), xml.indexOf(">", xml.indexOf("<Conference")) + 1);
+    expect(dialTag).toContain('record="record-from-answer-dual"');
+    // &amp;, because the URL is spliced into an XML attribute -- a raw & would make the document
+    // invalid and Twilio would answer the call with an application error.
+    expect(dialTag).toContain('recordingStatusCallback="https://x/rec?rec=dual&amp;staffch=2"');
+    expect(confTag).not.toContain("record");
+  });
+
+  it("records nothing at all when the leg is told not to, dual or otherwise", () => {
+    for (const dual of [true, false]) {
+      const xml = renderDialAgentIntoConference({
+        conferenceName: "CAcaller",
+        actionUrl: "https://x/action",
+        recordingStatusCallbackUrl: "https://x/rec",
+        record: false,
+        dual,
+      });
+      expect(xml).not.toContain("record");
+      expect(xml).not.toContain("recordingStatusCallback");
+    }
+  });
+
   it("omits recording attributes when record is false", () => {
     const xml = renderDialAgentIntoConference({ conferenceName: "CAx", actionUrl: "https://x/a", recordingStatusCallbackUrl: "https://x/r", record: false });
     expect(xml).not.toContain("record=");

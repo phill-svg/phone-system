@@ -78,6 +78,9 @@ export function renderDialAgentIntoConference(opts: {
   actionUrl: string;
   recordingStatusCallbackUrl: string;
   record?: boolean;
+  // Record on THIS leg's <Dial> (two channels) instead of on the <Conference> (one mixed track).
+  // Set only where this leg is the CUSTOMER's, so channel 1 is the customer everywhere.
+  dual?: boolean;
   whisper?: boolean;
 }): string {
   // CONFERENCE-level recording, and NOT a <Dial> recording -- deliberately, and the reasoning is on
@@ -93,21 +96,23 @@ export function renderDialAgentIntoConference(opts: {
   // is dual-channel and survives transfers -- so the inbound staff-answer path passes
   // `record: false` here and an inbound call is never recorded twice.
   //
-  // What is left for this to cover is the outbound softphone flow, where no caller-owned <Dial>
-  // exists to hang a recording on. A conference recording is ONE recording however many legs ask for
-  // it, so it cannot double up; the cost is that it is mono unless the Console switch works, so
-  // those transcripts stay unlabelled and keep Whisper's text. Worth having over no recording, and
-  // not worth guessing which leg is which to get labels.
-  const rec =
-    opts.record === false
-      ? ""
-      : ` record="record-from-start" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
+  // What is left for this to cover is the outbound softphone flow -- and there the CUSTOMER's leg
+  // renders this document too, because it is dialled by `createOutboundCall` and joins the same
+  // conference. That leg passes `dual: true` and the agent's leg passes `record: false`, which is
+  // the inbound arrangement exactly: one recording, on the customer's own <Dial>, two channels,
+  // channel 1 the customer. A conference-level recording is still used where no leg can be called
+  // the customer's (nothing does today), and stays mono and unlabelled.
+  const recAttrs = ` recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
+  // `dual` moves the recording from the <Conference> to this leg's own <Dial>, which is what makes
+  // it two-channel -- see the comment above.
+  const dialRec = opts.record !== false && opts.dual ? ` record="record-from-answer-dual"${recAttrs}` : "";
+  const confRec = opts.record !== false && !opts.dual ? ` record="record-from-start"${recAttrs}` : "";
   // The <Say> precedes the <Dial>, so it plays on this leg alone -- the caller is in the conference
   // and cannot hear it.
   return wrapResponse(
     (opts.whisper ? `<Say>${escapeXml(WORK_CALL_WHISPER)}</Say>` : "") +
-      `<Dial action="${escapeXml(opts.actionUrl)}" method="POST">` +
-      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}"${rec}>${escapeXml(opts.conferenceName)}</Conference>` +
+      `<Dial action="${escapeXml(opts.actionUrl)}" method="POST"${dialRec}>` +
+      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}"${confRec}>${escapeXml(opts.conferenceName)}</Conference>` +
       `</Dial>`
   );
 }
@@ -131,10 +136,14 @@ export function renderBridgeToCustomer(opts: {
   recordingStatusCallbackUrl: string;
   record?: boolean;
 }): string {
+  // `record-from-answer-dual`, so this one is labelled too. Note the channels are INVERTED here and
+  // the call site says so with `staffch=1`: this <Dial> is executed by the STAFF member's mobile
+  // leg, and a <Dial> recording puts channel 1 on the call that executed it. Every other recorded
+  // flow runs on the customer's leg, where channel 1 is the customer.
   const rec =
     opts.record === false
       ? ""
-      : ` record="record-from-answer" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
+      : ` record="record-from-answer-dual" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`;
   return wrapResponse(
     `<Dial answerOnBridge="true" callerId="${escapeXml(opts.callerId)}"${rec}>` +
       `<Number>${escapeXml(opts.to)}</Number>` +
