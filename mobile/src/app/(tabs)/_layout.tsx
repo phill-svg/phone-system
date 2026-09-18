@@ -17,7 +17,7 @@ function useIncomingCalls() {
   useEffect(() => {
     let unsub: (() => void) | undefined;
     let cancelled = false;
-    registerForIncoming(async (from) => {
+    registerForIncoming(async (caller) => {
       const hasActiveCall = getActiveCall() !== null;
       const autoAnswer = await getPrefBool("pref_auto_answer", false);
       const callWaiting = await getPrefBool("pref_call_waiting", true);
@@ -28,14 +28,17 @@ function useIncomingCalls() {
       }
       if (action === "answer-now") {
         // Push the ringing screen with an auto-accept flag so it immediately answers.
-        router.push({ pathname: "/call-incoming", params: { number: from, name: "", auto: "1" } });
+        router.push({ pathname: "/call-incoming", params: { number: caller.number, name: caller.name ?? "", auto: "1" } });
         return;
       }
       // show-incoming and show-waiting both open the ringing screen; "waiting" adds context.
-      router.push({ pathname: "/call-incoming", params: { number: from, name: "", waiting: action === "show-waiting" ? "1" : "" } });
-    }, (from) => {
+      router.push({
+        pathname: "/call-incoming",
+        params: { number: caller.number, name: caller.name ?? "", waiting: action === "show-waiting" ? "1" : "" },
+      });
+    }, (caller) => {
       // Already answered from the lock screen before the app loaded: straight to the in-call screen.
-      router.push({ pathname: "/call-active", params: { number: from, name: "", direction: "incoming" } });
+      router.push({ pathname: "/call-active", params: { number: caller.number, name: caller.name ?? "", direction: "incoming" } });
     })
       .then((u) => {
         // Registration can take ~30s on iOS. If this unmounted meanwhile, its cleanup found nothing to

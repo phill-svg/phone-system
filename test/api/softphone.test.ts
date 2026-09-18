@@ -234,7 +234,7 @@ describe("handlePostTransfer", () => {
         // CallerNumber rides along so the mobile app's native call-notification template (see
         // setIncomingCallContactHandleTemplate in mobile/src/lib/voice.ts) always resolves --
         // here it's the business number, matching what the colleague would see without it.
-        to: "client:b@b.com?CallerNumber=61261059771",
+        to: "client:b@b.com?CallerNumber=61261059771&CallerName=61261059771",
         from: "+61261059771",
         url: "https://example.com/webhooks/twilio/transfer-answer?conf=CAcaller",
       })

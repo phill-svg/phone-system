@@ -341,6 +341,50 @@ describe("CallSession", () => {
     });
   });
 
+  // "If it is saved as their name it should say the name, not the number." The contact lookup runs
+  // on the ring and the name rides along as CallerName -- which iOS also substitutes into its
+  // CallKit banner natively, so this is the only way a name can reach the lock screen at all.
+  it("sends the saved contact name alongside the number on a softphone leg", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('Jane Customer', NULL, '+61400000000', '61400000000', 1, 1)"
+    ).run();
+
+    const stub = stubFor("CA-named");
+    await send(stub, mainEvent("CA-named"));
+    await send(stub, mainEvent("CA-named", { digits: "1" }));
+
+    expect(outboundDials(fetchMock).filter((d) => d.startsWith("client:"))).toEqual([
+      "client:phill@b.com?CallerNumber=61400000000&CallerName=Jane%20Customer",
+    ]);
+  });
+
+  // A contact lookup must never be the thing that drops a call. Everything on the ring path is
+  // held to this: a throw escapes startRing to the DO catch-all, which tells a live customer we
+  // have a technical issue and hangs up on them. A name is worth nothing next to that.
+  it("still rings when the contact lookup throws", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+    await env.DB.prepare("ALTER TABLE contacts RENAME TO contacts_hidden").run();
+    try {
+      const stub = stubFor("CA-contacts-throw");
+      await send(stub, mainEvent("CA-contacts-throw"));
+      const { xml } = await send(stub, mainEvent("CA-contacts-throw", { digits: "1" }));
+
+      expect(xml).not.toContain("technical issue");
+      expect(outboundDials(fetchMock).filter((d) => d.startsWith("client:"))).toEqual([
+        "client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000",
+      ]);
+    } finally {
+      await env.DB.prepare("ALTER TABLE contacts_hidden RENAME TO contacts").run();
+    }
+  });
+
   // Reported as "it's still showing the business number when someone calls, not theirs", on every
   // iOS surface. Twilio's `From` on a client: leg is always OUR number, so CallerNumber is the only
   // thing that says who is calling -- and every reader PREFERS it over `From`. #116 made a missed
@@ -366,7 +410,7 @@ describe("CallSession", () => {
     expect(dialled[0]).not.toContain("61866108941");
     expect(dialled[0]).not.toContain("61200000000");
     // The caller stashed on the first webhook is still the right answer.
-    expect(dialled[0]).toBe("client:phill@b.com?CallerNumber=61400000000");
+    expect(dialled[0]).toBe("client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000");
   });
 
   // A number we hold for SMS only must never take a voice call. Twilio's own config is what routes
@@ -422,7 +466,7 @@ describe("CallSession", () => {
 
     expect(xml).toContain("<Enqueue");
     expect(xml).toContain("CA-enq"); // per-call queue name
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"]);
   });
 
   it("plays a greeting (play node) BEFORE enqueuing when a play precedes a direct ring", async () => {
@@ -477,10 +521,10 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-legs", { digits: "1" }));
 
     const row = await env.DB.prepare("SELECT * FROM softphone_call_legs WHERE call_sid = ?")
-      .bind("sid-client:phill@b.com?CallerNumber=61400000000")
+      .bind("sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000")
       .first<{ call_sid: string; staff_email: string; conference_name: string }>();
     expect(row).toMatchObject({
-      call_sid: "sid-client:phill@b.com?CallerNumber=61400000000",
+      call_sid: "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000",
       staff_email: "phill@b.com", // "client:" prefix stripped
       conference_name: "CA-legs", // the caller's CallSid, used as the queue/conference name
     });
@@ -889,7 +933,7 @@ describe("CallSession", () => {
     expect(answer.xml).toContain("<Hangup/>");
 
     // Sam's softphone leg then fails to answer too → attemptSids is empty → ALL_ATTEMPTS_EXHAUSTED.
-    await send(stub, agentStatus("CA-amd-exhaust", "sid-client:sam@b.com?CallerNumber=61400000000", "no-answer"));
+    await send(stub, agentStatus("CA-amd-exhaust", "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000", "no-answer"));
 
     const poll = await send(stub, {
       kind: "hold_poll",
@@ -912,7 +956,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-bridge"));
     await send(stub, mainEvent("CA-bridge", { digits: "1" }));
 
-    const answer = await send(stub, agentAnswer("CA-bridge", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    const answer = await send(stub, agentAnswer("CA-bridge", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
 
     // The caller's own leg (CallSid "CA-bridge") was REST-redirected into the join-conference webhook.
     const redirectHit = fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/Calls/CA-bridge.json"));
@@ -969,7 +1013,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-rec1", { digits: "1" }));
 
     // The STAFF leg's document must request no recording at all.
-    const answer = await send(stub, agentAnswer("CA-rec1", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    const answer = await send(stub, agentAnswer("CA-rec1", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
     expect(answer.xml).not.toContain("recordingStatusCallback");
     expect(answer.xml).not.toContain("record=");
 
@@ -993,7 +1037,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-whisper"));
     await send(stub, mainEvent("CA-whisper", { digits: "1" }));
 
-    const answer = await send(stub, agentAnswer("CA-whisper", "sid-client:phill@b.com?CallerNumber=61400000000", undefined, true));
+    const answer = await send(stub, agentAnswer("CA-whisper", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", undefined, true));
     expect(answer.xml).toContain("<Say>T C B call.</Say>");
     expect(answer.xml).toContain("<Conference");
   });
@@ -1008,7 +1052,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-nowhisper"));
     await send(stub, mainEvent("CA-nowhisper", { digits: "1" }));
 
-    const answer = await send(stub, agentAnswer("CA-nowhisper", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    const answer = await send(stub, agentAnswer("CA-nowhisper", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
     expect(answer.xml).not.toContain("<Say>");
   });
 
@@ -1024,17 +1068,17 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-cascade", { digits: "1" }));
 
     // Only the first number is dialed initially (cascade).
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"]);
 
     // First leg fails → second number is now dialed.
-    await send(stub, agentStatus("CA-cascade", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    await send(stub, agentStatus("CA-cascade", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", "no-answer"));
     expect(outboundDials(fetchMock)).toEqual([
-      "client:phill@b.com?CallerNumber=61400000000",
-      "client:sam@b.com?CallerNumber=61400000000",
+      "client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000",
+      "client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000",
     ]);
 
     // Second leg answers → bridges.
-    const answer = await send(stub, agentAnswer("CA-cascade", "sid-client:sam@b.com?CallerNumber=61400000000"));
+    const answer = await send(stub, agentAnswer("CA-cascade", "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000"));
     expect(answer.xml).toContain("<Dial");
 
     const left = await send(stub, queueLeft("CA-cascade"));
@@ -1060,14 +1104,14 @@ describe("CallSession", () => {
     expect(xml).toContain("<Enqueue");
     expect(outboundDials(fetchMock).sort()).toEqual(
       [
-        "client:phill@b.com?CallerNumber=61400000000",
-        "client:sam@b.com?CallerNumber=61400000000",
-        "client:jo@b.com?CallerNumber=61400000000",
+        "client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000",
+        "client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000",
+        "client:jo@b.com?CallerNumber=61400000000&CallerName=61400000000",
       ].sort()
     );
 
     // First leg answers → the other two are cancelled.
-    const answer = await send(stub, agentAnswer("CA-simul", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    const answer = await send(stub, agentAnswer("CA-simul", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
     expect(answer.xml).toContain("<Dial");
     expect(cancelHits(fetchMock).length).toBe(2);
   });
@@ -1102,15 +1146,15 @@ describe("CallSession", () => {
     const stub = stubFor("CA-conf-race");
     await send(stub, mainEvent("CA-conf-race"));
     await send(stub, mainEvent("CA-conf-race", { digits: "1" }));
-    await send(stub, agentAnswer("CA-conf-race", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    await send(stub, agentAnswer("CA-conf-race", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
 
     for (const status of ["canceled", "no-answer", "busy", "failed"]) {
-      await send(stub, agentStatus("CA-conf-race", "sid-client:sam@b.com?CallerNumber=61400000000", status));
+      await send(stub, agentStatus("CA-conf-race", "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000", status));
     }
     expect(endConferenceHits()).toBe(0);
 
     // A leg that WAS in the conference still cleans up after itself when it hangs up.
-    await send(stub, agentStatus("CA-conf-race", "sid-client:phill@b.com?CallerNumber=61400000000", "completed"));
+    await send(stub, agentStatus("CA-conf-race", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", "completed"));
     expect(endConferenceHits()).toBe(1);
   });
 
@@ -1166,7 +1210,7 @@ describe("CallSession", () => {
     await send(stub, mainEvent("CA-cancelfail", { digits: "1" }));
 
     // Sam's leg rejects the cancel, exactly as Twilio does for a leg no longer ringing.
-    const samSid = "sid-client:sam@b.com?CallerNumber=61400000000";
+    const samSid = "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000";
     const previous = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation(async (input: unknown, init: unknown) => {
       const isCancel =
@@ -1178,7 +1222,7 @@ describe("CallSession", () => {
 
     const answer = await send(
       stub,
-      agentAnswer("CA-cancelfail", "sid-client:phill@b.com?CallerNumber=61400000000")
+      agentAnswer("CA-cancelfail", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000")
     );
 
     // The caller is still bridged -- this is the part that was silently lost.
@@ -1216,11 +1260,11 @@ describe("CallSession", () => {
       await send(stub, mainEvent(callSid));
       await send(stub, mainEvent(callSid, { digits: "1" }));
 
-      const first = await send(stub, agentAnswer(callSid, "sid-client:phill@b.com?CallerNumber=61400000000"));
+      const first = await send(stub, agentAnswer(callSid, "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
       expect(first.xml).toContain("<Conference");
       if (afterQueueLeft) await send(stub, queueLeft(callSid));
 
-      const second = await send(stub, agentAnswer(callSid, "sid-client:sam@b.com?CallerNumber=61400000000"));
+      const second = await send(stub, agentAnswer(callSid, "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000"));
       expect(second.xml).toContain("<Say>This call was answered by someone else.</Say>");
       expect(second.xml).toContain("<Hangup/>");
       expect(second.xml).not.toContain("<Conference");
@@ -1263,8 +1307,8 @@ describe("CallSession", () => {
     const stub = stubFor("CA-refused-hangup");
     await send(stub, mainEvent("CA-refused-hangup"));
     await send(stub, mainEvent("CA-refused-hangup", { digits: "1" }));
-    const phillSid = "sid-client:phill@b.com?CallerNumber=61400000000";
-    const samSid = "sid-client:sam@b.com?CallerNumber=61400000000";
+    const phillSid = "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000";
+    const samSid = "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000";
     await send(stub, agentAnswer("CA-refused-hangup", phillSid));
     await send(stub, queueLeft("CA-refused-hangup"));
     await send(stub, agentAnswer("CA-refused-hangup", samSid));
@@ -1290,7 +1334,7 @@ describe("CallSession", () => {
     const stub = stubFor("CA-answer-redelivered");
     await send(stub, mainEvent("CA-answer-redelivered"));
     await send(stub, mainEvent("CA-answer-redelivered", { digits: "1" }));
-    const phillSid = "sid-client:phill@b.com?CallerNumber=61400000000";
+    const phillSid = "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000";
     await send(stub, agentAnswer("CA-answer-redelivered", phillSid));
     await send(stub, queueLeft("CA-answer-redelivered"));
 
@@ -1333,7 +1377,7 @@ describe("CallSession", () => {
       return previous(input, init);
     });
 
-    await send(stub, agentAnswer("CA-done-first", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    await send(stub, agentAnswer("CA-done-first", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
     expect(planAtCancel).toEqual(["DONE"]);
   });
 
@@ -1835,8 +1879,8 @@ describe("CallSession", () => {
     expect(outboundDials(fetchMock).length).toBe(2);
 
     // Both legs fail individually; the second failure empties attemptSids → EXHAUSTED → DONE{no_answer}.
-    await send(stub, agentStatus("CA-simul-noans", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
-    await send(stub, agentStatus("CA-simul-noans", "sid-client:sam@b.com?CallerNumber=61400000000", "busy"));
+    await send(stub, agentStatus("CA-simul-noans", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", "no-answer"));
+    await send(stub, agentStatus("CA-simul-noans", "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000", "busy"));
 
     // Hold poll now sees a non-DIALING plan and tells the caller to leave the queue.
     const poll = await send(stub, {
@@ -2001,7 +2045,7 @@ describe("CallSession", () => {
     await seedStaff("phill@b.com");
     await seedStaff("sam@b.com");
     // First number dials OK, second throws mid-batch.
-    failCreateFor("client:sam@b.com?CallerNumber=61400000000");
+    failCreateFor("client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000");
 
     const stub = stubFor("CA-dialfail");
     await send(stub, mainEvent("CA-dialfail"));
@@ -2015,7 +2059,7 @@ describe("CallSession", () => {
     // Exactly the one successfully-created leg was cancelled.
     const cancels = cancelHits(fetchMock);
     expect(cancels.length).toBe(1);
-    expect(cancels[0]).toContain("sid-client:phill@b.com?CallerNumber=61400000000");
+    expect(cancels[0]).toContain("sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000");
 
     // No activeRing was persisted (the whole batch failed), so a later hold poll just leaves.
     const poll = await send(stub, {
@@ -2033,16 +2077,16 @@ describe("CallSession", () => {
     await seedStaff("phill@b.com");
     await seedStaff("sam@b.com");
     // The first (cascade) number dials OK; the second (the cascade advance) throws.
-    failCreateFor("client:sam@b.com?CallerNumber=61400000000");
+    failCreateFor("client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000");
 
     const stub = stubFor("CA-cascade-dialfail");
     await send(stub, mainEvent("CA-cascade-dialfail"));
     const enq = await send(stub, mainEvent("CA-cascade-dialfail", { digits: "1" }));
     expect(enq.xml).toContain("<Enqueue"); // first leg dialed OK → caller enqueued
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"]);
 
     // First leg fails → attempt to dial the second throws → plan should transition to no_answer.
-    const s = await send(stub, agentStatus("CA-cascade-dialfail", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    const s = await send(stub, agentStatus("CA-cascade-dialfail", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", "no-answer"));
     expect(s.status).toBe(200);
 
     // No stale DIALING state waiting on a phantom leg: hold poll now sees non-DIALING → <Leave/>.
@@ -2173,7 +2217,7 @@ describe("CallSession", () => {
     const stub = stubFor("CA-timeline");
     await send(stub, mainEvent("CA-timeline"));
     await send(stub, mainEvent("CA-timeline", { digits: "1" }));
-    await send(stub, agentAnswer("CA-timeline", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    await send(stub, agentAnswer("CA-timeline", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
 
     const rows = await env.DB.prepare("SELECT event_type FROM call_events WHERE call_id = ? ORDER BY id")
       .bind("CA-timeline")
@@ -2195,13 +2239,13 @@ describe("CallSession", () => {
     const stub = stubFor("CA-dup");
     await send(stub, mainEvent("CA-dup"));
     await send(stub, mainEvent("CA-dup", { digits: "1" }));
-    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000"]);
+    expect(outboundDials(fetchMock)).toEqual(["client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"]);
 
     // First delivery: first leg fails → second number dialed.
-    await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", "no-answer"));
     expect(outboundDials(fetchMock)).toEqual([
-      "client:phill@b.com?CallerNumber=61400000000",
-      "client:sam@b.com?CallerNumber=61400000000",
+      "client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000",
+      "client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000",
     ]);
 
     // Snapshot state directly from DO storage after the first (legitimate) delivery.
@@ -2212,7 +2256,7 @@ describe("CallSession", () => {
     const cancelsAfterFirst = cancelHits(fetchMock).length;
 
     // Duplicate delivery of the SAME terminal event for sid-client:phill@b.com (already removed).
-    const dup = await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
+    const dup = await send(stub, agentStatus("CA-dup", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", "no-answer"));
     expect(dup.status).toBe(200);
 
     // No extra dial or cancel triggered by the duplicate, and stored state is byte-identical.
@@ -2224,7 +2268,7 @@ describe("CallSession", () => {
     expect(after).toEqual(before);
 
     // The second leg can still answer normally → bridge.
-    const answer = await send(stub, agentAnswer("CA-dup", "sid-client:sam@b.com?CallerNumber=61400000000"));
+    const answer = await send(stub, agentAnswer("CA-dup", "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000"));
     expect(answer.xml).toContain("<Dial");
   });
 
@@ -2252,7 +2296,7 @@ describe("CallSession", () => {
     expect(outboundDials(fetchMock).length).toBe(2);
 
     // Both legs are tracked, so answering one cancels the other.
-    await send(stub, agentAnswer("CA-leg-record-throws", "sid-client:phill@b.com?CallerNumber=61400000000"));
+    await send(stub, agentAnswer("CA-leg-record-throws", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000"));
     expect(cancelHits(fetchMock)).toHaveLength(1);
     expect(cancelHits(fetchMock)[0]).toContain("sam@b.com");
   });
@@ -2276,8 +2320,8 @@ describe("CallSession", () => {
 
     await env.DB.prepare("ALTER TABLE calls RENAME COLUMN outbound_target_sid TO outbound_target_sid_broken").run();
     try {
-      await send(stub, agentStatus("CA-outbound-lookup-throws", "sid-client:phill@b.com?CallerNumber=61400000000", "no-answer"));
-      await send(stub, agentStatus("CA-outbound-lookup-throws", "sid-client:sam@b.com?CallerNumber=61400000000", "busy"));
+      await send(stub, agentStatus("CA-outbound-lookup-throws", "sid-client:phill@b.com?CallerNumber=61400000000&CallerName=61400000000", "no-answer"));
+      await send(stub, agentStatus("CA-outbound-lookup-throws", "sid-client:sam@b.com?CallerNumber=61400000000&CallerName=61400000000", "busy"));
     } finally {
       await env.DB.prepare("ALTER TABLE calls RENAME COLUMN outbound_target_sid_broken TO outbound_target_sid").run();
     }

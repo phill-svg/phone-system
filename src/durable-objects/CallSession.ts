@@ -32,6 +32,8 @@ import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
 import { notifyCallbackRequest, notifyIncomingCall, notifyMissedCall, notifyVoicemail } from "../api/push";
 import { sendMissedCallSmsIfDue } from "../api/missedCallSms";
+import { findContactByPhone } from "../db/contacts";
+import { clientDialTarget } from "../twilio/clientTarget";
 
 type Env = {
   DB: D1Database;
@@ -1299,9 +1301,23 @@ export class CallSession extends DurableObject<Env> {
       // lookup simply omitted the parameter and the client fell back to `From`; #116 made a missed
       // lookup assert that the business number IS the caller.
       const displayNumber = stashedCaller ?? callerRow?.caller_number ?? null;
-      to = displayNumber
-        ? `${number}?CallerNumber=${encodeURIComponent(displayNumber.replace(/^\+/, ""))}`
-        : number;
+      // The saved contact's name, so a handset shows "Jane Customer" rather than a number nobody
+      // recognises. Guarded and swallowed like every other read on the ring path: a throw here
+      // escapes startRing to the DO catch-all, which tells a live customer we have a technical
+      // issue and hangs up on them. A name is worth nothing next to that, so a failed lookup just
+      // means the number is shown.
+      let displayName: string | null = null;
+      if (displayNumber) {
+        try {
+          displayName = (await findContactByPhone(this.env.DB, displayNumber))?.name ?? null;
+        } catch (err) {
+          console.log(
+            "RING_CONTACT_LOOKUP_FAILED",
+            JSON.stringify({ callSid, error: err instanceof Error ? err.message : String(err) })
+          );
+        }
+      }
+      to = clientDialTarget(ownerEmail, { number: displayNumber, name: displayName });
       // Every incoming call shows the BUSINESS number on the handset rather than the customer, and
       // the two candidate causes look identical from the outside: either `displayNumber` is already
       // wrong here (the calls row read above missing, which falls back to our own caller ID), or it
