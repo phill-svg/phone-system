@@ -480,10 +480,10 @@ before adding one, or you will duplicate a path that already works.
   reassuring silence it was built to break. The skip is persisted as `single_channel` now and the
   check keys on `intelligence_status`.
   Two constraints on that marker. It is written **only for conference recordings**, flagged with
-  `&conference=1` on the three callback URLs we build ourselves (`CallSession.handleAgentAnswer`,
-  `/webhooks/twilio/transfer-answer`, `/twiml/voice-app`) — a call-via-mobile leg is
-  `<Dial record="record-from-answer">`, mono by construction and unaffected by any Console setting,
-  so marking those would pin the check red over something working exactly as designed. Inferring it
+  `&conference=1` on the callback URLs we build ourselves. Since 2026-09-18 every recorded flow is a
+  dual `<Dial>` recording flagged `rec=dual` instead (caller leg, softphone customer leg,
+  call-via-mobile), where mono coming back is a real FAULT rather than the Console switch — so the
+  `conference=1` path is now effectively unused, kept for the fallback it describes. Inferring it
   from Twilio's own parameters was the alternative and is worse: `<Dial>`'s documented
   recordingStatusCallback carries no `ConferenceSid`, but that is a fact about their docs, not a
   guarantee. And the write is guarded on `intelligence_status IS NULL`, because callbacks are
@@ -538,12 +538,24 @@ before adding one, or you will duplicate a path that already works.
   the staff leg — load-bearing, not tidy-up — and a test at the CALL SITE pins both halves, because
   testing the two render helpers in isolation does not test which document each leg is handed, which
   was the defect.
-  `renderDialAgentIntoConference` keeps a **conference-level** (`record-from-start`) recording for
-  the outbound softphone flow, where no caller-owned `<Dial>` exists. A conference recording is one
-  recording however many legs ask for it, so it cannot double up; the cost is that it is mono, so
-  those transcripts stay unlabelled and keep Whisper's text. Worth having over no recording.
-- **Which audio channel is the staff member is a SETTING, not a constant**
-  (`transcript_staff_channel`, default **2**). For an inbound call that 2 is now structural rather
+  **Outbound follows the same rule since 2026-09-18: record on the CUSTOMER's `<Dial>`, dual.**
+  Before that both outbound flows were mono by construction and never labelled. The softphone's
+  dialled customer leg (`transfer-answer?rec=conf`) is a leg of its own with its own `<Dial>`, so it
+  records there (`renderDialAgentIntoConference({ dual: true })`) and the agent leg in
+  `/twiml/voice-app` passes `record: false` — the inbound arrangement exactly, one recording per
+  call. Call-via-mobile (`renderBridgeToCustomer`) is the exception that cannot follow it: the
+  customer is a `<Number>` dialled FROM the staff mobile leg, so that leg executes the `<Dial>` and
+  channel 1 is STAFF. It records dual anyway and says so with `staffch=1` (next bullet). Note the
+  softphone mapping is inferred from the same documented rule as inbound and has not yet been read
+  off a real outbound transcript.
+- **Which audio channel is the staff member is decided PER CALL, with a setting as the fallback.**
+  Since 2026-09-18 (migration `0040`) the leg that chooses a recording declares it as `staffch=` on
+  the recording-status callback URL, the webhook stores it in `calls.transcript_staff_channel`, and
+  the sweep reads that first: **2** wherever the recording sits on the customer's own `<Dial>`
+  (inbound caller leg, outbound softphone customer leg), **1** on call-via-mobile, where the staff
+  mobile executes the `<Dial>`. One account-wide value cannot be right for both, and being wrong is
+  silent. Only 1 or 2 is stored; NULL — every row recorded before this — falls back to the setting
+  below (`transcript_staff_channel`, default **2**). For an inbound call that 2 is now structural rather
   than a guess: the recording is on the CALLER's `<Dial>`, a `<Dial>` recording puts channel 1 on
   the **parent call**, and the parent there is the customer — so channel 2 is whoever they are
   speaking to, across a transfer included, because the caller's leg never changes.
@@ -555,11 +567,12 @@ before adding one, or you will duplicate a path that already works.
   where the join order genuinely is a race, and because the cost of being wrong is a transcript that
   confidently attributes the customer's words to staff. Read one real transcript and flip it if the
   labels come out the wrong way round.
-  It is read in **exactly one place**: the sweep, at collection time (`intelligenceQueue.ts`). The
-  recording-status webhook used to read it too, to label the channels in the transcript CREATE — that
-  went with the `participants` array, since Twilio refused the request that carried it. So Twilio's
-  own participant roles are never set and never read; the labels in `call_transcript` come from this
-  setting alone. `getTranscriptStaffChannel` still **catches `JSON.parse`**, because a hand-edited
+  The SETTING is read in **exactly one place**: the sweep, at collection time
+  (`intelligenceQueue.ts`), and only when the call carries no per-call value. The recording-status
+  webhook used to read it too, to label the channels in the transcript CREATE — that went with the
+  `participants` array, since Twilio refused the request that carried it. So Twilio's own
+  participant roles are never set and never read; the labels in `call_transcript` come from the
+  per-call value or this setting, nothing else. `getTranscriptStaffChannel` still **catches `JSON.parse`**, because a hand-edited
   junk row would otherwise throw inside the cron tick. The first test for that seeded `'7'` — valid
   JSON, so the guard was never executed and deleting it left the test green.
 - **Whisper and the Twilio sweep both write `call_transcript`, in the same cron tick.**
