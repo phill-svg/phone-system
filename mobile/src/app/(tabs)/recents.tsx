@@ -139,12 +139,24 @@ export default function RecentsScreen() {
           icon={q ? "magnifyingglass" : "clock"}
           iconFallback={q ? "search" : undefined}
           title={q ? "No Matches" : "No Recent Calls"}
-          message={q ? "No call matches that name or number." : "Your recent calls will appear here."}
+          message={
+            !q
+              ? "Your recent calls will appear here."
+              : contacts.isError
+                ? // Names could not be loaded, so only numbers were searched. Saying "no match"
+                  // alone would be a confident answer to a question that was half-asked.
+                  "No call matches that number. Contact names couldn't be loaded, so names weren't searched."
+                : "No call matches that name or number."
+          }
         />
       ) : (
         <FlatList
           data={rows}
           keyExtractor={(c) => c.id}
+          // Without this the keyboard's dismissal SWALLOWS the first tap: you search, one row comes
+          // back, you tap it, and nothing happens until you tap again. Same on the long-press that
+          // deletes. Contacts, which this search box was copied from, already sets it.
+          keyboardShouldPersistTaps="handled"
           onRefresh={calls.refetch}
           refreshing={calls.isFetching && !calls.isLoading}
           contentContainerStyle={{ paddingHorizontal: 16 }}

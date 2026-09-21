@@ -26,9 +26,11 @@ const ids = (rows: Row[]) => rows.map((r) => r.id);
 describe("searchCalls", () => {
   const calls = [inbound("c1", "+61402430107"), outbound("c2", "+61262931122"), inbound("c3", "+61411222333")];
 
-  it("returns everything for an empty query, including whitespace", () => {
-    expect(ids(searchCalls("", calls, nameFor))).toEqual(["c1", "c2", "c3"]);
-    expect(ids(searchCalls("   ", calls, nameFor))).toEqual(["c1", "c2", "c3"]);
+  // Asserted by IDENTITY. Every row "matches" an empty string through the name branch anyway, so
+  // an equality check here passes with the early return deleted and pins nothing.
+  it("returns the same list, untouched, for an empty query", () => {
+    expect(searchCalls("", calls, nameFor)).toBe(calls);
+    expect(searchCalls("   ", calls, nameFor)).toBe(calls);
   });
 
   it("matches the saved contact name, case-insensitively and part-way through", () => {
@@ -57,8 +59,20 @@ describe("searchCalls", () => {
   });
 
   // One digit matches most of a call log, which is not a search result -- it is the list again.
+  // "0" is the case that bites: normalizePhone("0") is "61", which passes a length check on the
+  // normalised form and matches every Australian number there is.
   it("ignores a single typed digit as a number search", () => {
     expect(ids(searchCalls("4", calls, nameFor))).toEqual([]);
+    expect(ids(searchCalls("0", calls, nameFor))).toEqual([]);
+  });
+
+  // `normalizePhone` is a whole-number transform, and a search box receives fragments: it rewrites
+  // a leading 0 to 61, so a fragment starting with 0 matched nothing -- while being contiguous text
+  // visible on the row.
+  it("matches a fragment typed straight off the screen", () => {
+    const landline = [inbound("c4", "+61261059771")];
+    expect(ids(searchCalls("05 9771", landline, nameFor))).toEqual(["c4"]);
+    expect(ids(searchCalls("6105", landline, nameFor))).toEqual(["c4"]);
   });
 
   // A call with no saved contact still has a number, and that is usually what you remember.

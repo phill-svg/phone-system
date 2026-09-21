@@ -55,13 +55,20 @@ export function searchCalls<T extends { direction: string; caller_number: string
 ): T[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return calls;
+  // BOTH forms, because `normalizePhone` is a whole-number transform being used on a fragment:
+  // it rewrites a leading 0 to 61, so typing "05 9771" -- contiguous text visible on the row for
+  // 02 6105 9771 -- becomes "6159771", which is in no stored number. The raw digits match that;
+  // the normalised form matches a number typed in a different shape from the stored one.
   const digits = normalizePhone(query);
+  const raw = query.replace(/\D/g, "");
+  // Gated on the RAW length. `normalizePhone("0")` is "61", so a length check on the normalised
+  // form lets a single typed 0 -- the first keystroke of every AU number -- match every row.
+  const numberSearch = raw.length >= 2;
   return calls.filter((c) => {
-    const number = c.direction === "outbound" ? c.called_number : c.caller_number;
     if (nameFor(c).toLowerCase().includes(needle)) return true;
-    // Two digits is where a number search stops matching half the call log. Below that the name
-    // match above is the only sensible reading of what was typed.
-    return digits.length >= 2 && normalizePhone(number).includes(digits);
+    if (!numberSearch) return false;
+    const number = normalizePhone(c.direction === "outbound" ? c.called_number : c.caller_number);
+    return number.includes(digits) || number.includes(raw);
   });
 }
 
