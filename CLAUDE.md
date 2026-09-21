@@ -88,7 +88,37 @@ before adding one, or you will duplicate a path that already works.
 - **Tenancy is fail-closed.** `tenant_id` columns are `TEXT NOT NULL DEFAULT ''` deliberately;
   never default them to a real tenant. The existing business is `tnt_tcb`, hardcoded only in
   migration `0026`.
-- **Check `ls migrations/` before adding one** — another session may have taken the next number.
+- **Check `ls migrations/` before adding one — against `origin/master`, not your checkout.** Another
+  session may have taken the next number, and a stale clone answers the question wrongly while
+  looking like it answered it. That happened on 2026-09-21: a session sitting three commits behind
+  (`167229f`, #128) listed `migrations/` correctly for what it had, saw `0040` as the last, and
+  added `0041_per_number_ivr_flow.sql` — while `0041_reset_legacy_transcript_status.sql` already
+  existed on master from #130. Both are on master now.
+  `git fetch origin master && git ls-tree --name-only origin/master migrations/ | tail` is the
+  check that would have caught it.
+  **Two migrations sharing a number is survivable, and renaming one after it has been applied is
+  not.** wrangler tracks applied migrations by FILENAME, so the two are distinct entries, both run,
+  ordered lexicographically (`per_number` before `reset_legacy`) — and these two touch different
+  tables, so the order does not matter. Renaming one to `0042` after production has applied it would
+  make wrangler treat it as new and re-run it, and an `ALTER TABLE ... ADD COLUMN` run twice fails
+  on `duplicate column name`. So: leave a duplicate number alone once deployed, and take the NEXT
+  free number (`0042`) for whatever comes next.
+- **`OTA_BUILD` collides the same way, and git will NOT warn you.** #131 bumped it 76 -> 77 and
+  PUBLISHED 77 (run #39, 2026-09-21 11:08). #132, branched from #128 where it was 76, bumped
+  76 -> 77 as well — and because both sides ended on the same literal, there was no merge conflict
+  at all. Master carried `OTA_BUILD = "77"` with mobile changes the published 77 does not contain,
+  so publishing would have put materially different code on handsets under a number already in use.
+  That is the one thing the version label exists to prevent: it is how anyone answers "what is on
+  that phone?". Bumped to 78 before any publish. **Read `OTA_BUILD` off `origin/master`, never off
+  your checkout, and never assume an unconflicted merge means the number is free.**
+- **Commit trailers: `Co-Authored-By` YES, `Claude-Session` URL NO.** The repo convention is stated
+  in four places under `docs/superpowers/plans/` and in
+  `specs/2026-08-27-tcbvoip-migration-design.md` ("Do not include the Claude-Session URL trailer").
+  A Claude Code session reminder may say to add both; the repo's own rule wins, and that reminder
+  says so itself. Written here because it was missed on 2026-09-21 by a session that had READ those
+  plan files earlier the same session — a rule filed only in the plans is a rule that gets walked
+  past. The trailer is in `3fddcf2` on master as a result; it was left there rather than
+  force-pushing shared history to remove it.
 - `AUTH_MODE=dev` bypasses staff login. Local development only, never in production.
 
 ## Current status (update this when it changes)
