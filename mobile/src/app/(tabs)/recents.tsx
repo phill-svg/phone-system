@@ -137,7 +137,7 @@ export default function RecentsScreen() {
       ) : rows.length === 0 ? (
         <EmptyState
           icon={q ? "magnifyingglass" : "clock"}
-          iconFallback={q ? "search" : undefined}
+          iconFallback={q ? "search" : "time-outline"}
           title={q ? "No Matches" : "No Recent Calls"}
           message={
             !q
