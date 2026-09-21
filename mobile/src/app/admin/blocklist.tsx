@@ -5,7 +5,7 @@ import { Group } from "../../components/ui/Grouped";
 import { PrimaryButton } from "../../components/ui/PrimaryButton";
 import { Icon } from "../../components/ui/Icon";
 import { getCallBlocklist, setCallBlocklist } from "../../lib/api";
-import { blocklistState, isSaveableBlocklistEntry, normalizeBlocklistEntry } from "../../lib/phone";
+import { blocklistNumber, blocklistState } from "../../lib/phone";
 import { useTheme, type } from "../../theme/theme";
 
 // Numbers the IVR drops before they ever ring anyone. Stored as a plain list and matched against
@@ -39,17 +39,17 @@ export default function BlocklistScreen() {
   function add() {
     const raw = entry.trim();
     if (!raw) return;
-    // The SAME rule Save applies. Without it the two paths disagreed about identical text: tapping
-    // + committed "02 6105 977" as "+6126105977" while Save quietly refused it, and disagreement
-    // between those two is what produced the original bug.
-    if (!isSaveableBlocklistEntry(raw)) {
+    // The SAME rule Save applies, and a mirror of the one the SERVER enforces. Without it the two
+    // paths disagreed about identical text: + committed "02 6105 977" as "+6126105977" while Save
+    // quietly refused it, and that disagreement is what produced the original bug.
+    const number = blocklistNumber(raw);
+    if (!number) {
       Alert.alert(
         "That number looks incomplete",
         "Enter a full Australian number, or an international one starting with +."
       );
       return;
     }
-    const number = normalizeBlocklistEntry(raw);
     if (numbers.includes(number)) {
       Alert.alert("Already blocked", `${number} is already on the list.`);
       setEntry("");

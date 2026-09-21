@@ -287,37 +287,31 @@ export function renderSettingsPage(
       document.getElementById('blocklist-form').addEventListener('submit', async function (e) {
         e.preventDefault();
         const status = document.getElementById('blocklist-save-status');
-        // Normalised to E.164, exactly as the handset does (normalizeBlocklistEntry in
-        // mobile/src/lib/phone.ts). src/worker.ts matches this list LITERALLY against Twilio's
-        // From, so a number saved here as "0400 123 456" blocked nobody, forever, silently --
-        // while sitting in the box looking like a blocked number. A line with no digits at all
-        // (a short code, an alphanumeric sender) is kept verbatim.
-        // ONLY a line that is entirely a phone number is rewritten. Mapping every line through
-        // this turned an alphanumeric sender ("Optus1") or a note ("# blocked 2026") into "+1" and
-        // "+2026" -- destroying entries the admin never touched, on a list the worker matches
-        // literally, with the original text gone from the box as well.
-        const toE164 = function (line) {
-          if (!/^\\+?[0-9 ()-]+$/.test(line)) return line;
-          var plus = line.charAt(0) === '+';
-          var d = line.replace(/[^0-9]/g, '');
-          if (!d) return line;
-          var digits = plus ? d : (d.charAt(0) === '0' ? '61' + d.slice(1) : d);
-          // 1300/1800/13xx carry no trunk 0, so they must not gain a +61 prefix twice over.
-          return /^(1[38]00[0-9]{6}|13[0-9]{4})$/.test(digits) ? '+61' + digits : '+' + digits;
-        };
+        // Posted as TYPED. The server normalises every entry to E.164 and refuses an incomplete
+        // one by name (handlePutCallBlocklist -> blocklistNumber), which is what makes this form
+        // and the handset agree: they used to disagree about the same text, so a half-typed number
+        // was refused on the phone and stored from here as something that matches no caller.
         const numbers = document.getElementById('blocklist-numbers').value
           .split('\\n')
-          .map(function (line) { return toE164(line.trim()); })
+          .map(function (line) { return line.trim(); })
           .filter(function (line) { return line !== ''; });
         const res = await fetch('/api/settings/call-blocklist', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(numbers),
         });
-        status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
-        // AFTER a confirmed save, never before. Reformatting the box on a 403 or a 500 is a visual
-        // "it worked" for a save that did not happen.
-        if (res.ok) document.getElementById('blocklist-numbers').value = numbers.join('\\n');
+        if (res.ok) {
+          // Show the STORED form, so what is on screen is what a caller is matched against. Read
+          // back rather than reformatted locally: the server owns the rule.
+          const saved = await fetch('/api/settings/call-blocklist').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+          if (Array.isArray(saved)) document.getElementById('blocklist-numbers').value = saved.join('\\n');
+          status.textContent = 'Saved.';
+        } else {
+          // The server names the offending entry; "Failed to save" for a list of twenty numbers is
+          // unactionable.
+          const body = await res.json().catch(function () { return null; });
+          status.textContent = (body && body.error) || 'Failed to save.';
+        }
       });
 
       var divertForm = document.getElementById('divert-callerid-form');

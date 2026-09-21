@@ -1,3 +1,4 @@
+import { blocklistNumber } from "./blocklistNumber";
 import { jsonResponse } from "./respond";
 import {
   getBusinessHours,
@@ -62,7 +63,29 @@ export async function handlePutCallBlocklist(request: Request, db: D1Database, s
     return INVALID_BODY_RESPONSE();
   }
   if (!isStringArray(body)) return INVALID_BODY_RESPONSE();
-  await setCallBlocklist(db, body);
+  // Normalised and validated HERE, because this list is compared literally against Twilio's
+  // E.164 From and both clients write it. They disagreed -- the web form posted raw text while
+  // the handset normalised -- so the same number blocked callers from one surface and nobody from
+  // the other. A rejection names the entry: "invalid request body" for a list of twenty numbers
+  // is unactionable, and apiFetch only surfaces a JSON { error }.
+  const numbers: string[] = [];
+  for (const entry of body) {
+    if (!entry.trim()) continue;
+    const number = blocklistNumber(entry);
+    if (!number) {
+      return jsonResponse(
+        {
+          error:
+            `"${entry}" is not a complete phone number. Blocked callers are matched on the number ` +
+            `Twilio reports, so a partial one would never match.`,
+        },
+        400
+      );
+    }
+    // Deduplicated after normalisation: "0400 123 456" and "+61400123456" are one entry.
+    if (!numbers.includes(number)) numbers.push(number);
+  }
+  await setCallBlocklist(db, numbers);
   return jsonResponse({ ok: true });
 }
 

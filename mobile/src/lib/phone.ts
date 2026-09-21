@@ -114,79 +114,61 @@ export function searchContacts(query: string, contacts: Contact[]): Contact[] {
   );
 }
 
-// A blocklist entry, in the form the IVR compares against.
+// A call-blocklist entry, in the form the IVR compares against -- or null if it is not one.
 //
-// Twilio reports the caller in E.164 and `src/worker.ts` matches the list LITERALLY
-// (`blocklist.includes(params.From)`), so "0400 123 456" has to be stored as "+61400123456" or it
-// blocks nobody. Anything `toE164` cannot make sense of is kept verbatim rather than mangled --
-// a short code or an alphanumeric sender is still something an admin may want to block.
-export function normalizeBlocklistEntry(raw: string): string {
-  const trimmed = raw.trim();
-  return toE164(trimmed) || trimmed;
-}
+// MIRRORS `src/api/blocklistNumber.ts`, which is authoritative: the server normalises and validates
+// every entry, so a client that gets this wrong gets a 400 naming the entry rather than a list that
+// silently blocks nobody. This copy exists only to answer "should Save be enabled", the same way
+// `normalizePhone` is duplicated against the backend's copy.
+//
+// Prefix-freedom (no digit can be appended to make another valid number), because the failure this
+// prevents is a HALF-TYPED number: "02 6105 977" stored as "+6126105977" blocks nobody while
+// reading on screen exactly like an entry that works. Alphanumeric senders are refused -- a voice
+// call's From is never one.
+const MIN_INTERNATIONAL_DIGITS = 9;
+const MAX_E164_DIGITS = 15;
 
-// Whether what has been typed is a FINISHED blocklist entry, rather than a prefix of one.
-//
-// Prefix-freedom, the same rule as the schedule editor's TimeField: no digit can be appended to
-// make another valid number. Without it, folding the entry box into the saved list re-opens the
-// very bug this exists to fix from the other side: an admin typing "02 6105 977", being interrupted
-// and tapping Save would write "+6126105977" to the live blocklist -- a number that blocks nobody
-// while reading on screen exactly like one that does.
-//
-// Australian numbers resolve through `toE164`, NOT `normalizePhone`: 1300/1800/13xx carry no trunk
-// 0, so normalizePhone leaves them bare ("132221") and a check for a "61" prefix rejects every one
-// of them. Same trap normalizeAuNumber hit on the dial path.
-export function isCompleteAuNumber(raw: string): boolean {
-  const e164 = toE164(raw);
-  if (!e164.startsWith("+61")) return false;
-  const national = e164.slice(3);
+function isCompleteAuNational(national: string): boolean {
   return (
     /^4\d{8}$/.test(national) || // mobile
     /^[2378]\d{8}$/.test(national) || // landline
-    // (?!00) because 1300 is carved OUT of the 13 range: without it "130012" -- the first six
-    // digits of every 1300 number -- reads as a finished 13xxxx number and commits "+61130012",
-    // which is precisely the half-typed entry this function exists to refuse.
+    // (?!00) because 1300 is carved OUT of the 13 range: "130012" is the first six digits of every
+    // 1300 number, not a finished 13xxxx one.
     /^13(?!00)\d{4}$/.test(national) || // 13xxxx
     /^1[38]00\d{6}$/.test(national) // 1300/1800
   );
 }
 
-// An entry the admin clearly meant as an international number: typed with an explicit leading "+"
-// and long enough to be a real one. Twilio reports every caller in E.164, so an overseas scam
-// caller is an ordinary thing to want blocked -- and the AU rule above cannot judge those, because
-// numbering plans differ by country. Requiring the "+" is what stops this swallowing half-typed
-// local numbers: nobody types a leading + by accident.
-//
-// 8 digits is the shortest national number in general use; below that it is a prefix, not a number.
-export function isExplicitInternational(raw: string): boolean {
+export function blocklistNumber(raw: string): string | null {
   const trimmed = raw.trim();
-  return trimmed.startsWith("+") && !trimmed.startsWith("+61") && trimmed.replace(/\D/g, "").length >= 8;
-}
+  if (!trimmed) return null;
+  if (/[a-z]/i.test(trimmed)) return null;
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits || digits.length > MAX_E164_DIGITS) return null;
 
-// Whether this entry is finished enough to save -- the ONE rule both the + button and Save apply,
-// so the same text can never be accepted by one and silently refused by the other.
-export function isSaveableBlocklistEntry(raw: string): boolean {
-  const trimmed = raw.trim();
-  if (!trimmed) return false;
-  // No digits at all: a short code or alphanumeric sender ("SERVICE-NSW"), stored verbatim. There
-  // is no length to be half-way through.
-  if (!/\d/.test(trimmed)) return true;
-  return isCompleteAuNumber(trimmed) || isExplicitInternational(trimmed);
+  // On the DIGITS, not the raw string: "+ 61 2 6105 977" must not dodge the Australian rules by
+  // putting a space after the plus.
+  const international = trimmed.startsWith("+");
+  if (digits.startsWith("61")) {
+    const national = digits.slice(2);
+    return isCompleteAuNational(national) ? `+61${national}` : null;
+  }
+  if (!international) {
+    const local = digits.startsWith("0") ? digits.slice(1) : digits;
+    return isCompleteAuNational(local) ? `+61${local}` : null;
+  }
+  return digits.length >= MIN_INTERNATIONAL_DIGITS ? `+${digits}` : null;
 }
 
 // The blocklist as it would be SAVED, including a number still sitting unadded in the entry box.
 //
 // Tapping Save without tapping + used to discard that number silently, while the button read
-// "Saved" -- so the admin believed a caller was blocked who was not.
-//
-// Only a FINISHED entry is folded in. A half-typed number is left alone, because committing one
-// would write a number that blocks nobody and still reads on screen as blocked -- the same defect
-// wearing different clothes. Deduplicated, since the same number may already be listed and a
-// duplicate row would share a React key.
+// "Saved" -- so the admin believed a caller was blocked who was not. Only a COMPLETE number is
+// folded in; a half-typed one is left in the box, because committing it would write an entry that
+// blocks nobody. Deduplicated, since the same number may already be listed and a duplicate row
+// would share a React key.
 export function withPendingEntry(numbers: string[], entry: string): string[] {
-  const trimmed = entry.trim();
-  if (!isSaveableBlocklistEntry(trimmed)) return numbers;
-  const pendingEntry = normalizeBlocklistEntry(trimmed);
+  const pendingEntry = blocklistNumber(entry);
   if (!pendingEntry || numbers.includes(pendingEntry)) return numbers;
   return [...numbers, pendingEntry];
 }
