@@ -30,6 +30,7 @@ import { appendCallEvent, parseRecordingDuration } from "../db/calls";
 import { getAudioAsset } from "../db/audioAssets";
 import { recordCallLeg } from "../db/callLegs";
 import { isWithinBusinessHours } from "../ivr/businessHours";
+import { entryFlowCandidates, resolveNumberRouting } from "../ivr/numberRouting";
 import { notifyCallbackRequest, notifyIncomingCall, notifyMissedCall, notifyVoicemail } from "../api/push";
 import { sendMissedCallSmsIfDue } from "../api/missedCallSms";
 import { findContactByPhone } from "../db/contacts";
@@ -271,7 +272,12 @@ export class CallSession extends DurableObject<Env> {
       //
       // Fails OPEN in every uncertain case -- an unknown number, or a read that throws -- because
       // refusing a real customer is far worse than the mismatch this guards.
-      if (await this.isVoiceDisabled(to)) {
+      //
+      // One read answers both "does this number take voice calls" and "which flow does it enter" --
+      // they want the same row, and a live caller should not wait on two round trips to D1 just to
+      // find out which greeting to play.
+      const routing = await resolveNumberRouting(this.env.DB, to);
+      if (routing.voiceDisabled) {
         console.log("VOICE_DISABLED_NUMBER", JSON.stringify({ callSid, to }));
         return this.xml(wrapResponse('<Reject reason="rejected"/>'));
       }
@@ -283,20 +289,41 @@ export class CallSession extends DurableObject<Env> {
         .run();
       await this.logEvent(callSid, "call_started", { from, to, afterHours: isAfterHours });
 
-      // Route after-hours callers into the dedicated "after_hours" flow (emergency ring /
-      // voicemail) instead of the in-hours "main" menu. If the "after_hours" flow is
-      // missing/misconfigured (no entry node), fall back to "main" so a live call still connects
-      // rather than erroring out.
-      const entryFlow = isAfterHours ? "after_hours" : "main";
-      let result: WalkResult;
-      try {
-        result = await advanceFlow(this.env.DB, entryFlow, null, { type: "ENTER" }, isAfterHours, 0);
-      } catch (err) {
-        if (entryFlow === "main") throw err;
-        console.log("AFTER_HOURS_FLOW_FALLBACK", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
-        result = await advanceFlow(this.env.DB, "main", null, { type: "ENTER" }, isAfterHours, 0);
+      // Which flow this call enters is now a property of the NUMBER it came in on, so a second line
+      // can have a menu of its own (`phone_numbers.ivr_flow` / `.after_hours_flow`, migration 0041).
+      // `entryFlowCandidates` returns them most-specific-first, with the global defaults appended --
+      // so a number with no override produces exactly the pre-0041 list, and this loop is exactly
+      // the old "try after_hours, fall back to main" with one more rung on it.
+      //
+      // Falling back matters more than honouring the configuration: an admin who points a number at
+      // a flow and then deletes that flow's entry node would otherwise hang up on every caller to
+      // it. Health Checks reports the misconfiguration (see `checkNumberRoutes`); the caller still
+      // hears a menu. Only a broken `main` reaches the DO catch-all, which is what happened before
+      // this feature existed and is the one case with nothing left to fall back to.
+      const candidates = entryFlowCandidates(routing, isAfterHours);
+      let result: WalkResult | null = null;
+      for (let i = 0; i < candidates.length; i++) {
+        const flow = candidates[i];
+        try {
+          result = await advanceFlow(this.env.DB, flow, null, { type: "ENTER" }, isAfterHours, 0);
+          break;
+        } catch (err) {
+          // The last candidate's failure is the real one: re-throw so the DO catch-all answers,
+          // exactly as an unusable `main` always has.
+          if (i === candidates.length - 1) throw err;
+          console.log(
+            "ENTRY_FLOW_FALLBACK",
+            JSON.stringify({
+              callSid,
+              to,
+              failed: flow,
+              next: candidates[i + 1],
+              error: err instanceof Error ? err.message : String(err),
+            })
+          );
+        }
       }
-      return this.xml(await this.applyWalkResult(callSid, result, isAfterHours, origin));
+      return this.xml(await this.applyWalkResult(callSid, result!, isAfterHours, origin));
     }
 
     // (c) Continuing from a gather node (digit or timeout/invalid). The flow name is only used
@@ -313,20 +340,6 @@ export class CallSession extends DurableObject<Env> {
       stored.attempt
     );
     return this.xml(await this.applyWalkResult(callSid, result, isAfterHours, origin));
-  }
-
-  // True ONLY when this number is one of ours AND is explicitly marked as not taking voice.
-  // Anything else -- no row, a read that throws -- answers false, so the call proceeds.
-  private async isVoiceDisabled(to: string): Promise<boolean> {
-    try {
-      const row = await this.env.DB.prepare("SELECT voice_enabled FROM phone_numbers WHERE e164 = ?")
-        .bind(to)
-        .first<{ voice_enabled: number }>();
-      return row !== null && !row.voice_enabled;
-    } catch (err) {
-      console.log("VOICE_ENABLED_LOOKUP_FAILED", JSON.stringify({ to, error: err instanceof Error ? err.message : String(err) }));
-      return false;
-    }
   }
 
   // -------------------------------------------------------------------------

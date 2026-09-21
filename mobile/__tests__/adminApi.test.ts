@@ -104,7 +104,7 @@ describe("admin api client", () => {
 
   it("sends every number field on update, since the API replaces the row", async () => {
     const fetchMock = mockFetch();
-    await updateNumber(7, {
+    const input = {
       e164: "+61261059771",
       label: "Landline",
       voice_enabled: true,
@@ -112,11 +112,17 @@ describe("admin api client", () => {
       is_default_voice: true,
       is_default_sms: false,
       region: "au1",
-    });
+      ivr_flow: "sales",
+      after_hours_flow: null,
+    };
+    await updateNumber(7, input);
     const { url, init } = lastCall(fetchMock);
     expect(url).toContain("/api/numbers/7");
     expect(init.method).toBe("PUT");
-    expect(JSON.parse(init.body as string)).toMatchObject({ label: "Landline", voice_enabled: true, region: "au1" });
+    // toEqual, not toMatchObject: the endpoint replaces the whole row, so a field the client stops
+    // sending is a field the server wipes. `ivr_flow` is the live example -- dropping it would
+    // silently repoint that number back at the default menu on the next unrelated edit.
+    expect(JSON.parse(init.body as string)).toEqual(input);
   });
 });
 

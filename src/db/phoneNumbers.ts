@@ -10,6 +10,11 @@ export type PhoneNumber = {
   is_default_voice: number;
   is_default_sms: number;
   region: string | null;
+  // Which IVR flow a call to this number enters. NULL = the global default (see
+  // src/ivr/numberRouting.ts) -- NOT the literal string "main", so a number that was never given a
+  // route of its own keeps following whatever the default is.
+  ivr_flow: string | null;
+  after_hours_flow: string | null;
 };
 
 export type PhoneNumberInput = {
@@ -20,6 +25,8 @@ export type PhoneNumberInput = {
   is_default_voice: boolean;
   is_default_sms: boolean;
   region: string | null;
+  ivr_flow: string | null;
+  after_hours_flow: string | null;
 };
 
 export async function createPhoneNumber(db: D1Database, input: PhoneNumberInput): Promise<PhoneNumber> {
@@ -32,7 +39,7 @@ export async function createPhoneNumber(db: D1Database, input: PhoneNumberInput)
   stmts.push(
     db
       .prepare(
-        "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region"
+        "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, ivr_flow, after_hours_flow, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, ivr_flow, after_hours_flow"
       )
       .bind(
         input.e164.trim(),
@@ -42,6 +49,8 @@ export async function createPhoneNumber(db: D1Database, input: PhoneNumberInput)
         input.is_default_voice ? 1 : 0,
         input.is_default_sms ? 1 : 0,
         input.region,
+        input.ivr_flow,
+        input.after_hours_flow,
         Date.now()
       )
   );
@@ -60,7 +69,7 @@ export async function updatePhoneNumber(db: D1Database, id: number, input: Phone
   stmts.push(
     db
       .prepare(
-        "UPDATE phone_numbers SET label = ?, voice_enabled = ?, sms_enabled = ?, is_default_voice = ?, is_default_sms = ?, region = ? WHERE id = ?"
+        "UPDATE phone_numbers SET label = ?, voice_enabled = ?, sms_enabled = ?, is_default_voice = ?, is_default_sms = ?, region = ?, ivr_flow = ?, after_hours_flow = ? WHERE id = ?"
       )
       .bind(
         input.label.trim(),
@@ -69,6 +78,8 @@ export async function updatePhoneNumber(db: D1Database, id: number, input: Phone
         input.is_default_voice ? 1 : 0,
         input.is_default_sms ? 1 : 0,
         input.region,
+        input.ivr_flow,
+        input.after_hours_flow,
         id
       )
   );
@@ -84,7 +95,7 @@ export async function deletePhoneNumber(db: D1Database, id: number): Promise<voi
 export async function listPhoneNumbers(db: D1Database): Promise<PhoneNumber[]> {
   const r = await db
     .prepare(
-      "SELECT id, e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region FROM phone_numbers ORDER BY id ASC"
+      "SELECT id, e164, label, voice_enabled, sms_enabled, is_default_voice, is_default_sms, region, ivr_flow, after_hours_flow FROM phone_numbers ORDER BY id ASC"
     )
     .all<PhoneNumber>();
   return r.results;

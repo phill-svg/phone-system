@@ -25,6 +25,14 @@ import type { IvrNode } from "../db/ivrNodes";
 //    whenever that flow has an entry node, falling back to `main` only when it has none -- so that
 //    is the flow walked here, chosen the same way.
 //
+// 5. Walking ONE pair of flow names. Since migration 0041 each number carries its own
+//    `after_hours_flow`, so "the after-hours flow" is no longer a single thing: a rota wired into a
+//    second line's own menu would have read as unwired, and one wired only into `after_hours` would
+//    have read as fine for numbers that never enter it. The caller passes the ordered candidate
+//    list for each number in use (`entryFlowCandidates`), each is resolved to the first flow that
+//    actually has an entry node -- the same rung-by-rung fallback CallSession walks at call time --
+//    and the rota counts as reachable if ANY of them reaches it.
+//
 // `null` means "could not answer", which the caller reports as a warning rather than a failure.
 
 const CLOSED_ONLY = new Set(["business_hours"]);
@@ -43,7 +51,14 @@ const NEXT_FIELDS: Record<string, string[]> = {
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
-export async function isRingNodeReachingOnCall(db: D1Database): Promise<boolean | null> {
+export async function isRingNodeReachingOnCall(
+  db: D1Database,
+  // One ordered candidate list per number in use, most-specific first. Required rather than
+  // defaulted: a defaulted list would silently answer the pre-0041 question the moment a caller
+  // forgot to pass one, which is the "a defaulted exclusion list FAILS OPEN" lesson from the demo
+  // account, in a check whose whole job is to notice a rota nothing reaches.
+  afterHoursCandidates: string[][]
+): Promise<boolean | null> {
   const result = await db.prepare("SELECT * FROM ivr_nodes").all<{
     id: string;
     flow: string;
@@ -61,24 +76,34 @@ export async function isRingNodeReachingOnCall(db: D1Database): Promise<boolean 
   }));
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const entry =
-    nodes.find((n) => n.flow === "after_hours" && n.isEntry) ?? nodes.find((n) => n.flow === "main" && n.isEntry);
-  // No entry node means every inbound call already fails in loadEntryNode -- the phone system is
-  // down, not missing a menu step. Reporting that as "add a ring step" would send someone building
-  // a menu while no call of any kind is answered, so it is explicitly unanswerable here.
-  if (!entry) return null;
+  const entryOf = (flow: string) => nodes.find((n) => n.flow === flow && n.isEntry);
 
-  const seen = new Set<string>();
-  const queue = [entry];
-  while (queue.length > 0) {
-    const node = queue.shift()!;
-    if (seen.has(node.id)) continue;
-    seen.add(node.id);
-    if (node.type === "ring" && node.config.target === "on_call") return true;
+  // Resolve each number's candidate list the way CallSession does: the first flow with an entry
+  // node is the one its after-hours callers actually land in.
+  const entries = afterHoursCandidates
+    .map((candidates) => candidates.map(entryOf).find((n) => n !== undefined))
+    .filter((n): n is (typeof nodes)[number] => n !== undefined);
 
-    for (const id of outgoing(node.type, node.config)) {
-      const next = byId.get(id);
-      if (next && !seen.has(next.id)) queue.push(next);
+  // No entry node anywhere means every inbound call already fails in loadEntryNode -- the phone
+  // system is down, not missing a menu step. Reporting that as "add a ring step" would send someone
+  // building a menu while no call of any kind is answered, so it is explicitly unanswerable here.
+  if (entries.length === 0) return null;
+
+  // A fresh `seen` per entry: one walk's visited set would let an early flow's dead end mark a node
+  // that a later flow reaches by a different route, turning a wired rota into a false negative.
+  for (const entry of entries) {
+    const seen = new Set<string>();
+    const queue = [entry];
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      if (node.type === "ring" && node.config.target === "on_call") return true;
+
+      for (const id of outgoing(node.type, node.config)) {
+        const next = byId.get(id);
+        if (next && !seen.has(next.id)) queue.push(next);
+      }
     }
   }
   return false;

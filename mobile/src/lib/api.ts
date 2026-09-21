@@ -309,6 +309,11 @@ export type PhoneNumber = {
   is_default_voice: number;
   is_default_sms: number;
   region: string | null;
+  // The phone menu a call to this number enters. NULL = follow the shared default ("main" in hours,
+  // "after_hours" outside them) -- deliberately not the literal name, so a number that was never
+  // given a route of its own keeps following whatever the default is.
+  ivr_flow: string | null;
+  after_hours_flow: string | null;
 };
 
 // Throws. For Admin > Phone Numbers and the hub count, where an empty list reads as "no numbers
@@ -467,6 +472,15 @@ export async function putIvrFlow(flow: string, body: IvrFlow): Promise<void> {
 
 export type IvrAudioAsset = { id: string; label: string };
 
+// Every phone menu that exists, for the number pickers and the Phone Menu screen's flow switcher.
+// `hasEntry` is what says a menu can actually take a call -- one without a starting step throws in
+// the flow engine, so the pickers mark it and the server refuses to point a number at it.
+export type IvrFlowSummary = { flow: string; nodeCount: number; hasEntry: boolean };
+
+export async function getIvrFlows(): Promise<IvrFlowSummary[]> {
+  return apiFetch<IvrFlowSummary[]>("/api/ivr/flows");
+}
+
 export async function getIvrAudio(): Promise<IvrAudioAsset[]> {
   return apiFetch<IvrAudioAsset[]>("/api/ivr/audio");
 }
@@ -574,6 +588,8 @@ export type PhoneNumberInput = {
   is_default_voice: boolean;
   is_default_sms: boolean;
   region: string | null;
+  ivr_flow: string | null;
+  after_hours_flow: string | null;
 };
 
 export async function createNumber(input: PhoneNumberInput): Promise<PhoneNumber> {

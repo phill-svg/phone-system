@@ -8,7 +8,7 @@ import {
   getBusinessHours,
   getCallBlocklist,
   getDivertCallerIdSetting,
-  getIvrFlow,
+  getIvrFlows,
   getMissedCallSmsSetting,
   fetchNumbers,
   getOnCall,
@@ -66,8 +66,18 @@ export default function AdminHomeScreen() {
           setOnCall(now && now.email ? shortName(now.email) : "Nobody");
         })
         .catch(() => alive && setOnCall("—"));
-      getIvrFlow("main")
-        .then((f) => alive && setMenuSteps(`${f.nodes.length} steps`))
+      // Counts the MENUS, not the steps in one of them: since each number can route into its own,
+      // "12 steps" described whichever menu happened to be called "main" and said nothing about the
+      // rest. One menu still reads as its step count, which is the more useful number then.
+      getIvrFlows()
+        .then((fs) => {
+          if (!alive) return;
+          if (fs.length === 1) {
+            setMenuSteps(`${fs[0].nodeCount} steps`);
+            return;
+          }
+          setMenuSteps(fs.length === 0 ? "None" : `${fs.length} menus`);
+        })
         .catch(() => alive && setMenuSteps("—"));
       getMissedCallSmsSetting()
         .then((s) => alive && setMissedCallSms(s.enabled ? "On" : "Off"))

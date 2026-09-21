@@ -107,7 +107,69 @@ before adding one, or you will duplicate a path that already works.
   ID. Setting one up is two separate steps: the Twilio console webhooks (from `/admin/webhooks` —
   the `?whsec=` IS the auth) and a `phone_numbers` row on `/admin/settings`. The app never touches
   Twilio's number-provisioning API, so adding the row configures nothing on Twilio's side, and
-  inbound routing never reads that table.
+  inbound routing reads that table for ONE thing only -- which IVR flow the call enters (see the
+  per-number routing bullet below). Everything else about how a number behaves still lives in the
+  Twilio console.
+- **Every number can have its OWN IVR, and that is a property of `phone_numbers` (migration `0041`).**
+  `ivr_flow` and `after_hours_flow` are nullable columns; NULL means "follow the shared default"
+  (`main` in hours, `after_hours` outside them), which is exactly what every number did before, so
+  existing rows are unchanged. They are deliberately NOT defaulted to the literal `'main'`: a stored
+  name would pin a number that was never configured, and would make "never set" indistinguishable
+  from "deliberately set to main". `src/ivr/numberRouting.ts` resolves it, and two things in there
+  are load-bearing. It **must never throw** -- it is read inside `handleMainWebhook`, and a throw
+  there escapes to the DO catch-all, which says "we're experiencing a technical issue" and hangs up
+  on a live customer (the same family as `callerId()` and `resolveRingTargets`); a failed read falls
+  back to the defaults. And it is **ONE read**: it replaced `isVoiceDisabled` rather than sitting
+  beside it, because both wanted the same row and a live caller should not wait on two round trips
+  to find out which greeting to play. A blank stored value is treated as NULL -- `""` is not null,
+  and `?? DEFAULT` would hand `loadEntryNode` a flow that cannot exist.
+  **The fallback CHAIN is the design, not politeness.** `entryFlowCandidates` returns
+  `[number's flow, "main"]` in hours and `[number's after-hours flow, number's in-hours flow,
+  "main"]` after them, deduped, and CallSession tries each in turn. An admin who points a number at
+  a menu and then deletes that menu's starting step would otherwise hang up on every caller to it;
+  instead they hear a working menu and `Admin > Health Checks` goes red (`checkNumberRoutes`). Only
+  a broken `main` reaches the catch-all, which is what happened before this feature existed and is
+  the one case with nothing left to fall back to. With no overrides the list is byte-for-byte the
+  old behaviour -- a test pins that, because changing routing for every existing call would be the
+  worst possible way to add this.
+  Pointing a number at a flow with no entry node is **refused on write** (`/api/numbers`, JSON error
+  naming the field and flow, since `apiFetch` lifts a message only out of `{error}`); only a
+  non-null value is checked, so no existing row can become unsaveable. The remaining way to break it
+  is deleting or renaming a menu a number still points at, which no write to `phone_numbers` sees --
+  hence the Health Check.
+  **Three places had to stop assuming there were only two flows.** `isRingNodeReachingOnCall` now
+  takes the per-number after-hours candidate lists (a rota wired only into a second line's menu read
+  as unwired before, and one wired only into `after_hours` read as fine for numbers that never enter
+  it); it takes them REQUIRED, not defaulted, for the same "a defaulted list fails open" reason as
+  `excludeEmails`. `GET /api/ivr/flows` lists every flow with `hasEntry`, so both pickers offer real
+  menus instead of a free-text box. And the mobile **Phone Menu** screen grew a flow switcher --
+  without it you could point a number at a menu on the handset that only the web could then edit,
+  which is the "shipped on one surface only" half-feature this file already warns about twice.
+  The mobile step editor takes the flow as a route param: it PUTs the WHOLE flow back under that
+  name, so a wrong one would wipe the other menu. What makes that safe is the existing load guard --
+  a node that is not in the loaded flow errors out instead of becoming a save.
+  **`addStepTo` makes the new step the ENTRY when the menu has none** (and only then -- moving an
+  existing entry stays refused on mobile). Without it a brand-new menu could never get its first
+  step from the handset and an entry-less one could never be repaired, because `handlePutFlow`
+  requires an `entryNodeId` matching a node: every save and delete died on the opaque
+  `invalid request body`. The web editor has always done the same thing (its entry falls back to
+  `nodes[0]`), so this is parity. A menu is created by switching the Phone Menu screen to a new name
+  and adding a step -- there is no table to insert into. The name field is an inline `TextInput`,
+  **not `Alert.prompt`**, which is iOS-only: on Android it is simply absent at runtime, so creating
+  a menu would have been impossible on the platform nobody tests on.
+  **`/code-review` before shipping found three defects in the first version, all of which would have
+  been live.** (1) `checkNumberRoutes` failed on the RESOLVED flow, so a business whose shared
+  `after_hours` menu lacked a starting step was reported broken -- the exact state the fallback
+  chain exists for, i.e. red over a working system. It has three levels now: **fail** only for a
+  flow an admin EXPLICITLY set (`routesInUse` carries the raw nullable value beside the resolved
+  one, so the two can be told apart), **fail** when no rung of the chain can answer at all, **warn**
+  when an unset default is unusable but the chain covers it. (2) The after-hours chain had the
+  number's own IN-HOURS flow as a rung, which would play a 2am caller that line's daytime menu where
+  pre-0041 code used `main`'s closed branch -- every rung must be more generic for the SAME
+  situation, never a sideways move. (3) The mobile flow switcher let you select an entry-less menu
+  that then 400'd on every save, with no way to fix it on the handset -- which is what the
+  `addStepTo` change above closes. The count did not fall between finding and fixing: review the
+  fix, then review the fix to the fix.
 - **A voice number must be homed in au1.** A Twilio number is global but its config is per-region,
   and inbound calls are processed in whichever region its Inbound Processing Region (`voice_region`)
   names — where, if no voice handler is set, Twilio rejects the call at the network edge: no call

@@ -1,10 +1,11 @@
 import React, { useCallback, useState } from "react";
-import { ScrollView, View, Text, Pressable, ActivityIndicator, Alert } from "react-native";
+import { ScrollView, View, Text, TextInput, Pressable, ActivityIndicator, Alert } from "react-native";
+import { normalizeFlowName } from "../../../lib/ivr";
 import { router, useFocusEffect } from "expo-router";
 import { Screen } from "../../../components/ui/Screen";
 import { Group } from "../../../components/ui/Grouped";
 import { Icon } from "../../../components/ui/Icon";
-import { getIvrFlow, putIvrFlow } from "../../../lib/api";
+import { getIvrFlow, getIvrFlows, putIvrFlow, type IvrFlowSummary } from "../../../lib/api";
 import {
   IVR_NODE_TYPES,
   NODE_TYPE_LABELS,
@@ -19,7 +20,7 @@ import {
 } from "../../../lib/ivr";
 import { useTheme, type } from "../../../theme/theme";
 
-const FLOW = "main";
+const DEFAULT_FLOW = "main";
 
 // The phone menu, as a LIST rather than the web editor's node canvas.
 //
@@ -27,15 +28,29 @@ const FLOW = "main";
 // the real production flow those differ enough that the raw order shows the after-hours voicemail
 // above the step that greets the caller. Unreachable steps are listed separately rather than
 // hidden: an orphan is nearly always a half-finished edit, and it is what you came here to find.
+//
+// Since migration 0041 there is more than one menu to show: each phone number can route into its
+// own. The switcher below picks which -- without it, a number could be pointed at a menu on this
+// handset that only the web editor could then change, which is the "shipped on one surface only"
+// half-feature this file's own history warns about.
 export default function IvrFlowScreen() {
   const t = useTheme();
   const [flow, setFlow] = useState<IvrFlow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [flowName, setFlowName] = useState(DEFAULT_FLOW);
+  const [flows, setFlows] = useState<IvrFlowSummary[]>([]);
+  const [switching, setSwitching] = useState(false);
+  const [newName, setNewName] = useState("");
 
   const load = useCallback(() => {
-    getIvrFlow(FLOW)
+    // Never throws: a failed list leaves the switcher offering only the menu already open, which is
+    // strictly better than blocking the screen everyone actually came here to use.
+    getIvrFlows()
+      .then(setFlows)
+      .catch(() => {});
+    getIvrFlow(flowName)
       .then((f) => {
         // Clear it on success, or a single failed load (one bar of signal) wins for the life of
         // the screen: the error branch returns before the data branch, so a later focus reload
@@ -44,7 +59,7 @@ export default function IvrFlowScreen() {
         setFlow(f);
       })
       .catch(() => setError("Couldn't load the phone menu."));
-  }, []);
+  }, [flowName]);
 
   useFocusEffect(useCallback(() => load(), [load]));
 
@@ -55,15 +70,107 @@ export default function IvrFlowScreen() {
     // A new step is saved immediately rather than held locally, so its editor can load the flow
     // fresh like every other screen -- and so a half-added step can never be lost by navigating.
     try {
-      await addStepTo(flow, FLOW, nodeType, id, { get: () => getIvrFlow(FLOW), put: (f) => putIvrFlow(FLOW, f) });
+      await addStepTo(flow, flowName, nodeType, id, {
+        get: () => getIvrFlow(flowName),
+        put: (f) => putIvrFlow(flowName, f),
+      });
       setAdding(false);
-      router.push(`/admin/ivr/${id}`);
+      openStep(id);
     } catch (e) {
       Alert.alert("Couldn't add the step", e instanceof Error ? e.message : "Try again in a moment.");
     } finally {
       setBusy(false);
     }
   }
+
+  // The step editor PUTs the whole flow back under this name, so the menu being viewed has to
+  // travel with the push -- a step opened without it would save into "main".
+  function openStep(id: string) {
+    router.push({ pathname: "/admin/ivr/[nodeId]", params: { nodeId: id, flow: flowName } });
+  }
+
+  // A menu is not a row in a table -- it exists as soon as a step is saved under its name. So
+  // "creating" one is just switching to a name that has none yet and adding the first step, which
+  // `addStepTo` makes the starting step. Without this the feature needed someone to type a URL into
+  // the web editor, which is not a thing to ask of a phone.
+  //
+  // An inline field rather than `Alert.prompt`, which exists on iOS ONLY -- the trap this file's
+  // neighbours keep hitting with SF Symbols. On Android it is simply absent at runtime, so creating
+  // a menu would have been impossible on exactly the platform nobody tests on.
+  function newMenu() {
+    const name = normalizeFlowName(newName);
+    if (!name) {
+      Alert.alert("Pick a name", "Use letters, numbers or underscores — for example, sales.");
+      return;
+    }
+    setNewName("");
+    setSwitching(false);
+    setFlow(null);
+    setFlowName(name);
+  }
+
+  const switcher = (
+      <Group
+        title="Menu"
+        footer="Each phone number can route into its own menu — set which in Admin > Phone Numbers."
+      >
+        <Pressable
+          onPress={() => setSwitching((v) => !v)}
+          style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, paddingVertical: 12 }}
+        >
+          <Text style={[type.body, { color: t.colors.label }]}>{flowName}</Text>
+          <Icon
+            name={switching ? "chevron.up" : "chevron.down"}
+            fallback={switching ? "chevron-up" : "chevron-down"}
+            size={12}
+            color={t.colors.labelTertiary}
+          />
+        </Pressable>
+        {switching
+          ? flows.map((f) => (
+              <Pressable
+                key={f.flow}
+                onPress={() => {
+                  setSwitching(false);
+                  if (f.flow === flowName) return;
+                  // Blank the list first: without this the previous menu's steps stay on screen
+                  // under the new menu's name until the fetch lands, and tapping one would open a
+                  // step that is not in it.
+                  setFlow(null);
+                  setFlowName(f.flow);
+                }}
+                style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 24, paddingVertical: 10 }}
+              >
+                {f.flow === flowName ? (
+                  <Icon name="checkmark" fallback="checkmark" size={14} color={t.colors.accent} />
+                ) : null}
+                <Text style={[type.body, { color: t.colors.label, marginLeft: f.flow === flowName ? 8 : 22 }]}>
+                  {f.hasEntry ? f.flow : `${f.flow} — no starting step`}
+                </Text>
+              </Pressable>
+            ))
+          : null}
+        {switching ? (
+          <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 24, paddingVertical: 10, gap: 8 }}>
+            <Icon name="plus.circle.fill" fallback="add-circle" size={16} color={t.colors.accent} />
+            <TextInput
+              value={newName}
+              onChangeText={setNewName}
+              onSubmitEditing={newMenu}
+              placeholder="New menu name"
+              placeholderTextColor={t.colors.labelTertiary}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="go"
+              style={{ flex: 1, color: t.colors.label, fontSize: 17, paddingVertical: 4 }}
+            />
+            <Pressable onPress={newMenu} disabled={!newName.trim()}>
+              <Text style={[type.body, { color: newName.trim() ? t.colors.accent : t.colors.labelTertiary }]}>Create</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </Group>
+    );
 
   if (error) {
     return (
@@ -92,7 +199,7 @@ export default function IvrFlowScreen() {
   ) => (
     <Pressable
       key={nodeId}
-      onPress={() => router.push(`/admin/ivr/${nodeId}`)}
+      onPress={() => openStep(nodeId)}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -123,7 +230,8 @@ export default function IvrFlowScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+        {switcher}
         <Group
           title="The call, step by step"
           footer="Listed in the order a call walks them. Tap a step to change what it says or where it goes next."
@@ -131,7 +239,9 @@ export default function IvrFlowScreen() {
           {ordered.length === 0 ? (
             <View style={{ padding: 14 }}>
               <Text style={[type.body, { color: t.colors.labelTertiary }]}>
-                No step is marked as the start of the flow, so no call can be routed. Fix this on the web editor.
+                {flow.nodes.length === 0
+                  ? "This menu is empty. Add a step and it becomes where calls start."
+                  : "No step is marked as the start of this menu, so no call can be routed. Add a step — the first one added becomes the start."}
               </Text>
             </View>
           ) : (

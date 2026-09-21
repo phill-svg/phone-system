@@ -4,11 +4,14 @@ import { Screen } from "../../components/ui/Screen";
 import { Group, Row } from "../../components/ui/Grouped";
 import { PrimaryButton } from "../../components/ui/PrimaryButton";
 import { Segmented } from "../../components/ui/Segmented";
+import { FlowPicker } from "../../components/ui/FlowPicker";
 import {
   fetchNumbers,
   createNumber,
   updateNumber,
   deleteNumber,
+  getIvrFlows,
+  type IvrFlowSummary,
   type PhoneNumber,
   type PhoneNumberInput,
 } from "../../lib/api";
@@ -26,7 +29,14 @@ const BLANK: PhoneNumberInput = {
   is_default_voice: false,
   is_default_sms: false,
   region: "au1",
+  ivr_flow: null,
+  after_hours_flow: null,
 };
+
+// The shared menus a number falls back to when it has no route of its own. Kept in step with
+// src/ivr/numberRouting.ts, which is what actually resolves them on a live call.
+const DEFAULT_FLOW = "main";
+const DEFAULT_AFTER_HOURS_FLOW = "after_hours";
 
 function toInput(n: PhoneNumber): PhoneNumberInput {
   return {
@@ -37,23 +47,32 @@ function toInput(n: PhoneNumber): PhoneNumberInput {
     is_default_voice: !!n.is_default_voice,
     is_default_sms: !!n.is_default_sms,
     region: n.region,
+    ivr_flow: n.ivr_flow,
+    after_hours_flow: n.after_hours_flow,
   };
 }
 
 // The business's sending numbers — what staff see in the "Call from" and "From" pickers.
 //
 // Adding a row here configures NOTHING on Twilio: the number must already exist and be wired up
-// there, and inbound routing never reads this table. What it does record is the region, which is
-// worth getting right — see the warning below.
+// there. What it DOES control is two things worth getting right: the region (see the warning
+// below), and — since migration 0041 — which phone menu a call to that number enters, so a second
+// line can answer completely differently from the main one.
 export default function NumbersScreen() {
   const t = useTheme();
   const [numbers, setNumbers] = useState<PhoneNumber[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<PhoneNumberInput>(BLANK);
+  // Never throws: a failed flow load leaves the pickers offering only "Default" plus whatever each
+  // number already has, which is strictly better than blocking the whole screen on it.
+  const [flows, setFlows] = useState<IvrFlowSummary[]>([]);
 
   async function load() {
     try {
+      getIvrFlows()
+        .then(setFlows)
+        .catch(() => {});
       setNumbers(await fetchNumbers());
     } catch {
       // A failed RELOAD (after a save, remove or add) keeps the list on screen: replacing it would
@@ -103,7 +122,7 @@ export default function NumbersScreen() {
     <Screen>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
         {numbers.map((n) => (
-          <NumberCard key={n.id} number={n} onChanged={load} />
+          <NumberCard key={n.id} number={n} flows={flows} onChanged={load} />
         ))}
 
         <Group
@@ -130,6 +149,20 @@ export default function NumbersScreen() {
           <Row label="Voice" toggle={draft.voice_enabled} onToggle={(v) => setDraft({ ...draft, voice_enabled: v })} />
           <Row label="SMS" toggle={draft.sms_enabled} onToggle={(v) => setDraft({ ...draft, sms_enabled: v })} />
           <RegionPicker value={(draft.region as Region | null) ?? "au1"} onChange={(r) => setDraft({ ...draft, region: r })} />
+          <FlowPicker
+            label="Menu in hours"
+            value={draft.ivr_flow}
+            defaultName={DEFAULT_FLOW}
+            flows={flows}
+            onChange={(f) => setDraft({ ...draft, ivr_flow: f })}
+          />
+          <FlowPicker
+            label="Menu after hours"
+            value={draft.after_hours_flow}
+            defaultName={DEFAULT_AFTER_HOURS_FLOW}
+            flows={flows}
+            onChange={(f) => setDraft({ ...draft, after_hours_flow: f })}
+          />
         </Group>
 
         <View style={{ paddingHorizontal: 16, marginTop: 20 }}>
@@ -140,7 +173,15 @@ export default function NumbersScreen() {
   );
 }
 
-function NumberCard({ number, onChanged }: { number: PhoneNumber; onChanged: () => void }) {
+function NumberCard({
+  number,
+  flows,
+  onChanged,
+}: {
+  number: PhoneNumber;
+  flows: IvrFlowSummary[];
+  onChanged: () => void;
+}) {
   const t = useTheme();
   const [input, setInput] = useState<PhoneNumberInput>(toInput(number));
   const [saving, setSaving] = useState(false);
@@ -209,6 +250,20 @@ function NumberCard({ number, onChanged }: { number: PhoneNumber; onChanged: () 
       <Row label="Default for calls" toggle={input.is_default_voice} onToggle={(v) => setInput({ ...input, is_default_voice: v })} />
       <Row label="Default for texts" toggle={input.is_default_sms} onToggle={(v) => setInput({ ...input, is_default_sms: v })} />
       <RegionPicker value={input.region as Region | null} onChange={(r) => setInput({ ...input, region: r })} />
+      <FlowPicker
+        label="Menu in hours"
+        value={input.ivr_flow}
+        defaultName={DEFAULT_FLOW}
+        flows={flows}
+        onChange={(f) => setInput({ ...input, ivr_flow: f })}
+      />
+      <FlowPicker
+        label="Menu after hours"
+        value={input.after_hours_flow}
+        defaultName={DEFAULT_AFTER_HOURS_FLOW}
+        flows={flows}
+        onChange={(f) => setInput({ ...input, after_hours_flow: f })}
+      />
       {wrongRegion ? (
         <Row icon="exclamationmark.triangle.fill" iconColor={t.colors.warning} label="Voice number is not in au1" />
       ) : null}

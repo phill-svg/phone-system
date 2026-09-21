@@ -208,6 +208,7 @@ export function renderSettingsPage(
     <section class="settings-form" id="numbers-section">
       <h3>Phone Numbers</h3>
       <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">The <strong>label</strong> is the name staff see in the "Call from" / "From" pickers. Tick <em>Voice</em>/<em>SMS</em> for what a number can do, and mark the defaults. (A number must already be set up in Twilio to actually send/receive.) <strong>Region</strong> is the Twilio Inbound Processing Region that handles the number’s incoming calls — it must be <code>au1</code> for voice, because the softphone only registers in au1.</p>
+      <p style="color:var(--admin-dim);font-size:0.85rem"><strong>Phone menu</strong> is the route a call to that number takes — each number can have its own, so a second line can answer completely differently. Leave either set to <em>Default</em> and it follows the shared menu (<code>main</code> in hours, <code>after_hours</code> outside them), which is what every number did before. A menu with no starting step can’t take a call, so it isn’t offered here. Build the menus themselves in the <a href="/admin/ivr/main">IVR Flow</a> editor.</p>
       <div id="numbers-list">Loading…</div>
       <div style="margin-top:1rem;border-top:1px solid var(--admin-border);padding-top:1rem">
         <h4 style="margin:0 0 0.6rem">Add a number</h4>
@@ -217,6 +218,8 @@ export function renderSettingsPage(
           <label><input type="checkbox" id="num-add-voice"> Voice</label>
           <label><input type="checkbox" id="num-add-sms"> SMS</label>
           <select id="num-add-region"><option value="au1">au1 (Australia)</option><option value="us1">us1 (United States)</option></select>
+          <select id="num-add-flow" title="Phone menu in hours"></select>
+          <select id="num-add-ah-flow" title="Phone menu after hours"></select>
           <button type="button" id="num-add-btn">Add</button>
           <span id="num-add-status" style="font-size:0.8rem;color:var(--admin-dim)"></span>
         </div>
@@ -400,10 +403,57 @@ export function renderSettingsPage(
       }
 
       // ---- Phone numbers (admin): rename / toggle capabilities / set defaults / add / delete ----
+      // Every phone menu that exists, so a number can be pointed at one by picking rather than by
+      // typing a name and finding out on the next real call whether it was spelled right.
+      var ivrFlows = [];
+      async function loadIvrFlows() {
+        try {
+          var res = await fetch('/api/ivr/flows');
+          ivrFlows = res.ok ? ((await res.json()) || []) : [];
+        } catch (e) { ivrFlows = []; }
+      }
+      // A menu with no starting step throws in the flow engine, so it is not offered. A value
+      // already stored on this number is always offered even if it has gone bad -- otherwise the
+      // select would silently show "Default" for a number that is NOT on the default, and saving
+      // the row would quietly repoint it.
+      function flowSelect(current, defaultName) {
+        var sel = document.createElement('select');
+        var blank = document.createElement('option');
+        blank.value = ''; blank.textContent = 'Default (' + defaultName + ')';
+        sel.appendChild(blank);
+        var seen = {};
+        ivrFlows.forEach(function (f) {
+          if (!f.hasEntry && f.flow !== current) return;
+          seen[f.flow] = true;
+          var op = document.createElement('option');
+          op.value = f.flow;
+          op.textContent = f.hasEntry ? f.flow : f.flow + ' (no starting step)';
+          sel.appendChild(op);
+        });
+        if (current && !seen[current]) {
+          var missing = document.createElement('option');
+          missing.value = current; missing.textContent = current + ' (missing)';
+          sel.appendChild(missing);
+        }
+        sel.value = current || '';
+        return sel;
+      }
+      function fillAddFlowSelects() {
+        [['num-add-flow', 'main'], ['num-add-ah-flow', 'after_hours']].forEach(function (pair) {
+          var host = document.getElementById(pair[0]);
+          if (!host) return;
+          var built = flowSelect('', pair[1]);
+          host.innerHTML = '';
+          while (built.firstChild) host.appendChild(built.firstChild);
+          host.value = '';
+        });
+      }
       async function loadNumbers() {
         var list = document.getElementById('numbers-list');
         if (!list) return;
         try {
+          await loadIvrFlows();
+          fillAddFlowSelects();
           var res = await fetch('/api/numbers');
           if (!res.ok) { list.textContent = 'Could not load numbers.'; return; }
           renderNumbers((await res.json()) || []);
@@ -440,20 +490,31 @@ export function renderSettingsPage(
           syncWarn();
           region.addEventListener('change', syncWarn);
           voice._input.addEventListener('change', syncWarn);
+          var flow = flowSelect(n.ivr_flow || '', 'main');
+          flow.title = 'Phone menu in hours';
+          var ahFlow = flowSelect(n.after_hours_flow || '', 'after_hours');
+          ahFlow.title = 'Phone menu after hours';
           var save = document.createElement('button'); save.type = 'button'; save.textContent = 'Save';
           var del = document.createElement('button'); del.type = 'button'; del.textContent = 'Delete';
           var st = document.createElement('span'); st.style.cssText = 'font-size:0.8rem;color:var(--admin-dim)';
           save.addEventListener('click', function () {
             st.textContent = 'Saving…';
-            fetch('/api/numbers/' + n.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: n.e164, label: label.value, voice_enabled: voice._input.checked, sms_enabled: sms._input.checked, is_default_voice: dv._input.checked, is_default_sms: ds._input.checked, region: region.value || null }) })
-              .then(function (r) { st.textContent = r.ok ? 'Saved.' : 'Failed.'; if (r.ok) loadNumbers(); })
+            fetch('/api/numbers/' + n.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: n.e164, label: label.value, voice_enabled: voice._input.checked, sms_enabled: sms._input.checked, is_default_voice: dv._input.checked, is_default_sms: ds._input.checked, region: region.value || null, ivr_flow: flow.value || null, after_hours_flow: ahFlow.value || null }) })
+              // The 400 for an unusable menu names the offending field, which is the whole point of
+              // validating on write -- showing a bare "Failed." would throw that away.
+              .then(async function (r) {
+                if (r.ok) { st.textContent = 'Saved.'; loadNumbers(); return; }
+                var msg = 'Failed.';
+                try { var b = await r.json(); if (b && b.error) msg = b.error; } catch (e) {}
+                st.textContent = msg;
+              })
               .catch(function () { st.textContent = 'Failed.'; });
           });
           del.addEventListener('click', function () {
             if (!window.confirm('Delete ' + n.label + ' (' + n.e164 + ')?')) return;
             fetch('/api/numbers/' + n.id, { method: 'DELETE' }).then(function (r) { if (r.ok) loadNumbers(); });
           });
-          [e, label, region, voice, sms, dv, ds, save, del, st, warn].forEach(function (x) { row.appendChild(x); });
+          [e, label, region, flow, ahFlow, voice, sms, dv, ds, save, del, st, warn].forEach(function (x) { row.appendChild(x); });
           list.appendChild(row);
         });
       }
@@ -466,8 +527,13 @@ export function renderSettingsPage(
           var label = document.getElementById('num-add-label').value.trim();
           if (!e164 || !label) { status.textContent = 'Enter a number and a label.'; return; }
           status.textContent = 'Adding…';
-          fetch('/api/numbers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: e164, label: label, voice_enabled: document.getElementById('num-add-voice').checked, sms_enabled: document.getElementById('num-add-sms').checked, region: document.getElementById('num-add-region').value }) })
-            .then(function (r) { if (r.ok) { status.textContent = 'Added.'; document.getElementById('num-add-e164').value = ''; document.getElementById('num-add-label').value = ''; loadNumbers(); } else { status.textContent = 'Could not add (already exists?).'; } })
+          fetch('/api/numbers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ e164: e164, label: label, voice_enabled: document.getElementById('num-add-voice').checked, sms_enabled: document.getElementById('num-add-sms').checked, region: document.getElementById('num-add-region').value, ivr_flow: document.getElementById('num-add-flow').value || null, after_hours_flow: document.getElementById('num-add-ah-flow').value || null }) })
+            .then(async function (r) {
+              if (r.ok) { status.textContent = 'Added.'; document.getElementById('num-add-e164').value = ''; document.getElementById('num-add-label').value = ''; loadNumbers(); return; }
+              var msg = 'Could not add (already exists?).';
+              try { var b = await r.json(); if (b && b.error) msg = b.error; } catch (e) {}
+              status.textContent = msg;
+            })
             .catch(function () { status.textContent = 'Could not add.'; });
         });
       })();

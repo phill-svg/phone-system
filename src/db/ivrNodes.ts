@@ -103,3 +103,28 @@ export async function updateNodePosition(
     .run();
   return true;
 }
+
+// A "flow" is not a table -- it is just the set of ivr_nodes rows sharing a `flow` value, created
+// implicitly the first time one is saved. So listing them is a GROUP BY, and `hasEntry` is what
+// says whether a flow can actually take a call: without an is_entry row, `loadEntryNode` throws and
+// every caller routed there hits the Durable Object's catch-all. That is the one fact the number
+// pickers and Health Checks both need, so it is computed here rather than by each caller.
+export type IvrFlowSummary = { flow: string; nodeCount: number; hasEntry: boolean };
+
+export async function listFlows(db: D1Database): Promise<IvrFlowSummary[]> {
+  const result = await db
+    .prepare(
+      "SELECT flow, COUNT(*) AS node_count, MAX(is_entry) AS has_entry FROM ivr_nodes GROUP BY flow ORDER BY flow ASC"
+    )
+    .all<{ flow: string; node_count: number; has_entry: number }>();
+  return result.results.map((row) => ({
+    flow: row.flow,
+    nodeCount: row.node_count,
+    hasEntry: row.has_entry === 1,
+  }));
+}
+
+export async function flowHasEntryNode(db: D1Database, flow: string): Promise<boolean> {
+  const row = await db.prepare("SELECT 1 FROM ivr_nodes WHERE flow = ? AND is_entry = 1 LIMIT 1").bind(flow).first();
+  return row !== null;
+}
