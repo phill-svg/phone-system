@@ -107,7 +107,10 @@ function Attachment({
   outbound: boolean;
 }) {
   const t = useTheme();
-  const isImage = contentType.startsWith("image/");
+  // NOT `image/svg+xml`, which the server also refuses to serve inline: an SVG is an image to a
+  // person and a script host to a browser, and this content type is chosen by whoever sent the
+  // message. Shown as a named attachment instead.
+  const isImage = contentType.startsWith("image/") && contentType !== "image/svg+xml";
   const source = useMediaSource(isImage ? messageMediaPath(messageId, idx) : null);
 
   if (!isImage) {

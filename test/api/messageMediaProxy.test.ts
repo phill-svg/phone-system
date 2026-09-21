@@ -98,3 +98,51 @@ describe("handleGetMessageMedia", () => {
     expect((await handleGetMessageMedia(ENV, env.DB, "SM1", 0, threw as never)).status).toBe(502);
   });
 });
+
+// The content type describes a file a STRANGER sent, and this route serves it from our own origin,
+// where the web thread links it in a tab. Echoing it back would be stored XSS on tcbvoip.app with a
+// staff session attached, triggerable by anyone who can send the business a message.
+describe("what the proxy is willing to serve as itself", () => {
+  beforeEach(() => vi.unstubAllGlobals());
+  const ok = () => vi.fn(async () => new Response("bytes", { status: 200 }));
+
+  it("serves an ordinary photo as itself, inline", async () => {
+    await seed("https://api.twilio.com/media/ME1", "image/jpeg");
+    const res = await handleGetMessageMedia(ENV, env.DB, "SM1", 0, ok() as never);
+    expect(res.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(res.headers.get("Content-Disposition")).toBe("inline");
+  });
+
+  // The attack: a message carrying text/html, opened from the thread, runs on our origin.
+  it("refuses to serve HTML as HTML", async () => {
+    await seed("https://api.twilio.com/media/ME1", "text/html");
+    const res = await handleGetMessageMedia(ENV, env.DB, "SM1", 0, ok() as never);
+    expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(res.headers.get("Content-Disposition")).toBe("attachment");
+  });
+
+  // An SVG is an image to a person and a script host to a browser. It is excluded on purpose, and
+  // both clients refuse to inline it too.
+  it("refuses to serve an SVG as an image", async () => {
+    await seed("https://api.twilio.com/media/ME1", "image/svg+xml");
+    const res = await handleGetMessageMedia(ENV, env.DB, "SM1", 0, ok() as never);
+    expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(res.headers.get("Content-Disposition")).toBe("attachment");
+  });
+
+  // Without this a browser sniffs the bytes and decides for itself, which defeats the allowlist.
+  it("tells the browser not to sniff", async () => {
+    await seed("https://api.twilio.com/media/ME1", "image/png");
+    const res = await handleGetMessageMedia(ENV, env.DB, "SM1", 0, ok() as never);
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
+
+  // The attachment is real and staff should still get it -- as a download, not as something the
+  // browser will interpret.
+  it("still delivers a type it will not inline", async () => {
+    await seed("https://api.twilio.com/media/ME1", "audio/amr");
+    const res = await handleGetMessageMedia(ENV, env.DB, "SM1", 0, ok() as never);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("bytes");
+  });
+});

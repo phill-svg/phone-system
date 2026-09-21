@@ -8,6 +8,21 @@ type MediaEnv = {
   TWILIO_US1_API_KEY_SECRET?: string;
 };
 
+// The types this route will serve as themselves. Everything else is handed back as an opaque
+// download, because the browser must never be invited to interpret a file a stranger sent.
+//
+// NOTE what is missing: `image/svg+xml`. An SVG is an image to a person and a document that can
+// run script to a browser, so serving one inline from our own origin is stored XSS with a staff
+// session attached. Twilio reports the type from the file itself, so this is attacker-chosen.
+const SERVEABLE_INLINE = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "application/pdf",
+]);
+
 // Twilio's own media host. Anything else in the stored url is refused rather than fetched with the
 // account's credentials attached: the url comes from a webhook body, and "follow a URL from a
 // request and send credentials with it" is the shape of a credential-leak bug. The same check
@@ -58,9 +73,21 @@ export async function handleGetMessageMedia(
   }
 
   const headers = new Headers();
-  // The type WE recorded from the webhook, not the one the upstream response claims, so a client
-  // renders what the row says it is.
-  headers.set("Content-Type", media.content_type);
+  // The type is ALLOWLISTED, not echoed. `content_type` comes from a webhook describing a file a
+  // stranger sent us, and this route serves it from our own origin -- where the web thread links it
+  // in a tab. `text/html` or `image/svg+xml` served that way is script running on tcbvoip.app with
+  // the staff session, from a message anyone can send. SVG is excluded deliberately: it is an image
+  // to a person and a script host to a browser.
+  //
+  // Anything not on the list is still served -- the attachment is real and staff should get it --
+  // but as an opaque download rather than something the browser will interpret.
+  const safe = SERVEABLE_INLINE.has(media.content_type) ? media.content_type : "application/octet-stream";
+  headers.set("Content-Type", safe);
+  // Belt and braces: without this a browser may sniff the bytes and decide for itself, which
+  // defeats the allowlist above.
+  headers.set("X-Content-Type-Options", "nosniff");
+  // Images and PDFs display; everything else downloads instead of rendering.
+  headers.set("Content-Disposition", safe === "application/octet-stream" ? "attachment" : "inline");
   // Private: this is a customer's photo behind a staff session, and it must never land in a shared
   // cache. Immutable within the window because the bytes at a Twilio media URL never change.
   headers.set("Cache-Control", "private, max-age=3600");
