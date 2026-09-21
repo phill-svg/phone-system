@@ -73,11 +73,13 @@ before adding one, or you will duplicate a path that already works.
   The reason is in `mobile/AGENTS.md`. Two things about that pin, established 2026-09-10 rather
   than assumed: **Expo Observe needs SDK 55+**, so it cannot be adopted without the upgrade — and
   it measures STARTUP PERFORMANCE, not crashes, so it would not have caught `0xBAADCA11` anyway.
-  And the pin's stated rationale (Expo Go on the App Store only serves SDK 54, and Phill tests on a
-  real iPhone without a paid Apple account) now looks **stale**: there is a paid account, a signed
-  TestFlight build, and internal testers. Re-read `mobile/AGENTS.md` and check that reasoning still
-  holds before anyone treats the pin as permanent — but treat the upgrade as real work with real
-  risk, not a version bump.
+  And the pin's original rationale (Expo Go on the App Store only serves SDK 54, and Phill tests on
+  a real iPhone without a paid Apple account) is **dead**: there is a paid account, a signed
+  TestFlight build, and internal testers, so Expo Go is not how this app is run. `mobile/AGENTS.md`
+  stated that dead reason as current until 2026-09-21 and now carries the live one instead — the
+  cost of moving, chiefly that the CallKit fix lives in generated native code no local command
+  compiles. The pin stands on that; treat the upgrade as real work with real risk, not a version
+  bump.
 - **Never commit credentials.** `mobile/credentials/`, `play-service-account*.json`, `*.keystore`,
   `*.jks`, `.dev.vars` are all gitignored and must stay that way.
 - **Store identifiers are permanent.** The Android package name and the iOS bundle ID
