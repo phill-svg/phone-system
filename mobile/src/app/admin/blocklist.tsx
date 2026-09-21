@@ -5,7 +5,7 @@ import { Group } from "../../components/ui/Grouped";
 import { PrimaryButton } from "../../components/ui/PrimaryButton";
 import { Icon } from "../../components/ui/Icon";
 import { getCallBlocklist, setCallBlocklist } from "../../lib/api";
-import { normalizeBlocklistEntry, withPendingEntry } from "../../lib/phone";
+import { blocklistState, normalizeBlocklistEntry } from "../../lib/phone";
 import { useTheme, type } from "../../theme/theme";
 
 // Numbers the IVR drops before they ever ring anyone. Stored as a plain list and matched against
@@ -34,8 +34,7 @@ export default function BlocklistScreen() {
   // the admin had just typed was not blocked at all. The enclosing ScrollView sets
   // keyboardShouldPersistTaps="handled", so tapping Save never blurs the field either. Same defect
   // as the schedule editor's TimeField, which committed only on blur.
-  const pending = withPendingEntry(numbers, entry);
-  const dirty = saved !== null && (saved.length !== pending.length || saved.some((n, i) => n !== pending[i]));
+  const { pending, dirty } = blocklistState(saved, numbers, entry);
 
   function add() {
     const raw = entry.trim();

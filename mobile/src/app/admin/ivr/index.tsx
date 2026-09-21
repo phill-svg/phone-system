@@ -108,6 +108,12 @@ export default function IvrFlowScreen() {
     }
     setNewName("");
     setSwitching(false);
+    // Typing the name of the menu already open is a NO-OP, and blanking the list for it strands the
+    // screen: setFlowName changes nothing, so `load`'s useCallback keeps its identity, the focus
+    // effect never re-runs, and `flow` stays null -- which the early return renders as a spinner
+    // with no switcher and no way out short of leaving the screen. The switcher's own rows guard
+    // this the same way.
+    if (name === flowName) return;
     setFlow(null);
     setFlowName(name);
   }

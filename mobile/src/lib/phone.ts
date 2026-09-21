@@ -125,13 +125,58 @@ export function normalizeBlocklistEntry(raw: string): string {
   return toE164(trimmed) || trimmed;
 }
 
+// Whether the digits typed so far are a COMPLETE Australian number, not a prefix of one.
+//
+// Prefix-freedom, the same rule as the schedule editor's TimeField: no digit can be appended to
+// make another valid number. Without it, folding the entry box into the saved list re-opens the
+// very bug this exists to fix from the other side: an admin typing "02 6105 977", being interrupted
+// and tapping Save would write "+6126105977" to the live blocklist -- a number that blocks nobody
+// while reading on screen exactly like one that does.
+// Through `toE164`, NOT `normalizePhone`: 1300/1800/13xx carry no trunk 0, so normalizePhone leaves
+// them bare ("132221") and a check for a "61" prefix rejects every one of them. That is the same
+// trap normalizeAuNumber hit on the dial path.
+export function isCompleteAuNumber(raw: string): boolean {
+  const e164 = toE164(raw);
+  if (!e164.startsWith("+61")) return false;
+  const national = e164.slice(3);
+  return (
+    /^4\d{8}$/.test(national) || // mobile
+    /^[2378]\d{8}$/.test(national) || // landline
+    /^13\d{4}$/.test(national) || // 13xxxx
+    /^1[38]00\d{6}$/.test(national) // 1300/1800
+  );
+}
+
 // The blocklist as it would be SAVED, including a number still sitting unadded in the entry box.
 //
 // Tapping Save without tapping + used to discard that number silently, while the button read
-// "Saved" -- so the admin believed a caller was blocked who was not. Deduplicated, because the
-// same number may already be on the list.
+// Saved -- so the admin believed a caller was blocked who was not.
+//
+// Only a FINISHED entry is folded in: a complete Australian number, or something with no digits at
+// all (a short code or alphanumeric sender, which is stored verbatim). A half-typed number is left
+// alone, because committing one would write a number that blocks nobody and still reads on screen
+// as blocked -- the same defect wearing different clothes. Deduplicated, since the same number may
+// already be listed and a duplicate row would share a React key.
 export function withPendingEntry(numbers: string[], entry: string): string[] {
-  const pendingEntry = normalizeBlocklistEntry(entry);
+  const trimmed = entry.trim();
+  if (!trimmed) return numbers;
+  const hasDigits = /\d/.test(trimmed);
+  if (hasDigits && !isCompleteAuNumber(trimmed)) return numbers;
+  const pendingEntry = normalizeBlocklistEntry(trimmed);
   if (!pendingEntry || numbers.includes(pendingEntry)) return numbers;
   return [...numbers, pendingEntry];
+}
+
+// What the blocklist screen would SAVE, and whether Save should be enabled -- as one value,
+// because the bug was the two disagreeing. `dirty` was computed over the list alone while the entry
+// box held a number, so the button sat disabled reading "Saved" with that caller unblocked. Derive
+// both from the same place and that cannot come back.
+export function blocklistState(
+  saved: string[] | null,
+  numbers: string[],
+  entry: string
+): { pending: string[]; dirty: boolean } {
+  const pending = withPendingEntry(numbers, entry);
+  const dirty = saved !== null && (saved.length !== pending.length || saved.some((n, i) => n !== pending[i]));
+  return { pending, dirty };
 }

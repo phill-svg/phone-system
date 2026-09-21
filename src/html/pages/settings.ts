@@ -287,10 +287,26 @@ export function renderSettingsPage(
       document.getElementById('blocklist-form').addEventListener('submit', async function (e) {
         e.preventDefault();
         const status = document.getElementById('blocklist-save-status');
+        // Normalised to E.164, exactly as the handset does (normalizeBlocklistEntry in
+        // mobile/src/lib/phone.ts). src/worker.ts matches this list LITERALLY against Twilio's
+        // From, so a number saved here as "0400 123 456" blocked nobody, forever, silently --
+        // while sitting in the box looking like a blocked number. A line with no digits at all
+        // (a short code, an alphanumeric sender) is kept verbatim.
+        const toE164 = function (line) {
+          if (!/[0-9]/.test(line)) return line;
+          var plus = line.charAt(0) === '+';
+          var d = line.replace(/[^0-9]/g, '');
+          if (!d) return line;
+          var digits = plus ? d : (d.charAt(0) === '0' ? '61' + d.slice(1) : d);
+          // 1300/1800/13xx carry no trunk 0, so they must not gain a +61 prefix twice over.
+          return /^(1[38]00[0-9]{6}|13[0-9]{4})$/.test(digits) ? '+61' + digits : '+' + digits;
+        };
         const numbers = document.getElementById('blocklist-numbers').value
           .split('\\n')
-          .map(function (line) { return line.trim(); })
+          .map(function (line) { return toE164(line.trim()); })
           .filter(function (line) { return line !== ''; });
+        // Show what was actually saved, so the stored form is never a surprise later.
+        document.getElementById('blocklist-numbers').value = numbers.join('\\n');
         const res = await fetch('/api/settings/call-blocklist', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
