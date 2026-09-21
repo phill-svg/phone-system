@@ -609,9 +609,18 @@ before adding one, or you will duplicate a path that already works.
   `/twiml/voice-app` passes `record: false` — the inbound arrangement exactly, one recording per
   call. Call-via-mobile (`renderBridgeToCustomer`) is the exception that cannot follow it: the
   customer is a `<Number>` dialled FROM the staff mobile leg, so that leg executes the `<Dial>` and
-  channel 1 is STAFF. It records dual anyway and says so with `staffch=1` (next bullet). Note the
-  softphone mapping is inferred from the same documented rule as inbound and has not yet been read
-  off a real outbound transcript.
+  channel 1 is STAFF. It records dual anyway and says so with `staffch=1` (next bullet).
+  **The softphone mapping is now CONFIRMED against a real transcript** — call
+  `CA5cf27e3ccfe07f91d6046b9c746d41a5`, 2026-09-22 07:18, the first labelled transcript this system
+  has ever produced: the dialled party came out as `Customer:` and the staff member as `Staff:`,
+  correctly. It had only been inferred from Twilio's documented rule until then, and this repo was
+  burned once before trusting exactly that reasoning, so it needed reading. **Call-via-mobile has
+  NOT been read yet** and is the one flow with the opposite mapping — the only one left that could
+  come out backwards.
+  That same transcript settled the other open question: **Workers AI
+  `whisper-large-v3-turbo` does return per-segment timings**, so transcripts interleave into a real
+  back-and-forth. The one-block-per-speaker form in `buildLabelledTurns` is the safety net for a
+  model that stops returning them, not the normal output.
 - **Which audio channel is the staff member is decided PER CALL, with a setting as the fallback.**
   Since 2026-09-18 (migration `0040`) the leg that chooses a recording declares it as `staffch=` on
   the recording-status callback URL, the webhook stores it in `calls.transcript_staff_channel`, and
