@@ -1,6 +1,7 @@
 import React from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { View, Text, Image, Pressable, StyleSheet } from "react-native";
 import { messageStatusLabel } from "../lib/conversations";
+import { messageMediaPath, useMediaSource } from "../lib/mediaSource";
 import { useTheme, type } from "../theme/theme";
 import type { Message } from "../lib/api";
 
@@ -45,7 +46,15 @@ export function MessageBubble({
     <View>
       <View style={[styles.bubbleRow, { justifyContent: out ? "flex-end" : "flex-start" }]}>
         <View style={[styles.bubble, out ? { backgroundColor: t.colors.accent } : { backgroundColor: t.colors.fill }]}>
-          <Text style={[type.body, { color: out ? "#FFFFFF" : t.colors.label }]}>{message.body}</Text>
+          {(message.media ?? []).map((m) => (
+            <Attachment key={m.idx} messageId={message.id} idx={m.idx} contentType={m.content_type} outbound={out} />
+          ))}
+          {/* A photo arrives with an EMPTY body, so a bubble rendering only text was a blank one. */}
+          {message.body ? (
+            <Text style={[type.body, { color: out ? "#FFFFFF" : t.colors.label, marginTop: (message.media ?? []).length ? 6 : 0 }]}>
+              {message.body}
+            </Text>
+          ) : null}
         </View>
       </View>
       {label ? (
@@ -73,4 +82,46 @@ export function MessageBubble({
 const styles = StyleSheet.create({
   bubbleRow: { flexDirection: "row" },
   bubble: { maxWidth: "78%", paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20 },
+  media: { width: 200, height: 200, borderRadius: 12, overflow: "hidden" },
+  mediaImage: { width: "100%", height: "100%" },
 });
+
+// One attachment inside a bubble.
+//
+// An image is shown inline, because that is what a customer sending a photo of a rat or a meter box
+// expects to see. Anything else -- a PDF, an audio note -- gets a line saying what it is: rendering
+// it as an image would show a broken frame, and pretending it is not there is what this whole
+// feature exists to stop.
+//
+// `resizeMode="cover"` inside a fixed frame rather than a computed aspect ratio: the dimensions are
+// not known until the image loads, and a bubble that resizes mid-scroll jumps the list.
+function Attachment({
+  messageId,
+  idx,
+  contentType,
+  outbound,
+}: {
+  messageId: string;
+  idx: number;
+  contentType: string;
+  outbound: boolean;
+}) {
+  const t = useTheme();
+  const isImage = contentType.startsWith("image/");
+  const source = useMediaSource(isImage ? messageMediaPath(messageId, idx) : null);
+
+  if (!isImage) {
+    return (
+      <Text style={[type.footnote, { color: outbound ? "#FFFFFF" : t.colors.labelSecondary }]}>
+        Attachment ({contentType})
+      </Text>
+    );
+  }
+  // Until the session token resolves there is nothing to fetch with, so a placeholder holds the
+  // space rather than flashing a broken image.
+  return (
+    <View style={[styles.media, { backgroundColor: t.colors.fill }]}>
+      {source ? <Image source={source} style={styles.mediaImage} resizeMode="cover" accessibilityLabel="Attached photo" /> : null}
+    </View>
+  );
+}

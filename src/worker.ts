@@ -88,6 +88,8 @@ import {
   parseRecordingDuration,
 } from "./db/calls";
 import { handleGetRecording, handleRecoverRecording } from "./api/recordings";
+import { insertMessageMedia, parseInboundMedia } from "./db/messageMedia";
+import { handleGetMessageMedia } from "./api/messageMediaProxy";
 import { renderAnalyticsPage } from "./html/pages/analytics";
 import { getBusinessHours, getCallBlocklist, getRecordingEnabled, getDivertCallerId, getMissedCallSms } from "./db/settings";
 import { listNodesForFlow } from "./db/ivrNodes";
@@ -1095,8 +1097,9 @@ export default {
       const valid = await authorizeTwilioWebhook(request, params, env);
       if (!valid) return new Response("invalid signature", { status: 401 });
       if (params.From) {
+        const messageId = params.MessageSid || crypto.randomUUID();
         await insertMessage(env.DB, {
-          id: params.MessageSid || crypto.randomUUID(),
+          id: messageId,
           direction: "inbound",
           peer_number: params.From,
           our_number: params.To || null,
@@ -1105,6 +1108,16 @@ export default {
           read: 0,
           createdAt: Date.now(),
         });
+        // A photo the customer sent. Twilio carries these as NumMedia/MediaUrlN on the same
+        // webhook, and nothing read them -- so an attachment arrived as a message with an empty
+        // body and no sign anything was missing. In its own try: the message is already stored,
+        // and losing the attachment must never turn a delivered text into a failed webhook that
+        // Twilio then redelivers.
+        try {
+          await insertMessageMedia(env.DB, messageId, parseInboundMedia(params));
+        } catch (e) {
+          console.log("MESSAGE_MEDIA_INSERT_FAILED", JSON.stringify({ messageId, error: e instanceof Error ? e.message : String(e) }));
+        }
 
         // Facebook Messenger senders arrive as "messenger:<psid>" with no human-readable name.
         // Resolve it via the Graph API (once per PSID -- cached in fb_contacts after that) so the
@@ -1219,6 +1232,12 @@ export default {
         return new Response("Forbidden", { status: 403 });
       }
 
+      // One attachment on a message -- a customer's photo -- streamed through our own auth.
+      // Twilio's media URL needs the account credentials, which no client can present.
+      const mediaMatch = /^\/api\/messages\/([^/]+)\/media\/(\d+)$/.exec(url.pathname);
+      if (mediaMatch) {
+        return handleGetMessageMedia(env, env.DB, safeDecode(mediaMatch[1]) ?? "", Number(mediaMatch[2]));
+      }
       if (url.pathname === "/api/me") {
         return handleMe(env.DB, staff);
       }
