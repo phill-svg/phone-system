@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { View, Text, Pressable, FlatList, ActivityIndicator, StyleSheet } from "react-native";
+import { View, Text, Pressable, FlatList, TextInput, ActivityIndicator, StyleSheet } from "react-native";
 import { confirmDelete } from "../../lib/confirmDelete";
 import { useAuth } from "../../lib/auth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +11,7 @@ import { Segmented } from "../../components/ui/Segmented";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Icon } from "../../components/ui/Icon";
 import { getCalls, getContacts, deleteCall, restoreCall, type Call } from "../../lib/api";
-import { formatPhone, contactForNumber } from "../../lib/phone";
+import { formatPhone, contactForNumber, searchCalls } from "../../lib/phone";
 import { useTheme, type } from "../../theme/theme";
 
 // A missed call is an inbound one NOBODY PICKED UP -- including the ones that left a voicemail,
@@ -46,6 +46,7 @@ function whenLabel(ms: number): string {
 export default function RecentsScreen() {
   const t = useTheme();
   const [filter, setFilter] = useState<"all" | "missed">("all");
+  const [q, setQ] = useState("");
   const calls = useQuery({ queryKey: ["calls"], queryFn: getCalls });
   // Tabs stay mounted, so switching back to Recents never refetched and a call that came in while
   // you were on another tab stayed missing. Same pattern as Messages; the first focus is the mount,
@@ -80,20 +81,44 @@ export default function RecentsScreen() {
 
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts, staleTime: 60_000 });
 
+  // The contact name a row SHOWS, so the search matches what is on screen rather than what is in
+  // the database -- a row whose visible text contains the query must never be hidden.
+  const nameFor = useCallback(
+    (c: Call) => {
+      const number = c.direction === "outbound" ? c.called_number : c.caller_number;
+      return contactForNumber(number, contacts.data ?? [])?.name ?? "";
+    },
+    [contacts.data]
+  );
+
   const rows = useMemo(() => {
     const list = calls.data ?? [];
-    return filter === "missed" ? list.filter(isMissed) : list;
-  }, [calls.data, filter]);
+    const filtered = filter === "missed" ? list.filter(isMissed) : list;
+    // Filtered here rather than on the server: the whole list is already loaded, so this costs no
+    // round trip and works with no signal.
+    return searchCalls(q, filtered, nameFor);
+  }, [calls.data, filter, q, nameFor]);
 
   function displayName(c: Call): { title: string; missed: boolean } {
     const number = c.direction === "outbound" ? c.called_number : c.caller_number;
-    const contact = contactForNumber(number, contacts.data ?? []);
-    return { title: contact?.name ?? formatPhone(number) ?? "Unknown", missed: isMissed(c) };
+    return { title: nameFor(c) || formatPhone(number) || "Unknown", missed: isMissed(c) };
   }
 
   return (
     <Screen>
       <LargeHeader title="Recents" right={<StatusPill />} />
+      <View style={[styles.search, { backgroundColor: t.colors.fill }]}>
+        <Icon name="magnifyingglass" fallback="search" size={17} color={t.colors.labelTertiary} />
+        <TextInput
+          value={q}
+          onChangeText={setQ}
+          placeholder="Search name or number"
+          placeholderTextColor={t.colors.labelTertiary}
+          style={[styles.searchInput, { color: t.colors.label }]}
+          autoCapitalize="none"
+          clearButtonMode="while-editing"
+        />
+      </View>
       <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
         <Segmented
           value={filter}
@@ -110,7 +135,12 @@ export default function RecentsScreen() {
       ) : calls.isError ? (
         <EmptyState icon="wifi.exclamationmark" title="Couldn't load calls" message="Check your connection and pull to refresh." tone="danger" />
       ) : rows.length === 0 ? (
-        <EmptyState icon="clock" title="No Recent Calls" message="Your recent calls will appear here." />
+        <EmptyState
+          icon={q ? "magnifyingglass" : "clock"}
+          iconFallback={q ? "search" : undefined}
+          title={q ? "No Matches" : "No Recent Calls"}
+          message={q ? "No call matches that name or number." : "Your recent calls will appear here."}
+        />
       ) : (
         <FlatList
           data={rows}
@@ -157,6 +187,8 @@ export default function RecentsScreen() {
 }
 
 const styles = StyleSheet.create({
+  search: { flexDirection: "row", alignItems: "center", gap: 7, marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 9, borderRadius: 10 },
+  searchInput: { flex: 1, fontSize: 17, padding: 0 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11, paddingHorizontal: 4 },
   sep: { height: StyleSheet.hairlineWidth },
 });

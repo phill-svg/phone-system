@@ -39,6 +39,32 @@ export function formatPhone(raw: string): string {
   return raw;
 }
 
+// Recents, filtered by what was typed in the search box.
+//
+// Matched against the SAME two things the row shows -- the saved contact's name and the other
+// party's number -- because a list that hides a row whose visible text contains the query reads as
+// broken. The number is matched on digits (via normalizePhone), so "0402", "402" and "+61402" all
+// find the same call however it was stored or displayed.
+//
+// `nameFor` is supplied by the caller rather than looked up here: the screen already resolves each
+// call to a contact name for display, and doing it twice would let the two drift.
+export function searchCalls<T extends { direction: string; caller_number: string; called_number: string }>(
+  query: string,
+  calls: T[],
+  nameFor: (call: T) => string
+): T[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return calls;
+  const digits = normalizePhone(query);
+  return calls.filter((c) => {
+    const number = c.direction === "outbound" ? c.called_number : c.caller_number;
+    if (nameFor(c).toLowerCase().includes(needle)) return true;
+    // Two digits is where a number search stops matching half the call log. Below that the name
+    // match above is the only sensible reading of what was typed.
+    return digits.length >= 2 && normalizePhone(number).includes(digits);
+  });
+}
+
 // Contacts whose number contains the typed digits — keypad suggestions.
 export function matchContacts(typed: string, contacts: Contact[], limit = 3): Contact[] {
   const digits = normalizePhone(typed);

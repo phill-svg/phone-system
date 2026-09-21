@@ -8,12 +8,17 @@ import { useTheme, type } from "../../theme/theme";
 // message, optional action) so the app reads as one product, per the brief.
 export function EmptyState({
   icon,
+  iconFallback,
   title,
   message,
   tone = "neutral",
   action,
 }: {
   icon: SymbolViewProps["name"];
+  // Ionicons name for Android, where `icon` is an SF Symbol that does not exist. Without one `Icon`
+  // renders a blank `ellipse-outline` -- a coloured circle with nothing in it, on a screen whose
+  // only content IS that icon. Existing call sites are unchanged; new ones pass it.
+  iconFallback?: React.ComponentProps<typeof Icon>["fallback"];
   title: string;
   message: string;
   tone?: "neutral" | "danger";
@@ -24,7 +29,7 @@ export function EmptyState({
   return (
     <View style={styles.wrap}>
       <View style={[styles.iconWrap, { backgroundColor: tone === "danger" ? t.colors.dangerSoft : t.colors.fill }]}>
-        <Icon name={icon} size={34} color={tint} />
+        <Icon name={icon} fallback={iconFallback} size={34} color={tint} />
       </View>
       <Text style={[type.title3, { color: t.colors.label, marginTop: t.spacing(5), textAlign: "center" }]}>{title}</Text>
       <Text style={[type.subhead, { color: t.colors.labelSecondary, marginTop: t.spacing(2), textAlign: "center", maxWidth: 300, lineHeight: 21 }]}>
