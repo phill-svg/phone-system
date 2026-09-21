@@ -39,7 +39,6 @@ type Env = {
   TWILIO_US1_API_KEY_SID?: string;
   TWILIO_US1_API_KEY_SECRET?: string;
   SERVICEM8_API_KEY?: string;
-  TWILIO_INTELLIGENCE_SERVICE_SID?: string;
   TWILIO_PUSH_CREDENTIAL_SID_IOS?: string;
   TWILIO_PUSH_CREDENTIAL_SID_ANDROID?: string;
   EMAIL?: SendEmailBinding;
@@ -98,25 +97,18 @@ async function checkServiceM8(env: Env): Promise<Check> {
 // This check exists because the same shape of silence hid the ServiceM8 key for a full day.
 async function checkCallTranscripts(env: Env): Promise<Check> {
   const base = { key: "transcripts", label: "Speaker-labelled transcripts" };
-  if (!env.TWILIO_INTELLIGENCE_SERVICE_SID) {
-    return {
-      ...base,
-      status: "warn",
-      detail: "No Intelligence service set. Transcripts still work, but won't say who said what.",
-    };
-  }
   try {
-    // On `intelligence_status`, NOT `intelligence_sid`. A recording that came back mono is skipped
-    // before Twilio is ever asked, so it has no sid -- and keying on the sid made those rows
-    // invisible to the very check whose headline case they are.
+    // Keyed on `intelligence_status`, which now records how the LABELLING went -- the transcript
+    // itself is Whisper's either way. A recording that came back mono never reaches the labelling
+    // at all, so keying on anything the labelling writes would make the single most likely failure
+    // invisible, which is exactly how this screen once reported "nothing transcribed yet" for a
+    // fortnight while every request was being refused.
     const row = await env.DB.prepare(
       `SELECT
          SUM(intelligence_status = 'completed')      AS done,
          SUM(intelligence_status = 'single_channel') AS mono,
          SUM(intelligence_status = 'dual_failed')    AS dual_failed,
-         SUM(intelligence_status = 'request_failed') AS request_failed,
-         SUM(intelligence_status = 'pending')        AS pending,
-         SUM(intelligence_status IN ('abandoned', 'failed')) AS stuck
+         SUM(intelligence_status = 'unlabelled')     AS unlabelled
        FROM calls
        WHERE intelligence_status IS NOT NULL AND started_at > ?`
     )
@@ -125,87 +117,55 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
         done: number | null;
         mono: number | null;
         dual_failed: number | null;
-        request_failed: number | null;
-        pending: number | null;
-        stuck: number | null;
+        unlabelled: number | null;
       }>();
     const done = row?.done ?? 0;
     const mono = row?.mono ?? 0;
     const dualFailed = row?.dual_failed ?? 0;
-    const requestFailed = row?.request_failed ?? 0;
-    const pending = row?.pending ?? 0;
-    const stuck = row?.stuck ?? 0;
-    // FIRST, and regardless of how many others succeeded. An INBOUND call is recorded on the
-    // caller's leg with `record-from-answer-dual`, so mono there should be impossible -- it means
-    // Twilio is not honouring it, or RecordingChannels is absent from the callback. Unlike a mono
-    // conference recording this has no benign reading and no Console switch to blame, so it is
-    // reported even alongside successful transcripts: `done > 0` must not mask it, or one broken
-    // inbound call hides behind a week of working ones.
+    const unlabelled = row?.unlabelled ?? 0;
+
+    // FIRST, and regardless of how many others succeeded. Every recorded flow asks for two channels
+    // on the leg that makes the recording, so mono means Twilio is not honouring
+    // `record-from-answer-dual` or `RecordingChannels` is absent from the callback. No Console
+    // setting affects it and there is no benign reading, so `done > 0` must not mask it: one broken
+    // path hiding behind a week of working ones is the failure this screen exists to prevent.
     if (dualFailed > 0) {
       return {
         ...base,
         status: "fail",
         detail:
-          `${dualFailed} INBOUND recording(s) came back mono despite asking for dual-channel on the ` +
-          `caller's leg. That should not be possible and no Console setting affects it — check the ` +
-          `worker logs for INTELLIGENCE_SKIPPED_MONO and what RecordingChannels Twilio actually sent.`,
+          `${dualFailed} recording(s) came back on one channel despite asking for two, so those ` +
+          `calls have an unlabelled transcript. Check the worker logs for TRANSCRIBE_SKIPPED_MONO ` +
+          `and what RecordingChannels Twilio actually sent.`,
       };
     }
-    // Twilio refused the transcript request (or could not be reached), so these recordings never got
-    // a transcript sid. Before this was persisted it was invisible here, and the check said nothing
-    // had been transcribed yet while every request was failing. Not masked by successes, but not a
-    // FAIL alongside them either: the marker is permanent and a network blip or one 5xx sets it, and
-    // a week of red over one blip teaches people to ignore this screen.
-    if (requestFailed > 0) {
-      // What Twilio actually said on the MOST RECENT failure, if it was captured -- #115 fixed the
-      // AU1-vs-US1 host mismatch, but calls right after that deploy still came back request_failed
-      // with nothing here saying why, because nothing had persisted the response body. Falling back
-      // to "check the worker logs" only for a row from before this was captured.
-      const lastError = await env.DB.prepare(
-        `SELECT intelligence_error FROM calls
-         WHERE intelligence_status = 'request_failed' AND started_at > ?
-         ORDER BY started_at DESC LIMIT 1`
-      )
-        .bind(Date.now() - 7 * 24 * 60 * 60 * 1000)
-        .first<{ intelligence_error: string | null }>();
-      const detail = lastError?.intelligence_error
-        ? `${requestFailed} recording(s) could not be submitted to Twilio for transcription in the last ` +
-          `7 days. Twilio answered: ${lastError.intelligence_error}`
-        : `${requestFailed} recording(s) could not be submitted to Twilio for transcription in the last ` +
-          `7 days. Check the worker logs for INTELLIGENCE_CREATE_FAILED, which carries the HTTP status ` +
-          `Twilio answered.`;
-      return { ...base, status: done === 0 ? "fail" : "warn", detail };
+    // Two channels arrived and the labelling still produced nothing: the audio would not split, or
+    // Whisper returned nothing for either side. Not a FAIL alongside working transcripts -- a call
+    // where nobody spoke looks the same -- but never silent either.
+    if (unlabelled > 0) {
+      return {
+        ...base,
+        status: done === 0 ? "fail" : "warn",
+        detail:
+          `${unlabelled} two-channel recording(s) could not be labelled in the last 7 days; those ` +
+          `calls keep their plain transcript. Check the worker logs for TRANSCRIBE_DUAL_.`,
+      };
     }
-    // A mono CONFERENCE recording is the different, milder case: outbound softphone calls are
-    // recorded conference-level, where the Console's dual-channel switch does still apply. Worth
-    // reporting, but it is not the inbound path and those transcripts keep Whisper's text.
+    // A mono CONFERENCE recording is the milder case and not a fault: nothing in the current flows
+    // records conference-level, so this only appears for a call made before that changed.
     if (mono > 0 && done === 0) {
       return {
         ...base,
         status: "warn",
         detail:
           `${mono} conference recording(s) came back on one channel, so those transcripts are ` +
-          `unlabelled and keep the Whisper text. That is the OUTBOUND softphone path. Do NOT go and ` +
-          `turn on "Dual-channel Recording for Conference" expecting it to fix inbound calls — that ` +
-          `switch was verified on and saved on 2026-09-12 while Twilio still returned mono, which is ` +
-          `why inbound is recorded on the caller's own leg instead. A call where only one party ` +
-          `spoke looks identical, so check a recent one before changing anything.`,
-      };
-    }
-    // Every transcript giving up is the OTHER silent failure. A transcript Twilio holds but whose
-    // sentences we can never read (a sustained 5xx, or a call longer than the page cap) burns its
-    // polls and lands on `abandoned` -- which used to land on `single_channel` and at least turn
-    // this red, for the wrong reason. Counting it here is what stops "no alarm" being the trade.
-    if (stuck > 0 && done === 0) {
-      return {
-        ...base,
-        status: "fail",
-        detail: `${stuck} transcript(s) gave up before returning any text. Check the worker logs for INTELLIGENCE_.`,
+          `unlabelled. Nothing records conference-level any more, so these are from before that ` +
+          `changed. Do NOT turn on "Dual-channel Recording for Conference" expecting it to help — ` +
+          `that switch was verified on and saved on 2026-09-12 while Twilio still returned mono.`,
       };
     }
     if (done > 0) return { ...base, status: "ok", detail: `${done} labelled transcript(s) in the last 7 days.` };
-    if (pending > 0) return { ...base, status: "ok", detail: `${pending} transcript(s) in progress.` };
-    return { ...base, status: "warn", detail: "Configured, but no answered call has been transcribed yet." };
+    return { ...base, status: "warn", detail: "No answered call has been labelled yet." };
   } catch (e) {
     return { ...base, status: "warn", detail: `Couldn't check: ${e instanceof Error ? e.message : "error"}` };
   }

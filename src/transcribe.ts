@@ -1,4 +1,6 @@
 import { authHeader } from "./twilio/conferenceClient";
+import { splitStereoWav } from "./audio/wav";
+import { buildLabelledTurns, formatLabelledTurns, type ChannelResult } from "./labelledTranscript";
 
 // Full-call transcription via Cloudflare Workers AI (Whisper). Runs off the recording-status
 // webhook in ctx.waitUntil, so it never blocks the webhook ack and a failure is non-fatal (the
@@ -22,12 +24,102 @@ function isLikelyHallucination(text: string): boolean {
   return junk.has(stripped);
 }
 
+type WhisperResult = {
+  text?: string;
+  transcription_info?: { text?: string };
+  // Present on `@cf/openai/whisper-large-v3-turbo` today. Optional and unvalidated here on purpose:
+  // the labelling degrades to one block per speaker if it ever stops arriving (see
+  // `buildLabelledTurns`), rather than losing the transcript.
+  segments?: { start?: unknown; text?: unknown }[];
+};
+
 type TranscribeEnv = {
   DB: D1Database;
-  AI: { run: (model: string, input: Record<string, unknown>) => Promise<{ text?: string; transcription_info?: { text?: string } }> };
+  AI: { run: (model: string, input: Record<string, unknown>) => Promise<WhisperResult> };
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
 };
+
+const WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
+
+// Workers AI takes the audio as base64.
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+  }
+  return btoa(binary);
+}
+
+async function runWhisper(env: TranscribeEnv, audio: Uint8Array): Promise<WhisperResult> {
+  return env.AI.run(WHISPER_MODEL, {
+    audio: toBase64(audio),
+    // Whisper invents text on silence/noise ("Merci.", "Q2. Q2. Q2..."). These curb it:
+    language: "en", // AU English -- stops it defaulting to French/other hallucination tokens
+    vad_filter: true, // skip silent segments entirely (the big one for empty voicemails)
+    condition_on_previous_text: false, // break the repetition loops ("Q2. Q2. Q2...")
+  });
+}
+
+function cleanText(result: WhisperResult): string {
+  const text = (result?.text ?? result?.transcription_info?.text ?? "").trim();
+  return isLikelyHallucination(text) ? "" : text;
+}
+
+// The two-channel media file for a recording. Twilio serves it at `.wav?RequestedChannels=2`, and
+// answers 400 for a recording that has only one channel -- which is a normal outcome here (a
+// voicemail <Record>, an older recording), not an error worth reporting.
+function dualChannelUrl(recordingUrl: string): string {
+  const base = recordingUrl.replace(/\.(mp3|wav)$/, "");
+  return base + ".wav?RequestedChannels=2";
+}
+
+// A transcript that says WHO SAID WHAT, without Twilio's Conversational Intelligence -- which
+// cannot be used on this account at all, because it is unsupported in AU1 and our landline is au1
+// (see `src/audio/wav.ts`). Each channel of the recording is transcribed separately and the two are
+// merged back into one conversation.
+//
+// Returns the labelled text, or "" when this recording cannot be labelled -- mono audio, a file
+// that will not parse, one that is too large, or a call where nobody said anything. "" means the
+// CALLER should fall back to the ordinary single-pass transcript: an unlabelled transcript is worth
+// far more than none.
+export async function transcribeChannels(
+  env: TranscribeEnv,
+  callSid: string,
+  recordingUrl: string,
+  staffChannel: 1 | 2
+): Promise<string> {
+  const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+  const res = await fetch(dualChannelUrl(recordingUrl), { headers: { Authorization: auth } });
+  if (!res.ok) {
+    console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, status: res.status }));
+    return "";
+  }
+  const split = splitStereoWav(new Uint8Array(await res.arrayBuffer()));
+  if (!split) {
+    console.log("TRANSCRIBE_DUAL_UNSPLITTABLE", JSON.stringify({ callSid }));
+    return "";
+  }
+
+  // Serially, not Promise.all: two Workers AI inferences at once on a multi-minute call is twice
+  // the peak memory for no wall-clock gain worth having inside a webhook's waitUntil.
+  const first = await runWhisper(env, split.left);
+  const second = await runWhisper(env, split.right);
+
+  // Channel 1 is the leg that ran the <Dial>. That is the customer on every flow except
+  // call-via-mobile, where the staff member's own mobile ran it -- which is what
+  // `calls.transcript_staff_channel` records, written by the leg that chose the recording.
+  const staff: WhisperResult = staffChannel === 1 ? first : second;
+  const customer: WhisperResult = staffChannel === 1 ? second : first;
+  const asChannel = (r: WhisperResult): ChannelResult => ({ text: cleanText(r), segments: r.segments });
+  const text = formatLabelledTurns(buildLabelledTurns(asChannel(customer), asChannel(staff)));
+  if (!text) {
+    console.log("TRANSCRIBE_DUAL_EMPTY", JSON.stringify({ callSid }));
+    return "";
+  }
+  return text;
+}
 
 // Twilio RecordingUrl (regional, e.g. api.sydney.au1.twilio.com/.../Recordings/RE...) → fetch the
 // mp3 with the account's Basic auth, transcribe, store against the call. `column` picks where the
@@ -47,27 +139,10 @@ export async function transcribeCallRecording(
       console.log("TRANSCRIBE_FETCH_FAILED", callSid, res.status);
       return;
     }
-    const buf = await res.arrayBuffer();
-    // Workers AI Whisper takes the audio as base64.
-    const bytes = new Uint8Array(buf);
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
-    }
-    const base64 = btoa(binary);
-
-    const result = await env.AI.run("@cf/openai/whisper-large-v3-turbo", {
-      audio: base64,
-      // Whisper invents text on silence/noise ("Merci.", "Q2. Q2. Q2…"). These curb it:
-      language: "en", // AU English — stops it defaulting to French/other hallucination tokens
-      vad_filter: true, // skip silent segments entirely (the big one for empty voicemails)
-      condition_on_previous_text: false, // break the repetition loops ("Q2. Q2. Q2…")
-    });
-    let text = (result?.text ?? result?.transcription_info?.text ?? "").trim();
+    const bytes = new Uint8Array(await res.arrayBuffer());
     // Belt-and-braces: drop obvious hallucinations (a single short token repeated, or a bare
     // "thanks/merci"-style artefact on a silent clip) so we store nothing rather than nonsense.
-    if (isLikelyHallucination(text)) text = "";
+    const text = cleanText(await runWhisper(env, bytes));
     if (!text) return;
 
     // Never overwrite a speaker-labelled transcript with this unlabelled one.
@@ -82,6 +157,47 @@ export async function transcribeCallRecording(
   } catch (e) {
     console.log("TRANSCRIBE_FAILED", callSid, e instanceof Error ? e.message : String(e));
   }
+}
+
+// The ONE entry point the recording-status webhook uses, and the reason there is only one: Whisper
+// runs at most once per recording. Two writers racing over `call_transcript` in the same tick is
+// exactly how a labelled transcript used to be destroyed by an unlabelled one landing late.
+//
+// Labelled first when the audio has two channels; the plain single-pass transcript is the fallback,
+// and covers voicemail, mono recordings, audio that will not split, and a call where the labelling
+// produced nothing.
+export async function transcribeRecording(
+  env: TranscribeEnv,
+  callSid: string,
+  recordingUrl: string,
+  opts: { column: "call_transcript" | "transcription"; dualChannel: boolean; staffChannel: 1 | 2 }
+): Promise<void> {
+  if (opts.dualChannel && opts.column === "call_transcript") {
+    try {
+      const labelled = await transcribeChannels(env, callSid, recordingUrl, opts.staffChannel);
+      if (labelled) {
+        await env.DB.prepare(
+          "UPDATE calls SET call_transcript = ?, intelligence_status = 'completed' WHERE id = ?"
+        )
+          .bind(labelled, callSid)
+          .run();
+        console.log("TRANSCRIBE_LABELLED", JSON.stringify({ callSid }));
+        return;
+      }
+      // Two channels were there and the labelling still produced nothing. Recorded so Health Checks
+      // can say so: silence here is what let this feature sit broken for a fortnight.
+      await env.DB.prepare(
+        "UPDATE calls SET intelligence_status = 'unlabelled' WHERE id = ? AND intelligence_status IS NULL"
+      )
+        .bind(callSid)
+        .run()
+        .catch(() => {});
+    } catch (e) {
+      // Never at the cost of the transcript itself -- fall through to the plain one below.
+      console.log("TRANSCRIBE_DUAL_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+  await transcribeCallRecording(env, callSid, recordingUrl, opts.column);
 }
 
 // A recording only gets transcribed if the recording-status webhook fires while the Whisper code

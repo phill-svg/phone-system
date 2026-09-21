@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { backfillTranscripts, transcribeCallRecording, MAX_TRANSCRIBE_ATTEMPTS } from "../src/transcribe";
+import { backfillTranscripts, transcribeCallRecording, transcribeRecording, MAX_TRANSCRIBE_ATTEMPTS } from "../src/transcribe";
 
 // backfillTranscripts fetches the recording from Twilio and runs Workers AI. Both are stubbed:
 // `fetch` returns a tiny mp3 body, and a fake AI binding returns whatever text the test wants.
@@ -161,5 +161,146 @@ describe("Whisper never overwrites a speaker-labelled transcript", () => {
     }>();
     expect(row?.call_transcript).toBe("Customer: hello.");
     vi.unstubAllGlobals();
+  });
+});
+
+// ---- Speaker-labelled transcripts (the dual-channel path) ----
+//
+// Twilio's Conversational Intelligence cannot be used on this account -- it is unsupported in AU1
+// and the landline is au1, so every request for an au1 recording came back
+// "Resource RE... not found". The labelling is done here instead: split the two-channel recording,
+// transcribe each channel, merge. These tests cover the CHOICE between that and the plain
+// single-pass transcript, which is where the cost of being wrong is a lost transcript.
+describe("transcribeRecording", () => {
+  // A two-channel PCM WAV, built the way Twilio serves one.
+  function stereoWav(frames = 4): Uint8Array {
+    const out = new Uint8Array(44 + frames * 4);
+    const view = new DataView(out.buffer);
+    const ascii = (o: number, t: string) => { for (let i = 0; i < t.length; i++) view.setUint8(o + i, t.charCodeAt(i)); };
+    ascii(0, "RIFF"); view.setUint32(4, out.length - 8, true); ascii(8, "WAVE");
+    ascii(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+    view.setUint16(22, 2, true); view.setUint32(24, 8000, true); view.setUint32(28, 32000, true);
+    view.setUint16(32, 4, true); view.setUint16(34, 16, true);
+    ascii(36, "data"); view.setUint32(40, frames * 4, true);
+    return out;
+  }
+
+  function dualEnv(results: { text: string; segments?: { start: number; text: string }[] }[], body: Uint8Array | null = stereoWav()) {
+    const run = vi.fn(async () => results.shift() ?? { text: "" });
+    // Twilio answers 400 to `?RequestedChannels=2` for a recording that has only one channel, while
+    // the ordinary media URL still serves fine -- so the stub must distinguish them, or a test of
+    // the fallback would "pass" because BOTH fetches failed.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const isDual = String(input).includes("RequestedChannels=2");
+        if (isDual && !body) return new Response("no dual channel", { status: 400 });
+        return new Response(isDual ? body! : new Uint8Array([1, 2, 3]), { status: 200 });
+      })
+    );
+    return { env: { DB: env.DB, AI: { run }, TWILIO_ACCOUNT_SID: "AC_test", TWILIO_AUTH_TOKEN: "token" }, run };
+  }
+
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM calls WHERE id LIKE 'CA-dual%'").run();
+    vi.unstubAllGlobals();
+  });
+
+  it("labels each speaker and marks the call completed", async () => {
+    await insertCall({ id: "CA-dual-1", recordingUrl: "https://api.twilio.com/rec" });
+    const { env: e, run } = dualEnv([
+      { text: "Hello? I have a rat problem.", segments: [{ start: 0, text: "Hello? I have a rat problem." }] },
+      { text: "Whereabouts are you?", segments: [{ start: 2, text: "Whereabouts are you?" }] },
+    ]);
+
+    await transcribeRecording(e as never, "CA-dual-1", "https://api.twilio.com/rec", {
+      column: "call_transcript",
+      dualChannel: true,
+      staffChannel: 2,
+    });
+
+    const row = await env.DB.prepare("SELECT call_transcript, intelligence_status FROM calls WHERE id = 'CA-dual-1'")
+      .first<{ call_transcript: string; intelligence_status: string }>();
+    expect(row?.call_transcript).toBe("Customer: Hello? I have a rat problem.\n\nStaff: Whereabouts are you?");
+    expect(row?.intelligence_status).toBe("completed");
+    // Once per channel, and NOT a third time: the plain transcript must not run and overwrite this.
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  // The whole reason the channel is stored per call: call-via-mobile records on the STAFF member's
+  // own mobile leg, so channel 1 is staff there and every other flow has it the other way round.
+  // Getting this wrong quotes the customer's words as the staff member's, with nothing to catch it.
+  it("honours the staff channel when it is 1", async () => {
+    await insertCall({ id: "CA-dual-swap", recordingUrl: "https://api.twilio.com/rec" });
+    const { env: e } = dualEnv([
+      { text: "TCB pest control.", segments: [{ start: 0, text: "TCB pest control." }] },
+      { text: "Hi, I need a quote.", segments: [{ start: 1, text: "Hi, I need a quote." }] },
+    ]);
+
+    await transcribeRecording(e as never, "CA-dual-swap", "https://api.twilio.com/rec", {
+      column: "call_transcript",
+      dualChannel: true,
+      staffChannel: 1,
+    });
+
+    const row = await env.DB.prepare("SELECT call_transcript FROM calls WHERE id = 'CA-dual-swap'")
+      .first<{ call_transcript: string }>();
+    expect(row?.call_transcript).toBe("Staff: TCB pest control.\n\nCustomer: Hi, I need a quote.");
+  });
+
+  // An unlabelled transcript is worth far more than none. The row is still MARKED, because the
+  // callback said this recording had two channels -- if the file for it cannot be fetched, that is
+  // a fault someone should see rather than a call that quietly reads like every other one.
+  it("falls back to the plain transcript when the two-channel file cannot be fetched", async () => {
+    await insertCall({ id: "CA-dual-404", recordingUrl: "https://api.twilio.com/rec" });
+    const { env: e } = dualEnv([{ text: "both voices together" }], null);
+
+    await transcribeRecording(e as never, "CA-dual-404", "https://api.twilio.com/rec", {
+      column: "call_transcript",
+      dualChannel: true,
+      staffChannel: 2,
+    });
+
+    const row = await env.DB.prepare("SELECT call_transcript, intelligence_status FROM calls WHERE id = 'CA-dual-404'")
+      .first<{ call_transcript: string | null; intelligence_status: string | null }>();
+    expect(row?.call_transcript).toBe("both voices together");
+    expect(row?.intelligence_status).toBe("unlabelled");
+  });
+
+  // Two channels arrived and neither carried speech. The call keeps its plain transcript, and the
+  // row says so -- Health Checks reads this, and silence here is what hid the whole feature being
+  // broken for a fortnight.
+  it("marks a two-channel recording it could not label, and still stores the plain transcript", async () => {
+    await insertCall({ id: "CA-dual-empty", recordingUrl: "https://api.twilio.com/rec" });
+    const { env: e } = dualEnv([{ text: "" }, { text: "" }, { text: "plain text" }]);
+
+    await transcribeRecording(e as never, "CA-dual-empty", "https://api.twilio.com/rec", {
+      column: "call_transcript",
+      dualChannel: true,
+      staffChannel: 2,
+    });
+
+    const row = await env.DB.prepare("SELECT call_transcript, intelligence_status FROM calls WHERE id = 'CA-dual-empty'")
+      .first<{ call_transcript: string | null; intelligence_status: string | null }>();
+    expect(row?.intelligence_status).toBe("unlabelled");
+    expect(row?.call_transcript).toBe("plain text");
+  });
+
+  // Voicemail is one person talking: labelling it would pay twice to say "Customer:" in front of a
+  // message, and it lands in `transcription`, not `call_transcript`.
+  it("never labels voicemail", async () => {
+    await insertCall({ id: "CA-dual-vm", recordingUrl: "https://api.twilio.com/rec", mailbox: "Voicemail" });
+    const { env: e, run } = dualEnv([{ text: "leave a message" }]);
+
+    await transcribeRecording(e as never, "CA-dual-vm", "https://api.twilio.com/rec", {
+      column: "transcription",
+      dualChannel: true,
+      staffChannel: 2,
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    const row = await env.DB.prepare("SELECT transcription FROM calls WHERE id = 'CA-dual-vm'")
+      .first<{ transcription: string }>();
+    expect(row?.transcription).toBe("leave a message");
   });
 });

@@ -97,9 +97,9 @@ import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
-import { transcribeCallRecording, backfillTranscripts } from "./transcribe";
-import { intelligenceEnabled, isDualChannelRecording, requestTranscript } from "./twilio/intelligence";
-import { collectPendingTranscripts } from "./twilio/intelligenceQueue";
+import { transcribeRecording, backfillTranscripts } from "./transcribe";
+import { isDualChannelRecording } from "./twilio/dualChannel";
+import { getTranscriptStaffChannel } from "./db/settings";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
 import { resolveSendingNumber } from "./db/phoneNumbers";
 import { getFacebookName, upsertFacebookName, noteTwilioMessengerFields } from "./db/fbContacts";
@@ -994,57 +994,48 @@ export default {
             });
         }
         const column = isVoicemail ? "transcription" : "call_transcript";
-        const job = transcribeCallRecording(env, callSid, params.RecordingUrl, column);
+        // A two-channel recording is transcribed one channel at a time and merged back into a
+        // labelled conversation; anything else gets the ordinary single-pass transcript. Both live
+        // behind one call because Whisper must run at most once per recording -- two writers racing
+        // over `call_transcript` in a single tick is how a labelled transcript used to be destroyed
+        // by an unlabelled one landing late.
+        //
+        // Voicemail is excluded from labelling: one person is speaking, so there is nothing to
+        // label.
+        const dualChannel = !isVoicemail && isDualChannelRecording(params.RecordingChannels);
+        const job = transcribeRecording(env, callSid, params.RecordingUrl, {
+          column,
+          dualChannel,
+          // The leg that chose the recording declared this on the callback URL (`staffch`), and it
+          // is already persisted above. The account-wide setting covers a recording made before
+          // that existed.
+          staffChannel:
+            declaredStaffChannel === "1" || declaredStaffChannel === "2"
+              ? (Number(declaredStaffChannel) as 1 | 2)
+              : await getTranscriptStaffChannel(env.DB),
+        }).catch((e) => {
+          console.log("TRANSCRIBE_JOB_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
+        });
         if (ctx) ctx.waitUntil(job);
         else await job;
 
-        // Answered calls ALSO go to Twilio, which returns the transcript split by speaker. Whisper
-        // still runs above and lands first: Twilio is asynchronous, so this is what the call shows
-        // in the meantime, and what it keeps if the labelled one never arrives.
+        // A recording that came back MONO when the leg that made it asked for two channels. Every
+        // recorded flow asks for two now -- inbound on the caller's leg, outbound softphone on the
+        // dialled customer's leg, call-via-mobile on the staff mobile leg -- so this is a real
+        // fault, not a shape to skip quietly, and it is the difference between labelled transcripts
+        // working for every call and not working at all. A log line is not an alarm, so it is
+        // persisted for Health Checks to find.
         //
-        // Voicemail is deliberately excluded. Only the caller is speaking, so there is nothing to
-        // label and it would be paying per minute for the same text.
+        // `single_channel` stays for a conference recording, which is mono by construction and
+        // keeps its unlabelled transcript. Anything else is left UNMARKED rather than filed under a
+        // marker that is always set, which is one you learn to ignore.
         //
-        // Only TWO-CHANNEL recordings, which is what `RecordingChannels === "2"` identifies. Every
-        // recorded flow now asks for two channels -- inbound on the caller's leg, outbound softphone
-        // on the dialled customer's leg, call-via-mobile on the staff mobile leg -- so mono arriving
-        // here is a fault in all of them, not an expected shape to skip quietly.
-        if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && !isDualChannelRecording(params.RecordingChannels)) {
-          // Say so rather than going quiet. A mono recording here almost always means the Console's
-          // dual-channel conference switch is off, which is the difference between this feature
-          // working for every call and not working at all -- and silence is how SERVICEM8_API_KEY
-          // sat inert for a day.
+        // Guarded on a NULL status so a redelivered callback can never relabel a completed one.
+        if (!isVoicemail && !dualChannel) {
           console.log(
-            "INTELLIGENCE_SKIPPED_MONO",
-            JSON.stringify({
-              callSid,
-              channels: params.RecordingChannels ?? null,
-              conference: isConference,
-              callerDual: isCallerDual,
-            })
+            "TRANSCRIBE_SKIPPED_MONO",
+            JSON.stringify({ callSid, channels: params.RecordingChannels ?? null, conference: isConference, callerDual: isCallerDual })
           );
-          // A log line is not an alarm. Skipping here means no `intelligence_sid` is ever written,
-          // and Health Checks counted only rows that HAD one -- so the single most likely reason
-          // this feature does nothing read as the benign "no answered call has been transcribed
-          // yet", forever. Persist the skip so the check can see it.
-          //
-          // TWO statuses, because "came back mono" has two meanings and treating them alike would
-          // reintroduce that same silence from the other direction:
-          //
-          //   dual_failed     the CALLER's leg, which asked for record-from-answer-dual. Mono here
-          //                   should be impossible, so it is a real fault and Health Checks FAILS on
-          //                   it. Without this it would have been filed as `single_channel` and the
-          //                   screen would have called an un-transcribed inbound call expected.
-          //   single_channel  a conference recording (outbound softphone). Mono is the known outcome
-          //                   of the Console's dual-channel switch, which is reported but not
-          //                   alarming -- those transcripts keep Whisper's text.
-          //
-          // Anything else is left UNMARKED: a call-via-mobile leg is <Dial record="record-from-answer">,
-          // mono by construction, so marking it would pin Health Checks red over something working
-          // exactly as designed -- and a marker that is always set is one you learn to ignore.
-          //
-          // Guarded on a NULL status so a redelivered callback can never overwrite a transcript
-          // that has since completed, nor a `pending` row awaiting the sweep.
           const monoStatus = isCallerDual ? "dual_failed" : isConference ? "single_channel" : null;
           if (monoStatus) {
             const monoJob = env.DB.prepare(
@@ -1054,52 +1045,13 @@ export default {
               .run()
               .catch((e) => {
                 console.log(
-                  "INTELLIGENCE_MONO_MARK_FAILED",
+                  "TRANSCRIBE_MONO_MARK_FAILED",
                   JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) })
                 );
               });
             if (ctx) ctx.waitUntil(monoJob);
             else await monoJob;
           }
-        }
-        if (!isVoicemail && params.RecordingSid && intelligenceEnabled(env) && isDualChannelRecording(params.RecordingChannels)) {
-          // NOT named `request`: the fetch handler's own `request: Request` is in scope here, and
-          // shadowing it in a webhook handler is a trap for whoever next reads a header in this block.
-          const intelligenceJob = requestTranscript(env, params.RecordingSid)
-            .then(async ({ sid, error }) => {
-              if (!sid) {
-                // Twilio refused or could not be reached. `error` is Twilio's own answer (or the
-                // fetch failure), persisted in the SAME statement as the status -- one D1 write,
-                // not two, so it can never land out of step with a concurrent job (Whisper's own
-                // transcribeCallRecording runs off this same webhook) the way a separate write
-                // to a different table once did. Leaving the row unmarked made this invisible to
-                // Health Checks, which reported "no answered call has been transcribed yet"
-                // indefinitely. Same NULL guard as the mono marker, so a redelivery never relabels
-                // a transcript that completed.
-                await env.DB.prepare(
-                  "UPDATE calls SET intelligence_status = 'request_failed', intelligence_error = ? WHERE id = ? AND intelligence_status IS NULL"
-                )
-                  .bind(error, callSid)
-                  .run();
-                return;
-              }
-              await env.DB.prepare("UPDATE calls SET intelligence_sid = ?, intelligence_status = 'pending' WHERE id = ?")
-                .bind(sid, callSid)
-                .run();
-            })
-            // requestTranscript swallows its own failures, but this D1 write does not -- and an
-            // unhandled rejection inside waitUntil is recorded as a Worker EXCEPTION, not a log
-            // line. Every job on the cron is already `.catch`ed for exactly this reason; this one
-            // was the only new one that was not. Losing the sid means the sweep never collects that
-            // transcript, which costs a label, not the call.
-            .catch((e) => {
-              console.log(
-                "INTELLIGENCE_PENDING_WRITE_FAILED",
-                JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) })
-              );
-            });
-          if (ctx) ctx.waitUntil(intelligenceJob);
-          else await intelligenceJob;
         }
       }
 
@@ -1668,10 +1620,6 @@ export default {
     // shipped, or a dropped webhook). Bounded per tick; rows are attempt-capped so this drains
     // and then does nothing.
     ctx.waitUntil(backfillTranscripts(env).catch(() => {}));
-    // Twilio transcribes asynchronously, so the recording webhook can only ask -- this collects the
-    // finished ones and writes the speaker-labelled text over the Whisper transcript. No-ops
-    // entirely when TWILIO_INTELLIGENCE_SERVICE_SID is unset.
-    ctx.waitUntil(collectPendingTranscripts(env).catch(() => {}));
     // Messenger senders whose name lookup failed on their first message: retry them here, so the
     // inbox fills the name in by itself once the Graph API is answering again. Attempt-capped.
     ctx.waitUntil(backfillFacebookNames(env).catch(() => {}));
