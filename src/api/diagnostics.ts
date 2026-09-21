@@ -108,7 +108,8 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
          SUM(intelligence_status = 'completed')      AS done,
          SUM(intelligence_status = 'single_channel') AS mono,
          SUM(intelligence_status = 'dual_failed')    AS dual_failed,
-         SUM(intelligence_status = 'unlabelled')     AS unlabelled
+         SUM(intelligence_status = 'unlabelled')     AS unlabelled,
+         SUM(intelligence_status = 'label_retry')    AS retrying
        FROM calls
        WHERE intelligence_status IS NOT NULL AND started_at > ?`
     )
@@ -118,11 +119,13 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
         mono: number | null;
         dual_failed: number | null;
         unlabelled: number | null;
+        retrying: number | null;
       }>();
     const done = row?.done ?? 0;
     const mono = row?.mono ?? 0;
     const dualFailed = row?.dual_failed ?? 0;
     const unlabelled = row?.unlabelled ?? 0;
+    const retrying = row?.retrying ?? 0;
 
     // FIRST, and regardless of how many others succeeded. Every recorded flow asks for two channels
     // on the leg that makes the recording, so mono means Twilio is not honouring
@@ -165,6 +168,11 @@ async function checkCallTranscripts(env: Env): Promise<Check> {
       };
     }
     if (done > 0) return { ...base, status: "ok", detail: `${done} labelled transcript(s) in the last 7 days.` };
+    // Still being retried on the cron, which is a state that resolves itself -- attempt-capped, so
+    // it cannot sit here forever without becoming `unlabelled` above.
+    if (retrying > 0) {
+      return { ...base, status: "ok", detail: `${retrying} recording(s) waiting on another labelling attempt.` };
+    }
     return { ...base, status: "warn", detail: "No answered call has been labelled yet." };
   } catch (e) {
     return { ...base, status: "warn", detail: `Couldn't check: ${e instanceof Error ? e.message : "error"}` };

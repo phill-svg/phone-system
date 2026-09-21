@@ -1,5 +1,5 @@
 import { authHeader } from "./twilio/conferenceClient";
-import { splitStereoWav } from "./audio/wav";
+import { MAX_SPLIT_BYTES, splitStereoWav } from "./audio/wav";
 import { buildLabelledTurns, formatLabelledTurns, type ChannelResult } from "./labelledTranscript";
 
 // Full-call transcription via Cloudflare Workers AI (Whisper). Runs off the recording-status
@@ -80,26 +80,72 @@ function dualChannelUrl(recordingUrl: string): string {
 // (see `src/audio/wav.ts`). Each channel of the recording is transcribed separately and the two are
 // merged back into one conversation.
 //
-// Returns the labelled text, or "" when this recording cannot be labelled -- mono audio, a file
-// that will not parse, one that is too large, or a call where nobody said anything. "" means the
-// CALLER should fall back to the ordinary single-pass transcript: an unlabelled transcript is worth
-// far more than none.
+// The OUTCOME is returned, not just the text, because "could not label this" has causes that must
+// not be treated alike:
+//
+//   labelled   the text is here.
+//   retry      a transient failure -- the media host answered 5xx, or the fetch threw. Twilio still
+//              holds the recording, so this must be tried again. Collapsing it into a terminal
+//              marker is precisely the bug the deleted `fetchSentences` existed to avoid: one 502
+//              and that call is unlabelled for good.
+//   too_long   deliberately refused on size. Working as designed, not a fault, and must never reach
+//              a marker Health Checks reports -- an alarm that is always on is one you learn to
+//              ignore.
+//   unusable   two channels were promised and what arrived cannot be labelled: a 4xx for the
+//              two-channel file, audio that will not parse, or nobody speaking. Terminal, and worth
+//              reporting.
+export type LabelOutcome =
+  | { kind: "labelled"; text: string }
+  | { kind: "retry" }
+  | { kind: "too_long" }
+  | { kind: "unusable" };
+
 export async function transcribeChannels(
   env: TranscribeEnv,
   callSid: string,
   recordingUrl: string,
   staffChannel: 1 | 2
-): Promise<string> {
+): Promise<LabelOutcome> {
   const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
-  const res = await fetch(dualChannelUrl(recordingUrl), { headers: { Authorization: auth } });
+  let res: Response;
+  try {
+    res = await fetch(dualChannelUrl(recordingUrl), { headers: { Authorization: auth } });
+  } catch (e) {
+    console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
+    return { kind: "retry" };
+  }
   if (!res.ok) {
     console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, status: res.status }));
-    return "";
+    // 4xx is Twilio saying this recording has no second channel -- asking again cannot change that.
+    // 5xx and 429 are the host, and will answer differently on the next tick.
+    return res.status >= 500 || res.status === 429 ? { kind: "retry" } : { kind: "unusable" };
   }
-  const split = splitStereoWav(new Uint8Array(await res.arrayBuffer()));
+
+  // BEFORE buffering, not after: the size cap exists to protect a 128 MB isolate, and reading the
+  // body first is the allocation it is meant to prevent. A 40-minute call is ~77 MB on the wire and
+  // the split peaks at roughly three times the audio.
+  const declared = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_SPLIT_BYTES) {
+    console.log("TRANSCRIBE_DUAL_TOO_LONG", JSON.stringify({ callSid, bytes: declared }));
+    return { kind: "too_long" };
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await res.arrayBuffer());
+  } catch (e) {
+    console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
+    return { kind: "retry" };
+  }
+  // A host that sent no `content-length` still has to be caught, and this is free.
+  if (bytes.length > MAX_SPLIT_BYTES) {
+    console.log("TRANSCRIBE_DUAL_TOO_LONG", JSON.stringify({ callSid, bytes: bytes.length }));
+    return { kind: "too_long" };
+  }
+  const split = splitStereoWav(bytes);
   if (!split) {
-    console.log("TRANSCRIBE_DUAL_UNSPLITTABLE", JSON.stringify({ callSid }));
-    return "";
+    console.log("TRANSCRIBE_DUAL_UNSPLITTABLE", JSON.stringify({ callSid, bytes: bytes.length }));
+    return { kind: "unusable" };
   }
 
   // Serially, not Promise.all: two Workers AI inferences at once on a multi-minute call is twice
@@ -112,13 +158,20 @@ export async function transcribeChannels(
   // `calls.transcript_staff_channel` records, written by the leg that chose the recording.
   const staff: WhisperResult = staffChannel === 1 ? first : second;
   const customer: WhisperResult = staffChannel === 1 ? second : first;
-  const asChannel = (r: WhisperResult): ChannelResult => ({ text: cleanText(r), segments: r.segments });
+  // The hallucination filter has to reach the SEGMENTS, not just the joined text. Whisper invents
+  // words on a silent channel ("Thanks for watching", "Q2. Q2. Q2."), and the merge reads segments
+  // when both channels have timings -- so filtering only `text` would put an invented sentence in
+  // the transcript under a named speaker, which is worse than no label at all.
+  const asChannel = (r: WhisperResult): ChannelResult => {
+    const text = cleanText(r);
+    return { text, segments: text ? r.segments : undefined };
+  };
   const text = formatLabelledTurns(buildLabelledTurns(asChannel(customer), asChannel(staff)));
   if (!text) {
     console.log("TRANSCRIBE_DUAL_EMPTY", JSON.stringify({ callSid }));
-    return "";
+    return { kind: "unusable" };
   }
-  return text;
+  return { kind: "labelled", text };
 }
 
 // Twilio RecordingUrl (regional, e.g. api.sydney.au1.twilio.com/.../Recordings/RE...) → fetch the
@@ -173,31 +226,94 @@ export async function transcribeRecording(
   opts: { column: "call_transcript" | "transcription"; dualChannel: boolean; staffChannel: 1 | 2 }
 ): Promise<void> {
   if (opts.dualChannel && opts.column === "call_transcript") {
+    let outcome: LabelOutcome;
     try {
-      const labelled = await transcribeChannels(env, callSid, recordingUrl, opts.staffChannel);
-      if (labelled) {
-        await env.DB.prepare(
-          "UPDATE calls SET call_transcript = ?, intelligence_status = 'completed' WHERE id = ?"
-        )
-          .bind(labelled, callSid)
-          .run();
-        console.log("TRANSCRIBE_LABELLED", JSON.stringify({ callSid }));
-        return;
-      }
-      // Two channels were there and the labelling still produced nothing. Recorded so Health Checks
-      // can say so: silence here is what let this feature sit broken for a fortnight.
-      await env.DB.prepare(
-        "UPDATE calls SET intelligence_status = 'unlabelled' WHERE id = ? AND intelligence_status IS NULL"
-      )
-        .bind(callSid)
-        .run()
-        .catch(() => {});
+      outcome = await transcribeChannels(env, callSid, recordingUrl, opts.staffChannel);
     } catch (e) {
-      // Never at the cost of the transcript itself -- fall through to the plain one below.
+      // Never at the cost of the transcript itself. Retryable, because an exception here says
+      // nothing about the recording.
       console.log("TRANSCRIBE_DUAL_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
+      outcome = { kind: "retry" };
     }
+    if (outcome.kind === "labelled") {
+      // Guarded on the status, so a redelivered callback does not re-fetch the media and run two
+      // more inferences to write the same text again.
+      await env.DB.prepare(
+        "UPDATE calls SET call_transcript = ?, intelligence_status = 'completed' WHERE id = ? AND COALESCE(intelligence_status, '') <> 'completed'"
+      )
+        .bind(outcome.text, callSid)
+        .run();
+      console.log("TRANSCRIBE_LABELLED", JSON.stringify({ callSid }));
+      return;
+    }
+    // `label_retry` is NOT terminal: the cron picks it up (see backfillLabels). `too_long` is a
+    // deliberate refusal and is kept OUT of the statuses Health Checks reports as faults --
+    // a marker that is always set is one you learn to ignore. `unlabelled` is the real terminal
+    // failure and is reported.
+    const status =
+      outcome.kind === "retry" ? "label_retry" : outcome.kind === "too_long" ? "too_long" : "unlabelled";
+    await env.DB.prepare(
+      "UPDATE calls SET intelligence_status = ? WHERE id = ? AND COALESCE(intelligence_status, '') IN ('', 'label_retry')"
+    )
+      .bind(status, callSid)
+      .run()
+      .catch(() => {});
   }
   await transcribeCallRecording(env, callSid, recordingUrl, opts.column);
+}
+
+// Calls whose LABELLING failed for a reason that may not fail again -- the media host 5xx'd, or the
+// fetch threw. They already have a plain transcript, which is what makes them invisible to
+// `backfillTranscripts` (it only looks at rows with no transcript at all), so without this sweep one
+// transient failure would cost the labels permanently. That is the same defect the deleted Twilio
+// sweep was built to avoid, and it would have come straight back.
+//
+// `intelligence_polls` is the attempt counter (the column is free now that nothing polls Twilio),
+// and it is counted BEFORE the work: not every failure is transient, and an uncounted retry would
+// re-fetch the same recording every five minutes forever.
+export const MAX_LABEL_ATTEMPTS = 3;
+
+type LabelRetryRow = { id: string; recording_url: string; transcript_staff_channel: number | null; intelligence_polls: number | null };
+
+export async function backfillLabels(env: TranscribeEnv, limit = 2): Promise<number> {
+  const rows = (
+    await env.DB.prepare(
+      `SELECT id, recording_url, transcript_staff_channel, intelligence_polls
+         FROM calls
+        WHERE intelligence_status = 'label_retry'
+          AND recording_url IS NOT NULL AND recording_url <> ''
+          AND deleted_at IS NULL
+          AND COALESCE(intelligence_polls, 0) < ?
+        ORDER BY started_at DESC
+        LIMIT ?`
+    )
+      .bind(MAX_LABEL_ATTEMPTS, limit)
+      .all<LabelRetryRow>()
+  ).results;
+  if (rows.length === 0) return 0;
+
+  for (const row of rows) {
+    await env.DB.prepare("UPDATE calls SET intelligence_polls = COALESCE(intelligence_polls, 0) + 1 WHERE id = ?")
+      .bind(row.id)
+      .run();
+    const staffChannel = row.transcript_staff_channel === 1 ? 1 : 2;
+    const outcome = await transcribeChannels(env, row.id, row.recording_url, staffChannel).catch(
+      (): LabelOutcome => ({ kind: "retry" })
+    );
+    if (outcome.kind === "labelled") {
+      await env.DB.prepare(
+        "UPDATE calls SET call_transcript = ?, intelligence_status = 'completed' WHERE id = ?"
+      )
+        .bind(outcome.text, row.id)
+        .run();
+      console.log("TRANSCRIBE_LABELLED_RETRY", JSON.stringify({ callId: row.id }));
+    } else if (outcome.kind !== "retry") {
+      await env.DB.prepare("UPDATE calls SET intelligence_status = ? WHERE id = ?")
+        .bind(outcome.kind === "too_long" ? "too_long" : "unlabelled", row.id)
+        .run();
+    }
+  }
+  return rows.length;
 }
 
 // A recording only gets transcribed if the recording-status webhook fires while the Whisper code

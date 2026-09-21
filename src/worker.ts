@@ -97,7 +97,7 @@ import { listAudioAssets } from "./db/audioAssets";
 import { getStaffRoster, listStaffAccess } from "./db/staff";
 import { listCallbackRequests } from "./db/callbackRequests";
 import { recordCallLeg } from "./db/callLegs";
-import { transcribeRecording, backfillTranscripts } from "./transcribe";
+import { transcribeRecording, backfillTranscripts, backfillLabels } from "./transcribe";
 import { isDualChannelRecording } from "./twilio/dualChannel";
 import { getTranscriptStaffChannel } from "./db/settings";
 import { handleListNumbers, handleCreateNumber, handleUpdateNumber, handleDeleteNumber } from "./api/numbers";
@@ -1003,16 +1003,27 @@ export default {
         // Voicemail is excluded from labelling: one person is speaking, so there is nothing to
         // label.
         const dualChannel = !isVoicemail && isDualChannelRecording(params.RecordingChannels);
+        // The leg that chose the recording declared this on the callback URL (`staffch`), and it is
+        // already persisted above. The account-wide setting covers a recording made before that
+        // existed -- read ONLY when it is actually needed, and never allowed to throw: this runs
+        // after `recording_url` is written, so an escaping error would 500 a callback whose work is
+        // half done and lose the transcript entirely to save a label direction that has a default.
+        let staffChannel: 1 | 2 = 2;
+        if (declaredStaffChannel === "1" || declaredStaffChannel === "2") {
+          staffChannel = Number(declaredStaffChannel) as 1 | 2;
+        } else if (dualChannel) {
+          staffChannel = await getTranscriptStaffChannel(env.DB).catch((e) => {
+            console.log(
+              "TRANSCRIPT_STAFF_CHANNEL_READ_FAILED",
+              JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) })
+            );
+            return 2 as const;
+          });
+        }
         const job = transcribeRecording(env, callSid, params.RecordingUrl, {
           column,
           dualChannel,
-          // The leg that chose the recording declared this on the callback URL (`staffch`), and it
-          // is already persisted above. The account-wide setting covers a recording made before
-          // that existed.
-          staffChannel:
-            declaredStaffChannel === "1" || declaredStaffChannel === "2"
-              ? (Number(declaredStaffChannel) as 1 | 2)
-              : await getTranscriptStaffChannel(env.DB),
+          staffChannel,
         }).catch((e) => {
           console.log("TRANSCRIBE_JOB_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
         });
@@ -1620,6 +1631,10 @@ export default {
     // shipped, or a dropped webhook). Bounded per tick; rows are attempt-capped so this drains
     // and then does nothing.
     ctx.waitUntil(backfillTranscripts(env).catch(() => {}));
+    // Calls whose speaker labelling hit a transient failure. They already have a plain transcript,
+    // so backfillTranscripts above will never look at them again -- without this, one 502 from
+    // Twilio's media host costs those labels permanently. Attempt-capped, so it drains.
+    ctx.waitUntil(backfillLabels(env).catch(() => {}));
     // Messenger senders whose name lookup failed on their first message: retry them here, so the
     // inbox fills the name in by itself once the Graph API is answering again. Attempt-capped.
     ctx.waitUntil(backfillFacebookNames(env).catch(() => {}));
