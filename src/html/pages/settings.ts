@@ -292,8 +292,12 @@ export function renderSettingsPage(
         // From, so a number saved here as "0400 123 456" blocked nobody, forever, silently --
         // while sitting in the box looking like a blocked number. A line with no digits at all
         // (a short code, an alphanumeric sender) is kept verbatim.
+        // ONLY a line that is entirely a phone number is rewritten. Mapping every line through
+        // this turned an alphanumeric sender ("Optus1") or a note ("# blocked 2026") into "+1" and
+        // "+2026" -- destroying entries the admin never touched, on a list the worker matches
+        // literally, with the original text gone from the box as well.
         const toE164 = function (line) {
-          if (!/[0-9]/.test(line)) return line;
+          if (!/^\\+?[0-9 ()-]+$/.test(line)) return line;
           var plus = line.charAt(0) === '+';
           var d = line.replace(/[^0-9]/g, '');
           if (!d) return line;
@@ -305,14 +309,15 @@ export function renderSettingsPage(
           .split('\\n')
           .map(function (line) { return toE164(line.trim()); })
           .filter(function (line) { return line !== ''; });
-        // Show what was actually saved, so the stored form is never a surprise later.
-        document.getElementById('blocklist-numbers').value = numbers.join('\\n');
         const res = await fetch('/api/settings/call-blocklist', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(numbers),
         });
         status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
+        // AFTER a confirmed save, never before. Reformatting the box on a 403 or a 500 is a visual
+        // "it worked" for a save that did not happen.
+        if (res.ok) document.getElementById('blocklist-numbers').value = numbers.join('\\n');
       });
 
       var divertForm = document.getElementById('divert-callerid-form');

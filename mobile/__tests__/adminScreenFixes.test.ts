@@ -1,5 +1,5 @@
 import { loadFlowOrEmpty, type IvrFlow } from "../src/lib/ivr";
-import { blocklistState, isCompleteAuNumber, normalizeBlocklistEntry, withPendingEntry } from "../src/lib/phone";
+import { blocklistState, isCompleteAuNumber, isSaveableBlocklistEntry, normalizeBlocklistEntry, withPendingEntry } from "../src/lib/phone";
 
 // Two defects found by an adversarial scan of the admin screens on 2026-09-22. Both are the same
 // shape the repo has hit before: a client feature the server refuses, and a draft the Save button
@@ -135,5 +135,48 @@ describe("blocklistState", () => {
 
   it("is never dirty before the saved list has loaded", () => {
     expect(blocklistState(null, [], "0400 123 456").dirty).toBe(false);
+  });
+});
+
+// Third review round. Each of these is a way the completeness rule was itself wrong.
+describe("isCompleteAuNumber, the 1300/13xx collision", () => {
+  // 1300 is carved OUT of the 13 range, so "130012" -- the first six digits of every 1300 number --
+  // matched /^13\d{4}$/ and read as a finished 13xxxx number. An admin typing 1300 123 456 and
+  // being interrupted after six digits committed "+61130012", which is the exact half-typed entry
+  // the rule exists to refuse.
+  it("does not accept the first six digits of a 1300 number as a finished 13xxxx one", () => {
+    expect(isCompleteAuNumber("1300 12")).toBe(false);
+    expect(isCompleteAuNumber("130012")).toBe(false);
+  });
+
+  it("still accepts a real 13xxxx number", () => {
+    expect(isCompleteAuNumber("13 2221")).toBe(true);
+    expect(isCompleteAuNumber("13 1444")).toBe(true);
+  });
+});
+
+describe("isSaveableBlocklistEntry", () => {
+  // An overseas scam caller is an ordinary thing to want blocked, and the AU rule cannot judge one.
+  // Before this, typing it left Save disabled reading "Saved" -- the very state this series fixes.
+  it("accepts an international number typed with an explicit +", () => {
+    expect(isSaveableBlocklistEntry("+1 555 123 4567")).toBe(true);
+    expect(withPendingEntry([], "+1 555 123 4567")).toEqual(["+15551234567"]);
+  });
+
+  // The "+" is what distinguishes intent from a half-typed local number: nobody types one by
+  // accident, and without that requirement this would swallow every incomplete AU entry.
+  it("does not accept a bare digit string as international", () => {
+    expect(isSaveableBlocklistEntry("5551234567")).toBe(false);
+  });
+
+  it("does not accept a + with too few digits to be a number", () => {
+    expect(isSaveableBlocklistEntry("+1555")).toBe(false);
+  });
+
+  it("accepts a complete AU number and an alphanumeric sender, and refuses a half-typed one", () => {
+    expect(isSaveableBlocklistEntry("02 6105 9771")).toBe(true);
+    expect(isSaveableBlocklistEntry("SERVICE-NSW")).toBe(true);
+    expect(isSaveableBlocklistEntry("02 6105 977")).toBe(false);
+    expect(isSaveableBlocklistEntry("")).toBe(false);
   });
 });
