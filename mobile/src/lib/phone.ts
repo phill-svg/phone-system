@@ -113,3 +113,25 @@ export function searchContacts(query: string, contacts: Contact[]): Contact[] {
       (digits.length >= 2 && c.phone_normalized.includes(digits))
   );
 }
+
+// A blocklist entry, in the form the IVR compares against.
+//
+// Twilio reports the caller in E.164 and `src/worker.ts` matches the list LITERALLY
+// (`blocklist.includes(params.From)`), so "0400 123 456" has to be stored as "+61400123456" or it
+// blocks nobody. Anything `toE164` cannot make sense of is kept verbatim rather than mangled --
+// a short code or an alphanumeric sender is still something an admin may want to block.
+export function normalizeBlocklistEntry(raw: string): string {
+  const trimmed = raw.trim();
+  return toE164(trimmed) || trimmed;
+}
+
+// The blocklist as it would be SAVED, including a number still sitting unadded in the entry box.
+//
+// Tapping Save without tapping + used to discard that number silently, while the button read
+// "Saved" -- so the admin believed a caller was blocked who was not. Deduplicated, because the
+// same number may already be on the list.
+export function withPendingEntry(numbers: string[], entry: string): string[] {
+  const pendingEntry = normalizeBlocklistEntry(entry);
+  if (!pendingEntry || numbers.includes(pendingEntry)) return numbers;
+  return [...numbers, pendingEntry];
+}

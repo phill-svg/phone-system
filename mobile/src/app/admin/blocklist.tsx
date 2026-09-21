@@ -5,7 +5,7 @@ import { Group } from "../../components/ui/Grouped";
 import { PrimaryButton } from "../../components/ui/PrimaryButton";
 import { Icon } from "../../components/ui/Icon";
 import { getCallBlocklist, setCallBlocklist } from "../../lib/api";
-import { toE164 } from "../../lib/phone";
+import { normalizeBlocklistEntry, withPendingEntry } from "../../lib/phone";
 import { useTheme, type } from "../../theme/theme";
 
 // Numbers the IVR drops before they ever ring anyone. Stored as a plain list and matched against
@@ -27,14 +27,20 @@ export default function BlocklistScreen() {
       .catch(() => setError("Couldn't load the blocklist."));
   }, []);
 
-  const dirty = saved !== null && (saved.length !== numbers.length || saved.some((n, i) => n !== numbers[i]));
+  // What Save would write: the list, PLUS whatever is still sitting in the entry box.
+  //
+  // Typing a number and tapping Save without first tapping + used to discard it silently -- and
+  // because `dirty` ignored the box too, the button sat disabled reading "Saved" while the caller
+  // the admin had just typed was not blocked at all. The enclosing ScrollView sets
+  // keyboardShouldPersistTaps="handled", so tapping Save never blurs the field either. Same defect
+  // as the schedule editor's TimeField, which committed only on blur.
+  const pending = withPendingEntry(numbers, entry);
+  const dirty = saved !== null && (saved.length !== pending.length || saved.some((n, i) => n !== pending[i]));
 
   function add() {
     const raw = entry.trim();
     if (!raw) return;
-    // Accept "0400 123 456" and store "+61400123456" -- what Twilio actually reports as the caller,
-    // and what the IVR compares against literally.
-    const number = toE164(raw) || raw;
+    const number = normalizeBlocklistEntry(raw);
     if (numbers.includes(number)) {
       Alert.alert("Already blocked", `${number} is already on the list.`);
       setEntry("");
@@ -48,8 +54,12 @@ export default function BlocklistScreen() {
     if (saving) return;
     setSaving(true);
     try {
-      await setCallBlocklist(numbers);
-      setSaved(numbers);
+      await setCallBlocklist(pending);
+      setSaved(pending);
+      // Adopt it, so the list on screen matches what was saved rather than leaving the number
+      // in the box looking unsaved.
+      setNumbers(pending);
+      setEntry("");
     } catch (e) {
       Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again in a moment.");
     } finally {

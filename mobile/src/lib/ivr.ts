@@ -354,6 +354,26 @@ function clearReferences(node: IvrNode, removedId: string): Record<string, unkno
 // is pointed at. Restricted to the shape the existing menus already use (`main`, `after_hours`) so
 // a stray space or slash can never produce a name that round-trips differently than it was typed.
 // Returns "" for anything unusable, which the caller reports rather than silently correcting.
+// Loading a menu that may not exist yet.
+//
+// `GET /api/ivr/flows/:flow` answers **404** for a flow with no rows, and a flow only gets rows
+// when its first step is saved -- so a menu the admin has just named is ALWAYS 404. Treating that
+// as an error made "Create a new menu" impossible from the handset: the screen showed "Couldn't
+// load the phone menu", and its error branch returns before both the menu switcher and the
+// Add-a-step control, so the first step could never be added and there was no way back to `main`.
+//
+// A 404 means EMPTY here, not broken. Every other failure still throws -- a 500 or a dropped
+// connection must not present itself as a blank menu, which an admin might then "fix" by rebuilding
+// steps that already exist.
+export async function loadFlowOrEmpty(get: () => Promise<IvrFlow>): Promise<IvrFlow> {
+  try {
+    return await get();
+  } catch (e) {
+    if ((e as { status?: number } | null)?.status === 404) return { entryNodeId: null, nodes: [] };
+    throw e;
+  }
+}
+
 export function normalizeFlowName(raw: string): string {
   const name = raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
   return /^[a-z0-9_]{1,40}$/.test(name) ? name : "";

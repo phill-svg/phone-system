@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { ScrollView, View, Text, TextInput, Pressable, ActivityIndicator, Alert } from "react-native";
-import { normalizeFlowName } from "../../../lib/ivr";
+import { loadFlowOrEmpty, normalizeFlowName } from "../../../lib/ivr";
 import { router, useFocusEffect } from "expo-router";
 import { Screen } from "../../../components/ui/Screen";
 import { Group } from "../../../components/ui/Grouped";
@@ -50,7 +50,10 @@ export default function IvrFlowScreen() {
     getIvrFlows()
       .then(setFlows)
       .catch(() => {});
-    getIvrFlow(flowName)
+    // Through loadFlowOrEmpty, because a menu the admin has just named has no rows yet and the
+    // endpoint 404s exactly that case. Without it, Create was a dead end: this catch fired, and the
+    // error branch below returns before the switcher AND the Add-a-step control.
+    loadFlowOrEmpty(() => getIvrFlow(flowName))
       .then((f) => {
         // Clear it on success, or a single failed load (one bar of signal) wins for the life of
         // the screen: the error branch returns before the data branch, so a later focus reload
