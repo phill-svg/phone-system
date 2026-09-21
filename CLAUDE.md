@@ -321,10 +321,12 @@ before adding one, or you will duplicate a path that already works.
   global handler chains to the previous one (observes, does not change behaviour) and an error
   boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
   (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
-  falling over must be able to say so whoever holds it). Handsets are on **OTA 67**, and the first
-  binary carrying the native CallKit fix is **build 5** (2026-09-10), **confirmed installed on
-  Phill's iPhone on 2026-09-11**. Settings shows both as `#67 · b5` — and only from OTA 67, which
-  is the first build where that `· b5` half actually renders (see the bullet on it below).
+  falling over must be able to say so whoever holds it). Handsets are on **OTA 78** (published
+  2026-09-22 07:30, both channels), and the first binary carrying the native CallKit fix is
+  **build 5** (2026-09-10), **confirmed installed on Phill's iPhone on 2026-09-11**. Settings shows
+  both as `#78 · b5` — and that `· b5` half only renders from OTA 67 onwards (see the bullet on it
+  below). **Build 5 expires around 2026-12-09**: internal TestFlight builds last 90 days, so the
+  binary needs re-uploading quarterly even when no native code has changed.
 - **Recent work (2026-09-09/10):** the day the missed calls were root-caused. `0xBAADCA11` turned
   out to be the iOS CallKit watchdog rather than any JavaScript fault (see the two bullets on it
   below — most of a day went into chasing it as a JS crash, which it can never be), the cure shipped
@@ -354,8 +356,10 @@ before adding one, or you will duplicate a path that already works.
   * ~~Speaker-labelled transcripts need the Console's **Dual-channel Recording for Conference**
     switch.~~ **Resolved 2026-09-12 by not depending on it**: that switch was Enabled and saved and
     Twilio was still returning mono, so the recording moved to `record-from-answer-dual` on the
-    `<Dial>`. See the bullet on it below. Still worth reading one real transcript to confirm the
-    labels are the right way round.
+    `<Dial>`. See the bullet on it below. **Settled 2026-09-22**: Twilio's Conversational
+    Intelligence turned out to be unusable here at all (unsupported in AU1) and was deleted; the
+    labelling is done in the worker now, and the first real labelled transcript came out correct.
+    Only **call-via-mobile** — the one flow with the channels reversed — is still unread.
   * **A Twilio Auth Token was exposed in chat on 2026-09-10 and needs rotating** if it has not been.
     The ORDER matters: create a SECONDARY token in Twilio, update `TWILIO_AUTH_TOKEN` in the
     Cloudflare dashboard (Workers & Pages > tcb-voip > Settings > Variables and Secrets), make one
