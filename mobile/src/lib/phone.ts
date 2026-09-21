@@ -39,6 +39,39 @@ export function formatPhone(raw: string): string {
   return raw;
 }
 
+// Recents, filtered by what was typed in the search box.
+//
+// Matched against the SAME two things the row shows -- the saved contact's name and the other
+// party's number -- because a list that hides a row whose visible text contains the query reads as
+// broken. The number is matched on digits (via normalizePhone), so "0402", "402" and "+61402" all
+// find the same call however it was stored or displayed.
+//
+// `nameFor` is supplied by the caller rather than looked up here: the screen already resolves each
+// call to a contact name for display, and doing it twice would let the two drift.
+export function searchCalls<T extends { direction: string; caller_number: string; called_number: string }>(
+  query: string,
+  calls: T[],
+  nameFor: (call: T) => string
+): T[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return calls;
+  // BOTH forms, because `normalizePhone` is a whole-number transform being used on a fragment:
+  // it rewrites a leading 0 to 61, so typing "05 9771" -- contiguous text visible on the row for
+  // 02 6105 9771 -- becomes "6159771", which is in no stored number. The raw digits match that;
+  // the normalised form matches a number typed in a different shape from the stored one.
+  const digits = normalizePhone(query);
+  const raw = query.replace(/\D/g, "");
+  // Gated on the RAW length. `normalizePhone("0")` is "61", so a length check on the normalised
+  // form lets a single typed 0 -- the first keystroke of every AU number -- match every row.
+  const numberSearch = raw.length >= 2;
+  return calls.filter((c) => {
+    if (nameFor(c).toLowerCase().includes(needle)) return true;
+    if (!numberSearch) return false;
+    const number = normalizePhone(c.direction === "outbound" ? c.called_number : c.caller_number);
+    return number.includes(digits) || number.includes(raw);
+  });
+}
+
 // Contacts whose number contains the typed digits — keypad suggestions.
 export function matchContacts(typed: string, contacts: Contact[], limit = 3): Contact[] {
   const digits = normalizePhone(typed);
