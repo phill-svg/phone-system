@@ -103,6 +103,14 @@ before adding one, or you will duplicate a path that already works.
   make wrangler treat it as new and re-run it, and an `ALTER TABLE ... ADD COLUMN` run twice fails
   on `duplicate column name`. So: leave a duplicate number alone once deployed, and take the NEXT
   free number (`0042`) for whatever comes next.
+- **`OTA_BUILD` collides the same way, and git will NOT warn you.** #131 bumped it 76 -> 77 and
+  PUBLISHED 77 (run #39, 2026-09-21 11:08). #132, branched from #128 where it was 76, bumped
+  76 -> 77 as well — and because both sides ended on the same literal, there was no merge conflict
+  at all. Master carried `OTA_BUILD = "77"` with mobile changes the published 77 does not contain,
+  so publishing would have put materially different code on handsets under a number already in use.
+  That is the one thing the version label exists to prevent: it is how anyone answers "what is on
+  that phone?". Bumped to 78 before any publish. **Read `OTA_BUILD` off `origin/master`, never off
+  your checkout, and never assume an unconflicted merge means the number is free.**
 - **Commit trailers: `Co-Authored-By` YES, `Claude-Session` URL NO.** The repo convention is stated
   in four places under `docs/superpowers/plans/` and in
   `specs/2026-08-27-tcbvoip-migration-design.md` ("Do not include the Claude-Session URL trailer").
