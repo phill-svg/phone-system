@@ -799,7 +799,7 @@ describe("Task 8 queue/ring webhook routes", () => {
     // line: requestTranscript returned null and nothing was written, so Health Checks -- counting
     // only rows with a status -- kept saying "no answered call has been transcribed yet" while 76
     // recordings in production never got a sid.
-    describe("a transcript request Twilio refuses", () => {
+    describe("a two-channel recording that cannot be labelled", () => {
       async function seedCall(id: string, status: string | null = null) {
         await env.DB.prepare(
           "INSERT INTO calls (id, caller_number, called_number, started_at, direction, intelligence_status) VALUES (?, '+61400000000', '+61261059771', ?, 'inbound', ?)"
@@ -814,34 +814,41 @@ describe("Task 8 queue/ring webhook routes", () => {
           .then((r) => r?.intelligence_status ?? null);
 
       beforeEach(() => {
+        // Two channels were promised and the audio will not parse -- which is the case worth
+        // marking. (A 400 means the recording simply has one channel, which is not a fault and is
+        // deliberately left unmarked.)
         vi.stubGlobal(
           "fetch",
           vi.fn(async (input: RequestInfo | URL) =>
-            String(input).includes("intelligence.twilio.com")
-              ? new Response("unauthorized", { status: 401 })
+            String(input).includes("RequestedChannels=2")
+              ? new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
               : new Response("", { status: 200 })
           )
         );
       });
 
-      it("records request_failed so the health check can see it", async () => {
-        await seedCall("CA-rec-reqfail");
-        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-reqfail&conference=1&rec=dual", {
+      // Silence here is what hid this feature being broken for a fortnight: the calls simply had
+      // transcripts with both voices run together, and nothing anywhere said why.
+      it("records `unlabelled` so the health check can see it", async () => {
+        await seedCall("CA-rec-unlabelled");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-unlabelled&rec=dual&staffch=2", {
           RecordingUrl: "https://api.twilio.com/rec.mp3",
-          RecordingSid: "RE-reqfail",
+          RecordingSid: "RE-unlabelled",
           RecordingChannels: "2",
         });
-        expect(await statusOf("CA-rec-reqfail")).toBe("request_failed");
+        expect(await statusOf("CA-rec-unlabelled")).toBe("unlabelled");
       });
 
+      // Twilio redelivers callbacks, and a late duplicate must never relabel a call whose
+      // transcript already came out right.
       it("never overwrites a status that is already set", async () => {
-        await seedCall("CA-rec-reqfail-done", "completed");
-        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-reqfail-done&conference=1&rec=dual", {
+        await seedCall("CA-rec-unlabelled-done", "completed");
+        await postSigned("https://example.com/webhooks/twilio/recording-status?callSid=CA-rec-unlabelled-done&rec=dual&staffch=2", {
           RecordingUrl: "https://api.twilio.com/rec.mp3",
-          RecordingSid: "RE-reqfail-done",
+          RecordingSid: "RE-unlabelled-done",
           RecordingChannels: "2",
         });
-        expect(await statusOf("CA-rec-reqfail-done")).toBe("completed");
+        expect(await statusOf("CA-rec-unlabelled-done")).toBe("completed");
       });
     });
 

@@ -181,132 +181,87 @@ describe("admin diagnostics", () => {
   // reason this feature does nothing invisible to the one screen that exists to say so. It reported
   // the reassuring "no answered call has been transcribed yet" instead, indefinitely.
   describe("speaker-labelled transcripts", () => {
-    const ON = () => baseEnv({ TWILIO_INTELLIGENCE_SERVICE_SID: "GA-test" });
-
     beforeEach(async () => {
       await env.DB.prepare("DELETE FROM calls WHERE id LIKE 'CA-diag-tr%'").run();
     });
 
-    async function seed(id: string, status: string | null, sid: string | null, error: string | null = null) {
+    async function seed(id: string, status: string | null) {
       await env.DB.prepare(
-        "INSERT INTO calls (id, caller_number, called_number, started_at, intelligence_status, intelligence_sid, intelligence_error) VALUES (?, '+61400000000', '+61200000000', ?, ?, ?, ?)"
+        "INSERT INTO calls (id, caller_number, called_number, started_at, intelligence_status) VALUES (?, '+61400000000', '+61200000000', ?, ?)"
       )
-        .bind(id, Date.now(), status, sid, error)
+        .bind(id, Date.now(), status)
         .run();
     }
 
-    it("warns, without claiming a fault, when nothing is configured", async () => {
+    // The headline failure. Every recorded flow asks for two channels on the leg that makes the
+    // recording, so mono means Twilio is not honouring it -- and the call keeps a transcript with
+    // both voices run together, which is the symptom someone would otherwise have to notice by
+    // reading one.
+    it("FAILS on a recording that came back mono despite asking for two channels", async () => {
+      await seed("CA-diag-tr-dual", "dual_failed");
+      stubFetch();
+      const check = find(await run(), "transcripts");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("one channel");
+      expect(check.detail).toContain("TRANSCRIBE_SKIPPED_MONO");
+    });
+
+    // A week of working transcripts must not hide one broken path -- that masking is the exact
+    // silence this screen exists to break.
+    it("still fails on a mono recording even when other transcripts succeeded", async () => {
+      await seed("CA-diag-tr-dual2", "dual_failed");
+      await seed("CA-diag-tr-ok2", "completed");
+      stubFetch();
+      expect(find(await run(), "transcripts").status).toBe("fail");
+    });
+
+    // Two channels arrived and the labelling still produced nothing: unsplittable audio, or Whisper
+    // returning nothing for either side. Those calls keep their plain transcript, so this is only a
+    // FAIL when nothing at all is being labelled.
+    it("reports a two-channel recording that could not be labelled", async () => {
+      await seed("CA-diag-tr-unl", "unlabelled");
+      stubFetch();
+      const check = find(await run(), "transcripts");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("could not be labelled");
+    });
+
+    it("softens to a warning when some could not be labelled but others were", async () => {
+      await seed("CA-diag-tr-unl2", "unlabelled");
+      await seed("CA-diag-tr-ok3", "completed");
+      stubFetch();
+      expect(find(await run(), "transcripts").status).toBe("warn");
+    });
+
+    // A mono conference recording predates the current flows and is not a fault. It must also steer
+    // AWAY from the Console's dual-channel switch, which was verified on and saved while Twilio
+    // still returned mono -- sending someone there again would cost another day.
+    it("warns about a mono conference recording without blaming the Console switch", async () => {
+      await seed("CA-diag-tr-mono", "single_channel");
       stubFetch();
       const check = find(await run(), "transcripts");
       expect(check.status).toBe("warn");
-      expect(check.detail).toContain("No Intelligence service set");
-    });
-
-    // Still the original point -- sid NULL, status single_channel, so a check keyed on the sid never
-    // sees this row at all. It is a WARN rather than a fail now: `single_channel` means a mono
-    // CONFERENCE recording, which is the outbound softphone path where the Console switch genuinely
-    // does apply, and those transcripts keep Whisper's text. The inbound path has its own status.
-    it("reports a mono conference recording that HAS no transcript sid", async () => {
-      await seed("CA-diag-tr-mono", "single_channel", null);
-      stubFetch();
-      const check = find(await run(ON()), "transcripts");
-      expect(check.status).toBe("warn");
       expect(check.detail).toContain("conference recording");
-      // And it must actively steer away from that switch as a fix for inbound, which is the wrong
-      // turn this wording exists to prevent.
-      expect(check.detail).toContain("Do NOT");
+      expect(check.detail).toContain("Do NOT turn on");
     });
 
-    // An INBOUND recording coming back mono is a different animal: the caller's leg asked for
-    // `record-from-answer-dual`, so mono should be impossible and no Console setting explains it.
-    // Filing it as `single_channel` would have had Health Checks call an un-transcribed inbound call
-    // expected -- the same silence fixed a day earlier, arriving from the other direction.
-    it("FAILS on an inbound caller-leg recording that came back mono", async () => {
-      await seed("CA-diag-tr-dual", "dual_failed", null);
+    it("goes green once labelled transcripts land, without clearing the old mono rows", async () => {
+      await seed("CA-diag-tr-mono2", "single_channel");
+      await seed("CA-diag-tr-ok", "completed");
       stubFetch();
-      const check = find(await run(ON()), "transcripts");
-      expect(check.status).toBe("fail");
-      expect(check.detail).toContain("INBOUND");
-      expect(check.detail).toContain("dual-channel");
-    });
-
-    // ...and it must not be masked by calls that DID work. One broken inbound call hiding behind a
-    // week of successful ones is exactly how this goes unnoticed.
-    it("still fails on a mono inbound recording even when other transcripts succeeded", async () => {
-      await seed("CA-diag-tr-dual2", "dual_failed", null);
-      await seed("CA-diag-tr-ok", "completed", "GT-ok");
-      stubFetch();
-      expect(find(await run(ON()), "transcripts").status).toBe("fail");
-    });
-
-    // Twilio refusing the transcript request left the row with no status at all, so this check said
-    // "no answered call has been transcribed yet" forever. Every request failing is the live state
-    // this was built for, and it fails.
-    it("FAILS when recordings could not be submitted to Twilio and none succeeded", async () => {
-      await seed("CA-diag-tr-req1", "request_failed", null);
-      await seed("CA-diag-tr-req2", "request_failed", null);
-      stubFetch();
-      const check = find(await run(ON()), "transcripts");
-      expect(check.status).toBe("fail");
-      expect(check.detail).toContain("2 recording(s) could not be submitted to Twilio");
-    });
-
-    // #115 fixed the AU1-vs-US1 host mismatch, but real calls right after that deploy still came
-    // back request_failed with nothing saying WHY -- "check the worker logs" was the only lead, and
-    // nobody was tailing them. When the webhook captured Twilio's actual answer, Health Checks
-    // should quote it instead.
-    it("quotes Twilio's actual response when the most recent failure captured one", async () => {
-      await seed("CA-diag-tr-req-detail", "request_failed", null, '401 (US1 key): {"code":20003,"message":"Authenticate"}');
-      stubFetch();
-      const check = find(await run(ON()), "transcripts");
-      expect(check.status).toBe("fail");
-      expect(check.detail).toContain("401");
-      expect(check.detail).toContain("Authenticate");
-    });
-
-    // A row from before this was captured (or one that races the read) has no error text -- fall
-    // back to the log-pointer rather than quoting "null".
-    it("falls back to pointing at the worker logs when no error was captured", async () => {
-      await seed("CA-diag-tr-req-noerr", "request_failed", null, null);
-      stubFetch();
-      const check = find(await run(ON()), "transcripts");
-      expect(check.status).toBe("fail");
-      expect(check.detail).toContain("Check the worker logs");
-    });
-
-    // The marker is permanent and a network blip or one 5xx sets it too. Failing for seven days over
-    // one blip teaches people to ignore the screen; alongside working transcripts it is a warning.
-    it("WARNS, not fails, when some requests failed but others were transcribed", async () => {
-      await seed("CA-diag-tr-req3", "request_failed", null);
-      await seed("CA-diag-tr-req-ok", "completed", "GT-ok2");
-      stubFetch();
-      const check = find(await run(ON()), "transcripts");
-      expect(check.status).toBe("warn");
-      expect(check.detail).toContain("1 recording(s) could not be submitted to Twilio");
-    });
-
-    it("goes green again once a labelled transcript lands, without clearing the old mono rows", async () => {
-      await seed("CA-diag-tr-mono2", "single_channel", null);
-      await seed("CA-diag-tr-done", "completed", "GT1");
-      stubFetch();
-      const check = find(await run(ON()), "transcripts");
+      const check = find(await run(), "transcripts");
       expect(check.status).toBe("ok");
       expect(check.detail).toContain("1 labelled transcript");
     });
 
-    it("says nothing has been transcribed yet when there is genuinely nothing to report", async () => {
+    it("says nothing has been labelled yet when there is genuinely nothing to report", async () => {
       stubFetch();
-      const check = find(await run(ON()), "transcripts");
+      const check = find(await run(), "transcripts");
       expect(check.status).toBe("warn");
-      expect(check.detail).toContain("no answered call has been transcribed yet");
+      expect(check.detail).toContain("No answered call has been labelled yet");
     });
   });
 
-  // The native CallKit fix ships in a BINARY and can never arrive by OTA, so an old build on the
-  // newest OTA is exactly the state that looks fine and is not: push registered, OTA current, no
-  // crash recorded (no JavaScript runs when iOS kills the app), and the softphone simply never
-  // rings. Before this, the only thing that could answer "is the fix installed?" was a line in the
-  // handset's own Settings -- and that line was reading a property that does not exist.
   describe("which build a handset is running", () => {
     // `last_seen` is now load-bearing: a device nobody has opened in a month is not judged, so a
     // test device has to look like it checked in today rather than at the epoch.
