@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SPLIT_BYTES, splitStereoWav } from "../../src/audio/wav";
+import { splitStereoWav } from "../../src/audio/wav";
 
 // A PCM WAV built the way Twilio serves one, so the test exercises the real parse rather than a
 // shape invented to match the parser.
@@ -99,6 +99,12 @@ describe("splitStereoWav", () => {
     expect(splitStereoWav(wav({ channels: 1, samples: [[1, 2, 3]] }))).toBeNull();
   });
 
+  // 16-bit is what Twilio serves. Anything else would need a second code path for a file this
+  // never receives.
+  it("refuses a bit depth it does not handle", () => {
+    expect(splitStereoWav(wav({ channels: 2, bitsPerSample: 8, samples: [[1, 2], [3, 4]] }))).toBeNull();
+  });
+
   it("refuses compressed audio it cannot decode", () => {
     expect(splitStereoWav(wav({ channels: 2, format: 17, samples: [[1], [2]] }))).toBeNull();
   });
@@ -106,12 +112,6 @@ describe("splitStereoWav", () => {
   it("refuses anything that is not a RIFF/WAVE file", () => {
     expect(splitStereoWav(new Uint8Array(64))).toBeNull();
     expect(splitStereoWav(new Uint8Array(8))).toBeNull(); // shorter than a header
-  });
-
-  it("refuses a file past the size cap rather than risking the worker's memory", () => {
-    const huge = new Uint8Array(MAX_SPLIT_BYTES + 1);
-    huge.set(wav({ channels: 2, samples: [[1], [2]] }).subarray(0, 44));
-    expect(splitStereoWav(huge)).toBeNull();
   });
 
   // A `data` size larger than the bytes actually present: take what is there instead of reading off

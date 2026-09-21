@@ -88,64 +88,54 @@ function dualChannelUrl(recordingUrl: string): string {
 //              holds the recording, so this must be tried again. Collapsing it into a terminal
 //              marker is precisely the bug the deleted `fetchSentences` existed to avoid: one 502
 //              and that call is unlabelled for good.
-//   too_long   deliberately refused on size. Working as designed, not a fault, and must never reach
-//              a marker Health Checks reports -- an alarm that is always on is one you learn to
-//              ignore.
-//   unusable   two channels were promised and what arrived cannot be labelled: a 4xx for the
-//              two-channel file, audio that will not parse, or nobody speaking. Terminal, and worth
-//              reporting.
-export type LabelOutcome =
-  | { kind: "labelled"; text: string }
-  | { kind: "retry" }
-  | { kind: "too_long" }
-  | { kind: "unusable" };
+//   unusable   nothing here can be labelled: a 4xx for the two-channel file, audio that will not
+//              parse, or nobody speaking. Terminal, and reported.
+//
+// A recording refused on SIZE returns `unusable` too, but is not marked: it is working as designed,
+// and a marker that is always set is one you learn to ignore. The log line is the record.
+export type LabelOutcome = { kind: "labelled"; text: string } | { kind: "retry" } | { kind: "unusable" };
 
 export async function transcribeChannels(
   env: TranscribeEnv,
   callSid: string,
   recordingUrl: string,
   staffChannel: 1 | 2
-): Promise<LabelOutcome> {
+): Promise<{ outcome: LabelOutcome; mark: boolean }> {
   const auth = authHeader(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
-  let res: Response;
-  try {
-    res = await fetch(dualChannelUrl(recordingUrl), { headers: { Authorization: auth } });
-  } catch (e) {
-    console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
-    return { kind: "retry" };
-  }
-  if (!res.ok) {
-    console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, status: res.status }));
-    // 4xx is Twilio saying this recording has no second channel -- asking again cannot change that.
-    // 5xx and 429 are the host, and will answer differently on the next tick.
-    return res.status >= 500 || res.status === 429 ? { kind: "retry" } : { kind: "unusable" };
-  }
-
-  // BEFORE buffering, not after: the size cap exists to protect a 128 MB isolate, and reading the
-  // body first is the allocation it is meant to prevent. A 40-minute call is ~77 MB on the wire and
-  // the split peaks at roughly three times the audio.
-  const declared = Number(res.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > MAX_SPLIT_BYTES) {
-    console.log("TRANSCRIBE_DUAL_TOO_LONG", JSON.stringify({ callSid, bytes: declared }));
-    return { kind: "too_long" };
-  }
-
   let bytes: Uint8Array;
   try {
+    const res = await fetch(dualChannelUrl(recordingUrl), { headers: { Authorization: auth } });
+    if (!res.ok) {
+      console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, status: res.status }));
+      // 4xx is Twilio saying this recording has no second channel -- asking again cannot change
+      // that. 5xx and 429 are the host, and will answer differently on the next tick.
+      // 4xx is Twilio saying this recording has no second channel. Not a fault -- a mono
+      // recording, an older one -- so it is logged and left unmarked, like the size refusal.
+      const retry = res.status >= 500 || res.status === 429;
+      return { outcome: retry ? { kind: "retry" } : { kind: "unusable" }, mark: retry };
+    }
+    // BEFORE buffering: the size cap exists to protect a 128 MB isolate, and reading the body first
+    // is the allocation it is meant to prevent. A 40-minute call is ~77 MB on the wire, and the
+    // split peaks at roughly three times the audio.
+    const declared = Number(res.headers.get("content-length") ?? "");
+    if (Number.isFinite(declared) && declared > MAX_SPLIT_BYTES) {
+      console.log("TRANSCRIBE_DUAL_TOO_LONG", JSON.stringify({ callSid, bytes: declared }));
+      return { outcome: { kind: "unusable" }, mark: false };
+    }
     bytes = new Uint8Array(await res.arrayBuffer());
   } catch (e) {
     console.log("TRANSCRIBE_DUAL_FETCH_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
-    return { kind: "retry" };
+    return { outcome: { kind: "retry" }, mark: true };
   }
   // A host that sent no `content-length` still has to be caught, and this is free.
   if (bytes.length > MAX_SPLIT_BYTES) {
     console.log("TRANSCRIBE_DUAL_TOO_LONG", JSON.stringify({ callSid, bytes: bytes.length }));
-    return { kind: "too_long" };
+    return { outcome: { kind: "unusable" }, mark: false };
   }
   const split = splitStereoWav(bytes);
   if (!split) {
     console.log("TRANSCRIBE_DUAL_UNSPLITTABLE", JSON.stringify({ callSid, bytes: bytes.length }));
-    return { kind: "unusable" };
+    return { outcome: { kind: "unusable" }, mark: true };
   }
 
   // Serially, not Promise.all: two Workers AI inferences at once on a multi-minute call is twice
@@ -168,10 +158,12 @@ export async function transcribeChannels(
   };
   const text = formatLabelledTurns(buildLabelledTurns(asChannel(customer), asChannel(staff)));
   if (!text) {
+    // Nobody spoke. Indistinguishable from a fault only if you mark it as one -- and an alarm that
+    // fires on a short real call is an alarm people learn to ignore.
     console.log("TRANSCRIBE_DUAL_EMPTY", JSON.stringify({ callSid }));
-    return { kind: "unusable" };
+    return { outcome: { kind: "unusable" }, mark: false };
   }
-  return { kind: "labelled", text };
+  return { outcome: { kind: "labelled", text }, mark: true };
 }
 
 // Twilio RecordingUrl (regional, e.g. api.sydney.au1.twilio.com/.../Recordings/RE...) → fetch the
@@ -226,40 +218,44 @@ export async function transcribeRecording(
   opts: { column: "call_transcript" | "transcription"; dualChannel: boolean; staffChannel: 1 | 2 }
 ): Promise<void> {
   if (opts.dualChannel && opts.column === "call_transcript") {
-    let outcome: LabelOutcome;
+    let result: { outcome: LabelOutcome; mark: boolean };
     try {
-      outcome = await transcribeChannels(env, callSid, recordingUrl, opts.staffChannel);
+      result = await transcribeChannels(env, callSid, recordingUrl, opts.staffChannel);
     } catch (e) {
       // Never at the cost of the transcript itself. Retryable, because an exception here says
       // nothing about the recording.
       console.log("TRANSCRIBE_DUAL_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
-      outcome = { kind: "retry" };
+      result = { outcome: { kind: "retry" }, mark: true };
     }
-    if (outcome.kind === "labelled") {
-      // Guarded on the status, so a redelivered callback does not re-fetch the media and run two
-      // more inferences to write the same text again.
-      await env.DB.prepare(
-        "UPDATE calls SET call_transcript = ?, intelligence_status = 'completed' WHERE id = ? AND COALESCE(intelligence_status, '') <> 'completed'"
-      )
-        .bind(outcome.text, callSid)
-        .run();
-      console.log("TRANSCRIBE_LABELLED", JSON.stringify({ callSid }));
+    if (result.outcome.kind === "labelled") {
+      await writeLabelled(env, callSid, result.outcome.text);
       return;
     }
-    // `label_retry` is NOT terminal: the cron picks it up (see backfillLabels). `too_long` is a
-    // deliberate refusal and is kept OUT of the statuses Health Checks reports as faults --
-    // a marker that is always set is one you learn to ignore. `unlabelled` is the real terminal
-    // failure and is reported.
-    const status =
-      outcome.kind === "retry" ? "label_retry" : outcome.kind === "too_long" ? "too_long" : "unlabelled";
-    await env.DB.prepare(
-      "UPDATE calls SET intelligence_status = ? WHERE id = ? AND COALESCE(intelligence_status, '') IN ('', 'label_retry')"
-    )
-      .bind(status, callSid)
-      .run()
-      .catch(() => {});
+    // `label_retry` is NOT terminal: the cron picks it up (see backfillLabels). `mark: false` is
+    // the working-as-designed set -- a mono recording, one refused on size, a call where nobody
+    // spoke -- which is logged and left alone, because a marker that is always set is one you learn
+    // to ignore.
+    if (result.mark) {
+      await env.DB.prepare(
+        "UPDATE calls SET intelligence_status = ? WHERE id = ? AND COALESCE(intelligence_status, '') IN ('', 'label_retry')"
+      )
+        .bind(result.outcome.kind === "retry" ? "label_retry" : "unlabelled", callSid)
+        .run()
+        .catch(() => {});
+    }
   }
   await transcribeCallRecording(env, callSid, recordingUrl, opts.column);
+}
+
+// Guarded on the status, so a redelivered callback does not re-fetch the media and run two more
+// inferences to write the same text again.
+async function writeLabelled(env: TranscribeEnv, callSid: string, text: string): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE calls SET call_transcript = ?, intelligence_status = 'completed' WHERE id = ? AND COALESCE(intelligence_status, '') <> 'completed'"
+  )
+    .bind(text, callSid)
+    .run();
+  console.log("TRANSCRIBE_LABELLED", JSON.stringify({ callSid }));
 }
 
 // Calls whose LABELLING failed for a reason that may not fail again -- the media host 5xx'd, or the
@@ -293,24 +289,27 @@ export async function backfillLabels(env: TranscribeEnv, limit = 2): Promise<num
   if (rows.length === 0) return 0;
 
   for (const row of rows) {
-    await env.DB.prepare("UPDATE calls SET intelligence_polls = COALESCE(intelligence_polls, 0) + 1 WHERE id = ?")
-      .bind(row.id)
-      .run();
+    const attempt = (row.intelligence_polls ?? 0) + 1;
+    await env.DB.prepare("UPDATE calls SET intelligence_polls = ? WHERE id = ?").bind(attempt, row.id).run();
     const staffChannel = row.transcript_staff_channel === 1 ? 1 : 2;
-    const outcome = await transcribeChannels(env, row.id, row.recording_url, staffChannel).catch(
-      (): LabelOutcome => ({ kind: "retry" })
-    );
-    if (outcome.kind === "labelled") {
-      await env.DB.prepare(
-        "UPDATE calls SET call_transcript = ?, intelligence_status = 'completed' WHERE id = ?"
-      )
-        .bind(outcome.text, row.id)
-        .run();
-      console.log("TRANSCRIBE_LABELLED_RETRY", JSON.stringify({ callId: row.id }));
-    } else if (outcome.kind !== "retry") {
-      await env.DB.prepare("UPDATE calls SET intelligence_status = ? WHERE id = ?")
-        .bind(outcome.kind === "too_long" ? "too_long" : "unlabelled", row.id)
-        .run();
+    const result = await transcribeChannels(env, row.id, row.recording_url, staffChannel).catch(() => ({
+      outcome: { kind: "retry" } as LabelOutcome,
+      mark: true,
+    }));
+    if (result.outcome.kind === "labelled") {
+      await writeLabelled(env, row.id, result.outcome.text);
+      continue;
+    }
+    // The LAST attempt has to be terminal. Leaving the row on `label_retry` once it falls out of
+    // this query drops it out of every counter Health Checks has -- the screen would report a call
+    // that will never be labelled as "waiting on another attempt", indefinitely. A media-host
+    // outage longer than fifteen minutes is exactly how that happens: limit 2, three attempts, one
+    // tick every five minutes.
+    const givingUp = result.outcome.kind !== "retry" || attempt >= MAX_LABEL_ATTEMPTS;
+    if (givingUp && result.mark) {
+      await env.DB.prepare("UPDATE calls SET intelligence_status = 'unlabelled' WHERE id = ?").bind(row.id).run();
+    } else if (givingUp) {
+      await env.DB.prepare("UPDATE calls SET intelligence_status = NULL WHERE id = ?").bind(row.id).run();
     }
   }
   return rows.length;
@@ -325,12 +324,13 @@ export async function backfillLabels(env: TranscribeEnv, limit = 2): Promise<num
 // label; everything else lands in `call_transcript`, matching the webhook's own choice of column.
 export const MAX_TRANSCRIBE_ATTEMPTS = 3;
 
-type BackfillRow = { id: string; recording_url: string; is_voicemail: number };
+type BackfillRow = { id: string; recording_url: string; is_voicemail: number; transcript_staff_channel: number | null };
 
 export async function backfillTranscripts(env: TranscribeEnv, limit = 3): Promise<number> {
   const rows = (
     await env.DB.prepare(
-      `SELECT id, recording_url, (mailbox_label IS NOT NULL AND mailbox_label <> '') AS is_voicemail
+      `SELECT id, recording_url, transcript_staff_channel,
+              (mailbox_label IS NOT NULL AND mailbox_label <> '') AS is_voicemail
          FROM calls
         WHERE recording_url IS NOT NULL AND recording_url <> ''
           AND deleted_at IS NULL
@@ -359,7 +359,16 @@ export async function backfillTranscripts(env: TranscribeEnv, limit = 3): Promis
   // Serial, not Promise.all: each row is a Twilio fetch plus a Workers AI inference, and the
   // sweep shares the cron invocation's budget with reconcileStaleCalls. `limit` keeps it small.
   for (const row of rows) {
-    await transcribeCallRecording(env, row.id, row.recording_url, row.is_voicemail ? "transcription" : "call_transcript");
+    // Through the SAME entry point the webhook uses, so a recording whose status callback was lost
+    // is still labelled. Calling `transcribeCallRecording` directly here left those calls with a
+    // permanently unlabelled transcript AND no status at all, which is invisible to Health Checks
+    // -- the reassuring silence this all exists to break. A mono recording answers 4xx for its
+    // two-channel file and falls through to the plain transcript, unmarked.
+    await transcribeRecording(env, row.id, row.recording_url, {
+      column: row.is_voicemail ? "transcription" : "call_transcript",
+      dualChannel: !row.is_voicemail,
+      staffChannel: row.transcript_staff_channel === 1 ? 1 : 2,
+    });
   }
   return rows.length;
 }

@@ -814,12 +814,14 @@ describe("Task 8 queue/ring webhook routes", () => {
           .then((r) => r?.intelligence_status ?? null);
 
       beforeEach(() => {
-        // Twilio answers 400 to `?RequestedChannels=2` when the recording has only one channel.
+        // Two channels were promised and the audio will not parse -- which is the case worth
+        // marking. (A 400 means the recording simply has one channel, which is not a fault and is
+        // deliberately left unmarked.)
         vi.stubGlobal(
           "fetch",
           vi.fn(async (input: RequestInfo | URL) =>
             String(input).includes("RequestedChannels=2")
-              ? new Response("no dual channel", { status: 400 })
+              ? new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
               : new Response("", { status: 200 })
           )
         );

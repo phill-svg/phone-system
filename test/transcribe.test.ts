@@ -248,9 +248,8 @@ describe("transcribeRecording", () => {
     expect(row?.call_transcript).toBe("Staff: TCB pest control.\n\nCustomer: Hi, I need a quote.");
   });
 
-  // An unlabelled transcript is worth far more than none. The row is still MARKED, because the
-  // callback said this recording had two channels -- if the file for it cannot be fetched, that is
-  // a fault someone should see rather than a call that quietly reads like every other one.
+  // An unlabelled transcript is worth far more than none. Twilio answers 400 when the recording has
+  // only one channel, which is not a fault, so the row is left unmarked.
   it("falls back to the plain transcript when the two-channel file cannot be fetched", async () => {
     await insertCall({ id: "CA-dual-404", recordingUrl: "https://api.twilio.com/rec" });
     const { env: e } = dualEnv([{ text: "both voices together" }], null);
@@ -264,15 +263,15 @@ describe("transcribeRecording", () => {
     const row = await env.DB.prepare("SELECT call_transcript, intelligence_status FROM calls WHERE id = 'CA-dual-404'")
       .first<{ call_transcript: string | null; intelligence_status: string | null }>();
     expect(row?.call_transcript).toBe("both voices together");
-    expect(row?.intelligence_status).toBe("unlabelled");
+    expect(row?.intelligence_status).toBeNull();
   });
 
-  // Two channels arrived and neither carried speech. The call keeps its plain transcript, and the
-  // row says so -- Health Checks reads this, and silence here is what hid the whole feature being
-  // broken for a fortnight.
+  // Two channels arrived and the audio would not parse. THAT is a fault: the call keeps its plain
+  // transcript and the row says so, because silence here is what hid the whole feature being broken
+  // for a fortnight. (A call where nobody spoke is a different case and is left unmarked.)
   it("marks a two-channel recording it could not label, and still stores the plain transcript", async () => {
     await insertCall({ id: "CA-dual-empty", recordingUrl: "https://api.twilio.com/rec" });
-    const { env: e } = dualEnv([{ text: "" }, { text: "" }, { text: "plain text" }]);
+    const { env: e } = dualEnv([{ text: "plain text" }], new Uint8Array([1, 2, 3, 4]));
 
     await transcribeRecording(e as never, "CA-dual-empty", "https://api.twilio.com/rec", {
       column: "call_transcript",

@@ -12,8 +12,14 @@
 --
 -- NULL means "never labelled", which is exactly true of these calls. They keep their plain
 -- transcripts; nothing here touches `call_transcript`.
+-- `intelligence_polls` is cleared with them: it counted Twilio polls and is now the LABELLING
+-- attempt counter. Left at its old value, a call that later needs labelling starts with its
+-- attempts already spent and gets none -- which is reachable, because two recordings can legitimately
+-- post under one callSid (a divert into carrier voicemail, then business voicemail).
 UPDATE calls
    SET intelligence_status = NULL,
        intelligence_sid = NULL,
-       intelligence_error = NULL
- WHERE intelligence_status IN ('pending', 'request_failed', 'abandoned', 'no_speech', 'failed');
+       intelligence_error = NULL,
+       intelligence_polls = 0
+ WHERE intelligence_status IN ('pending', 'request_failed', 'abandoned', 'no_speech', 'failed')
+    OR COALESCE(intelligence_polls, 0) > 0;

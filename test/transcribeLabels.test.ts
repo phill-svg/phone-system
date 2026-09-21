@@ -83,9 +83,10 @@ describe("labelling failures", () => {
     expect(row?.call_transcript).toBe("plain");
   });
 
-  // 4xx is Twilio saying this recording has no second channel. Asking again cannot change that, so
-  // retrying it every five minutes would burn the cap for nothing.
-  it("treats a 4xx as terminal, not retryable", async () => {
+  // 4xx is Twilio saying this recording has no second channel -- a mono recording, or an older one.
+  // Asking again cannot change that, and it is not a fault: no marker, or Health Checks goes red
+  // over something working exactly as designed.
+  it("treats a 4xx as terminal and unremarkable, not retryable", async () => {
     await insertCall("CA-lab-400");
     const { env: e } = aiEnv([{ text: "plain" }]);
     vi.stubGlobal(
@@ -99,15 +100,16 @@ describe("labelling failures", () => {
 
     await label(e, "CA-lab-400");
 
-    const row = await env.DB.prepare("SELECT intelligence_status FROM calls WHERE id = 'CA-lab-400'")
-      .first<{ intelligence_status: string }>();
-    expect(row?.intelligence_status).toBe("unlabelled");
+    const row = await env.DB.prepare("SELECT intelligence_status, call_transcript FROM calls WHERE id = 'CA-lab-400'")
+      .first<{ intelligence_status: string | null; call_transcript: string | null }>();
+    expect(row?.intelligence_status).toBeNull();
+    expect(row?.call_transcript).toBe("plain");
   });
 
-  // A deliberate size refusal is not a fault and must not reach a status Health Checks reports as
-  // one -- a marker that is always set is one you learn to ignore. The check is on the HEADER,
-  // because reading the body first is the allocation the cap exists to prevent.
-  it("refuses an over-long recording on its content-length, under its own status", async () => {
+  // A deliberate size refusal is not a fault and must not reach a marker at all -- one that is
+  // always set is one you learn to ignore. The check is on the HEADER, because reading the body
+  // first is the allocation the cap exists to prevent.
+  it("refuses an over-long recording on its content-length, without marking it", async () => {
     await insertCall("CA-lab-long");
     const { env: e } = aiEnv([{ text: "plain" }]);
     const fetchMock = vi.fn(async (input: unknown) =>
@@ -122,9 +124,10 @@ describe("labelling failures", () => {
 
     await label(e, "CA-lab-long");
 
-    const row = await env.DB.prepare("SELECT intelligence_status FROM calls WHERE id = 'CA-lab-long'")
-      .first<{ intelligence_status: string }>();
-    expect(row?.intelligence_status).toBe("too_long");
+    const row = await env.DB.prepare("SELECT intelligence_status, call_transcript FROM calls WHERE id = 'CA-lab-long'")
+      .first<{ intelligence_status: string | null; call_transcript: string | null }>();
+    expect(row?.intelligence_status).toBeNull();
+    expect(row?.call_transcript).toBe("plain");
   });
 
   // Whisper invents words on a silent channel. The merge reads SEGMENTS whenever both channels have
@@ -206,5 +209,21 @@ describe("backfillLabels", () => {
     expect(row?.intelligence_polls).toBe(1);
     // Still retryable rather than given up on: the cap, not one failure, is what ends this.
     expect(row?.intelligence_status).toBe("label_retry");
+  });
+
+  // The LAST attempt has to be terminal. A row left on `label_retry` once it falls out of the
+  // sweep's query counts towards nothing on Health Checks, so a call that will never be labelled
+  // reads as "waiting on another attempt" forever -- and a media-host outage of more than fifteen
+  // minutes puts every call in the window there (limit 2, three attempts, one tick per five).
+  it("gives up terminally on the final attempt instead of sitting on label_retry", async () => {
+    await insertCall("CA-lab-last", { status: "label_retry", transcript: "plain", polls: MAX_LABEL_ATTEMPTS - 1 });
+    const { env: e } = aiEnv([]);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
+
+    await backfillLabels(e as never);
+
+    const row = await env.DB.prepare("SELECT intelligence_status FROM calls WHERE id = 'CA-lab-last'")
+      .first<{ intelligence_status: string }>();
+    expect(row?.intelligence_status).toBe("unlabelled");
   });
 });

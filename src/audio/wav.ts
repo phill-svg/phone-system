@@ -23,6 +23,9 @@ export type StereoSplit = { left: Uint8Array; right: Uint8Array };
 // cannot exhaust a Worker's 128 MB. 25 MB of 8 kHz 16-bit stereo is a little over 13 minutes; past
 // that the caller keeps the ordinary unlabelled transcript, which is strictly better than an
 // out-of-memory failure that loses the transcript altogether.
+//
+// Enforced by the CALLER, before the body is buffered -- checking it here would be after the
+// allocation it exists to prevent, and would report a deliberate refusal as a parse failure.
 export const MAX_SPLIT_BYTES = 25 * 1024 * 1024;
 
 const RIFF = 0x46464952; // "RIFF", little-endian
@@ -31,9 +34,8 @@ const FMT = 0x20746d66; // "fmt "
 const DATA = 0x61746164; // "data"
 const PCM = 1;
 
-// A mono PCM header for `samples`, matching the source's rate and bit depth.
-function monoWav(samples: Uint8Array, sampleRate: number, bitsPerSample: number): Uint8Array {
-  const bytesPerSample = bitsPerSample / 8;
+// A mono 16-bit PCM header for `samples`, matching the source's rate.
+function monoWav(samples: Uint8Array, sampleRate: number): Uint8Array {
   const out = new Uint8Array(44 + samples.length);
   const view = new DataView(out.buffer);
   view.setUint32(0, RIFF, true);
@@ -44,20 +46,23 @@ function monoWav(samples: Uint8Array, sampleRate: number, bitsPerSample: number)
   view.setUint16(20, PCM, true);
   view.setUint16(22, 1, true); // channels
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * bytesPerSample, true); // byte rate
-  view.setUint16(32, bytesPerSample, true); // block align
-  view.setUint16(34, bitsPerSample, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true);
   view.setUint32(36, DATA, true);
   view.setUint32(40, samples.length, true);
   out.set(samples, 44);
   return out;
 }
 
-// Returns null for anything this cannot split with certainty -- not PCM, not two channels, headers
-// that do not parse, or simply too big. Null means "keep the unlabelled transcript", never "no
-// transcript": guessing at a format would produce confident nonsense attributed to a named speaker.
+// Returns null for anything this cannot split with certainty -- not 16-bit PCM, not two channels,
+// or headers that do not parse. Null means "keep the unlabelled transcript", never "no transcript":
+// guessing at a format would produce confident nonsense attributed to a named speaker.
+//
+// 16-bit only, which is what Twilio serves. A general WAV reader here would be code written for a
+// file this never receives.
 export function splitStereoWav(bytes: Uint8Array): StereoSplit | null {
-  if (bytes.length < 44 || bytes.length > MAX_SPLIT_BYTES) return null;
+  if (bytes.length < 44) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== RIFF || view.getUint32(8, true) !== WAVE) return null;
 
@@ -89,27 +94,20 @@ export function splitStereoWav(bytes: Uint8Array): StereoSplit | null {
     offset = body + size + (size % 2);
   }
 
-  if (channels !== 2 || dataStart < 0 || dataLength <= 0) return null;
-  if (bitsPerSample !== 8 && bitsPerSample !== 16) return null;
-  if (sampleRate <= 0) return null;
+  if (channels !== 2 || bitsPerSample !== 16 || sampleRate <= 0) return null;
+  if (dataStart < 0 || dataLength <= 0) return null;
 
-  const bytesPerSample = bitsPerSample / 8;
-  const frame = bytesPerSample * 2;
-  const frames = Math.floor(dataLength / frame);
+  const frames = Math.floor(dataLength / 4); // two channels, two bytes each
   if (frames === 0) return null;
 
-  const left = new Uint8Array(frames * bytesPerSample);
-  const right = new Uint8Array(frames * bytesPerSample);
+  const left = new Uint8Array(frames * 2);
+  const right = new Uint8Array(frames * 2);
   for (let i = 0; i < frames; i++) {
-    const src = dataStart + i * frame;
-    const dst = i * bytesPerSample;
-    for (let b = 0; b < bytesPerSample; b++) {
-      left[dst + b] = bytes[src + b];
-      right[dst + b] = bytes[src + bytesPerSample + b];
-    }
+    const src = dataStart + i * 4;
+    left[i * 2] = bytes[src];
+    left[i * 2 + 1] = bytes[src + 1];
+    right[i * 2] = bytes[src + 2];
+    right[i * 2 + 1] = bytes[src + 3];
   }
-  return {
-    left: monoWav(left, sampleRate, bitsPerSample),
-    right: monoWav(right, sampleRate, bitsPerSample),
-  };
+  return { left: monoWav(left, sampleRate), right: monoWav(right, sampleRate) };
 }
