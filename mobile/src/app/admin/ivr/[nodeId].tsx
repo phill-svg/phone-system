@@ -20,7 +20,15 @@ import {
 } from "../../../lib/ivr";
 import { useTheme, type } from "../../../theme/theme";
 
-const FLOW = "main";
+// Which menu this step belongs to. Since migration 0041 each phone number can route into a menu of
+// its own, so this screen can no longer assume "main" -- the list screen passes the flow it was
+// showing. A deep link with no flow falls back to "main", the menu every number used before.
+//
+// Getting this wrong is DESTRUCTIVE, not cosmetic: the endpoint is a whole-flow delete-and-reinsert,
+// so saving under the wrong name would wipe that menu and re-insert it without this step. The load
+// below is what makes it safe -- a node that is not in the loaded flow errors out instead of
+// becoming a save.
+const DEFAULT_FLOW = "main";
 
 // Types whose caller-facing prompt is editable here. Voicemail and callback have one too, so the
 // list is "everything except the pure branching and routing steps".
@@ -28,7 +36,8 @@ const HAS_PROMPT = new Set(["play", "gather", "input", "wait", "voicemail", "cal
 
 export default function IvrNodeScreen() {
   const t = useTheme();
-  const { nodeId } = useLocalSearchParams<{ nodeId: string }>();
+  const { nodeId, flow: flowParam } = useLocalSearchParams<{ nodeId: string; flow?: string }>();
+  const flowName = flowParam || DEFAULT_FLOW;
   const [flow, setFlow] = useState<IvrFlow | null>(null);
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
   const [audio, setAudio] = useState<IvrAudioAsset[]>([]);
@@ -44,7 +53,7 @@ export default function IvrNodeScreen() {
   // with a mount-only effect.
   const load = useCallback(
     (keepEdits = false) => {
-      getIvrFlow(FLOW)
+      getIvrFlow(flowName)
         .then((f) => {
           const node = f.nodes.find((n) => n.id === nodeId);
           if (!node) {
@@ -63,7 +72,7 @@ export default function IvrNodeScreen() {
         .then(setAudio)
         .catch(() => {});
     },
-    [nodeId]
+    [nodeId, flowName]
   );
 
   const node: IvrNode | undefined = flow?.nodes.find((n) => n.id === nodeId);
@@ -96,14 +105,14 @@ export default function IvrNodeScreen() {
       // A failed re-read falls back to the snapshot rather than refusing: the point of reading is
       // to avoid clobbering someone else's edit, and turning a transient GET failure into "you
       // cannot save" would block a write the PUT would have accepted.
-      const fresh = await getIvrFlow(FLOW).catch(() => flow);
+      const fresh = await getIvrFlow(flowName).catch(() => flow);
       if (!fresh.nodes.some((n) => n.id === node.id)) {
         Alert.alert("Couldn't save", "That step has been deleted somewhere else.");
         return;
       }
       // The whole flow goes back, every other node byte-for-byte as it arrived -- positions
       // included. The endpoint is a delete-and-reinsert, so anything omitted is destroyed.
-      await putIvrFlow(FLOW, {
+      await putIvrFlow(flowName, {
         ...fresh,
         nodes: fresh.nodes.map((n) => (n.id === node.id ? { ...n, config: draft } : n)),
       });
@@ -160,7 +169,7 @@ export default function IvrNodeScreen() {
               // `entryNodeId` forward from whatever it is handed, so deleting from a stale snapshot
               // reverts every web edit made since this screen opened -- entry node included --
               // while reporting success.
-              const fresh = await getIvrFlow(FLOW).catch(() => flow);
+              const fresh = await getIvrFlow(flowName).catch(() => flow);
               const current = fresh.nodes.find((n) => n.id === node.id);
               if (!current) {
                 router.back();
@@ -176,7 +185,7 @@ export default function IvrNodeScreen() {
                 );
                 return;
               }
-              await putIvrFlow(FLOW, removeNode(fresh, node.id));
+              await putIvrFlow(flowName, removeNode(fresh, node.id));
               router.back();
             } catch (e) {
               Alert.alert("Couldn't delete", e instanceof Error ? e.message : "Try again in a moment.");

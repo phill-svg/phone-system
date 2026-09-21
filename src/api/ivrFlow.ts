@@ -1,5 +1,5 @@
 import { jsonResponse } from "./respond";
-import { listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes, updateNodePosition } from "../db/ivrNodes";
+import { listFlows, listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes, updateNodePosition } from "../db/ivrNodes";
 import type { StaffUser } from "../access/requireStaffUser";
 import { isValidClosedDateEntry } from "../ivr/dateRules";
 
@@ -186,6 +186,14 @@ function forbiddenUnlessAdmin(staff: StaffUser): Response | null {
 const badRequest = (error: string) => jsonResponse({ error }, 400);
 
 const INVALID_BODY_RESPONSE = () => badRequest("invalid request body");
+
+// Every phone menu that exists, so the number pickers can offer real choices rather than making an
+// admin type a flow name and find out on the next call whether they spelled it right. `hasEntry`
+// travels with each one because a flow without a starting step cannot take a call -- both the web
+// and mobile pickers grey those out, and `handleUpdateNumber` refuses them outright.
+export async function handleListFlows(db: D1Database): Promise<Response> {
+  return jsonResponse(await listFlows(db));
+}
 
 export async function handleGetFlow(db: D1Database, flow: string): Promise<Response> {
   const nodes = await listNodesForFlow(db, flow);

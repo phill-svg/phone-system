@@ -9,6 +9,7 @@ import { isStaffAvailable } from "../dial/presence";
 import { readOnCallRotation, resolveOnCallEmail } from "../db/onCall";
 import { excludeDemos } from "../demo";
 import { isRingNodeReachingOnCall } from "../ivr/onCallWiring";
+import { entryFlowCandidates, flowHasEntryNode, routesInUse } from "../ivr/numberRouting";
 import { SERVICEM8_SYNC_DELAY_MS } from "../servicem8/syncQueue";
 import { getUserSettings, normalizeMobileE164 } from "../db/userSettings";
 import { sendExpoPush } from "../push/expoPush";
@@ -517,10 +518,20 @@ async function checkOnCall(env: Env): Promise<Check> {
     // stop being reported because of an unrelated node. `null` means "could not verify".
     const [email, wired] = await Promise.all([
       resolveOnCallEmail(env.DB, now),
-      isRingNodeReachingOnCall(env.DB).catch((err) => {
-        console.log("ON_CALL_WIRING_CHECK_FAILED", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
-        return null;
-      }),
+      // Each number's own after-hours candidate list, resolved the way a real call resolves it --
+      // since 0041 "the after-hours flow" is per number, so asking about one pair of names would
+      // answer about a flow half the business never enters.
+      routesInUse(env.DB)
+        .then((routes) =>
+          isRingNodeReachingOnCall(
+            env.DB,
+            routes.map((r) => entryFlowCandidates(r.routing, true))
+          )
+        )
+        .catch((err) => {
+          console.log("ON_CALL_WIRING_CHECK_FAILED", JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          return null;
+        }),
     ]);
     if (!email) {
       // "Nobody is set" and "the stored value could not be read" both arrive here as null, and they
@@ -744,14 +755,107 @@ async function checkVoipPushCredentials(env: Env): Promise<Check> {
   return { ...base, status: worst, detail: notes.join(". ") + "." };
 }
 
+// Does every number's configured phone menu actually exist?
+//
+// A number pointed at a deleted or renamed menu keeps taking calls -- CallSession deliberately
+// falls back to a working one rather than hanging up -- so the failure is INVISIBLE from the
+// caller's side: they hear the wrong greeting, and nothing anywhere says the route an admin
+// configured is not the route being used. That silence is exactly what this screen exists to break.
+//
+// THREE LEVELS, and the distinction is the whole point. Only what an admin EXPLICITLY set can fail:
+// reporting an unusable shared default as a hard failure would pin this red over a system whose
+// fallback chain is working exactly as designed, and a check that cannot go green is one you learn
+// to ignore (the `divert_caller_id_last_error` lesson). An unusable default that the chain covers
+// is a warn. A number with NO usable flow anywhere in its chain is a fail whatever the cause --
+// no call to it can be answered at all.
+//
+// `handleUpdateNumber` refuses a bad flow on write, so the realistic way to reach the fail is
+// deleting or renaming a menu that a number still points at -- which no write to `phone_numbers`
+// is involved in.
+async function checkNumberRoutes(env: Env): Promise<Check> {
+  const base = { key: "number_routes", label: "Per-number call routing" };
+  try {
+    const routes = await routesInUse(env.DB);
+    const checked = new Map<string, boolean>();
+    const usable = async (flow: string): Promise<boolean> => {
+      const cached = checked.get(flow);
+      if (cached !== undefined) return cached;
+      const has = await flowHasEntryNode(env.DB, flow);
+      checked.set(flow, has);
+      return has;
+    };
+
+    const broken: string[] = [];
+    const dead: string[] = [];
+    const softened: string[] = [];
+
+    for (const route of routes) {
+      const who = route.e164 ? `${route.label} (${route.e164})` : route.label;
+      for (const [when, isAfterHours, configured] of [
+        ["in hours", false, route.configured.inHours],
+        ["after hours", true, route.configured.afterHours],
+      ] as const) {
+        const candidates = entryFlowCandidates(route.routing, isAfterHours);
+        const first = candidates[0];
+        const firstOk = await usable(first);
+
+        if (!firstOk && configured !== null) {
+          // The admin chose this one and it cannot take a call.
+          broken.push(`${who} ${when} → "${first}"`);
+        }
+
+        // Does ANY rung work? If not, every call to this number dies at loadEntryNode.
+        let anyOk = firstOk;
+        for (const flow of candidates.slice(1)) {
+          if (anyOk) break;
+          anyOk = await usable(flow);
+        }
+        if (!anyOk) dead.push(`${who} ${when}`);
+        else if (!firstOk && configured === null) softened.push(`${who} ${when} → "${first}"`);
+      }
+    }
+
+    if (dead.length > 0) {
+      return {
+        ...base,
+        status: "fail",
+        detail: `No phone menu can answer these at all, so those calls fail outright: ${dead.join("; ")}. Give the menu a starting step.`,
+      };
+    }
+    if (broken.length > 0) {
+      return {
+        ...base,
+        status: "fail",
+        detail: `${broken.length} route(s) point at a phone menu with no starting step, so those callers hear a fallback menu instead: ${broken.join("; ")}. Fix the menu, or repoint the number in Settings.`,
+      };
+    }
+    if (softened.length > 0) {
+      return {
+        ...base,
+        status: "warn",
+        detail: `The shared menu for these has no starting step, so callers fall through to the next one: ${softened.join("; ")}. Working as designed, but not what the menu names suggest.`,
+      };
+    }
+    const summary = routes
+      .map((r) => `${r.label}: ${r.routing.inHoursFlow} / ${r.routing.afterHoursFlow}`)
+      .join(", ");
+    return { ...base, status: "ok", detail: `${routes.length} number route(s), all pointing at a usable menu — ${summary}.` };
+  } catch (e) {
+    // Could-not-read is a warn, never a fail: a D1 blip must not send someone rebuilding menus that
+    // were fine.
+    return { ...base, status: "warn", detail: `Couldn't check the number routes: ${e instanceof Error ? e.message : "error"}` };
+  }
+}
+
 export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<Response> {
   // The names below are POSITIONAL: each binding takes whatever the call in the same position
   // returns. Keep the two lists in the same order and the same length -- adding a call without a
   // binding silently shifts every one after it and drops the last check off the end entirely, which
   // is exactly what happened when the transcripts check was first added here.
-  const [twilio, regions, roster, onCall, divert, servicem8, transcripts, voipPush, push] = await Promise.all([
+  const [twilio, regions, routes, roster, onCall, divert, servicem8, transcripts, voipPush, push] = await Promise.all([
     checkTwilioCredentials(env),
     checkNumberRegions(env),
+    checkNumberRoutes(env),
     checkRingRoster(env),
     checkOnCall(env),
     checkDivertCallerId(env),
@@ -761,7 +865,7 @@ export async function handleGetDiagnostics(env: Env, staff: StaffUser): Promise<
     checkPushTokens(env, staff),
   ]);
   // Display order, which is deliberately not the call order.
-  return jsonResponse([twilio, regions, roster, onCall, divert, servicem8, transcripts, checkEmail(env), voipPush, push]);
+  return jsonResponse([twilio, regions, routes, roster, onCall, divert, servicem8, transcripts, checkEmail(env), voipPush, push]);
 }
 
 // End-to-end push: the only proof that the whole chain works is a phone buzzing. Deliberately sent

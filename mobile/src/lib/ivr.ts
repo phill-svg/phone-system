@@ -310,9 +310,19 @@ export async function addStepTo(
   io: { get: () => Promise<IvrFlow>; put: (flow: IvrFlow) => Promise<void> }
 ): Promise<void> {
   const fresh = await io.get().catch(() => snapshot);
+  // A menu with no starting step cannot be saved at all -- handlePutFlow requires an entryNodeId
+  // matching exactly one node -- so without this a BRAND-NEW menu could never get its first step
+  // from the handset, and one whose entry had been deleted could never be repaired: every save and
+  // delete died on the opaque "invalid request body". The web editor has always done the same thing
+  // (its entry falls back to `nodes[0]`), so this is parity, not a new rule.
+  //
+  // It only ever FILLS a missing entry. Moving an existing one is still refused on mobile, because
+  // that silently changes where every call to this menu starts.
+  const hasEntry = fresh.entryNodeId !== null && fresh.nodes.some((n) => n.id === fresh.entryNodeId);
   await io.put({
     ...fresh,
-    nodes: [...fresh.nodes, { id, flow: flowName, isEntry: false, type, config: blankConfigFor(type), positionX: null, positionY: null }],
+    entryNodeId: hasEntry ? fresh.entryNodeId : id,
+    nodes: [...fresh.nodes, { id, flow: flowName, isEntry: !hasEntry, type, config: blankConfigFor(type), positionX: null, positionY: null }],
   });
 }
 
@@ -338,4 +348,13 @@ function clearReferences(node: IvrNode, removedId: string): Record<string, unkno
     });
   }
   return config;
+}
+
+// A menu name goes into a URL path segment and into `ivr_nodes.flow`, and it is what a phone number
+// is pointed at. Restricted to the shape the existing menus already use (`main`, `after_hours`) so
+// a stray space or slash can never produce a name that round-trips differently than it was typed.
+// Returns "" for anything unusable, which the caller reports rather than silently correcting.
+export function normalizeFlowName(raw: string): string {
+  const name = raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return /^[a-z0-9_]{1,40}$/.test(name) ? name : "";
 }

@@ -11,6 +11,7 @@ import {
   addStepTo,
   IVR_NODE_TYPES,
   NEXT_FIELDS,
+  normalizeFlowName,
   type IvrFlow,
   type IvrNode,
   type IvrNodeType,
@@ -273,5 +274,77 @@ describe("addStepTo", () => {
     await addStepTo(stale, "main", "voicemail", "new_step", { get: async () => { throw new Error("offline"); }, put });
 
     expect((put.mock.calls[0][0] as IvrFlow).nodes.map((n) => n.id)).toEqual(["hours", "new_step"]);
+  });
+});
+
+describe("addStepTo — the first step of an empty or entry-less menu", () => {
+  // A menu with no starting step cannot be SAVED at all: handlePutFlow requires an entryNodeId
+  // matching exactly one node. So without this, a brand-new menu could never get its first step
+  // from the handset, and one whose entry had been deleted could never be repaired — every save
+  // died on the opaque "invalid request body".
+  it("makes the new step the entry when the menu has none", async () => {
+    const empty: IvrFlow = { entryNodeId: null, nodes: [] };
+    let put: IvrFlow | null = null;
+    await addStepTo(empty, "sales", "gather", "n_new", {
+      get: async () => empty,
+      put: async (f) => {
+        put = f;
+      },
+    });
+    expect(put!.entryNodeId).toBe("n_new");
+    expect(put!.nodes.map((n) => [n.id, n.isEntry])).toEqual([["n_new", true]]);
+  });
+
+  it("repairs a menu whose entryNodeId points at a step that is gone", async () => {
+    const orphaned: IvrFlow = {
+      entryNodeId: "n_deleted",
+      nodes: [{ id: "n_a", flow: "sales", isEntry: false, type: "play", config: {}, positionX: null, positionY: null }],
+    };
+    let put: IvrFlow | null = null;
+    await addStepTo(orphaned, "sales", "play", "n_new", {
+      get: async () => orphaned,
+      put: async (f) => {
+        put = f;
+      },
+    });
+    expect(put!.entryNodeId).toBe("n_new");
+  });
+
+  // Moving an existing entry silently changes where every call to this menu starts. Mobile refuses
+  // that deliberately (see the delete-the-entry-step refusal), and adding a step must not do it by
+  // the back door.
+  it("never MOVES an entry the menu already has", async () => {
+    const wired: IvrFlow = {
+      entryNodeId: "n_a",
+      nodes: [{ id: "n_a", flow: "sales", isEntry: true, type: "play", config: {}, positionX: null, positionY: null }],
+    };
+    let put: IvrFlow | null = null;
+    await addStepTo(wired, "sales", "play", "n_new", {
+      get: async () => wired,
+      put: async (f) => {
+        put = f;
+      },
+    });
+    expect(put!.entryNodeId).toBe("n_a");
+    expect(put!.nodes.find((n) => n.id === "n_new")!.isEntry).toBe(false);
+  });
+});
+
+describe("normalizeFlowName", () => {
+  // The name goes into a URL path segment, into ivr_nodes.flow, and is what a phone number is
+  // pointed at. A value that round-trips differently than it was typed would point a number at a
+  // menu that does not exist.
+  it("accepts the shape the existing menus use", () => {
+    expect(normalizeFlowName("sales")).toBe("sales");
+    expect(normalizeFlowName("  After Hours  ")).toBe("after_hours");
+    expect(normalizeFlowName("out-of-hours")).toBe("out_of_hours");
+  });
+
+  it("refuses anything that would not survive a URL, rather than silently correcting it", () => {
+    expect(normalizeFlowName("")).toBe("");
+    expect(normalizeFlowName("   ")).toBe("");
+    expect(normalizeFlowName("sales/main")).toBe("");
+    expect(normalizeFlowName("sales?x=1")).toBe("");
+    expect(normalizeFlowName("a".repeat(41))).toBe("");
   });
 });

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "../../src/api/ivrFlow";
+import { handleGetFlow, handleListFlows, handlePatchNodePosition, handlePutFlow } from "../../src/api/ivrFlow";
 import { replaceFlowNodes } from "../../src/db/ivrNodes";
 
 const STAFF: import("../../src/access/requireStaffUser").StaffUser = {
@@ -628,5 +628,42 @@ describe("handlePatchNodePosition", () => {
       .first<{ position_x: number; position_y: number }>();
     expect(row?.position_x).toBe(42);
     expect(row?.position_y).toBe(99);
+  });
+});
+
+// The flow LIST is what lets the number pickers offer real menus instead of a free-text box an
+// admin can typo. `hasEntry` travels with each one because a menu with no starting step cannot take
+// a call — both pickers grey those out and `handleUpdateNumber` refuses them.
+describe("GET /api/ivr/flows", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM ivr_nodes").run();
+  });
+
+  async function node(id: string, flow: string, isEntry: boolean) {
+    await env.DB
+      .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, ?, 'voicemail', ?, 1, 1)")
+      .bind(id, flow, isEntry ? 1 : 0, JSON.stringify({ audioAssetId: null, ttsText: "x", mailboxLabel: flow }))
+      .run();
+  }
+
+  it("lists every flow with its node count and whether it can take a call", async () => {
+    await node("n1", "main", true);
+    await node("n2", "main", false);
+    await node("n3", "sales", false); // no entry node
+
+    const listed = (await (await handleListFlows(env.DB)).json()) as {
+      flow: string;
+      nodeCount: number;
+      hasEntry: boolean;
+    }[];
+
+    expect(listed).toEqual([
+      { flow: "main", nodeCount: 2, hasEntry: true },
+      { flow: "sales", nodeCount: 1, hasEntry: false },
+    ]);
+  });
+
+  it("returns an empty list rather than failing when no flow exists yet", async () => {
+    expect(await (await handleListFlows(env.DB)).json()).toEqual([]);
   });
 });

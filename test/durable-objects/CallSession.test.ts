@@ -2129,6 +2129,125 @@ describe("CallSession", () => {
     expect(xml).not.toContain("Press 1 to connect"); // did NOT enter the in-hours main menu
   });
 
+  // --- Per-number IVR routing (migration 0041) ---
+
+  // Seeds a phone_numbers row with its own route. Voice is on, since a voice-disabled number is
+  // rejected before any flow runs.
+  async function seedNumberRoute(
+    e164: string,
+    flows: { ivrFlow?: string | null; afterHoursFlow?: string | null }
+  ): Promise<void> {
+    await env.DB.prepare(
+      "INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, ivr_flow, after_hours_flow, created_at) VALUES (?, 'Second line', 1, 0, ?, ?, 3)"
+    )
+      .bind(e164, flows.ivrFlow ?? null, flows.afterHoursFlow ?? null)
+      .run();
+  }
+
+  it("a call to a number with its own flow enters THAT flow, not main", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedNode({
+      id: "sales_entry",
+      flow: "sales",
+      isEntry: true,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "Sales is closed, leave a message.", mailboxLabel: "sales" },
+    });
+    await seedNumberRoute("+61200000055", { ivrFlow: "sales" });
+
+    const stub = stubFor("CA-pernum");
+    const { xml } = await send(stub, mainEvent("CA-pernum", { to: "+61200000055" }));
+
+    expect(xml).toContain("Sales is closed");
+    expect(xml).not.toContain("Press 1 to connect"); // did NOT enter main
+  });
+
+  it("a number with no route of its own still enters main, exactly as before", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedNode({
+      id: "sales_entry",
+      flow: "sales",
+      isEntry: true,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "Sales is closed.", mailboxLabel: "sales" },
+    });
+    await seedNumberRoute("+61200000056", {});
+
+    const stub = stubFor("CA-pernum-default");
+    const { xml } = await send(stub, mainEvent("CA-pernum-default", { to: "+61200000056" }));
+
+    expect(xml).toContain("Press 1 to connect");
+    expect(xml).not.toContain("Sales is closed");
+  });
+
+  it("uses the number's own after-hours flow outside business hours", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedNode({
+      id: "sales_entry",
+      flow: "sales",
+      isEntry: true,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "Sales, in hours.", mailboxLabel: "sales" },
+    });
+    await seedNode({
+      id: "sales_ah_entry",
+      flow: "sales_ah",
+      isEntry: true,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "Sales is shut for the night.", mailboxLabel: "sales-ah" },
+    });
+    await seedNode({
+      id: "ah_entry",
+      flow: "after_hours",
+      isEntry: true,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "The office is closed.", mailboxLabel: "after-hours" },
+    });
+    await seedNumberRoute("+61200000057", { ivrFlow: "sales", afterHoursFlow: "sales_ah" });
+    await setBusinessHours(env.DB, {
+      mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+    });
+
+    const stub = stubFor("CA-pernum-ah");
+    const { xml } = await send(stub, mainEvent("CA-pernum-ah", { to: "+61200000057" }));
+
+    expect(xml).toContain("Sales is shut for the night");
+    // Neither the shared after-hours flow nor its own in-hours menu.
+    expect(xml).not.toContain("The office is closed");
+    expect(xml).not.toContain("Sales, in hours");
+  });
+
+  // The caller must never pay for an admin's mistake. A flow with no entry node throws in
+  // loadEntryNode, which without the fallback reaches the DO catch-all and HANGS UP mid-call.
+  it("falls back to a working menu when the number's own flow has no starting step", async () => {
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    // "sales" exists as a flow but nothing in it is the entry — the shape left behind by deleting a
+    // starting step, which no write to phone_numbers would catch.
+    await seedNode({
+      id: "sales_orphan",
+      flow: "sales",
+      isEntry: false,
+      type: "voicemail",
+      config: { audioAssetId: null, ttsText: "orphan", mailboxLabel: "sales" },
+    });
+    await seedNumberRoute("+61200000058", { ivrFlow: "sales" });
+
+    const stub = stubFor("CA-pernum-broken");
+    const { status, xml } = await send(stub, mainEvent("CA-pernum-broken", { to: "+61200000058" }));
+
+    expect(status).toBe(200);
+    expect(xml).toContain("Press 1 to connect"); // fell back to main
+    expect(xml).not.toContain("technical issue"); // and did NOT hang up on the caller
+  });
+
   it("staff legs are dialed with a ring Timeout so no-answer falls through promptly", async () => {
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm" });
     await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });

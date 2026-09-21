@@ -34,7 +34,7 @@ import { sendMissedCallSmsIfDue } from "./api/missedCallSms";
 import { handleGetOnCall, handlePutOnCall, handlePutOnCallOverride } from "./api/onCall";
 import { handleGetUserSettings, handlePutUserSettings } from "./api/userSettings";
 import { handleListAudioAssets, handleUploadAudioAsset } from "./api/audioAssets";
-import { handleGetFlow, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
+import { handleGetFlow, handleListFlows, handlePatchNodePosition, handlePutFlow } from "./api/ivrFlow";
 import { handleGetMedia } from "./api/media";
 import { handleListCallbackRequests, handleUpdateCallbackRequest } from "./api/callbackRequests";
 import {
@@ -1313,6 +1313,12 @@ export default {
         return request.method === "POST"
           ? handleUploadAudioAsset(request, env)
           : handleListAudioAssets(env.DB);
+      }
+
+      // The flow LIST, matched before the per-flow regex below. That regex requires a segment after
+      // "flows/", so it never matches this bare path -- the order is for readability, not shadowing.
+      if (url.pathname === "/api/ivr/flows" && request.method === "GET") {
+        return handleListFlows(env.DB);
       }
 
       // Matched after the literal /api/ivr/audio check above -- "audio" and "flows" are

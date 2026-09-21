@@ -172,7 +172,7 @@ describe("admin diagnostics", () => {
   it("returns every check, with no key lost or duplicated", async () => {
     stubFetch();
     const keys = (await run()).map((c) => c.key);
-    expect(keys).toEqual(["twilio", "regions", "roster", "on_call", "divert_caller_id", "servicem8", "transcripts", "email", "voip_push", "push"]);
+    expect(keys).toEqual(["twilio", "regions", "number_routes", "roster", "on_call", "divert_caller_id", "servicem8", "transcripts", "email", "voip_push", "push"]);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
@@ -922,6 +922,39 @@ describe("admin diagnostics", () => {
       expect(find(await run(), "on_call").status).toBe("ok");
     });
 
+    // Since migration 0041 "the after-hours flow" is a property of the NUMBER. A rota wired only
+    // into a second line's own menu used to read as unwired, because the check asked about one
+    // hardcoded pair of flow names.
+    it("walks a number's OWN after-hours flow, not just the shared one", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await seedUnwiredFlow();
+      // The shared after-hours flow goes to voicemail; the rota lives in the second line's own.
+      await node("n_ah_vm", "after_hours", true, "voicemail", VOICEMAIL);
+      await node("n_sales_ah_ring", "sales_ah", true, "ring", ON_CALL_RING);
+      await env.DB
+        .prepare("INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, after_hours_flow, created_at) VALUES ('+61200000300', 'Sales', 1, 0, 'sales_ah', 4)")
+        .run();
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("ok");
+    });
+
+    it("is not satisfied by a rota only an SMS-only number would reach", async () => {
+      await addTech("tech@oncall.test");
+      await setRotation(["tech@oncall.test"]);
+      await setUserSettings(env.DB, "tech@oncall.test", { mobile_number: "0412345678" });
+      await seedUnwiredFlow();
+      await node("n_ah_vm", "after_hours", true, "voicemail", VOICEMAIL);
+      await node("n_sales_ah_ring", "sales_ah", true, "ring", ON_CALL_RING);
+      // voice_enabled = 0: this number takes no calls, so its route is not a way to the rota.
+      await env.DB
+        .prepare("INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, after_hours_flow, created_at) VALUES ('+61200000301', 'SMS only', 0, 1, 'sales_ah', 5)")
+        .run();
+      stubFetch();
+      expect(find(await run(), "on_call").status).toBe("fail");
+    });
+
     it("is not satisfied by main when an after_hours flow bypasses the rota", async () => {
       await addTech("tech@oncall.test");
       await setRotation(["tech@oncall.test"]);
@@ -934,6 +967,92 @@ describe("admin diagnostics", () => {
       expect(check.detail).toContain("no step of the phone menu");
     });
 });
+
+  // A number pointed at a deleted or renamed menu keeps taking calls -- CallSession falls back to a
+  // working one rather than hanging up -- so the misconfiguration is invisible from the caller's
+  // side. This check is the only thing that says so.
+  describe("per-number routing", () => {
+    // Migrations seed `main` and `after_hours` WITH entry nodes, so every flow these tests care
+    // about has to be built from scratch -- otherwise "this menu has no starting step" is not the
+    // state under test and all three levels read as ok.
+    beforeEach(async () => {
+      await env.DB.prepare("DELETE FROM ivr_nodes").run();
+    });
+
+    async function flowNode(flow: string, isEntry: boolean) {
+      await env.DB
+        .prepare("INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, ?, ?, 'voicemail', ?, 1, 1)")
+        .bind(`n_${flow}`, flow, isEntry ? 1 : 0, JSON.stringify({ audioAssetId: null, ttsText: "x", mailboxLabel: flow }))
+        .run();
+    }
+
+    it("passes when every number points at a menu that has a starting step", async () => {
+      await flowNode("main", true);
+      await flowNode("after_hours", true);
+      stubFetch();
+      const check = find(await run(), "number_routes");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("main");
+    });
+
+    it("fails and names the number when its menu has no starting step", async () => {
+      await flowNode("main", true);
+      await flowNode("after_hours", true);
+      await flowNode("sales", false); // exists, but nothing in it is the entry
+      await env.DB
+        .prepare("INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, ivr_flow, created_at) VALUES ('+61200000400', 'Sales', 1, 0, 'sales', 6)")
+        .run();
+      stubFetch();
+      const check = find(await run(), "number_routes");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("+61200000400");
+      expect(check.detail).toContain("sales");
+    });
+
+    // Found by /code-review before shipping: the first version failed on the RESOLVED flow, so a
+    // business whose shared `after_hours` menu has no starting step was reported as broken -- the
+    // exact state CallSession's documented fallback exists for. A check that goes red over a system
+    // working as designed is one you learn to ignore.
+    it("only WARNS when an unset default is unusable but the fallback covers it", async () => {
+      await flowNode("main", true);
+      await flowNode("after_hours", false); // exists, no starting step; nothing points at it explicitly
+      stubFetch();
+      const check = find(await run(), "number_routes");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("after_hours");
+    });
+
+    it("still FAILS when the admin explicitly chose that same unusable menu", async () => {
+      await flowNode("main", true);
+      await flowNode("after_hours", false);
+      await env.DB
+        .prepare("INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, after_hours_flow, created_at) VALUES ('+61200000402', 'Chose it', 1, 0, 'after_hours', 8)")
+        .run();
+      stubFetch();
+      expect(find(await run(), "number_routes").status).toBe("fail");
+    });
+
+    // No usable menu anywhere in the chain means no call to that number is answered at all — the
+    // one thing this screen could say that matters more than a misroute.
+    it("fails outright when nothing in the chain can answer", async () => {
+      await flowNode("main", false);
+      await flowNode("after_hours", false);
+      stubFetch();
+      const check = find(await run(), "number_routes");
+      expect(check.status).toBe("fail");
+      expect(check.detail).toContain("fail outright");
+    });
+
+    it("ignores an SMS-only number, which takes no calls to misroute", async () => {
+      await flowNode("main", true);
+      await flowNode("after_hours", true);
+      await env.DB
+        .prepare("INSERT INTO phone_numbers (e164, label, voice_enabled, sms_enabled, ivr_flow, created_at) VALUES ('+61200000401', 'SMS only', 0, 1, 'ghost', 7)")
+        .run();
+      stubFetch();
+      expect(find(await run(), "number_routes").status).toBe("ok");
+    });
+  });
 });
 
 describe("test push", () => {
