@@ -287,6 +287,10 @@ export function renderSettingsPage(
       document.getElementById('blocklist-form').addEventListener('submit', async function (e) {
         e.preventDefault();
         const status = document.getElementById('blocklist-save-status');
+        // Posted as TYPED. The server normalises every entry to E.164 and refuses an incomplete
+        // one by name (handlePutCallBlocklist -> blocklistNumber), which is what makes this form
+        // and the handset agree: they used to disagree about the same text, so a half-typed number
+        // was refused on the phone and stored from here as something that matches no caller.
         const numbers = document.getElementById('blocklist-numbers').value
           .split('\\n')
           .map(function (line) { return line.trim(); })
@@ -296,7 +300,18 @@ export function renderSettingsPage(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(numbers),
         });
-        status.textContent = res.ok ? 'Saved.' : 'Failed to save.';
+        if (res.ok) {
+          // Show the STORED form, so what is on screen is what a caller is matched against. Read
+          // back rather than reformatted locally: the server owns the rule.
+          const saved = await fetch('/api/settings/call-blocklist').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+          if (Array.isArray(saved)) document.getElementById('blocklist-numbers').value = saved.join('\\n');
+          status.textContent = 'Saved.';
+        } else {
+          // The server names the offending entry; "Failed to save" for a list of twenty numbers is
+          // unactionable.
+          const body = await res.json().catch(function () { return null; });
+          status.textContent = (body && body.error) || 'Failed to save.';
+        }
       });
 
       var divertForm = document.getElementById('divert-callerid-form');

@@ -113,3 +113,76 @@ export function searchContacts(query: string, contacts: Contact[]): Contact[] {
       (digits.length >= 2 && c.phone_normalized.includes(digits))
   );
 }
+
+// A call-blocklist entry, in the form the IVR compares against -- or null if it is not one.
+//
+// MIRRORS `src/api/blocklistNumber.ts`, which is authoritative: the server normalises and validates
+// every entry, so a client that gets this wrong gets a 400 naming the entry rather than a list that
+// silently blocks nobody. This copy exists only to answer "should Save be enabled", the same way
+// `normalizePhone` is duplicated against the backend's copy.
+//
+// Prefix-freedom (no digit can be appended to make another valid number), because the failure this
+// prevents is a HALF-TYPED number: "02 6105 977" stored as "+6126105977" blocks nobody while
+// reading on screen exactly like an entry that works. Alphanumeric senders are refused -- a voice
+// call's From is never one.
+const MIN_INTERNATIONAL_DIGITS = 9;
+const MAX_E164_DIGITS = 15;
+
+function isCompleteAuNational(national: string): boolean {
+  return (
+    /^4\d{8}$/.test(national) || // mobile
+    /^[2378]\d{8}$/.test(national) || // landline
+    // (?!00) because 1300 is carved OUT of the 13 range: "130012" is the first six digits of every
+    // 1300 number, not a finished 13xxxx one.
+    /^13(?!00)\d{4}$/.test(national) || // 13xxxx
+    /^1[38]00\d{6}$/.test(national) // 1300/1800
+  );
+}
+
+export function blocklistNumber(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/[a-z]/i.test(trimmed)) return null;
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits || digits.length > MAX_E164_DIGITS) return null;
+
+  // On the DIGITS, not the raw string: "+ 61 2 6105 977" must not dodge the Australian rules by
+  // putting a space after the plus.
+  const international = trimmed.startsWith("+");
+  if (digits.startsWith("61")) {
+    const national = digits.slice(2);
+    return isCompleteAuNational(national) ? `+61${national}` : null;
+  }
+  if (!international) {
+    const local = digits.startsWith("0") ? digits.slice(1) : digits;
+    return isCompleteAuNational(local) ? `+61${local}` : null;
+  }
+  return digits.length >= MIN_INTERNATIONAL_DIGITS ? `+${digits}` : null;
+}
+
+// The blocklist as it would be SAVED, including a number still sitting unadded in the entry box.
+//
+// Tapping Save without tapping + used to discard that number silently, while the button read
+// "Saved" -- so the admin believed a caller was blocked who was not. Only a COMPLETE number is
+// folded in; a half-typed one is left in the box, because committing it would write an entry that
+// blocks nobody. Deduplicated, since the same number may already be listed and a duplicate row
+// would share a React key.
+export function withPendingEntry(numbers: string[], entry: string): string[] {
+  const pendingEntry = blocklistNumber(entry);
+  if (!pendingEntry || numbers.includes(pendingEntry)) return numbers;
+  return [...numbers, pendingEntry];
+}
+
+// What the blocklist screen would SAVE, and whether Save should be enabled -- as one value,
+// because the bug was the two disagreeing. `dirty` was computed over the list alone while the entry
+// box held a number, so the button sat disabled reading "Saved" with that caller unblocked. Derive
+// both from the same place and that cannot come back.
+export function blocklistState(
+  saved: string[] | null,
+  numbers: string[],
+  entry: string
+): { pending: string[]; dirty: boolean } {
+  const pending = withPendingEntry(numbers, entry);
+  const dirty = saved !== null && (saved.length !== pending.length || saved.some((n, i) => n !== pending[i]));
+  return { pending, dirty };
+}
