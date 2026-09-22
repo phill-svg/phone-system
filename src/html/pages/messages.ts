@@ -51,6 +51,10 @@ export function renderMessagesPage(role: "admin" | "staff" = "admin"): string {
     .bubble.in { background: var(--admin-surface); border: 1px solid var(--admin-border); }
     .bubble.in.fb { border-color: rgba(8,102,255,0.5); }
     .bubble.out { background: var(--admin-brand); color: #fff; }
+    /* A customer's photo, inline. Capped so one picture cannot take the whole pane; the link
+       opens it full size, through the same authenticated proxy. */
+    .msg-media { display: block; max-width: 100%; max-height: 260px; border-radius: 10px; }
+    .msg-attach { display: inline-block; font-size: 0.82rem; text-decoration: underline; }
     .msg-status-fail { font-size: 0.72rem; color: #ff6b6b; padding: 0.05rem 0.3rem 0; }
     .msg-status { font-size: 0.72rem; color: var(--admin-dim); padding: 0.05rem 0.3rem 0; }
     .sms-from-row { padding: 0.4rem 1.1rem; border-top: 1px solid var(--admin-border); font-size: 0.8rem; color: var(--admin-dim); display: flex; align-items: center; gap: 0.5rem; }
@@ -119,6 +123,10 @@ const CLIENT_JS = [
   'function resolveName(number){ var c=contactsByNorm[normalizePhoneJS(number)]; return c?c.name:null; }',
   // Messenger peers are stored as "messenger:<psid>", never a phone number — that prefix is the only
   // thing separating a Facebook conversation from an SMS one anywhere in this UI.
+  // An SVG is an image to a person and a script host to a browser, and this content type is
+  // chosen by whoever sent the message. The server refuses to serve one inline for the same
+  // reason.
+  'function isInlineImage(ct){return ["image/jpeg","image/png","image/gif","image/webp"].indexOf(String(ct||""))!==-1;}',
   'function isMessenger(number){ return String(number==null?"":number).indexOf("messenger:")===0; }',
   'function avatarText(c){ return (isMessenger(c.number)&&!c.name)?"FB":initials(label(c)); }',
   'function chanChip(number){ return isMessenger(number)?"<span class=\\"chan chan-fb\\">Messenger</span>":"<span class=\\"chan chan-sms\\">SMS</span>"; }',
@@ -177,7 +185,7 @@ const CLIENT_JS = [
   // reports delivery back, so those stop at `sent` permanently and captioning them "Sent" forever
   // would read as "not delivered yet" and be wrong every time. A Messenger FAILURE still shows.
   'function msgStatusLabel(direction,status,isLastOutbound,isMessengerThread){if(direction!=="outbound")return null;var s=String(status==null?"":status).trim().toLowerCase();if(s==="failed"||s==="undelivered")return {text:"Not delivered",failed:true};if(isMessengerThread||!isLastOutbound)return null;if(s==="read")return {text:"Read",failed:false};if(s==="delivered")return {text:"Delivered",failed:false};if(SENT_STATUSES.indexOf(s)>=0)return {text:"Sent",failed:false};return null;}',
-  'function renderThread(msgs){var el=document.getElementById("scroll");if(msgs.length===0){el.innerHTML="<div class=\\"msg-empty\\">No messages yet. Send the first one below.</div>";return;}var fbThread=isMessenger(current);var lastOut=lastOutboundIndex(msgs);var html="";for(var i=0;i<msgs.length;i++){var m=msgs[i];var out=m.direction==="outbound";var inCls=fbThread?"in fb":"in";var st=msgStatusLabel(m.direction,m.status,i===lastOut,fbThread);html+="<div class=\\"bubble-row "+(out?"out":"in")+"\\"><div class=\\"bubble "+(out?"out":inCls)+"\\">"+esc(m.body)+"</div></div>";if(st){var detail=st.failed?(m.error_message||(m.error_code?"Error "+m.error_code:null)):null;html+="<div class=\\"bubble-row out\\"><div class=\\""+(st.failed?"msg-status-fail":"msg-status")+"\\">"+esc(st.text)+(detail?" -- "+esc(detail):"")+"</div></div>";}}el.innerHTML=html;el.scrollTop=el.scrollHeight;}',
+  'function renderThread(msgs){var el=document.getElementById("scroll");if(msgs.length===0){el.innerHTML="<div class=\\"msg-empty\\">No messages yet. Send the first one below.</div>";return;}var fbThread=isMessenger(current);var lastOut=lastOutboundIndex(msgs);var html="";for(var i=0;i<msgs.length;i++){var m=msgs[i];var out=m.direction==="outbound";var inCls=fbThread?"in fb":"in";var st=msgStatusLabel(m.direction,m.status,i===lastOut,fbThread);var media="";var mlist=m.media||[];for(var k=0;k<mlist.length;k++){var mm=mlist[k];var src="/api/messages/"+encodeURIComponent(m.id)+"/media/"+mm.idx;media+=(isInlineImage(mm.content_type))?("<a href=\\""+src+"\\" target=\\"_blank\\" rel=\\"noopener\\"><img class=\\"msg-media\\" src=\\""+src+"\\" alt=\\"Attached photo\\"></a>"):("<a class=\\"msg-attach\\" href=\\""+src+"\\" target=\\"_blank\\" rel=\\"noopener\\">Attachment ("+esc(mm.content_type)+")</a>");}html+="<div class=\\"bubble-row "+(out?"out":"in")+"\\"><div class=\\"bubble "+(out?"out":inCls)+"\\">"+media+esc(m.body)+"</div></div>";if(st){var detail=st.failed?(m.error_message||(m.error_code?"Error "+m.error_code:null)):null;html+="<div class=\\"bubble-row out\\"><div class=\\""+(st.failed?"msg-status-fail":"msg-status")+"\\">"+esc(st.text)+(detail?" -- "+esc(detail):"")+"</div></div>";}}el.innerHTML=html;el.scrollTop=el.scrollHeight;}',
   // The recipient is either the open thread, or -- for a brand-new message -- whatever is typed
   // in the inline To field, so Send works without having to commit the number first.
   'function send(){var ta=document.getElementById("text");var body=ta.value.trim();var ti=document.getElementById("toInput");var to=current||(ti?(ti.value||"").trim():"");if(!body||!to)return;var fresh=!current;var btn=document.getElementById("sendBtn");btn.disabled=true;var fs=document.getElementById("smsFromSelect");var payload={to:to,body:body};if(fs&&fs.value)payload.from=fs.value;api("/api/messages",{method:"POST",body:JSON.stringify(payload)}).then(function(){ta.value="";if(fresh){openThread(to);}else{loadThread();loadConversations();}}).catch(function(err){alert(err&&err.message?err.message:"Could not send the message.");}).then(function(){btn.disabled=false;});}',

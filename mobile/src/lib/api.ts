@@ -262,6 +262,8 @@ export async function deleteContact(id: number): Promise<void> {
 // The backend SMS endpoints + Twilio number are wired later; until then these
 // resolve to empty so the UI shows honest empty states rather than erroring.
 
+export type MessageMedia = { idx: number; content_type: string };
+
 export type Message = {
   id: string;
   direction: "inbound" | "outbound";
@@ -270,6 +272,9 @@ export type Message = {
   status?: string;
   error_code?: string | null;
   error_message?: string | null;
+  // Attachments -- a photo the customer sent. The Twilio url is deliberately NOT here: it needs the
+  // account credentials, so each one is fetched from /api/messages/:id/media/:idx instead.
+  media?: MessageMedia[];
 };
 
 export type Conversation = {

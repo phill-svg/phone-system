@@ -111,3 +111,51 @@ describe("MessageBubble", () => {
     expect(out).not.toContain("stale");
   });
 });
+
+// Attachments -- a customer's photo. Twilio carries these on the same inbound webhook, and nothing
+// read them, so a photo arrived as a bubble with an EMPTY body and no sign an attachment existed.
+// Walking the tree for element types (not just strings) is what pins the call site: delete the
+// attachment block from the component and these fail while every other mobile test stays green.
+function elementTypes(node: unknown, out: string[] = []): string[] {
+  if (node == null || typeof node !== "object") return out;
+  if (Array.isArray(node)) {
+    node.forEach((n) => elementTypes(n, out));
+    return out;
+  }
+  const el = node as { type?: unknown; props?: { children?: unknown } };
+  if (typeof el.type === "string") out.push(el.type);
+  else if (typeof el.type === "function") out.push((el.type as { name?: string }).name ?? "anon");
+  if (el.props && el.props.children !== undefined) elementTypes(el.props.children, out);
+  return out;
+}
+
+describe("MessageBubble attachments", () => {
+  const withPhoto = msg({
+    direction: "inbound",
+    body: "",
+    media: [{ idx: 0, content_type: "image/jpeg" }],
+  });
+
+  it("renders an attachment component for a photo", () => {
+    expect(elementTypes(MessageBubble({ message: withPhoto, isLastOutbound: false, isMessenger: false }))).toContain(
+      "Attachment"
+    );
+  });
+
+  // The body of a picture message is empty, so a bubble that renders only text was a blank one.
+  it("does not render an empty text node when there is no caption", () => {
+    const rendered = render({ message: withPhoto, isLastOutbound: false, isMessenger: false });
+    expect(rendered).toBe("");
+  });
+
+  it("still renders the caption a customer sent with the photo", () => {
+    const captioned = msg({ direction: "inbound", body: "rat in the roof", media: [{ idx: 0, content_type: "image/jpeg" }] });
+    expect(render({ message: captioned, isLastOutbound: false, isMessenger: false })).toContain("rat in the roof");
+  });
+
+  it("renders nothing extra for a message with no attachments", () => {
+    expect(elementTypes(MessageBubble({ message: msg(), isLastOutbound: true, isMessenger: false }))).not.toContain(
+      "Attachment"
+    );
+  });
+});

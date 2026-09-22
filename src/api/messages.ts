@@ -1,5 +1,6 @@
 import { jsonResponse } from "./respond";
 import { listConversations, listThread, markThreadRead, insertMessage } from "../db/messages";
+import { listMediaForPeer } from "../db/messageMedia";
 import { resolveSendingNumber } from "../db/phoneNumbers";
 import { sendSms } from "../twilio/smsClient";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
@@ -43,7 +44,22 @@ export async function handleGetThread(db: D1Database, peer: string, peek = false
   // peek: read-only preview (call detail) — don't clear the unread badge just by looking, and only
   // return the recent tail (the panel shows 6; don't drag a whole long thread out of D1 for that).
   if (!peek) await markThreadRead(db, peer);
-  return jsonResponse(await listThread(db, peer, peek ? 6 : undefined));
+  const messages = await listThread(db, peer, peek ? 6 : undefined);
+  // Attachments for the whole page in ONE query -- a customer photo arrives as a message with an
+  // empty body, so without these the thread shows a blank bubble and nothing else.
+  // Scoped by PEER, not by the page of message ids: an IN list of ids blows D1's 100-parameter
+  // cap on a long conversation and throws inside this handler, which makes the thread unreadable.
+  const media = await listMediaForPeer(db, peer);
+  const byMessage = new Map<string, { idx: number; content_type: string }[]>();
+  for (const m of media) {
+    const list = byMessage.get(m.message_id) ?? [];
+    list.push({ idx: m.idx, content_type: m.content_type });
+    byMessage.set(m.message_id, list);
+  }
+  // The Twilio url is NOT sent to clients: it needs the account credentials, and handing it out
+  // would be handing out a request that only works with them. Clients fetch
+  // /api/messages/:id/media/:idx, which proxies it behind the staff session.
+  return jsonResponse(messages.map((m) => ({ ...m, media: byMessage.get(m.id) ?? [] })));
 }
 
 export async function handleSendMessage(request: Request, env: Env): Promise<Response> {
