@@ -138,6 +138,30 @@ describe("sendMissedCallSmsIfDue", () => {
     expect(row?.missed_sms_sent_at).toBeNull();
   });
 
+  // Two senders now legitimately race for the same call: a caller who hangs up during the
+  // voicemail recording makes Twilio fire the `<Record>` action and the terminal status callback
+  // at the same time, and both reach here. A read-then-send-then-claim order lets both pass the
+  // SELECT and text the customer twice, so the claim happens BEFORE the send. Called directly
+  // rather than through SELF.fetch, which serialises requests and would pass either way.
+  it("texts once when two senders race the same call", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-race");
+    await appendCallEvent(env.DB, "CA-race", "voicemail_left");
+    let sendCount = 0;
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/Messages.json")) {
+        sendCount++;
+        return Promise.resolve(new Response(JSON.stringify({ sid: `SM-race-${sendCount}` }), { status: 201 }));
+      }
+      return realFetch(input as RequestInfo, init);
+    });
+
+    await Promise.all([sendMissedCallSmsIfDue(SMS_ENV, "CA-race"), sendMissedCallSmsIfDue(SMS_ENV, "CA-race")]);
+
+    expect(sendCount).toBe(1);
+  });
+
   it("never double-sends: a second call for the same call id is a no-op", async () => {
     await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
     await insertCall("CA-once");
@@ -249,5 +273,66 @@ describe("sendMissedCallSmsIfDue", () => {
 
     const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?").bind("CA-plain-no-answer").first<{ missed_sms_sent_at: number | null }>();
     expect(row?.missed_sms_sent_at).toBeNull();
+  });
+
+  // Reported live: the text arrived while the caller was still on the phone. A caller who leaves a
+  // voicemail or asks for a callback has `calls.ended_at` stamped by CallSession on the `<Record>`
+  // action -- mid-call, with "Thanks, goodbye" still to play -- and the send used to be made from
+  // there, because the status webhook's own send sat inside the `ended_at IS NULL` write that had
+  // by then changed 0 rows.
+  //
+  // The webhook is now the only sender, and it must run even though that write changes nothing.
+  // The worker handler is called DIRECTLY rather than through SELF.fetch, because the US1 key pair
+  // is a worker secret absent from the test bindings and mutating the imported `env` does not reach
+  // the worker SELF.fetch runs -- a test written that way passes with the send never executed.
+  it("the status webhook still texts a caller whose call was already marked ended mid-IVR", async () => {
+    const worker = (await import("../../src/worker")).default;
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-vm-then-status", { caller: "+61411222444" });
+    await appendCallEvent(env.DB, "CA-vm-then-status", "voicemail_left");
+    // Exactly what the `<Record>` action handler leaves behind: the call is already over as far as
+    // the row is concerned, so the webhook's UPDATE below will change 0 rows.
+    await env.DB.prepare("UPDATE calls SET status = 'completed', ended_at = ? WHERE id = ?")
+      .bind(Date.now(), "CA-vm-then-status")
+      .run();
+
+    let sentTo: string | null = null;
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      // Messages.json specifically: the webhook also calls cleanupLoneConference afterwards, which
+      // is another twilio.com request with no body -- capturing on the host alone overwrote this
+      // with null and the test failed against working code.
+      if (String(input).includes("/Messages.json")) {
+        sentTo = new URLSearchParams(String(init?.body)).get("To");
+        return Promise.resolve(new Response(JSON.stringify({ sid: "SM-vm-then-status" }), { status: 201 }));
+      }
+      if (String(input).includes("twilio.com")) {
+        return Promise.resolve(new Response(JSON.stringify({ conferences: [] }), { status: 200 }));
+      }
+      return realFetch(input as RequestInfo, init);
+    });
+
+    const webhookEnv = {
+      ...env,
+      TWILIO_US1_API_KEY_SID: "SK-test",
+      TWILIO_US1_API_KEY_SECRET: "secret",
+      TWILIO_WEBHOOK_SECRET: "wh-test",
+    } as never;
+    const response = await worker.fetch(
+      new Request("https://example.com/webhooks/twilio/status?whsec=wh-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ CallSid: "CA-vm-then-status", CallStatus: "completed" }).toString(),
+      }),
+      webhookEnv,
+      { waitUntil: () => {}, passThroughOnException: () => {} } as never
+    );
+    expect(response.status).toBe(200);
+
+    expect(sentTo).toBe("+61411222444");
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?")
+      .bind("CA-vm-then-status")
+      .first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeGreaterThan(0);
   });
 });

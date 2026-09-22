@@ -120,12 +120,12 @@ function mainEvent(
   };
 }
 
-function recordingEvent(callSid: string, recordingUrl: string, recordingSid: string) {
+function recordingEvent(callSid: string, recordingUrl: string, recordingSid: string, digits: string | null = null) {
   return {
     callSid,
     from: "+61400000000",
     to: "+61200000000",
-    digits: null,
+    digits,
     recordingUrl,
     recordingSid,
     recordingDuration: "12",
@@ -1928,15 +1928,70 @@ describe("CallSession", () => {
     expect(row?.ivr_path).toBe("main_vm");
   });
 
-  // Reported live: a caller who left a voicemail or requested a callback never got the auto
-  // missed-call text, because both paths set `calls.ended_at` THEMSELVES (here, and in
-  // recordCallbackRequest) rather than through the caller-leg status webhook -- so by the time
-  // Twilio's own terminal status callback arrived, `ended_at IS NULL` was already false and the
-  // webhook's own call to sendMissedCallSmsIfDue never ran. This pins that the voicemail handoff
-  // itself now calls it (see missedCallSms.test.ts for the full "is this call missed" logic --
-  // TWILIO_US1_API_KEY_SID is a worker secret, absent from these test bindings, so the send itself
-  // safely no-ops here; what this test actually pins is that the new call site doesn't throw and
-  // doesn't disturb the voicemail flow it was added to).
+  // The `<Record>` action sends the missed-call text ONLY when the caller has already hung up
+  // (Twilio posts `Digits=hangup` for that). Any other ending means they are still connected and
+  // about to hear "Thanks, goodbye", and texting then buzzes their handset mid-call -- the
+  // reported bug. Both halves are pinned below, because deleting either one leaves the OTHER
+  // test green.
+  //
+  // The US1 key pair is a worker secret and is absent from the test bindings, so the send would
+  // no-op and every assertion here would pass against any code at all. `runInDurableObject` hands
+  // back the real instance in THIS isolate, so its `env` is writable and `vi.stubGlobal` reaches
+  // the fetch it makes -- that is what makes the call site testable rather than just the rule.
+  async function recordWithSmsEnabled(callSid: string, digits: string | null): Promise<string[]> {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm", retryLimit: 0 });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor(callSid);
+    await runInDurableObject(stub, (instance) => {
+      const e = (instance as unknown as { env: Record<string, string> }).env;
+      e.TWILIO_US1_API_KEY_SID = "SK-test";
+      e.TWILIO_US1_API_KEY_SECRET = "secret";
+    });
+
+    const sentTo: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/Messages.json")) {
+        sentTo.push(String(new URLSearchParams(String(init?.body)).get("To")));
+        return Promise.resolve(new Response(JSON.stringify({ sid: `SM-${callSid}` }), { status: 201 }));
+      }
+      if (String(input).includes("twilio.com")) {
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+      }
+      return realFetch(input as RequestInfo, init);
+    });
+
+    await send(stub, mainEvent(callSid));
+    await send(stub, mainEvent(callSid, { digits: "9" }));
+    const rec = await send(stub, recordingEvent(callSid, `https://api.twilio.com/rec/RE-${callSid}`, "RE-x", digits));
+    expect(rec.xml).toContain("<Hangup/>");
+    return sentTo;
+  }
+
+  it("does not text the caller from the <Record> action while they are still on the line", async () => {
+    expect(await recordWithSmsEnabled("CA-vm-still-on", null)).toEqual([]);
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?")
+      .bind("CA-vm-still-on")
+      .first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeNull();
+  });
+
+  // Digits=hangup means the caller ended the recording by hanging up, so the call really is over.
+  // This one cannot be left to the status webhook: Twilio fires that callback and this action
+  // concurrently, and if the webhook lands first `voicemail_left` is not written yet, no "missed"
+  // shape matches, and nothing retries -- the text is lost for good.
+  it("texts the caller from the <Record> action when Digits=hangup says the call is already over", async () => {
+    expect(await recordWithSmsEnabled("CA-vm-hangup", "hangup")).toEqual(["+61400000000"]);
+    const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = ?")
+      .bind("CA-vm-hangup")
+      .first<{ missed_sms_sent_at: number | null }>();
+    expect(row?.missed_sms_sent_at).toBeGreaterThan(0);
+  });
+
   it("leaving a voicemail with the missed-call SMS setting on does not disturb the voicemail flow", async () => {
     await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm", retryLimit: 0 });

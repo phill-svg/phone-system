@@ -15,14 +15,18 @@ type Env = {
   TWILIO_SMS_NUMBER?: string;
 };
 
-// Called from every place a call reaches its actual end -- the caller-leg's own status webhook
-// (CallStatus completed/etc, on the first terminal delivery only -- see the `ended_at IS NULL`
-// guard at each call site) AND the two paths in CallSession that end a call directly, WITHOUT ever
-// going through that webhook: the voicemail `<Record>` handoff and `recordCallbackRequest` both set
-// `calls.ended_at` themselves the instant they run, well before Twilio's own terminal status
-// callback arrives -- so by the time that callback lands, `ended_at IS NULL` is already false and
-// the status-webhook call site never fires. A caller who left a voicemail or asked for a callback
-// therefore got NO text at all until this function was reachable from all three places.
+// Called from ONE place: the caller leg's own terminal status callback (`/webhooks/twilio/status`,
+// configured on the Twilio number). That is the only moment the call is genuinely over, and being
+// genuinely over is the whole requirement -- a customer must not be texted "sorry we missed you"
+// while they are still on the phone to us.
+//
+// It used to be called from CallSession as well, on the voicemail `<Record>` action and the
+// callback request, because those paths stamp `calls.ended_at` themselves and the webhook's send
+// sat behind that same `ended_at IS NULL` write (0 rows changed -> never ran). But the `<Record>`
+// action is NOT the end of a call: the caller is still connected and about to hear "Thanks,
+// goodbye", so the text landed on their handset mid-call. The webhook still fires for those calls
+// -- `ended_at` being already set only stops it re-stamping the row -- so the send simply moved
+// OUT of that guard rather than being duplicated into the IVR.
 //
 // "Missed" is four shapes, not one:
 //   1. `voicemail_left` -- reached a mailbox and recorded something. Never requires `ring_started`:
@@ -63,23 +67,39 @@ export async function sendMissedCallSmsIfDue(env: Env, callSid: string): Promise
       .first<{ caller_number: string }>();
     if (!row?.caller_number) return;
 
+    // CLAIM BEFORE SENDING, and release if the send fails. Two callers can reach here for the same
+    // call concurrently -- a caller who hangs up during the voicemail recording makes Twilio fire
+    // the `<Record>` action and the terminal status callback at the same time, and both are
+    // senders (see CallSession's `digits === "hangup"` block) -- so a SELECT that both pass before
+    // either writes would text the customer twice. This conditional UPDATE is the only thing that
+    // serialises them, so it has to happen before the Twilio call, not after.
+    //
+    // Claiming first is what the comment here used to reject, for a reason that still stands: the
+    // column must record a text that actually WENT OUT, and nothing retries, so a Twilio failure
+    // marking a call "texted" forever would be a lie. Hence the release in the catch -- the claim
+    // is held only for the length of the send.
+    // Resolved BEFORE the claim: it is a read that can throw, and a throw between claiming and the
+    // try/catch below would hold the claim forever with no text ever sent.
     const from = (await resolveSendingNumber(env.DB, "sms", null)) ?? env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER;
-    const { sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET, {
-      to: row.caller_number,
-      from,
-      body: setting.template,
-    });
 
-    // Claimed AFTER the send succeeds, not before: the column is a record of a text that actually
-    // went out, not an attempt. Nothing here retries a failure, so claiming first would have let a
-    // Twilio error permanently mark a call "sent" when it wasn't. The `IS NULL` guard still means
-    // this can never double-claim, and the caller already guarantees a single execution per call
-    // (the status webhook only reaches here on the first terminal delivery) -- this is the same
-    // belt-and-suspenders the rest of this codebase applies anywhere a bug could reach a customer
-    // twice, not the primary defence.
-    await env.DB.prepare("UPDATE calls SET missed_sms_sent_at = ? WHERE id = ? AND missed_sms_sent_at IS NULL")
+    const claim = await env.DB.prepare(
+      "UPDATE calls SET missed_sms_sent_at = ? WHERE id = ? AND missed_sms_sent_at IS NULL"
+    )
       .bind(Date.now(), callSid)
       .run();
+    if ((claim.meta.changes ?? 0) === 0) return;
+
+    let sid: string;
+    try {
+      ({ sid } = await sendSms(env.TWILIO_ACCOUNT_SID, env.TWILIO_US1_API_KEY_SID, env.TWILIO_US1_API_KEY_SECRET, {
+        to: row.caller_number,
+        from,
+        body: setting.template,
+      }));
+    } catch (e) {
+      await env.DB.prepare("UPDATE calls SET missed_sms_sent_at = NULL WHERE id = ?").bind(callSid).run();
+      throw e;
+    }
 
     // Deliberately its own try/catch, same reasoning as handleSendMessage: Twilio has already
     // accepted the message by this point, so a D1 failure here must not be reported as a send
