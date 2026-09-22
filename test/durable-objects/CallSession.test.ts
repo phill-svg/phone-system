@@ -2628,4 +2628,28 @@ describe("CallSession", () => {
     const cb = await env.DB.prepare("SELECT caller_number FROM callback_requests").all();
     expect(cb.results.length).toBe(1);
   });
+
+  // Live 2026-09-23: the node's ack was "your call back has been logged we will be in contact
+  // shortly" -- it sounds final, the beep followed with no invitation, and every caller hung up
+  // (recordings of 2-4s). The invitation is spoken by us, after whatever the admin configured.
+  it("tells the caller to leave a message before the beep, after a custom acknowledgement", async () => {
+    await seedEntryGather({ option1: "main_callback", defaultNextNodeId: "main_vm" });
+    await seedNode({
+      id: "main_callback",
+      type: "callback",
+      config: { audioAssetId: null, ttsText: "your call back has been logged we will be in contact shortly" },
+    });
+    await seedVoicemail("main_vm", "voicemail");
+
+    const stub = stubFor("CA-cb-prompt");
+    await send(stub, mainEvent("CA-cb-prompt", { from: "+61455512345" }));
+    const res = await send(stub, mainEvent("CA-cb-prompt", { digits: "1" }));
+
+    const ack = res.xml.indexOf("your call back has been logged");
+    const prompt = res.xml.indexOf("leave a message after the beep");
+    const record = res.xml.indexOf("<Record");
+    expect(ack).toBeGreaterThan(-1);
+    expect(prompt).toBeGreaterThan(ack);
+    expect(record).toBeGreaterThan(prompt);
+  });
 });

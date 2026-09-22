@@ -617,7 +617,11 @@ export class CallSession extends DurableObject<Env> {
     // callback message apart from an ordinary voicemail (see the `body.recordingUrl` branch of
     // handleMainWebhook).
     await this.ctx.storage.put("awaitingCallbackRecording", true);
-    const greeting = ackFragment || `<Say>${escapeXml("Thanks, we'll call you back soon.")}</Say>`;
+    // The invitation is ours, not the node's: an admin ack reads as a goodbye ("we will be in
+    // contact shortly"), and a bare beep after it had every caller hang up with nothing recorded.
+    const greeting =
+      (ackFragment || `<Say>${escapeXml("Thanks, we'll call you back soon.")}</Say>`) +
+      `<Say>${escapeXml("Please leave a message after the beep.")}</Say>`;
     const recordingStatusCb = appendWebhookSecret(`${origin}/webhooks/twilio/recording-status?callSid=${callSid}&vm=1`, this.env.TWILIO_WEBHOOK_SECRET);
     const recordAction = appendWebhookSecret(`${origin}/webhooks/twilio`, this.env.TWILIO_WEBHOOK_SECRET);
     const record = `<Record action="${escapeXml(recordAction)}" method="POST" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="${escapeXml(recordingStatusCb)}" recordingStatusCallbackEvent="completed"/>`;
