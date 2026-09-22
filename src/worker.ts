@@ -356,12 +356,17 @@ export default {
           // searched for a record that did not exist yet and gave up for good. The row is left
           // with servicem8_synced_at NULL and the cron picks it up a few minutes later --
           // see src/servicem8/syncQueue.ts.
-
-          // Genuinely the call's own end, not a ring round's -- see sendMissedCallSmsIfDue for why
-          // that distinction matters (a caller bridged on a LATER ring round must never get "sorry
-          // we missed you"). Best-effort and never throws; nothing here can fail this webhook.
-          await sendMissedCallSmsIfDue(env, params.CallSid);
         }
+
+        // OUTSIDE the `changes > 0` block on purpose. This is the only moment the call is
+        // genuinely over -- Twilio has reported a terminal status for the caller's own leg -- and
+        // it is the ONLY place the missed-call text is sent. A caller who leaves a voicemail or
+        // asks for a callback has `ended_at` stamped mid-call by CallSession, on the `<Record>`
+        // action, while they are still connected; gating on `changes > 0` meant either texting
+        // them from there (their phone buzzing during the call, the reported bug) or not at all.
+        // Re-running on a redelivered status is harmless: the `missed_sms_sent_at IS NULL` claim
+        // inside is what makes it once-per-call. Best-effort and never throws.
+        await sendMissedCallSmsIfDue(env, params.CallSid);
         // The caller's leg ending may strand the agent alone in the conference (named by
         // this same CallSid) -- end it if at most one participant remains.
         await cleanupLoneConference(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, params.CallSid);

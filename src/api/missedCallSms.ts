@@ -15,14 +15,18 @@ type Env = {
   TWILIO_SMS_NUMBER?: string;
 };
 
-// Called from every place a call reaches its actual end -- the caller-leg's own status webhook
-// (CallStatus completed/etc, on the first terminal delivery only -- see the `ended_at IS NULL`
-// guard at each call site) AND the two paths in CallSession that end a call directly, WITHOUT ever
-// going through that webhook: the voicemail `<Record>` handoff and `recordCallbackRequest` both set
-// `calls.ended_at` themselves the instant they run, well before Twilio's own terminal status
-// callback arrives -- so by the time that callback lands, `ended_at IS NULL` is already false and
-// the status-webhook call site never fires. A caller who left a voicemail or asked for a callback
-// therefore got NO text at all until this function was reachable from all three places.
+// Called from ONE place: the caller leg's own terminal status callback (`/webhooks/twilio/status`,
+// configured on the Twilio number). That is the only moment the call is genuinely over, and being
+// genuinely over is the whole requirement -- a customer must not be texted "sorry we missed you"
+// while they are still on the phone to us.
+//
+// It used to be called from CallSession as well, on the voicemail `<Record>` action and the
+// callback request, because those paths stamp `calls.ended_at` themselves and the webhook's send
+// sat behind that same `ended_at IS NULL` write (0 rows changed -> never ran). But the `<Record>`
+// action is NOT the end of a call: the caller is still connected and about to hear "Thanks,
+// goodbye", so the text landed on their handset mid-call. The webhook still fires for those calls
+// -- `ended_at` being already set only stops it re-stamping the row -- so the send simply moved
+// OUT of that guard rather than being duplicated into the IVR.
 //
 // "Missed" is four shapes, not one:
 //   1. `voicemail_left` -- reached a mailbox and recorded something. Never requires `ring_started`:

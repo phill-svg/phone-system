@@ -232,7 +232,7 @@ export class CallSession extends DurableObject<Env> {
       // (not that webhook) is what first marks a voicemail call ended -- Twilio's own terminal
       // status callback for it arrives later and finds `changes = 0` there, so the missed-call SMS
       // must fire from HERE, on this update's first success, or it never fires at all.
-      const ended = await this.env.DB.prepare(
+      await this.env.DB.prepare(
         "UPDATE calls SET status = 'completed', ended_at = ?, recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration), mailbox_label = ? WHERE id = ? AND ended_at IS NULL"
       )
         .bind(
@@ -254,7 +254,13 @@ export class CallSession extends DurableObject<Env> {
           /* notifications are best-effort */
         }
       }
-      if ((ended.meta.changes ?? 0) > 0) await sendMissedCallSmsIfDue(this.env, callSid);
+      // No missed-call SMS here, deliberately. This runs on the `<Record>` action callback, which
+      // is NOT the end of the call -- the caller is still connected and is about to hear the line
+      // below. Texting from here buzzed the customer's phone mid-call, which is what it looks like
+      // from their end: they are still on the phone to us and being told we missed them. It is sent
+      // from the caller leg's own terminal status callback instead (`/webhooks/twilio/status`),
+      // which is the one moment the call is genuinely over. That webhook fires for these calls too:
+      // `ended_at` being already set here only stops it re-stamping the row, not running.
       return this.xml(wrapResponse("<Say>Thanks, goodbye.</Say><Hangup/>"));
     }
 

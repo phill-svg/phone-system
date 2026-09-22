@@ -1928,15 +1928,12 @@ describe("CallSession", () => {
     expect(row?.ivr_path).toBe("main_vm");
   });
 
-  // Reported live: a caller who left a voicemail or requested a callback never got the auto
-  // missed-call text, because both paths set `calls.ended_at` THEMSELVES (here, and in
-  // recordCallbackRequest) rather than through the caller-leg status webhook -- so by the time
-  // Twilio's own terminal status callback arrived, `ended_at IS NULL` was already false and the
-  // webhook's own call to sendMissedCallSmsIfDue never ran. This pins that the voicemail handoff
-  // itself now calls it (see missedCallSms.test.ts for the full "is this call missed" logic --
-  // TWILIO_US1_API_KEY_SID is a worker secret, absent from these test bindings, so the send itself
-  // safely no-ops here; what this test actually pins is that the new call site doesn't throw and
-  // doesn't disturb the voicemail flow it was added to).
+  // The voicemail handoff deliberately does NOT send the missed-call text: it runs on the
+  // `<Record>` action, with the caller still connected and "Thanks, goodbye" still to play, so a
+  // text from here lands on their handset mid-call (which is how it was reported). The send lives
+  // on the caller leg's terminal status callback instead -- see missedCallSms.test.ts, which pins
+  // that the webhook still fires it even though `ended_at` was already stamped here. What this
+  // test pins is that turning the setting on does not disturb the voicemail flow.
   it("leaving a voicemail with the missed-call SMS setting on does not disturb the voicemail flow", async () => {
     await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
     await seedEntryGather({ option1: "main_ring", defaultNextNodeId: "main_vm", retryLimit: 0 });
