@@ -143,9 +143,11 @@ describe("MessageBubble attachments", () => {
   });
 
   // The body of a picture message is empty, so a bubble that renders only text was a blank one.
-  it("does not render an empty text node when there is no caption", () => {
+  // The time is always there (every message shows when it arrived), but nothing else is.
+  it("renders no body text for a photo with no caption", () => {
     const rendered = render({ message: withPhoto, isLastOutbound: false, isMessenger: false });
-    expect(rendered).toBe("");
+    expect(rendered).toMatch(/^[0-9]/); // the time, and only the time
+    expect(rendered).not.toContain("undefined");
   });
 
   it("still renders the caption a customer sent with the photo", () => {
@@ -157,5 +159,39 @@ describe("MessageBubble attachments", () => {
     expect(elementTypes(MessageBubble({ message: msg(), isLastOutbound: true, isMessenger: false }))).not.toContain(
       "Attachment"
     );
+  });
+});
+
+// Asked for as "can we get a time on the sms as well". Every message carries one -- a thread of
+// bubbles with no times cannot answer "did we reply before they rang?".
+describe("MessageBubble timestamps", () => {
+  it("shows a time on every message, inbound and outbound", () => {
+    for (const direction of ["inbound", "outbound"] as const) {
+      const rendered = render({
+        message: msg({ direction, body: "hi", status: undefined }),
+        isLastOutbound: false,
+        isMessenger: false,
+      });
+      // The fixture ts is 1, so the label is whatever that epoch renders as -- assert a clock time
+      // is present rather than a fixed string, which would only hold in one timezone.
+      expect(rendered).toMatch(/\d{1,2}:\d{2}\s?(am|pm)/i);
+    }
+  });
+
+  // One line, not two: the delivery state joins the time rather than taking its own row under the
+  // bubble.
+  it("puts the delivery state alongside the time, not on its own line", () => {
+    const rendered = render({ message: msg({ status: "delivered" }), isLastOutbound: true, isMessenger: false });
+    expect(rendered).toMatch(/\d{1,2}:\d{2}\s?(am|pm).*Delivered/i);
+  });
+
+  it("still shows the failure reason beside the time", () => {
+    const rendered = render({
+      message: msg({ status: "failed", error_message: "Unreachable" }),
+      isLastOutbound: true,
+      isMessenger: false,
+    });
+    expect(rendered).toContain("Not delivered");
+    expect(rendered).toContain("Unreachable");
   });
 });

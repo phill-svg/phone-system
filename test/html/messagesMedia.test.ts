@@ -22,9 +22,16 @@ type FakeMessage = {
   id: string;
   direction: string;
   body: string;
+  ts?: number;
   status?: string;
   media?: { idx: number; content_type: string }[];
 };
+
+// Every bubble now carries a timestamp caption, so a fixture without `ts` renders the literal
+// string "Invalid Date invalid date" and every assertion below still passes -- which is exactly
+// what this file was doing before the timestamps were reviewed. Defaulted here rather than on
+// seven fixtures, and pinned by its own test below so the default cannot quietly rot again.
+const FIXED_TS = Date.UTC(2020, 0, 15, 2, 30);
 
 // Runs the page's own renderThread over `msgs` and returns the HTML it wrote into the scroller.
 //
@@ -92,7 +99,7 @@ function renderThread(msgs: FakeMessage[]): string {
     "localStorage",
     body
   )(
-    msgs,
+    msgs.map((m) => ({ ts: FIXED_TS, ...m })),
     fakeDocument,
     { addEventListener() {}, location: { search: "", pathname: "/admin/messages" } },
     { search: "", pathname: "/admin/messages", href: "https://tcbvoip.app/admin/messages" },
@@ -107,6 +114,16 @@ function renderThread(msgs: FakeMessage[]): string {
 describe("the messages thread's attachment rendering", () => {
   it("parses - a broken string literal here takes out the whole thread view", () => {
     expect(() => new Function(clientJs())).not.toThrow();
+  });
+
+  // Renders a real date, not "Invalid Date". This is the only test that renders renderThread, so
+  // without it a broken msgTime reaches the dashboard with every other assertion here still green.
+  it("captions each bubble with a real time rather than Invalid Date", () => {
+    const html = renderThread([{ id: "SM1", direction: "inbound", body: "hello" }]);
+    expect(html).not.toContain("Invalid Date");
+    expect(html).not.toContain("invalid date");
+    expect(html).toMatch(/15 Jan\b/);
+    expect(html).toMatch(/\d{1,2}:\d{2}\s?[ap]m/);
   });
 
   // The image is fetched from our own proxy, never Twilio directly: that url needs the account

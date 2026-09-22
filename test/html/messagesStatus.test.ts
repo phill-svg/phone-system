@@ -104,12 +104,45 @@ describe("the thread renderer uses the rule rather than re-deriving it", () => {
   it("renders the caption through msgStatusLabel and both CSS classes", () => {
     const js = clientJs();
     expect(js).toContain("var st=msgStatusLabel(m.direction,m.status,i===lastOut,fbThread);");
-    expect(js).toContain('(st.failed?"msg-status-fail":"msg-status")');
+    // The caption now carries the TIME as well, so the failed branch is guarded (`st` may be null
+    // when there is no delivery state but there is always a time). Behaviour for the media path is
+    // pinned by rendering in messagesMedia.test.ts; this file still checks the rule is consulted.
+    expect(js).toContain('(st&&st.failed)?"msg-status-fail":"msg-status"');
     expect(html).toContain(".msg-status {");
     expect(html).toContain(".msg-status-fail {");
   });
 
   it("still parses as JavaScript", () => {
     expect(() => new Function(clientJs())).not.toThrow();
+  });
+
+  // The web copy of the rule in mobile/src/lib/conversations.ts (messageTimeLabel). These two are
+  // the pair this repo has already watched drift once, on "was this call missed?", so the rule is
+  // pinned on both sides rather than on the one that happened to be easier to call.
+  describe("msgTime", () => {
+    const msgTime = evalFn<(ts: number, now: number) => string>("msgTime");
+    const now = Date.UTC(2026, 8, 22, 2, 30); // 22 Sep 2026, 12:30pm Sydney
+
+    it("shows only the time for a message sent today", () => {
+      expect(msgTime(Date.UTC(2026, 8, 22, 0, 13), now)).toMatch(/^\d{1,2}:\d{2} ?[ap]m$/);
+    });
+
+    it("says Yesterday for the day before, across a month boundary", () => {
+      expect(msgTime(Date.UTC(2026, 8, 21, 2, 30), now)).toMatch(/^Yesterday /);
+      const firstOfMonth = Date.UTC(2026, 9, 1, 2, 30);
+      expect(msgTime(Date.UTC(2026, 8, 30, 2, 30), firstOfMonth)).toMatch(/^Yesterday /);
+    });
+
+    it("adds the date earlier in the year, and the year before that", () => {
+      expect(msgTime(Date.UTC(2026, 8, 12, 2, 30), now)).toMatch(/^12 Sep(t)?\b/);
+      expect(msgTime(Date.UTC(2026, 8, 12, 2, 30), now)).not.toMatch(/2026/);
+      expect(msgTime(Date.UTC(2025, 8, 12, 2, 30), now)).toMatch(/2025/);
+    });
+
+    // A second `new Date()` read could put "Yesterday" on a message sent today. One read means the
+    // answer depends only on the argument, so the same pair of inputs is always the same string.
+    it("reads the clock once: the answer depends only on its arguments", () => {
+      expect(msgTime(Date.UTC(2026, 8, 22, 0, 13), now)).toBe(msgTime(Date.UTC(2026, 8, 22, 0, 13), now));
+    });
   });
 });
