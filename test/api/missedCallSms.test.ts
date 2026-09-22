@@ -138,6 +138,30 @@ describe("sendMissedCallSmsIfDue", () => {
     expect(row?.missed_sms_sent_at).toBeNull();
   });
 
+  // Two senders now legitimately race for the same call: a caller who hangs up during the
+  // voicemail recording makes Twilio fire the `<Record>` action and the terminal status callback
+  // at the same time, and both reach here. A read-then-send-then-claim order lets both pass the
+  // SELECT and text the customer twice, so the claim happens BEFORE the send. Called directly
+  // rather than through SELF.fetch, which serialises requests and would pass either way.
+  it("texts once when two senders race the same call", async () => {
+    await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+    await insertCall("CA-race");
+    await appendCallEvent(env.DB, "CA-race", "voicemail_left");
+    let sendCount = 0;
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/Messages.json")) {
+        sendCount++;
+        return Promise.resolve(new Response(JSON.stringify({ sid: `SM-race-${sendCount}` }), { status: 201 }));
+      }
+      return realFetch(input as RequestInfo, init);
+    });
+
+    await Promise.all([sendMissedCallSmsIfDue(SMS_ENV, "CA-race"), sendMissedCallSmsIfDue(SMS_ENV, "CA-race")]);
+
+    expect(sendCount).toBe(1);
+  });
+
   it("never double-sends: a second call for the same call id is a no-op", async () => {
     await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
     await insertCall("CA-once");

@@ -230,8 +230,9 @@ export class CallSession extends DurableObject<Env> {
       }
       // `ended_at IS NULL` guards this exactly like the caller-leg status webhook does: this write
       // (not that webhook) is what first marks a voicemail call ended -- Twilio's own terminal
-      // status callback for it arrives later and finds `changes = 0` there, so the missed-call SMS
-      // must fire from HERE, on this update's first success, or it never fires at all.
+      // status callback for it arrives later and finds `changes = 0` there. The missed-call SMS
+      // therefore does NOT hang off this write's success; see the `callerHungUp` block below for
+      // where it is sent from and why.
       await this.env.DB.prepare(
         "UPDATE calls SET status = 'completed', ended_at = ?, recording_url = ?, recording_sid = ?, recording_duration = COALESCE(?, recording_duration), mailbox_label = ? WHERE id = ? AND ended_at IS NULL"
       )
@@ -254,13 +255,22 @@ export class CallSession extends DurableObject<Env> {
           /* notifications are best-effort */
         }
       }
-      // No missed-call SMS here, deliberately. This runs on the `<Record>` action callback, which
-      // is NOT the end of the call -- the caller is still connected and is about to hear the line
-      // below. Texting from here buzzed the customer's phone mid-call, which is what it looks like
-      // from their end: they are still on the phone to us and being told we missed them. It is sent
-      // from the caller leg's own terminal status callback instead (`/webhooks/twilio/status`),
-      // which is the one moment the call is genuinely over. That webhook fires for these calls too:
-      // `ended_at` being already set here only stops it re-stamping the row, not running.
+      // The missed-call SMS is sent from here ONLY when the caller has already hung up.
+      //
+      // Twilio posts `Digits=hangup` on a `<Record>` action when hanging up is what ended the
+      // recording, which is how most people end a voicemail. Any other value (a key, the 5s
+      // silence timeout, maxLength) means the caller is STILL CONNECTED and about to hear the line
+      // below -- texting then buzzes their handset mid-call while they are on the phone to us,
+      // which is exactly what was reported. Those calls are sent from the caller leg's own
+      // terminal status callback instead, the one moment the call is genuinely over.
+      //
+      // The hangup case cannot be left to that webhook alone. Twilio fires it and this action
+      // CONCURRENTLY with no ordering guarantee, so if the webhook lands first, `voicemail_left`
+      // is not written yet and none of the four "missed" shapes match -- and for an after-hours
+      // call routed straight to voicemail there is no `ring_started` either, so nothing rescues
+      // it. Nothing retries, and the text is lost permanently. Both senders racing is safe:
+      // `sendMissedCallSmsIfDue` claims the call before sending.
+      if (digits === "hangup") await sendMissedCallSmsIfDue(this.env, callSid);
       return this.xml(wrapResponse("<Say>Thanks, goodbye.</Say><Hangup/>"));
     }
 
