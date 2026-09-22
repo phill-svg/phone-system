@@ -100,3 +100,36 @@ export function lastOutboundId(messages: { id: string; direction: string }[] | u
   }
   return null;
 }
+
+// When a message was sent or received, as a human reads it.
+//
+// Asked for as "can we get a time on the sms as well, like when we sent and received". A thread
+// with no times cannot answer "did we reply before they rang?" or "how long did they wait?", which
+// is the question staff actually have when they open one.
+//
+// Relative to NOW rather than absolute, the way a phone's own Messages app does it: a time alone is
+// ambiguous the moment a thread spans two days, and a full date on every bubble in a conversation
+// held this morning is noise. `now` is a parameter so this is testable without mocking the clock --
+// `process.env.TZ` does nothing in this repo's test runner, a lesson already paid for here.
+export function messageTimeLabel(ts: number, now: number = Date.now()): string {
+  const at = new Date(ts);
+  const today = new Date(now);
+  const time = at
+    .toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })
+    .toLowerCase()
+    // en-AU renders "3:42 pm" on some runtimes and "3:42 PM" on others; normalise so the thread
+    // does not mix the two.
+    .replace(/\s+/g, " ");
+  if (at.toDateString() === today.toDateString()) return time;
+  const yesterday = new Date(now);
+  yesterday.setDate(today.getDate() - 1);
+  if (at.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+  // Same year: the year adds nothing. Older than that and it is the thing you are looking for.
+  const sameYear = at.getFullYear() === today.getFullYear();
+  const date = at.toLocaleDateString("en-AU", {
+    day: "numeric",
+    month: "short",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+  return `${date} ${time}`;
+}

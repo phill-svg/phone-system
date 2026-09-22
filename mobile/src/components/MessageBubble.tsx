@@ -1,6 +1,6 @@
 import React from "react";
 import { View, Text, Image, StyleSheet } from "react-native";
-import { messageStatusLabel } from "../lib/conversations";
+import { messageStatusLabel, messageTimeLabel } from "../lib/conversations";
 import { INLINE_IMAGE_TYPES, messageMediaPath, useMediaSource } from "../lib/mediaSource";
 import { useTheme, type } from "../theme/theme";
 import type { Message } from "../lib/api";
@@ -41,6 +41,11 @@ export function MessageBubble({
   // Only a failure carries a reason worth printing. A successful "Delivered" has nothing to add,
   // and error_code/error_message can be left over on a row that later succeeded.
   const failDetail = message.error_message || (message.error_code ? `Error ${message.error_code}` : null);
+  // The time is ALWAYS shown; the delivery state joins it on the one message that carries one.
+  // Two separate lines under a bubble is twice the vertical space for one bubble's worth of
+  // metadata, and the thread is the thing being read.
+  const time = messageTimeLabel(message.ts);
+  const caption = label ? `${time}  ${String.fromCharCode(183)}  ${label.text}` : time;
 
   return (
     <View>
@@ -57,24 +62,22 @@ export function MessageBubble({
           ) : null}
         </View>
       </View>
-      {label ? (
-        <View style={[styles.bubbleRow, { justifyContent: "flex-end" }]}>
+      <View style={[styles.bubbleRow, { justifyContent: out ? "flex-end" : "flex-start" }]}>
           <Text
             style={[
               type.caption,
               {
-                color: label.failed ? "#FF3B30" : t.colors.labelSecondary,
+                color: label && label.failed ? "#FF3B30" : t.colors.labelTertiary,
                 paddingHorizontal: 4,
                 maxWidth: "78%",
-                textAlign: "right",
+                textAlign: out ? "right" : "left",
               },
             ]}
           >
-            {label.text}
-            {label.failed && failDetail ? ` -- ${failDetail}` : ""}
-          </Text>
-        </View>
-      ) : null}
+          {caption}
+          {label && label.failed && failDetail ? ` -- ${failDetail}` : ""}
+        </Text>
+      </View>
     </View>
   );
 }

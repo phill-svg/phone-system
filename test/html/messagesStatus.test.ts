@@ -104,7 +104,10 @@ describe("the thread renderer uses the rule rather than re-deriving it", () => {
   it("renders the caption through msgStatusLabel and both CSS classes", () => {
     const js = clientJs();
     expect(js).toContain("var st=msgStatusLabel(m.direction,m.status,i===lastOut,fbThread);");
-    expect(js).toContain('(st.failed?"msg-status-fail":"msg-status")');
+    // The caption now carries the TIME as well, so the failed branch is guarded (`st` may be null
+    // when there is no delivery state but there is always a time). Behaviour for the media path is
+    // pinned by rendering in messagesMedia.test.ts; this file still checks the rule is consulted.
+    expect(js).toContain('(st&&st.failed)?"msg-status-fail":"msg-status"');
     expect(html).toContain(".msg-status {");
     expect(html).toContain(".msg-status-fail {");
   });
