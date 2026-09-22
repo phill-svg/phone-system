@@ -67,7 +67,11 @@ export function MessageBubble({
             style={[
               type.caption,
               {
-                color: label && label.failed ? "#FF3B30" : t.colors.labelTertiary,
+                // labelSecondary, NOT labelTertiary: the caption carries the delivery state as
+                // well as the time, and tertiary (#A6A6AC light, #68686F dark) is about 2.3:1 on
+                // caption-sized text -- under the 4.5:1 floor. Wanting the time quieter is not a
+                // reason to dim "Not delivered" with it.
+                color: label && label.failed ? "#FF3B30" : t.colors.labelSecondary,
                 paddingHorizontal: 4,
                 maxWidth: "78%",
                 textAlign: out ? "right" : "left",

@@ -129,7 +129,13 @@ const CLIENT_JS = [
   // When a message was sent or received. Mirrors messageTimeLabel in
   // mobile/src/lib/conversations.ts -- relative to today, the way a phone's own Messages app does
   // it, because a bare time is ambiguous the moment a thread spans two days.
-  'function msgTime(ts){var at=new Date(ts);var now=new Date();var t=at.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}).toLowerCase();if(at.toDateString()===now.toDateString())return t;var y=new Date();y.setDate(now.getDate()-1);if(at.toDateString()===y.toDateString())return "Yesterday "+t;var opts={day:"numeric",month:"short"};if(at.getFullYear()!==now.getFullYear())opts.year="numeric";return at.toLocaleDateString("en-AU",opts)+" "+t;}',
+  // `nowMs` is a parameter for two reasons. It makes this testable the same way msgStatusLabel is
+  // (evalFn pulls the single emitted line and calls it), which is the only difference that made
+  // the mobile twin testable and this one not. And it is ONE clock read: the old version called
+  // `new Date()` twice, so a tick between them could put "Yesterday" on a message sent today.
+  // `.replace(/\\s+/g," ")` matches the mobile copy -- Chrome emits U+202F before am/pm in some
+  // locales, and these two already drifted on it.
+  'function msgTime(ts,nowMs){var at=new Date(ts);var now=new Date(nowMs==null?Date.now():nowMs);var t=at.toLocaleTimeString("en-AU",{hour:"numeric",minute:"2-digit"}).toLowerCase().replace(/\\s+/g," ");if(at.toDateString()===now.toDateString())return t;var y=new Date(now.getTime());y.setDate(y.getDate()-1);if(at.toDateString()===y.toDateString())return "Yesterday "+t;var opts={day:"numeric",month:"short"};if(at.getFullYear()!==now.getFullYear())opts.year="numeric";return at.toLocaleDateString("en-AU",opts)+" "+t;}',
   'function isInlineImage(ct){return ["image/jpeg","image/png","image/gif","image/webp"].indexOf(String(ct||""))!==-1;}',
   'function isMessenger(number){ return String(number==null?"":number).indexOf("messenger:")===0; }',
   'function avatarText(c){ return (isMessenger(c.number)&&!c.name)?"FB":initials(label(c)); }',
