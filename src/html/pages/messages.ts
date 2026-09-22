@@ -126,7 +126,7 @@ const CLIENT_JS = [
   // An SVG is an image to a person and a script host to a browser, and this content type is
   // chosen by whoever sent the message. The server refuses to serve one inline for the same
   // reason.
-  'function isInlineImage(ct){var t=String(ct||"");return t.indexOf("image/")===0&&t!=="image/svg+xml";}',
+  'function isInlineImage(ct){return ["image/jpeg","image/png","image/gif","image/webp"].indexOf(String(ct||""))!==-1;}',
   'function isMessenger(number){ return String(number==null?"":number).indexOf("messenger:")===0; }',
   'function avatarText(c){ return (isMessenger(c.number)&&!c.name)?"FB":initials(label(c)); }',
   'function chanChip(number){ return isMessenger(number)?"<span class=\\"chan chan-fb\\">Messenger</span>":"<span class=\\"chan chan-sms\\">SMS</span>"; }',

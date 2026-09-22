@@ -863,7 +863,12 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
                 var meta = document.createElement('div'); meta.className = 'msg-preview-meta';
                 meta.textContent = (m.direction === 'outbound' ? 'You' : 'Them') + ' \\u00b7 ' +
                   new Date(m.ts).toLocaleString('en-AU', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-                var txt = document.createElement('div'); txt.className = 'msg-preview-body'; txt.textContent = m.body;
+                var txt = document.createElement('div'); txt.className = 'msg-preview-body';
+                // A photo-only message has an empty body, which rendered as a blank line here.
+                // This peek deliberately shows text only -- it is a six-line summary beside a call,
+                // not the thread -- so it says an attachment exists and the thread shows it.
+                var nMedia = (m.media || []).length;
+                txt.textContent = m.body || (nMedia ? (nMedia > 1 ? nMedia + ' attachments' : 'Photo') : '');
                 line.appendChild(meta); line.appendChild(txt);
                 msgBody.appendChild(line);
               });

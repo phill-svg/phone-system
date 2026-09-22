@@ -14,14 +14,18 @@ type MediaEnv = {
 // NOTE what is missing: `image/svg+xml`. An SVG is an image to a person and a document that can
 // run script to a browser, so serving one inline from our own origin is stored XSS with a staff
 // session attached. Twilio reports the type from the file itself, so this is attacker-chosen.
-const SERVEABLE_INLINE = new Set([
+export const SERVEABLE_INLINE = new Set([
   "image/jpeg",
   "image/png",
   "image/gif",
   "image/webp",
-  "image/heic",
   "application/pdf",
 ]);
+
+// What a CLIENT should render as a picture. A subset: a PDF is served inline but is not an image,
+// and `image/heic` is left out of both -- Chrome and Firefox cannot decode it, so an iPhone photo
+// would be a broken frame on the web dashboard rather than a download that opens.
+export const INLINE_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 // Twilio's own media host. Anything else in the stored url is refused rather than fetched with the
 // account's credentials attached: the url comes from a webhook body, and "follow a URL from a

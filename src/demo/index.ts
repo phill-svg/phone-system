@@ -80,7 +80,16 @@ export function handleDemoRequest(
   }
 
   // Demo calls carry no recording, so the player never appears and this only guards a direct hit.
-  if (/^\/api\/calls\/[^/]+\/recording$/.test(url.pathname)) {
+  //
+  // Message attachments are the same shape and MUST be here too: the thread rule above is
+  // `$`-anchored, so `/api/messages/:id/media/:idx` falls past it, and past this block entirely,
+  // into the real handler -- which would stream a real customer's photo to an App Review reviewer.
+  // That is the "a defaulted exclusion list fails open" trap, and the reason this list is the thing
+  // to check when a route is added under a path the demo account can reach.
+  if (
+    /^\/api\/calls\/[^/]+\/recording$/.test(url.pathname) ||
+    /^\/api\/messages\/[^/]+\/media\/\d+$/.test(url.pathname)
+  ) {
     return new Response("not found", { status: 404 });
   }
 

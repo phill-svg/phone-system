@@ -1,7 +1,7 @@
 import React from "react";
-import { View, Text, Image, Pressable, StyleSheet } from "react-native";
+import { View, Text, Image, StyleSheet } from "react-native";
 import { messageStatusLabel } from "../lib/conversations";
-import { messageMediaPath, useMediaSource } from "../lib/mediaSource";
+import { INLINE_IMAGE_TYPES, messageMediaPath, useMediaSource } from "../lib/mediaSource";
 import { useTheme, type } from "../theme/theme";
 import type { Message } from "../lib/api";
 
@@ -107,10 +107,16 @@ function Attachment({
   outbound: boolean;
 }) {
   const t = useTheme();
-  // NOT `image/svg+xml`, which the server also refuses to serve inline: an SVG is an image to a
-  // person and a script host to a browser, and this content type is chosen by whoever sent the
-  // message. Shown as a named attachment instead.
-  const isImage = contentType.startsWith("image/") && contentType !== "image/svg+xml";
+  // Twilio keeps the media, not us, so an attachment CAN age out (the proxy answers 404), and a
+  // locked phone can refuse the keychain. Both used to render as a blank square forever with
+  // nothing saying an attachment was even there; this flips to the text branch instead.
+  const [failed, setFailed] = React.useState(false);
+  // The SAME list the server will serve inline (INLINE_IMAGE_TYPES). `image/*` disagreed with it:
+  // bmp, tiff, avif and heif took this branch, the server sent them as downloads, and the bubble
+  // showed an empty grey square with no label -- the blank-with-no-explanation symptom this whole
+  // feature exists to remove. SVG is excluded on both sides: an image to a person, a script host
+  // to a browser, and the type is chosen by whoever sent the message.
+  const isImage = INLINE_IMAGE_TYPES.includes(contentType) && !failed;
   const source = useMediaSource(isImage ? messageMediaPath(messageId, idx) : null);
 
   if (!isImage) {
@@ -124,7 +130,18 @@ function Attachment({
   // space rather than flashing a broken image.
   return (
     <View style={[styles.media, { backgroundColor: t.colors.fill }]}>
-      {source ? <Image source={source} style={styles.mediaImage} resizeMode="cover" accessibilityLabel="Attached photo" /> : null}
+      {source ? (
+        <Image
+          source={source}
+          style={styles.mediaImage}
+          resizeMode="cover"
+          accessibilityLabel="Attached photo"
+          // Twilio keeps the media, not us, so an attachment CAN age out -- and a locked phone
+          // can refuse the keychain. Both rendered as a blank square forever with nothing saying
+          // an attachment was even there. Falling back to the text branch says it.
+          onError={() => setFailed(true)}
+        />
+      ) : null}
     </View>
   );
 }

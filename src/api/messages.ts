@@ -1,6 +1,6 @@
 import { jsonResponse } from "./respond";
 import { listConversations, listThread, markThreadRead, insertMessage } from "../db/messages";
-import { listMediaForMessages } from "../db/messageMedia";
+import { listMediaForPeer } from "../db/messageMedia";
 import { resolveSendingNumber } from "../db/phoneNumbers";
 import { sendSms } from "../twilio/smsClient";
 import { appendWebhookSecret } from "../twilio/webhookAuth";
@@ -47,7 +47,9 @@ export async function handleGetThread(db: D1Database, peer: string, peek = false
   const messages = await listThread(db, peer, peek ? 6 : undefined);
   // Attachments for the whole page in ONE query -- a customer photo arrives as a message with an
   // empty body, so without these the thread shows a blank bubble and nothing else.
-  const media = await listMediaForMessages(db, messages.map((m) => m.id));
+  // Scoped by PEER, not by the page of message ids: an IN list of ids blows D1's 100-parameter
+  // cap on a long conversation and throws inside this handler, which makes the thread unreadable.
+  const media = await listMediaForPeer(db, peer);
   const byMessage = new Map<string, { idx: number; content_type: string }[]>();
   for (const m of media) {
     const list = byMessage.get(m.message_id) ?? [];

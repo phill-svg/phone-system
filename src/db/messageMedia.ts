@@ -49,18 +49,25 @@ export async function insertMessageMedia(
   );
 }
 
-// Every attachment for a set of messages, in one query -- the thread renders a page of messages at
-// a time, and one query per message would be a round trip per bubble.
-export async function listMediaForMessages(db: D1Database, messageIds: string[]): Promise<MessageMedia[]> {
-  if (messageIds.length === 0) return [];
-  const placeholders = messageIds.map(() => "?").join(", ");
+// Every attachment in one conversation, in ONE query with ONE bound parameter.
+//
+// NOT `WHERE message_id IN (?, ?, ...)` over the page of messages: D1 caps a query at 100 bound
+// parameters, and the thread view loads a conversation with no LIMIT -- so a customer who has sent
+// more than ~100 messages would throw inside the thread handler and make the conversation
+// unreadable on BOTH surfaces. It would also pass every local test, because miniflare does not
+// enforce that cap, and fail only in production: the same shape as the PBKDF2 iteration limit this
+// repo has already been bitten by.
+//
+// Scoping by peer instead fetches the whole conversation's media, which is a handful of rows even
+// for a long thread -- attachments are rare compared to texts.
+export async function listMediaForPeer(db: D1Database, peer: string): Promise<MessageMedia[]> {
   const rows = await db
     .prepare(
       `SELECT message_id, idx, content_type, url FROM message_media
-        WHERE message_id IN (${placeholders})
+        WHERE message_id IN (SELECT id FROM messages WHERE peer_number = ? AND deleted_at IS NULL)
         ORDER BY message_id, idx`
     )
-    .bind(...messageIds)
+    .bind(peer)
     .all<MessageMedia>();
   return rows.results;
 }

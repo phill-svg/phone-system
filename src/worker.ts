@@ -1108,13 +1108,14 @@ export default {
           read: 0,
           createdAt: Date.now(),
         });
+        const mediaOnMessage = parseInboundMedia(params);
         // A photo the customer sent. Twilio carries these as NumMedia/MediaUrlN on the same
         // webhook, and nothing read them -- so an attachment arrived as a message with an empty
         // body and no sign anything was missing. In its own try: the message is already stored,
         // and losing the attachment must never turn a delivered text into a failed webhook that
         // Twilio then redelivers.
         try {
-          await insertMessageMedia(env.DB, messageId, parseInboundMedia(params));
+          await insertMessageMedia(env.DB, messageId, mediaOnMessage);
         } catch (e) {
           console.log("MESSAGE_MEDIA_INSERT_FAILED", JSON.stringify({ messageId, error: e instanceof Error ? e.message : String(e) }));
         }
@@ -1166,7 +1167,10 @@ export default {
         }
 
         // Notify staff devices (don't let a push failure break the webhook ack).
-        const notify = notifyInboundSms(env.DB, params.From, params.Body ?? "", fbName).catch(() => {});
+        // A photo arrives with an empty body, and an empty push says a message came in while showing
+        // nothing about it -- the half of this bug that is not in the thread view.
+        const preview = (params.Body ?? "").trim() || (mediaOnMessage.length ? "Photo" : "");
+        const notify = notifyInboundSms(env.DB, params.From, preview, fbName).catch(() => {});
         if (ctx) ctx.waitUntil(notify);
         else await notify;
       }

@@ -46,3 +46,13 @@ export function useMediaSource(path: string | null): ImageSource | null {
   }, [path]);
   return source;
 }
+
+// What a client renders as a picture, mirroring `INLINE_IMAGE_TYPES` in
+// `src/api/messageMediaProxy.ts` -- the server serves exactly these inline and everything else as a
+// download, so a client that inlines a wider set shows a broken frame (web) or an empty grey square
+// (mobile) for a file the server never intended to be displayed.
+//
+// `image/svg+xml` is in neither: an image to a person, a script host to a browser, and the type is
+// chosen by whoever sent the message. `image/heic` is in neither either -- Chrome and Firefox
+// cannot decode it, so an iPhone photo is better offered as a download than shown broken.
+export const INLINE_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];

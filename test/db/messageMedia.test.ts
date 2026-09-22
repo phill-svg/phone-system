@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { getMessageMedia, insertMessageMedia, listMediaForMessages, parseInboundMedia } from "../../src/db/messageMedia";
+import { getMessageMedia, insertMessageMedia, listMediaForPeer, parseInboundMedia } from "../../src/db/messageMedia";
 
 // A customer's photo used to arrive as a message with an empty body and nothing saying an
 // attachment had been dropped. These cover the parse -- where a malformed webhook could otherwise
@@ -64,7 +64,7 @@ describe("message media storage", () => {
     await insertMessageMedia(env.DB, "SM1", [
       { idx: 0, content_type: "image/jpeg", url: "https://api.twilio.com/media/ME1" },
     ]);
-    expect(await listMediaForMessages(env.DB, ["SM1", "SM2"])).toEqual([
+    expect(await listMediaForPeer(env.DB, "+61400000000")).toEqual([
       { message_id: "SM1", idx: 0, content_type: "image/jpeg", url: "https://api.twilio.com/media/ME1" },
     ]);
   });
@@ -75,20 +75,45 @@ describe("message media storage", () => {
     const media = [{ idx: 0, content_type: "image/jpeg", url: "https://api.twilio.com/media/ME1" }];
     await insertMessageMedia(env.DB, "SM1", media);
     await insertMessageMedia(env.DB, "SM1", media);
-    expect(await listMediaForMessages(env.DB, ["SM1"])).toHaveLength(1);
+    expect(await listMediaForPeer(env.DB, "+61400000000")).toHaveLength(1);
   });
 
   it("writes nothing for a message with no attachments", async () => {
     await insertMessageMedia(env.DB, "SM2", []);
-    expect(await listMediaForMessages(env.DB, ["SM2"])).toEqual([]);
+    expect(await listMediaForPeer(env.DB, "+61400000000")).toEqual([]);
   });
 
-  // The thread loads a page of messages at a time; one query per bubble would be a round trip each.
-  it("reads several messages' attachments in one go", async () => {
+  // The thread loads a whole conversation; one query per bubble would be a round trip each.
+  it("reads a conversation's attachments in one go", async () => {
     await insertMessageMedia(env.DB, "SM1", [{ idx: 0, content_type: "image/jpeg", url: "https://x/1" }]);
     await insertMessageMedia(env.DB, "SM2", [{ idx: 0, content_type: "image/png", url: "https://x/2" }]);
-    expect(await listMediaForMessages(env.DB, ["SM1", "SM2"])).toHaveLength(2);
-    expect(await listMediaForMessages(env.DB, [])).toEqual([]);
+    expect(await listMediaForPeer(env.DB, "+61400000000")).toHaveLength(2);
+  });
+
+  it("returns nothing for a conversation with no attachments", async () => {
+    expect(await listMediaForPeer(env.DB, "+61499999999")).toEqual([]);
+  });
+
+  // The reason this is scoped by PEER rather than by a list of message ids: D1 caps a query at 100
+  // bound parameters, and the thread view loads a conversation with no LIMIT. An IN list would
+  // throw inside the thread handler once a customer passed ~100 messages, making the conversation
+  // unreadable on both surfaces -- and it would pass locally, because miniflare does not enforce
+  // the cap. One parameter cannot hit it.
+  it("handles a conversation far longer than D1's bound-parameter cap", async () => {
+    const inserts = [];
+    for (let i = 0; i < 150; i++) {
+      inserts.push(
+        env.DB.prepare(
+          "INSERT INTO messages (id, direction, peer_number, our_number, body, status, read, created_at) VALUES (?, 'inbound', '+61400000000', '+61485034869', 'hi', 'received', 1, ?)"
+        ).bind(`BULK${i}`, 100 + i)
+      );
+    }
+    await env.DB.batch(inserts);
+    await insertMessageMedia(env.DB, "BULK149", [{ idx: 0, content_type: "image/jpeg", url: "https://x/last" }]);
+
+    const media = await listMediaForPeer(env.DB, "+61400000000");
+    expect(media).toHaveLength(1);
+    expect(media[0].url).toBe("https://x/last");
   });
 
   it("finds one attachment for the proxy, and null for one that does not exist", async () => {

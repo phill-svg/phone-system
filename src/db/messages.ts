@@ -41,7 +41,12 @@ export async function insertMessage(
 export async function listConversations(db: D1Database): Promise<ConversationRow[]> {
   const rows = await db
     .prepare(
-      `SELECT m.peer_number AS number, fb.name AS fb_name, m.body AS last_body, m.created_at AS last_ts,
+      `SELECT m.peer_number AS number, fb.name AS fb_name, m.created_at AS last_ts,
+         -- A photo-only message has an EMPTY body, which rendered as a blank conversation row:
+         -- staff could see that someone had messaged and not what, or even that anything was
+         -- attached. The preview says so instead.
+         CASE WHEN TRIM(m.body) = '' AND EXISTS (SELECT 1 FROM message_media mm WHERE mm.message_id = m.id)
+              THEN 'Photo' ELSE m.body END AS last_body,
          (SELECT COUNT(*) FROM messages u WHERE u.peer_number = m.peer_number AND u.direction = 'inbound' AND u.read = 0 AND u.deleted_at IS NULL) AS unread
        FROM messages m
        JOIN (SELECT peer_number, MAX(created_at) AS mx FROM messages WHERE deleted_at IS NULL GROUP BY peer_number) latest
