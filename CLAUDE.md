@@ -576,6 +576,51 @@ before adding one, or you will duplicate a path that already works.
 - **Call History was removed from the web dashboard (#63).** The handset carries the same list. The
   per-call DETAIL page `/admin/calls/:id` stays — `/admin/voicemail` links into it — but
   `/admin/calls` 404s deliberately, and a test pins that.
+- **The web Phone page is the dashboard's SHELL: every other section runs in a frame over it (#142,
+  2026-09-23). Never let a dashboard navigation leave `/admin/phone`.** The Twilio Device exists only
+  on that page, and a full-page navigation destroys it -- and Twilio never re-offers a call to a
+  Device that registered after the call started. So before #142 a call rang NOWHERE while staff were
+  on Messages or Voicemail, and clicking back to Phone mid-ring showed it as "In progress" with no
+  Answer (reported on the desktop app; the browser was identical). The desktop app loads
+  `/admin/phone`, so it got the fix from the web deploy; a desktop-only two-view Electron version was
+  written first and dropped because running both designs would register two Devices.
+  The load-bearing pieces, all in `src/html/pages/phone.ts`, `layout.ts` and the `/admin/` routes:
+  * **Shell or plain page is decided by `Sec-Fetch-Dest`.** `document` (a top-level load) gets the
+    Phone page with that section open in `#section-frame`; each `/admin/` route returns it FIRST
+    (`topLevel`/`shellHere`), before its own queries, so nothing runs twice and a 404 stays a 404
+    (call detail checks the row exists, `deleted_at IS NULL`). `iframe` gets the plain page. A MISSING
+    header gets the plain page too -- never the shell, which inside a frame nests a second softphone
+    -- and that page sends itself to `/admin/phone?section=...` (layout head script), which is also
+    the safety net for a route that forgets `topLevel`. `?section=` accepts only a dashboard path.
+  * **`/admin/phone` requested INTO the frame answers a stub** (`renderPhoneFrameStub`) that hands
+    `?dial=`/`?listen=` to the running page (`tcbShowPhone` -> `tcbPhoneDeepLink`). Messages "Call",
+    Live Calls "Listen" and the staff/demo redirects all land there. The Phone page also guards
+    itself: framed anyway, it `window.stop()`s before the SDK loads.
+  * **One softphone per browser, via the Web Locks API** (`tcb-softphone`). Every dashboard tab is
+    now the Phone page, so without it a Ctrl-clicked second tab rang every call too. A tab whose
+    phone failed to start RELEASES the lock (or every other tab waits behind a phone that never
+    rings); a lock API that refuses starts the phone anyway.
+  * **A ringing call hides the section without unloading it** (`tcbHideSection`, draft kept, media
+    paused) and brings it back when the call ends -- unless another call is still up, or the user
+    chose Phone ("back to call" button, Phone link, Back), which keeps it loaded but hidden. Hidden
+    frames still report `visibilityState` "visible", so the layout wraps `setInterval` in framed
+    pages to pause every poll while hidden: Messages' thread poll marks the thread read for the WHOLE
+    team, and a hidden one would clear texts nobody saw. It covers `setInterval` only; a new poll
+    built on a `setTimeout` chain needs to check `window.tcbSectionHidden()` itself.
+  * The frame's location is always REPLACED; the top page gets one `pushState` per section the user
+    opens, so Back moves between sections. `beforeunload` asks before leaving mid-call in the
+    browser only -- the desktop app has no Back button and must never be kept from quitting.
+    `/admin/` pages send `frame-ancestors 'self'` + `X-Frame-Options: SAMEORIGIN`, and
+    `Vary: Sec-Fetch-Dest` + `no-store`, so Back can never serve the plain page at the top.
+  **It took SIX `/code-review` rounds (10, 10, 7, 8, 9, 9 findings) and the count never fell**,
+  because each round's fixes were new frame/history/lock code for the next round to find edge cases
+  in. It was stopped by agreeing a bar with Phill: fix anything that can drop or miss a call, list
+  the rest. Two traps met on the way: a regex with `\/` inside the page's template literal loses
+  its backslashes and throws in the browser (write it without a regex), and an iframe keeps its
+  intrinsic 150px height under top/bottom insets, so its height is set outright.
+  **Still unproven with a real call** as of the merge: ring while on Messages and answer; click Phone
+  mid-ring; "Call" from Messages during a call. Every other check was tests plus a real Chrome
+  against `wrangler dev`, where the token endpoint 500s (no Twilio creds locally).
 - **Speaker-labelled call transcripts need TWO things set, and neither announces itself.**
   `TWILIO_INTELLIGENCE_SERVICE_SID` (a `GA...` Conversational Intelligence service) as a worker
   secret -- `deploy.yml` does not set it, wrangler secrets are separate -- AND **Dual-channel
