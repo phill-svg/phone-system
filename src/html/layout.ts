@@ -38,7 +38,7 @@ const NOTIFY_JS = [
   '  function fire(title, body, url, tag){',
   '    if (Notification.permission !== "granted") return;',
   '    try { var n = new Notification(title, { body: body, icon: "/logo.png", tag: tag });',
-  '      n.onclick = function(){ try { window.focus(); } catch(e){} if (url) { if (window.tcbOpenSection) window.tcbOpenSection(url); else window.location.href = url; } n.close(); }; } catch(e){}',
+  '      n.onclick = function(){ try { window.focus(); } catch(e){} if (url && !(window.tcbCallActive && window.tcbCallActive())) { if (window.tcbOpenSection) window.tcbOpenSection(url); else window.location.href = url; } n.close(); }; } catch(e){}',
   '  }',
   '  function pollMessages(){',
   '    fetch("/api/messages", { credentials: "same-origin" }).then(function(r){ return r.ok ? r.json() : []; }).then(function(list){',

@@ -1969,7 +1969,7 @@ export function renderPhonePage(
         function syncFromFrame() {
           if (frame.style.display !== 'block') return;
           var p = framePath();
-          if (!p) return;
+          if (p.indexOf('/admin/') !== 0) return;
           try { history.replaceState(null, '', p); } catch (e) {}
           try { document.title = frame.contentDocument.title || PHONE_TITLE; } catch (e) {}
           markNav(p.split(/[?#]/)[0]);
@@ -2037,7 +2037,7 @@ export function renderPhonePage(
         // ...and bring it back once the call is over. Left parked, a hidden Messages page would keep
         // polling its thread, marking every new text read for the whole team with nobody looking.
         window.tcbRestoreSection = function () {
-          if (!parked) return;
+          if (!parked || (window.tcbCallActive && window.tcbCallActive())) return;
           parked = false;
           showFrame();
           syncFromFrame();
@@ -2052,6 +2052,14 @@ export function renderPhonePage(
           e.preventDefault();
           if (u.pathname === '/admin/phone') window.tcbShowPhone(u.search);
           else openSection(u.pathname + u.search + u.hash);
+        });
+
+        // Leaving the page hangs up a live call, so the browser asks first. The desktop app has no
+        // Back button and must never be kept from quitting.
+        window.addEventListener('beforeunload', function (e) {
+          if (window.desktopBridge || !(window.tcbCallActive && window.tcbCallActive())) return;
+          e.preventDefault();
+          e.returnValue = '';
         });
 
         if (INITIAL_SECTION) openSection(INITIAL_SECTION + (INITIAL_SECTION.indexOf('#') < 0 ? location.hash : ''));

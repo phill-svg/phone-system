@@ -145,7 +145,12 @@ function shellHarness(section: string | null = null, hash = "") {
     addEventListener: (_: string, h: (e: unknown) => void) => (clickHandler = h),
   };
   let callUp = false;
-  const win: Record<string, unknown> = { addEventListener() {}, tcbPhoneDeepLink: vi.fn(), tcbCallActive: () => callUp };
+  const winListeners: Record<string, (e: unknown) => void> = {};
+  const win: Record<string, unknown> = {
+    addEventListener: (t: string, h: (e: unknown) => void) => (winListeners[t] = h),
+    tcbPhoneDeepLink: vi.fn(),
+    tcbCallActive: () => callUp,
+  };
   win.top = win;
   const history = { replaceState: vi.fn() };
   const location = { href: "https://example.com/admin/phone", origin: "https://example.com", hash: hash };
@@ -171,7 +176,12 @@ function shellHarness(section: string | null = null, hash = "") {
     onFrameLoad();
   };
   const setCallUp = (v: boolean) => (callUp = v);
-  return { win, frame, frameLoc, history, click, frameNavigates, pill, pillClick: () => pillClick(), media, setCallUp };
+  const leave = () => {
+    const e = { preventDefault: vi.fn(), returnValue: undefined as unknown };
+    winListeners.beforeunload(e);
+    return e;
+  };
+  return { win, frame, frameLoc, history, click, frameNavigates, pill, pillClick: () => pillClick(), media, setCallUp, leave };
 }
 
 describe("the shell", () => {
@@ -262,6 +272,16 @@ describe("the shell", () => {
     s.pillClick();
     expect(s.frame.style.display).toBe("none");
     expect(s.pill.style.display).toBe("none");
+  });
+
+  // Back or refresh unloads the page and hangs up the call; the browser must ask first.
+  it("asks before leaving the page during a call, and only then", () => {
+    const s = shellHarness();
+    expect(s.leave().preventDefault).not.toHaveBeenCalled();
+    s.setCallUp(true);
+    expect(s.leave().preventDefault).toHaveBeenCalled();
+    s.win.desktopBridge = {};
+    expect(s.leave().preventDefault).not.toHaveBeenCalled();
   });
 
   it("shows no call button with no call up", () => {
