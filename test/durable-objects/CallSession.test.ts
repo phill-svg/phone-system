@@ -1774,6 +1774,75 @@ describe("CallSession", () => {
     expect(enq.xml).not.toContain("<Hangup/>");
   });
 
+  // The recorded hold announcement says "press 1 now to leave a message", so on a callback-enabled
+  // wait step 1 must do exactly what * does. The old "press 1" menu stopped every phone ringing for
+  // the length of the prompt; the hold step keeps them ringing, but only works if 1 is honoured.
+  it("pressing 1 while on hold at a callback-enabled wait step requests a callback, like *", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cb1");
+    await send(stub, mainEvent("CA-cb1"));
+    await send(stub, mainEvent("CA-cb1", { digits: "1" }));
+
+    const digit = await send(stub, holdDigit("CA-cb1", "1"));
+    expect(digit.xml).toContain("<Leave/>");
+    expect(cancelHits(fetchMock).length).toBe(1);
+    const left = await send(stub, queueLeft("CA-cb1", "leave"));
+    expect(left.xml).toContain("call you back");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cb1").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
+  it("does not take 1 as a callback where the wait step does not offer one", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: false });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-nocb1");
+    await send(stub, mainEvent("CA-nocb1"));
+    await send(stub, mainEvent("CA-nocb1", { digits: "1" }));
+
+    const digit = await send(stub, holdDigit("CA-nocb1", "1"));
+    expect(digit.xml).not.toContain("<Leave/>");
+    expect(cancelHits(fetchMock).length).toBe(0);
+  });
+
+  // Every hold document used to replay the announcement and then sit 20s in SILENCE before the next
+  // poll: the caller heard prompt, dead air, prompt -- and, since a caller only leaves the queue when a
+  // hold document ends, waited up to ~35s after the ringing had already stopped. The announcement now
+  // plays once; after that the caller hears ringback, with the key still listened for.
+  it("plays a wait step's announcement once, then ringback that still listens for the key", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-once");
+    await send(stub, mainEvent("CA-once"));
+    await send(stub, mainEvent("CA-once", { digits: "1" }));
+    const pollEvent = { kind: "hold_poll", callSid: "CA-once", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` };
+
+    const first = await send(stub, pollEvent);
+    expect(first.xml).toContain("Please hold");
+
+    const second = await send(stub, pollEvent);
+    expect(second.xml).not.toContain("Please hold");
+    expect(second.xml).toContain("<Gather");
+    expect(second.xml).toContain("<Play");
+    expect(second.xml).toMatch(/timeout="1"/);
+
+    // A key press answered with a fresh hold document must not replay the announcement either.
+    const afterKey = await send(stub, holdDigit("CA-once", "5"));
+    expect(afterKey.xml).not.toContain("Please hold");
+  });
+
   it("hold poll keeps the caller holding while dialing", async () => {
     await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
     await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });

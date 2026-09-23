@@ -63,6 +63,9 @@ type RingConfig = {
 type ActiveRing = {
   ringNodeId: string;
   play: FlowCommand | null;
+  // Set once the wait step's announcement has been played: after that the caller hears ringback
+  // (still listening for the callback key) rather than the announcement again. See holdDocument.
+  announced?: boolean;
   allowCallbackStar: boolean;
   ringConfig: RingConfig;
   ringPlanState: RingPlanState;
@@ -151,16 +154,14 @@ type AnyEvent =
   | AmdStatusEvent
   | AmdFallthroughEvent;
 
-// Trailing <Gather> timeout on a hold document that carries a WAIT NODE'S OWN audio/TTS. This is
-// silence appended after that content, so it also sets how often the announcement repeats -- keep
-// it long enough not to nag the caller.
-const HOLD_CONTENT_TIMEOUT_SECONDS = 20;
-
 // Trailing <Gather> timeout on a default-ringback hold document. Together with HOLD_RINGBACK_LOOPS
 // this is the poll period: the caller cannot leave the queue until the document ends, so it bounds
 // how long they keep hearing ringback after the ring plan has already given up (~2 x 1.8s of tone
 // + this, so ~5s). Kept short deliberately -- a caller who has already waited out a 20s ring should
-// reach the menu promptly, and a * callback press is still caught during the tone itself.
+// reach the menu promptly, and a callback key press is still caught during the tone itself. A wait
+// step's announcement uses the same short tail: it plays ONCE (holdDocument), and a 20s silence
+// after it was dead air to the caller and ~35s of ringback after the ringing had already stopped.
+
 const HOLD_RINGBACK_TIMEOUT_SECONDS = 1;
 const AGENT_FAILURE_STATUSES = new Set(["busy", "no-answer", "failed", "canceled"]);
 
@@ -642,14 +643,14 @@ export class CallSession extends DurableObject<Env> {
       await this.performDeferredDial(activeRing, body.callSid, origin);
       const updated = await this.ctx.storage.get<ActiveRing>("activeRing");
       if (updated && updated.ringPlanState.name === "DIALING") {
-        return this.xml(this.renderHoldFor(updated, origin));
+        return this.xml(await this.holdDocument(updated, origin));
       }
       // Dial failed -> leave the queue so the caller falls through to the no-answer node.
       return this.xml(renderLeave());
     }
 
     if (activeRing && activeRing.ringPlanState.name === "DIALING") {
-      return this.xml(this.renderHoldFor(activeRing, origin));
+      return this.xml(await this.holdDocument(activeRing, origin));
     }
     return this.xml(renderLeave());
   }
@@ -708,14 +709,16 @@ export class CallSession extends DurableObject<Env> {
   }
 
   // -------------------------------------------------------------------------
-  // Caller-leg hold digit: star = callback request (if allowed), else keep holding.
+  // Caller-leg hold digit: * or 1 = callback request (if allowed), else keep holding. 1 because the
+  // recorded hold announcement says "press 1 now to leave a message"; * is the original key.
   // -------------------------------------------------------------------------
   private async handleHoldDigit(body: HoldDigitEvent): Promise<Response> {
     const origin = new URL(body.webhookUrl).origin;
     const activeRing = await this.ctx.storage.get<ActiveRing>("activeRing");
     if (!activeRing) return this.xml(renderLeave());
 
-    if (body.digits === "*" && activeRing.allowCallbackStar && activeRing.ringPlanState.name === "DIALING") {
+    const callbackKey = body.digits === "*" || body.digits === "1";
+    if (callbackKey && activeRing.allowCallbackStar && activeRing.ringPlanState.name === "DIALING") {
       const { state } = reduceRingPlan(activeRing.ringPlanState, { type: "CALLBACK_STAR_PRESSED" });
       for (const sid of activeRing.attemptSids) {
         await this.cancelStaff(sid);
@@ -727,7 +730,7 @@ export class CallSession extends DurableObject<Env> {
     }
 
     if (activeRing.ringPlanState.name === "DIALING") {
-      return this.xml(this.renderHoldFor(activeRing, origin));
+      return this.xml(await this.holdDocument(activeRing, origin));
     }
     return this.xml(renderLeave());
   }
@@ -1213,18 +1216,25 @@ export class CallSession extends DurableObject<Env> {
 
   // ---- small helpers -----------------------------------------------------
 
-  private renderHoldFor(activeRing: ActiveRing, origin: string): string {
+  // The hold document for this poll. A wait step's announcement plays on the FIRST one only; every
+  // later document is ringback wrapped in the same <Gather>, so the caller keeps hearing the phones
+  // ring and a callback key still works. Marking it announced is a storage write, and DO handlers are
+  // serialised, so two polls cannot both play it.
+  private async holdDocument(activeRing: ActiveRing, origin: string): Promise<string> {
+    const announce = activeRing.play !== null && !activeRing.announced;
+    if (announce) {
+      activeRing.announced = true;
+      await this.ctx.storage.put("activeRing", activeRing);
+    }
     return renderHold({
-      play: activeRing.play,
+      play: announce ? activeRing.play : null,
       baseUrl: origin,
       gatherAction: appendWebhookSecret(`${origin}/webhooks/twilio/hold-digit`, this.env.TWILIO_WEBHOOK_SECRET),
-      // A wait node's own content is finite and self-terminating, so it only needs a comfortable
-      // gap before repeating. The default ringback is a looping tone whose document length IS the
-      // poll interval, so it gets the short tail instead.
-      timeoutSeconds: activeRing.play ? HOLD_CONTENT_TIMEOUT_SECONDS : HOLD_RINGBACK_TIMEOUT_SECONDS,
+      timeoutSeconds: HOLD_RINGBACK_TIMEOUT_SECONDS,
       allowStar: activeRing.allowCallbackStar,
     });
   }
+
 
   // The twin of flowEngine's playCommandFor, and it needs the same normalisation for a worse
   // reason: this one runs INSIDE startRing. A blank audioAssetId ("" survives `?? null`) throws in
