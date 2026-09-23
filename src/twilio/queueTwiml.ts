@@ -72,7 +72,9 @@ export function renderHold(opts: {
   if (!opts.play && !opts.allowStar) return wrapResponse(content);
 
   return wrapResponse(
-    `<Gather input="dtmf" numDigits="1" timeout="${opts.timeoutSeconds}" ` +
+    // finishOnKey="" -- Twilio's default "#" would end the Gather and post NO digits, which reads as
+    // "the announcement played to its end" and stops it replaying for a caller who cut it short.
+    `<Gather input="dtmf" numDigits="1" timeout="${opts.timeoutSeconds}" finishOnKey="" ` +
       `actionOnEmptyResult="true" action="${opts.gatherAction}">${content}</Gather>`
   );
 }

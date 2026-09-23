@@ -47,7 +47,7 @@ describe("renderHold", () => {
     });
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
-        '<Gather input="dtmf" numDigits="1" timeout="30" actionOnEmptyResult="true" ' +
+        '<Gather input="dtmf" numDigits="1" timeout="30" finishOnKey="" actionOnEmptyResult="true" ' +
         'action="https://x.example/webhooks/twilio/hold-digit"><Say>Please hold</Say>' +
         `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play></Gather>` +
         "</Response>"
@@ -104,7 +104,7 @@ describe("renderHold", () => {
       timeoutSeconds: 10,
       allowStar: true,
     });
-    expect(xml).toContain('<Gather input="dtmf" numDigits="1" timeout="10"');
+    expect(xml).toContain('<Gather input="dtmf" numDigits="1" timeout="10" finishOnKey=""');
     expect(xml).toContain(`<Play loop="${HOLD_RINGBACK_LOOPS}">`);
   });
 
