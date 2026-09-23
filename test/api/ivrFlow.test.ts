@@ -319,6 +319,51 @@ describe("handlePutFlow", () => {
     expect(response.status).toBe(400);
   });
 
+  // A wait step's callback key must be exactly one phone key: anything else could never be pressed
+  // (so callbacks silently stop working) or would be read as "every digit".
+  it("returns 400 when a wait node's callbackKey is not a single phone key", async () => {
+    // "#" too: the hold <Gather> takes it as the finish key and posts no digits, so it could never work.
+    for (const callbackKey of ["12", "x", "", 1, "#"]) {
+      const res = await handlePutFlow(
+        putRequest({
+          entryNodeId: "w",
+          nodes: [
+            {
+              id: "w",
+              type: "wait",
+              config: { audioAssetId: null, ttsText: "hold please", allowCallbackStar: true, callbackKey, nextNodeId: "n1" },
+            },
+          ],
+        }),
+        env.DB,
+        "test_flow",
+        ADMIN
+      );
+      expect(res.status, String(callbackKey)).toBe(400);
+    }
+  });
+
+  it("accepts a wait node with a one-key callbackKey, or none", async () => {
+    for (const extra of [{ callbackKey: "1" }, { callbackKey: "*" }, {}]) {
+      const res = await handlePutFlow(
+        putRequest({
+          entryNodeId: "w",
+          nodes: [
+            {
+              id: "w",
+              type: "wait",
+              config: { audioAssetId: null, ttsText: "hold please", allowCallbackStar: true, nextNodeId: "", ...extra },
+            },
+          ],
+        }),
+        env.DB,
+        "test_flow",
+        ADMIN
+      );
+      expect(res.status, JSON.stringify(extra)).toBe(200);
+    }
+  });
+
   it("returns 400 when a wait node's allowCallbackStar is not a boolean", async () => {
     const response = await handlePutFlow(
       putRequest({

@@ -36,26 +36,27 @@ export function renderEnqueue(opts: { queueName: string; waitUrl: string; action
 }
 
 /**
- * Renders the hold (waitUrl) TwiML the caller hears while queued. Wraps optional hold
- * content (a single FlowCommand, rendered via Task 4's renderer) in a <Gather> so a
- * possible star-press can be captured. When `play` is null (no wait-node content, or the
- * synthesized-minimal-hold case for a ring node with no preceding wait) the <Gather> is
- * empty.
+ * Renders the hold (waitUrl) TwiML the caller hears while queued. `play` is a wait step's
+ * announcement, passed only until the caller has heard it once (CallSession.holdDocument); it is
+ * followed by a ring cycle inside the same <Gather>, so a key pressed a moment after the message
+ * ends ("press 1 now") is still caught rather than lost between documents. Without `play` the
+ * caller hears ringback, wrapped in a <Gather> only when the step offers a callback key.
  */
 export function renderHold(opts: {
   play: FlowCommand | null;
   baseUrl: string;
   gatherAction: string;
   timeoutSeconds: number;
-  // Whether a caller may press * here for a callback. Only a wait node sets it; a direct ring never
-  // does, which is why the plain-ringback path can drop the <Gather> entirely.
+  // Whether a caller may press a key here for a callback (which key is the wait step's callbackKey,
+  // decided in CallSession.handleHoldDigit). Only a wait node sets it; a direct ring never does,
+  // which is why the plain-ringback path can drop the <Gather> entirely. `play` is the step's
+  // announcement, which CallSession passes only until it has been heard once.
   allowStar?: boolean;
 }): string {
   // With custom wait content, play it; otherwise fall back to default hold music so the caller
   // hears something rather than dead air between hold polls.
-  const content = opts.play
-    ? renderFlowCommandsFragment([opts.play], { baseUrl: opts.baseUrl })
-    : `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play>`;
+  const ringback = `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play>`;
+  const content = opts.play ? renderFlowCommandsFragment([opts.play], { baseUrl: opts.baseUrl }) + ringback : ringback;
 
   // Plain ringback with no * to catch: emit the tone ALONE, with no wrapping <Gather>.
   //
@@ -71,7 +72,9 @@ export function renderHold(opts: {
   if (!opts.play && !opts.allowStar) return wrapResponse(content);
 
   return wrapResponse(
-    `<Gather input="dtmf" numDigits="1" timeout="${opts.timeoutSeconds}" ` +
+    // finishOnKey="" -- Twilio's default "#" would end the Gather and post NO digits, which reads as
+    // "the announcement played to its end" and stops it replaying for a caller who cut it short.
+    `<Gather input="dtmf" numDigits="1" timeout="${opts.timeoutSeconds}" finishOnKey="" ` +
       `actionOnEmptyResult="true" action="${opts.gatherAction}">${content}</Gather>`
   );
 }

@@ -2,6 +2,7 @@ import { jsonResponse } from "./respond";
 import { listFlows, listNodesForFlow, nodeExistsInOtherFlow, replaceFlowNodes, updateNodePosition } from "../db/ivrNodes";
 import type { StaffUser } from "../access/requireStaffUser";
 import { isValidClosedDateEntry } from "../ivr/dateRules";
+import { isCallbackKey } from "../ivr/flowEngine";
 
 const NODE_TYPES = ["business_hours", "play", "gather", "ring", "wait", "voicemail", "date_rule", "input", "redirect", "callback"] as const;
 type NodeType = (typeof NODE_TYPES)[number];
@@ -94,6 +95,7 @@ function isWaitConfig(c: Record<string, unknown>): boolean {
     isStringOrNull(c.audioAssetId) &&
     isStringOrNull(c.ttsText) &&
     typeof c.allowCallbackStar === "boolean" &&
+    (c.callbackKey === undefined || isCallbackKey(c.callbackKey)) &&
     isString(c.nextNodeId)
   );
 }

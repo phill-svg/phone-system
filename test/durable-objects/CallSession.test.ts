@@ -87,7 +87,10 @@ async function seedVoicemail(id: string, mailboxLabel: string): Promise<void> {
   });
 }
 
-async function seedWait(id: string, opts: { nextNodeId: string; allowCallbackStar: boolean }): Promise<void> {
+async function seedWait(
+  id: string,
+  opts: { nextNodeId: string; allowCallbackStar: boolean; callbackKey?: string }
+): Promise<void> {
   await seedNode({
     id,
     type: "wait",
@@ -96,6 +99,7 @@ async function seedWait(id: string, opts: { nextNodeId: string; allowCallbackSta
       ttsText: "Please hold, connecting you now.",
       allowCallbackStar: opts.allowCallbackStar,
       nextNodeId: opts.nextNodeId,
+      ...(opts.callbackKey !== undefined ? { callbackKey: opts.callbackKey } : {}),
     },
   });
 }
@@ -1772,6 +1776,141 @@ describe("CallSession", () => {
     // The failure this replaces: the DO catch-all answering with a hangup mid-call.
     expect(enq.xml).not.toContain("technical issue");
     expect(enq.xml).not.toContain("<Hangup/>");
+  });
+
+  // The callback key is the wait step's own (`callbackKey`): the production announcement says "press
+  // 1 now to leave a message", and moving it off a menu onto a hold step -- which keeps the phones
+  // ringing -- only works if that step honours 1.
+  it("takes the wait step's own callback key", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cb1");
+    await send(stub, mainEvent("CA-cb1"));
+    await send(stub, mainEvent("CA-cb1", { digits: "1" }));
+
+    const digit = await send(stub, holdDigit("CA-cb1", "1"));
+    expect(digit.xml).toContain("<Leave/>");
+    expect(cancelHits(fetchMock).length).toBe(1);
+    const left = await send(stub, queueLeft("CA-cb1", "leave"));
+    expect(left.xml).toContain("call you back");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cb1").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
+  // Default stays *, so a step reached by pressing 1 in a menu is not cancelled by a repeated 1.
+  it("keeps * as the callback key when the step sets none, so a stray 1 keeps holding", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-def1");
+    await send(stub, mainEvent("CA-def1"));
+    await send(stub, mainEvent("CA-def1", { digits: "1" }));
+    const digit = await send(stub, holdDigit("CA-def1", "1"));
+    expect(digit.xml).not.toContain("<Leave/>");
+    expect(cancelHits(fetchMock).length).toBe(0);
+  });
+
+  it("does not take the key as a callback where the wait step does not offer one", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: false, callbackKey: "1" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-nocb1");
+    await send(stub, mainEvent("CA-nocb1"));
+    await send(stub, mainEvent("CA-nocb1", { digits: "1" }));
+
+    const digit = await send(stub, holdDigit("CA-nocb1", "1"));
+    expect(digit.xml).not.toContain("<Leave/>");
+    expect(cancelHits(fetchMock).length).toBe(0);
+  });
+
+  // Every hold document used to replay the announcement and then sit 20s in SILENCE before the next
+  // poll: the caller heard prompt, dead air, prompt -- and, since a caller only leaves the queue when a
+  // hold document ends, waited up to ~35s after the ringing had already stopped. The announcement now
+  // plays once; after that the caller hears ringback, with the key still listened for.
+  it("plays a wait step's announcement once, then ringback that still listens for the key", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-once");
+    await send(stub, mainEvent("CA-once"));
+    await send(stub, mainEvent("CA-once", { digits: "1" }));
+    const pollEvent = { kind: "hold_poll", callSid: "CA-once", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` };
+
+    const first = await send(stub, pollEvent);
+    expect(first.xml).toContain("Please hold");
+
+    // The announcement's <Gather> timing out with no key: it played to the end, so it is done.
+    const second = await send(stub, holdDigit("CA-once", null));
+    expect(second.xml).not.toContain("Please hold");
+    expect(second.xml).toContain("<Gather");
+    expect(second.xml).toContain("<Play");
+    expect(second.xml).toMatch(/timeout="1"/);
+
+    const third = await send(stub, pollEvent);
+    expect(third.xml).not.toContain("Please hold");
+  });
+
+  // Stray tones must not trap a caller at the start of the announcement: it restarts at most twice,
+  // and only on a step whose announcement carries a callback instruction worth protecting.
+  it("stops replaying the announcement after two interruptions", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cap");
+    await send(stub, mainEvent("CA-cap"));
+    await send(stub, mainEvent("CA-cap", { digits: "1" }));
+    await send(stub, { kind: "hold_poll", callSid: "CA-cap", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
+    expect((await send(stub, holdDigit("CA-cap", "5"))).xml).toContain("Please hold");
+    expect((await send(stub, holdDigit("CA-cap", "5"))).xml).toContain("Please hold");
+    expect((await send(stub, holdDigit("CA-cap", "5"))).xml).not.toContain("Please hold");
+  });
+
+  it("does not replay the announcement on a step that offers no callback", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: false });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-norep");
+    await send(stub, mainEvent("CA-norep"));
+    await send(stub, mainEvent("CA-norep", { digits: "1" }));
+    await send(stub, { kind: "hold_poll", callSid: "CA-norep", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
+    expect((await send(stub, holdDigit("CA-norep", "5"))).xml).not.toContain("Please hold");
+  });
+
+  // A key that is not the callback key, pressed part-way through, cut the announcement off -- and
+  // with it the instruction the callback key depends on. It plays again rather than being lost.
+  it("replays the announcement when a key press cut it short", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cut");
+    await send(stub, mainEvent("CA-cut"));
+    await send(stub, mainEvent("CA-cut", { digits: "1" }));
+    await send(stub, { kind: "hold_poll", callSid: "CA-cut", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
+
+    const afterKey = await send(stub, holdDigit("CA-cut", "5"));
+    expect(afterKey.xml).toContain("Please hold");
   });
 
   it("hold poll keeps the caller holding while dialing", async () => {

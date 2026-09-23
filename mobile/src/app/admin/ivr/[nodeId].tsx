@@ -11,7 +11,10 @@ import {
   NEXT_FIELDS,
   NEXT_FIELD_LABELS,
   NODE_TYPE_LABELS,
+  CALLBACK_KEYS,
+  callbackKeyOf,
   configsEqual,
+  keyLabel,
   nodePickerLabel,
   nodeTitle,
   removeNode,
@@ -367,11 +370,34 @@ export default function IvrNodeScreen() {
         ) : null}
 
         {node.type === "wait" ? (
-          <Group footer="With this on, a caller on hold can press ★ to request a callback instead of waiting.">
+          <Group footer="Phones keep ringing while the caller holds. The message plays once, then the caller hears ringing. With callbacks on, the caller can press the key below instead of waiting -- pick the key the message tells them to press.">
             <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 12 }}>
-              <Text style={[type.body, { color: t.colors.label, flex: 1 }]}>★ requests a callback</Text>
+              <Text style={[type.body, { color: t.colors.label, flex: 1 }]}>Caller can request a callback</Text>
               <Switch value={draft.allowCallbackStar === true} onValueChange={(v) => set("allowCallbackStar", v)} />
             </View>
+            {draft.allowCallbackStar === true ? (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 14, paddingBottom: 12 }}>
+                {CALLBACK_KEYS.map((k) => {
+                  const on = callbackKeyOf(draft) === k;
+                  return (
+                    <Pressable
+                      key={k}
+                      onPress={() => set("callbackKey", k)}
+                      accessibilityLabel={`Callback key ${k === "*" ? "star" : k}`}
+                      style={{
+                        minWidth: 40,
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        alignItems: "center",
+                        backgroundColor: on ? t.colors.accent : t.colors.bg,
+                      }}
+                    >
+                      <Text style={[type.body, { color: on ? "#FFFFFF" : t.colors.label }]}>{keyLabel(k)}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
           </Group>
         ) : null}
 

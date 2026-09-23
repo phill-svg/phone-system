@@ -81,6 +81,19 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 // The one line under a step's title in the list. It has to answer "what does this step do" without
 // opening it, because scanning a flow is most of what this screen is for.
+// The key that requests a callback on a Hold step, as the server reads it: `callbackKey` when it is
+// one phone key, otherwise * (the default). Shown as ★ for star.
+// A copy of the server's list (src/ivr/flowEngine.ts). No "#": Twilio takes it as the hold step's
+// finish key, so it could never request a callback.
+export const CALLBACK_KEYS = ["*", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"] as const;
+export function callbackKeyOf(config: Record<string, unknown>): string {
+  const k = config.callbackKey;
+  return typeof k === "string" && (CALLBACK_KEYS as readonly string[]).includes(k) ? k : "*";
+}
+export function keyLabel(k: string): string {
+  return k === "*" ? "★" : k;
+}
+
 export function nodeSummary(node: IvrNode): string {
   const c = node.config;
   switch (node.type) {
@@ -108,7 +121,7 @@ export function nodeSummary(node: IvrNode): string {
     case "business_hours":
       return "Splits open vs closed";
     case "wait":
-      return c.allowCallbackStar ? "Hold, ★ requests a callback" : "Hold";
+      return c.allowCallbackStar ? `Hold, ${keyLabel(callbackKeyOf(c))} requests a callback` : "Hold";
     case "play":
     case "callback":
       return promptSummary(node);
