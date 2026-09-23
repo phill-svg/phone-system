@@ -152,8 +152,15 @@ function shellHarness(section: string | null = null, hash = "") {
     tcbCallActive: () => callUp,
   };
   win.top = win;
-  const history = { replaceState: vi.fn(), pushState: vi.fn() };
-  const location = { href: "https://example.com/admin/phone", origin: "https://example.com", hash: hash, pathname: "/admin/phone", search: "" };
+  // The address bar starts where the shell was served: the section itself, on a refresh of one.
+  const start = new URL(section ?? "/admin/phone", "https://example.com");
+  const location = { href: start.href, origin: "https://example.com", hash: hash, pathname: start.pathname, search: start.search };
+  // Like the real thing, a history write moves the address bar.
+  const moveTo = (_s: unknown, _t: string, path: string) => {
+    const url = new URL(path, "https://example.com");
+    Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+  };
+  const history = { replaceState: vi.fn(moveTo), pushState: vi.fn(moveTo) };
   new Function("window", "document", "history", "location", js)(win, document, history, location);
 
   const click = (href: string) => {
@@ -188,7 +195,16 @@ function shellHarness(section: string | null = null, hash = "") {
     winListeners.popstate({});
   };
   const navActive = () => nav.filter((n) => n.classList.toggle.mock.calls.at(-1)?.[1]).map((n) => n.getAttribute());
-  return { win, frame, frameLoc, history, click, frameNavigates, pill, pillClick: () => pillClick(), media, setCallUp, leave, back, navActive };
+  // A browser error page: reading the frame's location throws, as for any cross-origin document.
+  const loadUnreadable = () => {
+    Object.defineProperty(frame.contentWindow, "location", {
+      get: () => {
+        throw new Error("cross-origin");
+      },
+    });
+    onFrameLoad();
+  };
+  return { win, frame, frameLoc, history, click, frameNavigates, loadUnreadable, pill, pillClick: () => pillClick(), media, setCallUp, leave, back, navActive };
 }
 
 describe("the shell", () => {
@@ -247,6 +263,33 @@ describe("the shell", () => {
     expect(s.frameLoc.pathname).toBe("/admin/messages");
     s.back("/admin/phone");
     expect(s.frame.style.display).toBe("none");
+  });
+
+  // Phone clicked while a section is still loading from blank: the load must be cancelled, or it
+  // lands afterwards and puts the section back over the softphone.
+  it("cancels a section still loading when Phone is clicked", () => {
+    const s = shellHarness();
+    s.frameLoc.replace.mockImplementationOnce(() => {}); // navigation started, not committed yet
+    s.click("/admin/voicemail");
+    s.click("/admin/phone");
+    expect(s.frameLoc.replace).toHaveBeenLastCalledWith("about:blank");
+    expect(s.frame.style.display).toBe("none");
+  });
+
+  // A browser navigation to the URL already showing replaces the entry; so must a repeat click.
+  it("adds no duplicate history entry for a section clicked again", () => {
+    const s = shellHarness();
+    s.click("/admin/voicemail");
+    s.click("/admin/voicemail");
+    expect(s.history.pushState).toHaveBeenCalledTimes(1);
+  });
+
+  // A failed load leaves a browser error page nobody can read from here -- it is not "blank".
+  it("keeps showing the section when its load fails", () => {
+    const s = shellHarness();
+    s.click("/admin/messages");
+    s.loadUnreadable();
+    expect(s.frame.style.display).toBe("block");
   });
 
   it("marks Settings for the pages reached from it", () => {
@@ -528,27 +571,48 @@ describe("a section loaded as the whole window without the shell", () => {
 
 // Every dashboard tab is the Phone page now; without the lock a second tab rings every call too.
 describe("more than one dashboard tab", () => {
-  function boot(locks: unknown) {
+  function boot(locks: unknown, failed = false) {
     const html = renderPhonePage("phill@b.com");
     const js = /(if \(window\.Twilio\) \{[\s\S]*?\n {6}\})/.exec(html)?.[1];
     if (!js) throw new Error("could not find the softphone start-up");
-    const initDevice = vi.fn();
-    new Function("window", "navigator", "initDevice", "setDeviceStatusText", "document", "deviceFailed", js)(
+    const initDevice = vi.fn(() => Promise.resolve());
+    new Function("window", "navigator", "initDevice", "setDeviceStatusText", "document", "deviceFailed", `var waitingForLock = false; ${js}`)(
       { Twilio: {} },
       { locks },
       initDevice,
       () => {},
       { getElementById: () => ({ style: {} }) },
-      false
+      failed
     );
     return initDevice;
   }
 
   it("starts the softphone only once this tab holds the lock", () => {
     let grant: () => void = () => {};
-    const initDevice = boot({ request: (_: string, f: () => void) => (grant = f) });
+    const initDevice = boot({ request: (_: string, f: () => void) => ((grant = f), new Promise(() => {})) });
     expect(initDevice).not.toHaveBeenCalled();
     grant();
+    expect(initDevice).toHaveBeenCalled();
+  });
+
+  // A tab whose phone cannot start must not hold every other tab back from ringing.
+  it("lets the lock go when this tab's phone failed to start", async () => {
+    let held: unknown;
+    boot({ request: (_: string, f: () => unknown) => ((held = f()), new Promise(() => {})) }, true);
+    await expect(held).resolves.toBeUndefined();
+  });
+
+  it("keeps the lock while this tab's phone is running", async () => {
+    let held: Promise<unknown> = Promise.resolve();
+    boot({ request: (_: string, f: () => Promise<unknown>) => ((held = f()), new Promise(() => {})) });
+    const settled = await Promise.race([held.then(() => "released"), new Promise((r) => setTimeout(() => r("held"), 50))]);
+    expect(settled).toBe("held");
+  });
+
+  // A lock API that refuses must not leave the phone never starting.
+  it("starts the phone anyway if the lock request fails", async () => {
+    const initDevice = boot({ request: () => Promise.reject(new Error("SecurityError")) });
+    await new Promise((r) => setTimeout(r, 0));
     expect(initDevice).toHaveBeenCalled();
   });
 

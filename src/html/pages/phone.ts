@@ -573,6 +573,8 @@ export function renderPhonePage(
       // Set when the softphone cannot start at all (no token, SDK missing, register threw). A listen
       // queued then would wait for a registration that never comes.
       var deviceFailed = false;
+      // This tab is queued behind another tab's softphone (one per browser, see the Web Lock below).
+      var waitingForLock = false;
       var pendingListen = null; // { sid, at }
       var PENDING_LISTEN_MS = 60000;
       var isOnHold = false;
@@ -1899,6 +1901,7 @@ export function renderPhonePage(
         if (lc) {
           if (callBusy()) flashDeviceNote('Hang up the current call before listening in.');
           else if (deviceFailed) flashDeviceNote('Listen unavailable: the phone is not connected.');
+          else if (waitingForLock) flashDeviceNote('Listen from the tab where the phone is open.');
           else if (!device || device.state !== 'registered') {
             pendingListen = { sid: lc, at: Date.now() };
             flashDeviceNote('Listen will start once the phone has connected…');
@@ -1912,10 +1915,19 @@ export function renderPhonePage(
         // answerable in a tab nobody is looking at. The lock queues this tab until the one holding
         // it closes, and is released when the page unloads.
         if (navigator.locks && navigator.locks.request) {
+          waitingForLock = true;
           setDeviceStatusText('Phone is open in another tab or window.');
           navigator.locks.request('tcb-softphone', function () {
-            initDevice();
-            return new Promise(function () {}); // held for the life of the page
+            waitingForLock = false;
+            // Held for the life of the page -- unless this tab's phone could not start, when holding
+            // it would leave every other tab waiting behind a phone that never rings.
+            return initDevice().then(function () {
+              if (!deviceFailed) return new Promise(function () {});
+            });
+          }).catch(function () {
+            // The lock API refused (a sandboxed context, a policy): a phone that rings in two tabs
+            // beats one that rings in none.
+            if (waitingForLock) { waitingForLock = false; initDevice(); }
           });
         } else {
           initDevice();
@@ -1964,6 +1976,11 @@ export function renderPhonePage(
             return l.href === 'about:blank' ? '' : l.pathname + l.search + l.hash;
           } catch (e) { return ''; }
         }
+        // A browser error page (a failed load) cannot be read from here. It is not the blank entry
+        // Phone leaves behind, and hiding it would make the click look like it did nothing.
+        function frameIsBlank() {
+          try { return frame.contentWindow.location.href === 'about:blank'; } catch (e) { return false; }
+        }
         function visible() { return frame.style.display === 'block'; }
         function markNav(pathname) {
           // Analytics, Webhooks and the phone-menu editor are reached from Settings.
@@ -1980,7 +1997,7 @@ export function renderPhonePage(
         function setUrl(path, push) {
           if (path.indexOf('/admin/') !== 0) return;
           try {
-            if (push) history.pushState(null, '', path);
+            if (push && path !== location.pathname + location.search + location.hash) history.pushState(null, '', path);
             else history.replaceState(null, '', path);
           } catch (e) {}
         }
@@ -2022,7 +2039,9 @@ export function renderPhonePage(
         function showPhone(unload, push) {
           frame.style.display = 'none';
           document.documentElement.style.overflow = '';
-          if (unload && framePath()) frame.contentWindow.location.replace('about:blank');
+          // Always, even when the frame still reads about:blank: a section mid-load does, and only
+          // replacing the location cancels that load before it lands back over the softphone.
+          if (unload) frame.contentWindow.location.replace('about:blank');
           setUrl('/admin/phone', push);
           document.title = PHONE_TITLE;
           markNav('/admin/phone');
@@ -2050,7 +2069,7 @@ export function renderPhonePage(
           // stays put.
           if (!visible() && fp && !kept) showFrame();
           // ...and Forward onto the blank entry Phone leaves behind must not cover the softphone.
-          else if (visible() && !fp) showPhone(false, false);
+          else if (visible() && frameIsBlank()) showPhone(false, false);
           syncFromFrame();
         });
 

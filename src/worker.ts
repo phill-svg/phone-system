@@ -1619,7 +1619,7 @@ export default {
         const callId = safeDecode(callIdMatch[1]);
         if (callId === null) return new Response("not found", { status: 404 });
         if (topLevel) {
-          const exists = await env.DB.prepare("SELECT 1 FROM calls WHERE id = ?").bind(callId).first();
+          const exists = await env.DB.prepare("SELECT 1 FROM calls WHERE id = ? AND deleted_at IS NULL").bind(callId).first();
           return exists ? shellHere() : new Response("not found", { status: 404 });
         }
         const detail = await getCallDetail(env.DB, callId);
