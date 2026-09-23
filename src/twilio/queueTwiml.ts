@@ -36,11 +36,11 @@ export function renderEnqueue(opts: { queueName: string; waitUrl: string; action
 }
 
 /**
- * Renders the hold (waitUrl) TwiML the caller hears while queued. Wraps optional hold
- * content (a single FlowCommand, rendered via Task 4's renderer) in a <Gather> so a
- * possible star-press can be captured. When `play` is null (no wait-node content, or the
- * synthesized-minimal-hold case for a ring node with no preceding wait) the <Gather> is
- * empty.
+ * Renders the hold (waitUrl) TwiML the caller hears while queued. `play` is a wait step's
+ * announcement, passed only until the caller has heard it once (CallSession.holdDocument); it is
+ * followed by a ring cycle inside the same <Gather>, so a key pressed a moment after the message
+ * ends ("press 1 now") is still caught rather than lost between documents. Without `play` the
+ * caller hears ringback, wrapped in a <Gather> only when the step offers a callback key.
  */
 export function renderHold(opts: {
   play: FlowCommand | null;
@@ -55,9 +55,8 @@ export function renderHold(opts: {
 }): string {
   // With custom wait content, play it; otherwise fall back to default hold music so the caller
   // hears something rather than dead air between hold polls.
-  const content = opts.play
-    ? renderFlowCommandsFragment([opts.play], { baseUrl: opts.baseUrl })
-    : `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play>`;
+  const ringback = `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play>`;
+  const content = opts.play ? renderFlowCommandsFragment([opts.play], { baseUrl: opts.baseUrl }) + ringback : ringback;
 
   // Plain ringback with no * to catch: emit the tone ALONE, with no wrapping <Gather>.
   //

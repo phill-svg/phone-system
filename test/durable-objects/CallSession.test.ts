@@ -1863,6 +1863,38 @@ describe("CallSession", () => {
     expect(third.xml).not.toContain("Please hold");
   });
 
+  // Stray tones must not trap a caller at the start of the announcement: it restarts at most twice,
+  // and only on a step whose announcement carries a callback instruction worth protecting.
+  it("stops replaying the announcement after two interruptions", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cap");
+    await send(stub, mainEvent("CA-cap"));
+    await send(stub, mainEvent("CA-cap", { digits: "1" }));
+    await send(stub, { kind: "hold_poll", callSid: "CA-cap", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
+    expect((await send(stub, holdDigit("CA-cap", "5"))).xml).toContain("Please hold");
+    expect((await send(stub, holdDigit("CA-cap", "5"))).xml).toContain("Please hold");
+    expect((await send(stub, holdDigit("CA-cap", "5"))).xml).not.toContain("Please hold");
+  });
+
+  it("does not replay the announcement on a step that offers no callback", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: false });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-norep");
+    await send(stub, mainEvent("CA-norep"));
+    await send(stub, mainEvent("CA-norep", { digits: "1" }));
+    await send(stub, { kind: "hold_poll", callSid: "CA-norep", webhookUrl: `${ORIGIN}/webhooks/twilio/hold` });
+    expect((await send(stub, holdDigit("CA-norep", "5"))).xml).not.toContain("Please hold");
+  });
+
   // A key that is not the callback key, pressed part-way through, cut the announcement off -- and
   // with it the instruction the callback key depends on. It plays again rather than being lost.
   it("replays the announcement when a key press cut it short", async () => {

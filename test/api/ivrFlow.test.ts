@@ -322,7 +322,8 @@ describe("handlePutFlow", () => {
   // A wait step's callback key must be exactly one phone key: anything else could never be pressed
   // (so callbacks silently stop working) or would be read as "every digit".
   it("returns 400 when a wait node's callbackKey is not a single phone key", async () => {
-    for (const callbackKey of ["12", "x", "", 1]) {
+    // "#" too: the hold <Gather> takes it as the finish key and posts no digits, so it could never work.
+    for (const callbackKey of ["12", "x", "", 1, "#"]) {
       const res = await handlePutFlow(
         putRequest({
           entryNodeId: "w",

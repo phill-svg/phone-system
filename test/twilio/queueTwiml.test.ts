@@ -7,6 +7,7 @@ import {
   renderHold,
   renderLeave,
 } from "../../src/twilio/queueTwiml";
+import { RINGBACK_URL } from "../../src/twilio/ringback";
 
 describe("renderEnqueue", () => {
   it("renders a complete <Enqueue> document with waitUrl/action and the queue name inside", () => {
@@ -34,7 +35,9 @@ describe("renderEnqueue", () => {
 });
 
 describe("renderHold", () => {
-  it("wraps a real PLAY (Say) command inside the <Gather>", () => {
+  // The ring cycle after the message keeps the <Gather> listening for a moment after "press 1 now",
+  // so a caller's reaction to the instruction is not lost between hold documents.
+  it("wraps a real PLAY (Say) command inside the <Gather>, followed by a ring cycle", () => {
     const play: FlowCommand = { type: "PLAY", audioAssetId: null, ttsText: "Please hold" };
     const xml = renderHold({
       play,
@@ -45,7 +48,8 @@ describe("renderHold", () => {
     expect(xml).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response>' +
         '<Gather input="dtmf" numDigits="1" timeout="30" actionOnEmptyResult="true" ' +
-        'action="https://x.example/webhooks/twilio/hold-digit"><Say>Please hold</Say></Gather>' +
+        'action="https://x.example/webhooks/twilio/hold-digit"><Say>Please hold</Say>' +
+        `<Play loop="${HOLD_RINGBACK_LOOPS}">${RINGBACK_URL}</Play></Gather>` +
         "</Response>"
     );
   });

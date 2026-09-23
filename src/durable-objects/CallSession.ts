@@ -163,6 +163,8 @@ type AnyEvent =
 // it used to be followed by was dead air to the caller, and up to ~35s more waiting after the
 // ringing had already stopped.
 const HOLD_RINGBACK_TIMEOUT_SECONDS = 1;
+// How many times a wrong key may restart a hold announcement (see holdDocument).
+const MAX_ANNOUNCE_REPLAYS = 2;
 const AGENT_FAILURE_STATUSES = new Set(["busy", "no-answer", "failed", "canceled"]);
 
 export class CallSession extends DurableObject<Env> {
@@ -535,7 +537,7 @@ export class CallSession extends DurableObject<Env> {
       // AMD rescue pulled the caller away from) must not read as the caller's leg in this one.
       await this.ctx.storage.delete("bridgedAgentSid");
       // Each ring round's hold step announces afresh.
-      await this.ctx.storage.delete("holdAnnounce");
+      await this.ctx.storage.delete(["holdAnnounce", "holdAnnounceReplays"]);
       let attemptSids: string[] = [];
       if (!greetingPrefix) {
         const sids = await this.dialBatch(numbersToDial, callSid, origin, ringConfig.timeoutSeconds);
@@ -587,12 +589,12 @@ export class CallSession extends DurableObject<Env> {
   // -------------------------------------------------------------------------
   // Logs a callback request for this call and returns the caller-leg TwiML that acknowledges it and
   // records a message, same as a voicemail node. THE single implementation behind both routes into
-  // the feature -- pressing * while held (handleQueueLeft's callback_requested outcome) and reaching
+  // the feature -- pressing a hold step's callback key (handleQueueLeft's callback_requested outcome) and reaching
   // a `callback` flow node -- so the two can never drift apart on what gets written or what the
   // caller hears.
   //
   // `ackFragment` is already-rendered prompt TwiML from the node's own audio/TTS; empty means the
-  // node configured none (or we came from the * route), so speak the default line.
+  // node configured none (or we came from the hold-step route), so speak the default line.
   //
   // The callback_requests row is created and its push sent IMMEDIATELY -- a caller's number is
   // worth having even if the recording that follows fails or they hang up before the beep. The
@@ -616,7 +618,7 @@ export class CallSession extends DurableObject<Env> {
     if (row?.caller_number) {
       await notifyCallbackRequest(this.env.DB, row.caller_number).catch(() => {});
     }
-    // Harmless when there is no active ring (the flow-node route); required on the * route.
+    // Harmless when there is no active ring (the flow-node route); required on the hold-step route.
     await this.ctx.storage.delete("activeRing");
     // Read the same way the voicemail node's Record action is found on the next webhook: the
     // recording lands on this same callSid/route, and this flag is how that handler tells a
@@ -1224,16 +1226,24 @@ export class CallSession extends DurableObject<Env> {
   // The hold document to serve next. A wait step's announcement plays until it has been heard to the
   // end once; after that the caller hears ringback, still wrapped in the same <Gather> so a callback
   // key works. "Heard to the end" means the document that carried it finished by itself -- a hold
-  // poll, or its <Gather> timing out with no digits. A key press part-way through (`interrupted`)
-  // cut it short, so it plays again rather than losing the instruction the callback key depends on.
-  // Kept under its own storage key, not a field of activeRing: other handlers read activeRing, await
-  // Twilio, and write the whole object back, which would undo a field set in between.
+  // poll, or its <Gather> timing out with no digits. A wrong key part-way through (`interrupted`) cut
+  // it short, so on a step that offers callbacks it plays again rather than losing the instruction
+  // the key depends on -- at most MAX_ANNOUNCE_REPLAYS times, so stray tones cannot trap a caller at
+  // the start of it. Kept under its own storage keys, not fields of activeRing: other handlers read
+  // activeRing, await Twilio, and write the whole object back, which would undo a field set between.
   private async holdDocument(activeRing: ActiveRing, origin: string, interrupted: boolean): Promise<string> {
     let announce = false;
     if (activeRing.play) {
       const state = await this.ctx.storage.get<"served" | "done">("holdAnnounce");
-      if (state === "served" && !interrupted) await this.ctx.storage.put("holdAnnounce", "done");
-      else if (state !== "done") {
+      if (state === "served") {
+        const replays = (await this.ctx.storage.get<number>("holdAnnounceReplays")) ?? 0;
+        if (interrupted && activeRing.allowCallbackStar && replays < MAX_ANNOUNCE_REPLAYS) {
+          announce = true;
+          await this.ctx.storage.put("holdAnnounceReplays", replays + 1);
+        } else {
+          await this.ctx.storage.put("holdAnnounce", "done");
+        }
+      } else if (state !== "done") {
         announce = true;
         await this.ctx.storage.put("holdAnnounce", "served");
       }
