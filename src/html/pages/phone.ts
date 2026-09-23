@@ -564,8 +564,10 @@ export function renderPhonePage(
       // A listen that is mid-connect has no activeCall yet, and one requested before the Device
       // registered has nothing to connect with. See tcbPhoneDeepLink.
       var listenConnecting = false;
+      // Likewise an outbound call: placeCall only sets activeCall once device.connect resolves.
+      var placingCall = false;
       var pendingListen = null; // { sid, at }
-      var PENDING_LISTEN_MS = 30000;
+      var PENDING_LISTEN_MS = 60000;
       var isOnHold = false;
 
       // Direction/status glyphs used when building call-list rows in JS.
@@ -1384,22 +1386,28 @@ export function renderPhonePage(
         });
       })();
 
+      // A passing note (a refused or queued deep link) over the device status. The REAL status is
+      // saved once, by the first of any overlapping notes, and put back when the last one expires --
+      // so a note never stands in for "Registered" or hides a registration error. A real status
+      // reported meanwhile wins, and the note is dropped.
+      var noteSaved = null;
+      var noteTimer = null;
       function setDeviceStatusText(text, registered) {
+        noteSaved = null;
+        clearTimeout(noteTimer);
         var el = document.getElementById('device-status');
         el.textContent = text;
         el.classList.toggle('registered', !!registered);
       }
-      // A passing note (a refused or queued deep link) over the device status. The real status is
-      // put back after a few seconds -- unless the Device reported something new meanwhile -- so a
-      // note never stands in for "Registered" or hides a registration error.
       function flashDeviceNote(text) {
         var el = document.getElementById('device-status');
-        var prevText = el.textContent;
-        var prevReg = el.classList.contains('registered');
+        if (!noteSaved) noteSaved = { text: el.textContent, registered: el.classList.contains('registered') };
         el.textContent = text;
         el.classList.remove('registered');
-        setTimeout(function () {
-          if (el.textContent === text) setDeviceStatusText(prevText, prevReg);
+        clearTimeout(noteTimer);
+        noteTimer = setTimeout(function () {
+          var saved = noteSaved;
+          if (saved) setDeviceStatusText(saved.text, saved.registered);
         }, 5000);
       }
 
@@ -1630,7 +1638,12 @@ export function renderPhonePage(
         var fromSel = document.getElementById('from-select');
         var params = { To: to };
         if (fromSel && fromSel.value) params.CallerId = fromSel.value;
-        activeCall = await device.connect({ params: params });
+        placingCall = true;
+        try {
+          activeCall = await device.connect({ params: params });
+        } finally {
+          placingCall = false;
+        }
         activeCall.on('accept', onCallConnected);
         activeCall.on('disconnect', onCallEnded);
         activeCall.on('cancel', onCallEnded);
@@ -1786,7 +1799,9 @@ export function renderPhonePage(
             if (pendingListen) {
               var pl = pendingListen;
               pendingListen = null;
-              if (Date.now() - pl.at < PENDING_LISTEN_MS && !activeCall && !listenConnecting) listenCall(pl.sid);
+              if (Date.now() - pl.at >= PENDING_LISTEN_MS) flashDeviceNote('Listen timed out while connecting. Click Listen again.');
+              else if (callBusy()) flashDeviceNote('Listen cancelled: a call is up.');
+              else listenCall(pl.sid);
             }
           });
           device.on('unregistered', function () {
@@ -1853,7 +1868,8 @@ export function renderPhonePage(
       // live: listenCall overwrites activeCall, which would strand that call with no controls.
       // Read by a sign-in page in the frame: with a call up it signs in there rather than taking over
       // the window, which would hang the call up.
-      window.tcbCallActive = function () { return !!activeCall || listenConnecting; };
+      function callBusy() { return !!activeCall || listenConnecting || placingCall; }
+      window.tcbCallActive = callBusy;
       window.tcbPhoneDeepLink = function (search) {
         var p = new URLSearchParams(search || '');
         var d = p.get('dial');
@@ -1862,12 +1878,12 @@ export function renderPhonePage(
           if (inp) inp.value = d;
           // Mid-call, the pane on screen holds Hang up / Mute / Hold / Transfer, and nothing in the
           // rail brings it back -- so the number waits in the dialpad instead of replacing them.
-          if (activeCall) flashDeviceNote('Number ready in the dial pad for after this call.');
+          if (callBusy()) flashDeviceNote('Number ready in the dial pad for after this call.');
           else showDetail('dialpad');
         }
         var lc = p.get('listen');
         if (lc) {
-          if (activeCall || listenConnecting) flashDeviceNote('Hang up the current call before listening in.');
+          if (callBusy()) flashDeviceNote('Hang up the current call before listening in.');
           else if (!device || device.state !== 'registered') {
             pendingListen = { sid: lc, at: Date.now() };
             flashDeviceNote('Listen will start once the phone has connected…');
@@ -1957,7 +1973,11 @@ export function renderPhonePage(
           // A hidden frame that loads a page on its own is Back/Forward moving through history the
           // frame made (a link followed inside a section). Show it, or Back would appear to do
           // nothing while a hidden page ran its polls. A parked section stays put until the call ends.
-          if (frame.style.display !== 'block' && framePath() && !parked) showFrame();
+          var fp = framePath();
+          // The /admin/phone stub hands over and blanks the frame; its own load event can still land
+          // first, and must not put the frame back over the softphone.
+          if (fp.indexOf('/admin/phone') === 0) return;
+          if (frame.style.display !== 'block' && fp && !parked) showFrame();
           // ...and Forward onto the blank entry Phone leaves behind must not cover the softphone.
           else if (frame.style.display === 'block' && !framePath()) showPhone(false);
           syncFromFrame();
@@ -1999,7 +2019,7 @@ export function renderPhonePage(
       })();
     </script>`;
 
-  return renderLayout("Phone", "phone", body, { extraHead: extraHead, fullWidth: true, role });
+  return renderLayout("Phone", "phone", body, { extraHead: extraHead, fullWidth: true, role, isShell: true });
 }
 
 // What /admin/phone answers when it is requested INTO the shell's frame -- Messages "Call",

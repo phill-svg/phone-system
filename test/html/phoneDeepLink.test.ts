@@ -24,6 +24,7 @@ function harness(opts: { activeCall?: unknown; listenConnecting?: boolean; devic
     "listenConnecting",
     "device",
     `var pendingListen = null;
+     function callBusy() { return !!activeCall || listenConnecting; }
      ${fn}
      return function () { return pendingListen; };`
   )(
@@ -85,5 +86,85 @@ describe("deep links handed to the running phone page", () => {
     expect(h.listenCall).not.toHaveBeenCalled();
     expect(h.pending()?.sid).toBe("CA789");
     expect(h.flashDeviceNote).toHaveBeenCalledWith(expect.stringContaining("once the phone has connected"));
+  });
+});
+
+// The REAL emitted status helpers, run against a stub status element.
+describe("a passing note over the device status", () => {
+  function statusHarness() {
+    const html = renderPhonePage("phill@b.com");
+    const js = /(var noteSaved = null;[\s\S]*?function flashDeviceNote\(text\) \{[\s\S]*?\n {6}\})/.exec(html)?.[1];
+    if (!js) throw new Error("could not find the status helpers");
+    const classes = new Set<string>(["registered"]);
+    const el = {
+      textContent: "Registered",
+      classList: {
+        contains: (c: string) => classes.has(c),
+        remove: (c: string) => classes.delete(c),
+        toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)),
+      },
+    };
+    const timers: Array<() => void> = [];
+    const api = new Function(
+      "document",
+      "setTimeout",
+      "clearTimeout",
+      `${js}; return { flashDeviceNote: flashDeviceNote, setDeviceStatusText: setDeviceStatusText };`
+    )({ getElementById: () => el }, (f: () => void) => timers.push(f), () => {}) as {
+      flashDeviceNote: (t: string) => void;
+      setDeviceStatusText: (t: string, r?: boolean) => void;
+    };
+    return { el, classes, timers, ...api };
+  }
+
+  it("puts the real status back afterwards", () => {
+    const h = statusHarness();
+    h.flashDeviceNote("note");
+    h.timers.forEach((t) => t());
+    expect(h.el.textContent).toBe("Registered");
+    expect(h.classes.has("registered")).toBe(true);
+  });
+
+  // Two notes inside the window: the second must not save the first as "the real status".
+  it("puts the real status back after two notes overlap", () => {
+    const h = statusHarness();
+    h.flashDeviceNote("A");
+    h.flashDeviceNote("B");
+    h.timers.forEach((t) => t());
+    expect(h.el.textContent).toBe("Registered");
+  });
+
+  it("lets a status the Device reports meanwhile win", () => {
+    const h = statusHarness();
+    h.flashDeviceNote("A");
+    h.setDeviceStatusText("Device error: boom");
+    h.timers.forEach((t) => t());
+    expect(h.el.textContent).toBe("Device error: boom");
+  });
+});
+
+// placeCall only sets activeCall once device.connect resolves; until then a sign-in page in the
+// frame or a Listen link must still see a call in progress.
+describe("an outbound call still connecting", () => {
+  it("counts as a call", async () => {
+    const html = renderPhonePage("phill@b.com");
+    const place = /(async function placeCall\(to\) \{[\s\S]*?\n {6}\})/.exec(html)?.[1];
+    const busy = /(function callBusy\(\) \{[^\n]*\})/.exec(html)?.[1];
+    if (!place || !busy) throw new Error("could not find placeCall / callBusy");
+    let resolveConnect: (c: unknown) => void = () => {};
+    const device = { connect: () => new Promise((r) => (resolveConnect = r)) };
+    const api = new Function(
+      "device",
+      "document",
+      `var activeCall = null, listenConnecting = false, placingCall = false;
+       function onCallConnected() {} function onCallEnded() {}
+       ${busy} ${place}
+       return { placeCall: placeCall, callBusy: callBusy };`
+    )(device, { getElementById: () => null }) as { placeCall: (to: string) => Promise<void>; callBusy: () => boolean };
+    const pending = api.placeCall("+61400000000");
+    expect(api.callBusy()).toBe(true);
+    resolveConnect({ on() {} });
+    await pending;
+    expect(api.callBusy()).toBe(true);
   });
 });

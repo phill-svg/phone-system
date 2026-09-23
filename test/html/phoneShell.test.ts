@@ -190,6 +190,14 @@ describe("the shell", () => {
   });
 
   // Phone leaves about:blank as the frame's entry; Forward onto it must not cover the softphone.
+  // The stub hands over and blanks the frame, but its own load event can land first.
+  it("does not re-show the frame for the Phone stub's own load", () => {
+    const s = shellHarness("/admin/messages");
+    s.click("/admin/phone");
+    s.frameNavigates("/admin/phone?listen=CA1");
+    expect(s.frame.style.display).toBe("none");
+  });
+
   it("hides the frame again when Forward lands on the blank entry", () => {
     const s = shellHarness("/admin/messages");
     s.frameNavigates("about:blank");
@@ -323,25 +331,24 @@ describe("a staff member opening App Errors", () => {
   });
 });
 
-// Every thread load marks it read for the WHOLE team. The REAL emitted poll runs against stubs.
+// Every thread load marks it read for the WHOLE team. The REAL emitted helper and poll run against stubs.
 describe("Messages hidden behind a ringing call", () => {
-  function poll(hidden: boolean | null) {
-    return import("../../src/html/pages/messages").then(({ renderMessagesPage }) => {
-      const html = renderMessagesPage("admin");
-      const fn = /(function tcbFrameHidden\(\)\{[^\n]*\})/.exec(html)?.[1];
-      const line = /(setInterval\(function\(\)\{if\(current&&!tcbFrameHidden\(\)\)loadThread\(\);\},5000\);)/.exec(html)?.[1];
-      if (!fn || !line) throw new Error("could not find the thread poll");
-      const loadThread = vi.fn();
-      let tick: () => void = () => {};
-      const frameElement = hidden === null ? null : { style: { display: hidden ? "none" : "block" } };
-      new Function("window", "setInterval", "loadThread", `var current = "+61400000000"; ${fn} ${line}`)(
-        { frameElement },
-        (f: () => void) => (tick = f),
-        loadThread
-      );
-      tick();
-      return loadThread;
-    });
+  async function poll(hidden: boolean | null) {
+    const { renderMessagesPage } = await import("../../src/html/pages/messages");
+    const html = renderMessagesPage("admin");
+    const helper = /(window\.tcbSectionHidden = function \(\) \{[\s\S]*?\n {2}\};)/.exec(html)?.[1];
+    const line = /(setInterval\(function\(\)\{if\(current&&!\(window\.tcbSectionHidden[^\n]*?\},5000\);)/.exec(html)?.[1];
+    if (!helper || !line) throw new Error("could not find the thread poll");
+    const loadThread = vi.fn();
+    let tick: () => void = () => {};
+    const frameElement = hidden === null ? null : { style: { display: hidden ? "none" : "block" } };
+    new Function("window", "setInterval", "loadThread", `var current = "+61400000000"; ${helper} ${line}`)(
+      { frameElement },
+      (f: () => void) => (tick = f),
+      loadThread
+    );
+    tick();
+    return loadThread;
   }
 
   it("does not poll the thread while hidden", async () => {
@@ -351,5 +358,48 @@ describe("Messages hidden behind a ringing call", () => {
   it("polls when on screen, framed or not", async () => {
     expect(await poll(false)).toHaveBeenCalled();
     expect(await poll(null)).toHaveBeenCalled();
+  });
+});
+
+// A browser that sends no Sec-Fetch-Dest gets the plain page even at the top level -- no softphone.
+// The page sends itself into the shell.
+describe("a section loaded as the whole window without the shell", () => {
+  function runHead(html: string, top: boolean) {
+    const js = /<title>[^<]*<\/title>\s*<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
+    if (!js) throw new Error("could not find the layout head script");
+    const replace = vi.fn();
+    const win: Record<string, unknown> = {};
+    win.top = top ? win : {};
+    new Function("window", "document", "location", js)(
+      win,
+      { documentElement: { className: "" } },
+      { pathname: "/admin/messages", search: "?to=1", hash: "", replace }
+    );
+    return replace;
+  }
+
+  it("sends itself into the shell with that section open", async () => {
+    const { renderMessagesPage } = await import("../../src/html/pages/messages");
+    expect(runHead(renderMessagesPage("admin"), true)).toHaveBeenCalledWith(
+      "/admin/phone?section=" + encodeURIComponent("/admin/messages?to=1")
+    );
+  });
+
+  it("stays put inside the frame, and the Phone page never redirects itself", async () => {
+    const { renderMessagesPage } = await import("../../src/html/pages/messages");
+    expect(runHead(renderMessagesPage("admin"), false)).not.toHaveBeenCalled();
+    expect(runHead(renderPhonePage("phill@b.com"), true)).not.toHaveBeenCalled();
+  });
+
+  it("is served the shell with that section by /admin/phone?section=", async () => {
+    const html = await (await page("/admin/phone?section=" + encodeURIComponent("/admin/voicemail"), "document")).text();
+    expect(html).toContain('var INITIAL_SECTION = "/admin/voicemail";');
+  });
+
+  it("never opens another site, or Phone itself, in the frame", async () => {
+    for (const bad of ["https://evil.example/", "//evil.example/admin/x", "/admin/phone", "/admin/phone?dial=1", "/login"]) {
+      const html = await (await page("/admin/phone?section=" + encodeURIComponent(bad), "document")).text();
+      expect(html, bad).toContain("var INITIAL_SECTION = null;");
+    }
   });
 });

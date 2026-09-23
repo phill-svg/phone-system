@@ -68,7 +68,7 @@ export function renderLayout(
   title: string,
   activeNav: string,
   body: string,
-  opts?: { extraHead?: string; fullWidth?: boolean; role?: "admin" | "staff" }
+  opts?: { extraHead?: string; fullWidth?: boolean; role?: "admin" | "staff"; isShell?: boolean }
 ): string {
   const isAdmin = (opts?.role ?? "admin") === "admin";
   const nav = NAV_ITEMS.filter((item) => isAdmin || !item.adminOnly)
@@ -84,7 +84,19 @@ export function renderLayout(
 <head>
 <meta charset="UTF-8">
 <title>${escapeHtml(title)} — TCB Phone </title>
-<script>if (window.top !== window) document.documentElement.className += " embedded";</script>
+<script>
+  if (window.top !== window) document.documentElement.className += " embedded";
+  // True while the Phone page's shell has this section hidden behind a call. A hidden iframe still
+  // reports visibilityState "visible", so any poll with a side effect (Messages marking a thread
+  // read for the whole team) must ask this instead.
+  window.tcbSectionHidden = function () {
+    try { return !!(window.frameElement && window.frameElement.style.display === "none"); } catch (e) { return false; }
+  };${opts?.isShell ? "" : `
+  // A section loaded as the whole window has no softphone, so calls would ring nowhere. The worker
+  // serves the shell for a top-level load on Sec-Fetch-Dest; a browser that does not send it lands
+  // here, and is sent into the shell with this section open.
+  if (window.top === window) location.replace("/admin/phone?section=" + encodeURIComponent(location.pathname + location.search + location.hash));`}
+</script>
 <style>
   html.embedded header { display: none; }
   /* Messages and the IVR editor size themselves as 100vh minus the header; framed, there is none. */

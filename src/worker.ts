@@ -210,6 +210,11 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
 // Every /admin/ page is served either as the Phone page's shell or as the plain page its frame
 // shows, depending on Sec-Fetch-Dest -- so the same URL must never be answered from cache with the
 // other variant. Back would otherwise put the plain page at the top, with no softphone on it.
+// Dashboard pages that always render (no 404 to preserve), for the shortcut in the /admin/ routes.
+// /admin/calls/:id is deliberately absent: an unknown call must still 404.
+const SHELL_PAGES =
+  /^\/admin\/(messages|live|webhooks|settings|errors|voicemail|callbacks|analytics|ivr\/[^/]+)$/;
+
 function adminHtml(html: string, status = 200): Response {
   return new Response(html, {
     status,
@@ -1586,8 +1591,17 @@ export default {
         adminHtml(renderPhonePage(staffOrResponse.email, staffOrResponse.role, { section }));
       const page = (html: string) => (dest === "document" ? shell(url.pathname + url.search) : adminHtml(html));
       if (url.pathname === "/admin/phone") {
-        return dest === "iframe" ? adminHtml(renderPhoneFrameStub()) : shell(null);
+        if (dest === "iframe") return adminHtml(renderPhoneFrameStub());
+        // ?section= is how a browser that sends no Sec-Fetch-Dest reaches the shell (see layout.ts).
+        // Only a dashboard path: never another origin, never Phone itself inside its own frame.
+        const asked = url.searchParams.get("section");
+        const section = asked && /^\/admin\/(?!phone(?:[/?#]|$))/.test(asked) ? asked : null;
+        return shell(section);
       }
+      // Pages known to exist skip straight to the shell, so a top-level load does not run the page's
+      // queries (Twilio calls, for Live Calls) only for the frame to run them again. Purely a saving:
+      // a page missing here still gets the shell through page() below, at the cost of the double work.
+      if (dest === "document" && SHELL_PAGES.test(url.pathname)) return shell(url.pathname + url.search);
 
       if (url.pathname === "/admin/messages") {
         const html = renderMessagesPage(staffOrResponse.role);
