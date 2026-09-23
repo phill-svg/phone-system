@@ -170,6 +170,14 @@ describe("incompleteReason", () => {
     expect(incompleteReason(n)).toBeNull();
   });
 
+  // The summary has to show the key the caller is actually told to press, not a fixed star.
+  it("names a Hold step's own callback key", () => {
+    const base = { audioAssetId: null, ttsText: "", allowCallbackStar: true, nextNodeId: "ring1" };
+    expect(nodeSummary(node("w", "wait", { ...base, callbackKey: "1" }))).toBe("Hold, 1 requests a callback");
+    expect(nodeSummary(node("w", "wait", base))).toBe("Hold, ★ requests a callback");
+    expect(nodeSummary(node("w", "wait", { ...base, callbackKey: "12" }))).toBe("Hold, ★ requests a callback");
+  });
+
   it("does not flag a callback step with no prompt, which speaks a default line", () => {
     const n = node("cb", "callback", { audioAssetId: null, ttsText: "" });
     expect(incompleteReason(n)).toBeNull();

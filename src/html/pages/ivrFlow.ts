@@ -202,7 +202,11 @@ export function renderIvrFlowPage(
         var c=n.config||{}, out='<div class="pf" style="color:var(--admin-text);font-weight:700">'+h(typeLabel(n.type))+'</div>';
         if(n.type==="play"||n.type==="input"||n.type==="wait"){ out+=promptPanel(n,c);
           if(n.type==="input") out+='<label class="pf">Digits to collect<input type="number" min="1" max="20" data-fld="numDigits" data-num="1" value="'+h(c.numDigits||4)+'"></label>';
-          if(n.type==="wait") out+='<label class="pf"><span><input type="checkbox" data-fld="allowCallbackStar" data-bool="1"'+(c.allowCallbackStar?" checked":"")+'> Let caller press * for a callback</span></label>';
+          if(n.type==="wait"){ var ck=c.callbackKey||"*", keys=["*","1","2","3","4","5","6","7","8","9","0","#"], ko="";
+            for(var k=0;k<keys.length;k++) ko+='<option value="'+h(keys[k])+'"'+(keys[k]===ck?" selected":"")+'>'+h(keys[k])+'</option>';
+            out+='<label class="pf"><span><input type="checkbox" data-fld="allowCallbackStar" data-bool="1"'+(c.allowCallbackStar?" checked":"")+'> Let caller request a callback</span></label>';
+            out+='<label class="pf">Callback key (match what the message tells callers to press)<select data-fld="callbackKey">'+ko+'</select></label>';
+            out+='<div class="pf" style="font-weight:400;opacity:.8">Phones keep ringing while the caller holds. The message plays once, then the caller hears ringing.</div>'; }
         } else if(n.type==="gather"){ out+=promptPanel(n,c);
           out+='<div class="pf">Menu keys (each key gets a line to drag)';
           var opts=c.options||[]; for(var i=0;i<opts.length;i++){ out+='<div class="p-opt"><input type="text" class="p-key" data-optkey="'+i+'" value="'+h(opts[i].digit||"")+'" placeholder="key"><button type="button" class="ivr-link p-delopt" data-opt="'+i+'">remove</button></div>'; }

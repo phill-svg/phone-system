@@ -47,8 +47,10 @@ export function renderHold(opts: {
   baseUrl: string;
   gatherAction: string;
   timeoutSeconds: number;
-  // Whether a caller may press * here for a callback. Only a wait node sets it; a direct ring never
-  // does, which is why the plain-ringback path can drop the <Gather> entirely.
+  // Whether a caller may press a key here for a callback (which key is the wait step's callbackKey,
+  // decided in CallSession.handleHoldDigit). Only a wait node sets it; a direct ring never does,
+  // which is why the plain-ringback path can drop the <Gather> entirely. `play` is the step's
+  // announcement, which CallSession passes only until it has been heard once.
   allowStar?: boolean;
 }): string {
   // With custom wait content, play it; otherwise fall back to default hold music so the caller

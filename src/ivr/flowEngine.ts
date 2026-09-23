@@ -100,6 +100,12 @@ function playCommandFor(config: Record<string, any>): FlowCommand | null {
   return { type: "PLAY", audioAssetId, ttsText };
 }
 
+// A wait (hold) step's callback key: one phone key. Validated on write (api/ivrFlow.ts) and again
+// where it is read at ring time, so a hand-edited row can never make every digit a callback.
+export function isCallbackKey(v: unknown): v is string {
+  return typeof v === "string" && /^[0-9*#]$/.test(v);
+}
+
 function gatherCommandFor(config: Record<string, any>): FlowCommand {
   const options: GatherOption[] = Array.isArray(config.options) ? config.options : [];
   const validDigits = options.map((o) => o.digit).join("");
