@@ -1,8 +1,18 @@
 # Tenancy Foundation — design
 
-**Status:** approved, ready for implementation planning
+**Status:** **SHELVED — not being pursued** (approved 2026-08-31, shelved since; status line
+corrected 2026-09-23, having read "ready for implementation planning" until then).
+Kept for reference only. **Do not resume without Phill explicitly asking for it again** — the
+backend is deliberately single-tenant, TCB-only, and `CLAUDE.md` says so in both its `specs/` index
+and its Current Status.
 **Date:** 2026-08-31
 **Sub-project:** 1 of 7 (see "Where this sits" below)
+
+> Migration `0026` and the `tnt_tcb` tenant row DID land, so `tenant_id` columns exist in
+> production — `CLAUDE.md`'s "Tenancy is fail-closed" constraint is live and still applies: those
+> columns are `TEXT NOT NULL DEFAULT ''` deliberately, and must never default to a real tenant.
+> What is shelved is everything after that: the scoped data layer, the CI guard, and sub-projects
+> 2-7.
 
 ## Why
 
