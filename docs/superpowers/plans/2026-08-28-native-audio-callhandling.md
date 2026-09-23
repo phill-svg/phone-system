@@ -1,5 +1,13 @@
 # Native Audio Routing/Bluetooth + Auto-Answer/Call-Waiting — Implementation Plan (Plan 4 of Workstream B)
 
+> **Historical plan — two of its standing instructions are superseded** (noted 2026-09-23).
+> (1) It says the deployed worker diverges from the repo and not to run `wrangler deploy`. That
+> has not been true for some time: deploys run from `.github/workflows/deploy.yml` on push to
+> `master`, which applies D1 migrations first. (2) Its commit trailer names an older model, and
+> it omits the rule that the `Claude-Session` URL trailer is NOT used here. `CLAUDE.md` carries
+> the current form of both. The rest of the document is the record of what was built and why,
+> and is left as written.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the last four device-side Settings behaviors real: **Audio Routing** (Earpiece/Speaker/Bluetooth picker, live during a call), **Bluetooth** (allow/block BT routing), **Auto-Answer** (auto-accept an incoming call), and **Call Waiting** (handle a 2nd incoming call while on one).

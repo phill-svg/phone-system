@@ -1,5 +1,10 @@
 # Mobile app: first EAS build runbook
 
+> Hostname corrected 2026-09-23: the API base is `tcbvoip.app`. `phone.tcbpestcontrolcanberra.com.au`
+> is still a live route on the same worker (kept as a fallback, see the tcbvoip migration spec),
+> so the old URLs answered — but this is a runbook people follow, and it should name the canonical
+> domain the app actually points at.
+
 Precondition: Phase 2 mobile tasks 1–6 (scaffold, secure token storage, API
 client, auth provider, login screen, Live Calls screen + EAS config) are
 merged.
@@ -17,7 +22,7 @@ Expo account.
    root:
    `npm run deploy`
    The mobile app authenticates against the live prod API
-   (`https://phone.tcbpestcontrolcanberra.com.au`) — without this deploy,
+   (`https://tcbvoip.app`) — without this deploy,
    `/api/login` won't have the auth cutover changes the app depends on.
 4. Build a development client APK:
    `npx eas build --profile development --platform android`
@@ -43,7 +48,7 @@ only needed for TestFlight/App Store distribution, not for this).
 ## Rollback / troubleshooting
 
 - Login fails with a network error: confirm step 3 (Phase 1 deploy) actually
-  ran and `https://phone.tcbpestcontrolcanberra.com.au/api/login` is live —
+  ran and `https://tcbvoip.app/api/login` is live —
   check with `curl` or a browser.
 - Login succeeds but Live Calls never populates: confirm a call is actually
   in progress (the endpoint only returns calls with an active status), and
