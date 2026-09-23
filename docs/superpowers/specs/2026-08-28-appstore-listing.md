@@ -3,8 +3,19 @@
 Draft content to paste into App Store Connect once the TestFlight build lands. Everything here is
 ready to use; adjust wording to taste.
 
-> **Distribution decided 2026-09-03: UNLISTED, not a public listing.** See the section below. This
-> changes the review framing — read it before pasting the review notes.
+> **Two routes, and they are not the same date. Read both before pasting anything.**
+> (clarified 2026-09-23)
+>
+> - **TODAY, how staff actually get the app: INTERNAL TestFlight testers.** They skip Beta App
+>   Review entirely. Builds expire after 90 days, so this needs a re-upload quarterly. External
+>   TestFlight was **rejected under Guideline 2.2** — TestFlight is for apps bound for public
+>   distribution, and this is a single-business staff tool.
+> - **THE GOAL: unlisted App Store distribution** (decided 2026-09-03, section below). **The
+>   unlisted request has not been filed or approved**, so none of it is live yet. Everything in this
+>   document is the preparation for that submission.
+>
+> So the review framing below is written for the unlisted submission, not for how the app is
+> distributed right now. `CLAUDE.md`'s Current Status carries the same pair.
 
 **App:** TCB Phone · **Bundle ID:** `au.com.tcbpestcontrolcanberra.tcbphone` · **Version:** 1.0.0
 **Category:** Business (primary) · Productivity (secondary)
@@ -50,11 +61,17 @@ transcription, and call notifications for TCB Pest Control staff.
 
 ---
 
-## Distribution: unlisted (decided 2026-09-03)
+## Distribution: unlisted (decided 2026-09-03 — INTENDED, not yet live)
 
-**The app ships as an [unlisted app](https://developer.apple.com/support/unlisted-app-distribution),
-not a public App Store listing.** An unlisted app is on the real App Store but invisible to search,
-charts, categories and recommendations. You get a normal App Store link.
+**The app is MEANT to ship as an
+[unlisted app](https://developer.apple.com/support/unlisted-app-distribution), not a public App
+Store listing.** An unlisted app is on the real App Store but invisible to search, charts,
+categories and recommendations. You get a normal App Store link.
+
+> **Not the case today.** The request has not been filed or approved, so staff still install
+> through **internal TestFlight** — which works, skips Beta App Review, and expires every 90 days.
+> This section is the plan and the prep, not a description of the present. The checklist at the
+> bottom ends with filing the request precisely because that step is outstanding.
 
 **Why this and not the alternatives:**
 
@@ -181,10 +198,25 @@ privacy question that is tedious to answer after the fact.
 - [ ] Support URL, Privacy Policy URL set
 - [ ] Age rating questionnaire completed (likely 4+)
 - [ ] Export compliance: uses only standard encryption → `ITSAppUsesNonExemptEncryption=false` (already set)
-- [x] **Production VoIP push — done.** The Twilio credential `CRcb31d1c3e79de7195d6c81eb241ebc75`
-      has `Sandbox=false` and `app.json` sets `aps-environment: production`. Calling and incoming
-      push were confirmed working on-device on iOS (2026-08-27, re-confirmed 2026-09-03). Do not
-      create a second credential; the earlier "make a separate production one" note is stale.
+- [x] **Production VoIP push — done, but NOT with the credential this line used to name.**
+      The live iOS credential is **`CRa85b8607a3c0fa5a465024590c9ff96a`** (apn, `Sandbox=false`),
+      created **2026-09-12 in au1**. The iPhone rang, locked, at 07:28 that morning — the first time
+      it ever had.
+      This line named `CRcb31d1c3e79de7195d6c81eb241ebc75` until 2026-09-23 and ticked it as done.
+      **That is exactly the wrong thing to believe**, and the two days it cost are written up in
+      `CLAUDE.md` under *"A PUSH CREDENTIAL MUST LIVE IN au1, AND THE CONSOLE CANNOT MAKE ONE"*.
+      The short version: a push credential must exist in the region the access token names
+      (`mintAccessToken` sets `twr: "au1"`), or Twilio has nothing to send the VoIP push with and
+      the handset is never woken — error **52161**, no log line, no crash. Twilio's docs say AU1
+      push credentials are unsupported and that the REST API for them is US1-only; **both are true
+      of the CONSOLE and false of the REST API** — `notify.sydney.au1.twilio.com/v1/Credentials`
+      creates and reads them fine, with the AU1 auth token, via curl. So a 404 from
+      `notify.twilio.com` says nothing about this account, and the US1 console list is not this
+      account's list.
+      It must also be built from an Apple **VoIP Services Certificate** (not a standard APNs cert,
+      not a `.p8`) using a **fresh CSR** — reusing one that already made a regular APNs certificate
+      causes "service type confusion", and the result looks fine and silently does not work.
+      Read the `CLAUDE.md` bullet before touching any of this; do not re-derive it from here.
 - [ ] **After submitting:** file the
       [unlisted app request form](https://developer.apple.com/contact/request/unlisted-app/)
 
@@ -195,5 +227,11 @@ privacy question that is tedious to answer after the fact.
    via CallKit. The Twilio Voice RN SDK integration does this and calling is confirmed working
    on-device on iOS.
 3. **Demo account must actually work** — the #1 avoidable rejection. Re-verify
-   `reviewer@tcbpestcontrolcanberra.com.au` right before submitting. Note it currently sits in the
-   live ring roster marked `available`; only a stale heartbeat keeps it from ringing on real calls.
+   `reviewer@tcbpestcontrolcanberra.com.au` right before submitting. It sits in `staff_users` marked
+   `available`, and what keeps it from ringing on real calls is **code, not luck**: it is listed in
+   `DEMO_ACCOUNT_EMAILS` (`wrangler.jsonc`), which `demoEmails(env)` feeds into `excludeDemos`
+   (`src/demo`), dropping it from `resolveRingTargets` before shift or availability is even
+   considered — and out of `/api/staff`, the ungated roster the softphone's transfer picker reads.
+   Emptying that var is what would make a reviewer ring, or appear as a transfer destination for a
+   real customer's live call. This line said "only a stale heartbeat keeps it from ringing" until
+   2026-09-23; that was wrong, and `CLAUDE.md` has corrected it since.

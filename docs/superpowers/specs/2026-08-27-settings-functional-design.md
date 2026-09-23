@@ -41,6 +41,18 @@ observable acceptance check. Overall done when:
   per-user or per-type gating.
 - **Recording:** inbound queue calls **already record** (`queueTwiml.ts`,
   `record="record-from-answer-dual"`). Outbound `/twiml/voice-app` dials into a conference.
+
+  > **Superseded 2026-09-12/18 — recording moved leg.** It is on **`renderJoinConference`**, the
+  > CALLER's own leg, not on the staff leg or the queue dial. A `<Dial>` recording belongs to every
+  > leg that renders the document, and two do per call (the staff leg plus a warm-transfer target,
+  > or the agent leg plus the dialled customer on an outbound softphone call) — both post to the
+  > same callback, `recording_url` is last-write-wins, so half the conversation was orphaned in
+  > Twilio. The caller's leg is the one that lasts the WHOLE call, so it is one continuous recording
+  > no other leg can overwrite; `handleAgentAnswer` passes `record: false` on the staff leg, which
+  > is load-bearing rather than tidy-up. Outbound follows the same rule since 2026-09-18, except
+  > call-via-mobile, where the customer is a `<Number>` dialled FROM the staff mobile so channel 1
+  > is staff (declared as `staffch=1`). Read the recording/transcript bullets in `CLAUDE.md` before
+  > changing any of this; this paragraph describes the state in August 2026, not the code.
 - **Audio SDK:** `@twilio/voice-react-native-sdk@2.0.0-preview.2` exposes `voice.getAudioDevices()`
   → `{ audioDevices, selectedDevice }`, `AudioDevice.select()`, types Earpiece/Speaker/Bluetooth,
   and `Voice.Event.AudioDevicesUpdated`. Audio-route control is feasible.
@@ -136,6 +148,10 @@ Because both numbers are shared, **Call Recording** is **business-wide**, stored
 | Row | Behavior | Wiring | Acceptance |
 |-----|----------|--------|------------|
 | **Call Recording** | Business-wide toggle for whether calls on the shared line(s) are recorded. Governs both the inbound queue dial and outbound `/twiml/voice-app`. Default ON (matches today's inbound behavior). | `queueTwiml.ts` and `/twiml/voice-app` read the global `recording` setting and include/omit `record="record-from-answer-dual"` accordingly. | Turn recording OFF (admin) → a new inbound/outbound call produces no recording; ON → it does. |
+
+> **The Wiring column above is superseded** (2026-09-12/18): the recording lives on
+> `renderJoinConference` — the caller's leg — not on `queueTwiml.ts` / `/twiml/voice-app`. See the
+> note in *Current state* above. The toggle itself, and its admin gating, are unchanged.
 
 ### D. Already functional (no change, listed for completeness)
 Account/Registration/Role/Incoming-calls status rows; Appearance (theme); Version; Check for

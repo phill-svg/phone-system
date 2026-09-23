@@ -123,13 +123,24 @@ before adding one, or you will duplicate a path that already works.
 
 ## Current status (update this when it changes)
 
-- **iOS:** TestFlight external testing was **rejected under Guideline 2.2** — TestFlight is for
-  apps bound for public distribution, and this is a single-business staff tool. A public App Store
-  submission would hit **Guideline 3.2 (Business)** for the same underlying reason.
-  Staff distribution is **internal** TestFlight testers, who skip Beta App Review entirely (builds
-  expire after 90 days, so re-upload quarterly). The durable alternative is an Apple Business
-  Manager custom app, but note that choice is one-way per app record and tenancy sub-project 7 is a
-  public App Store submission — so do not set this bundle ID to Private if it is meant to become
+- **iOS: internal TestFlight TODAY, unlisted App Store INTENDED.** Keep the two apart — this file
+  recorded only the first and `specs/2026-08-28-appstore-listing.md` only the second, so each read
+  as the settled answer and they disagreed. Both are true, at different dates (reconciled
+  2026-09-23).
+  *Today:* staff install through **internal** TestFlight testers, who skip Beta App Review entirely.
+  Builds expire after 90 days, so this needs a re-upload quarterly. TestFlight **external** testing
+  was **rejected under Guideline 2.2** — TestFlight is for apps bound for public distribution, and
+  this is a single-business staff tool — and a public App Store listing would hit **Guideline 3.2
+  (Business)** for the same underlying reason.
+  *Intended:* **unlisted** App Store distribution (decided 2026-09-03), which is on the real App
+  Store but invisible to search, charts and categories, installs from a direct link, auto-updates
+  and never expires. **The unlisted request has not been filed or approved**, so none of it is live;
+  `specs/2026-08-28-appstore-listing.md` is the prep for that submission, including the review-notes
+  wording, which for unlisted says the staff-only audience OUTRIGHT rather than dodging 3.2.
+  The other durable option is an Apple Business Manager custom app, which needs a Company/
+  Organization account with a D-U-N-S — this enrolment is individual (Team ID B7WRQ9STH6), so it is
+  closed without converting. Note that choice is one-way per app record and tenancy sub-project 7 is
+  a public App Store submission — so do not set this bundle ID to Private if it is meant to become
   the public product.
 - **Android:** ships to the Play **internal** track via `eas submit`.
 - **Backend:** single-tenant, TCB-only. The multi-tenancy plan is shelved (see `specs/` note above)
@@ -156,14 +167,21 @@ before adding one, or you will duplicate a path that already works.
   to find out which greeting to play. A blank stored value is treated as NULL -- `""` is not null,
   and `?? DEFAULT` would hand `loadEntryNode` a flow that cannot exist.
   **The fallback CHAIN is the design, not politeness.** `entryFlowCandidates` returns
-  `[number's flow, "main"]` in hours and `[number's after-hours flow, number's in-hours flow,
-  "main"]` after them, deduped, and CallSession tries each in turn. An admin who points a number at
-  a menu and then deletes that menu's starting step would otherwise hang up on every caller to it;
-  instead they hear a working menu and `Admin > Health Checks` goes red (`checkNumberRoutes`). Only
-  a broken `main` reaches the catch-all, which is what happened before this feature existed and is
-  the one case with nothing left to fall back to. With no overrides the list is byte-for-byte the
-  old behaviour -- a test pins that, because changing routing for every existing call would be the
-  worst possible way to add this.
+  `[number's flow, "main"]` in hours and `[number's after-hours flow, "after_hours", "main"]` after
+  them, deduped, and CallSession tries each in turn. An admin who points a number at a menu and then
+  deletes that menu's starting step would otherwise hang up on every caller to it; instead they hear
+  a working menu and `Admin > Health Checks` goes red (`checkNumberRoutes`). Only a broken `main`
+  reaches the catch-all, which is what happened before this feature existed and is the one case with
+  nothing left to fall back to. With no overrides the list is byte-for-byte the old behaviour -- a
+  test pins that, because changing routing for every existing call would be the worst possible way
+  to add this.
+  **Every rung is MORE GENERIC FOR THE SAME SITUATION, never a sideways move**, and that rule is
+  what keeps the after-hours chain off the number's own DAYTIME menu. This paragraph described that
+  sideways rung as the design until 2026-09-23 -- it was written before `/code-review` removed it
+  (see the review note further down this bullet) and never reconciled when the code changed, so the
+  file contradicted both itself and `src/ivr/numberRouting.ts` for two days. Anyone adding a rung
+  here: `entryFlowCandidates` is the only place the order lives, and its own comment carries the
+  same rule.
   Pointing a number at a flow with no entry node is **refused on write** (`/api/numbers`, JSON error
   naming the field and flow, since `apiFetch` lifts a message only out of `{error}`); only a
   non-null value is checked, so no existing row can become unsaveable. The remaining way to break it

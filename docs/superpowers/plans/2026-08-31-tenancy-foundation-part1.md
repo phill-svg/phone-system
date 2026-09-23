@@ -1,5 +1,11 @@
 # Tenancy Foundation — Part 1: schema, scope, and the first scoped module
 
+> **SHELVED — do not execute this plan** (noted 2026-09-23). Multi-tenancy is not being pursued;
+> the backend stays TCB-only. See the status note on
+> `../specs/2026-08-31-tenancy-foundation-design.md` and `CLAUDE.md`. Task 1's migration (`0026`,
+> the `tenant_id` columns and the `tnt_tcb` row) DID land and is live; nothing from Task 2 onward
+> was built. Kept for reference only — **do not resume without Phill explicitly asking**.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give every row in D1 an owning tenant, and make the data layer unreachable without proving which tenant you are acting for — proven end-to-end on the `messages` module.
