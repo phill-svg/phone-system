@@ -210,11 +210,6 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
 // Every /admin/ page is served either as the Phone page's shell or as the plain page its frame
 // shows, depending on Sec-Fetch-Dest -- so the same URL must never be answered from cache with the
 // other variant. Back would otherwise put the plain page at the top, with no softphone on it.
-// Dashboard pages that always render (no 404 to preserve), for the shortcut in the /admin/ routes.
-// Pages that can 404 on their own input (/admin/calls/:id, /admin/ivr/:flow) are deliberately
-// absent and go through page(), so a bad id or encoding still 404s.
-const SHELL_PAGES = /^\/admin\/(messages|live|webhooks|settings|errors|voicemail|callbacks|analytics)$/;
-
 function adminHtml(html: string, status = 200): Response {
   return new Response(html, {
     status,
@@ -1581,15 +1576,17 @@ export default {
 
       // The Phone page is the dashboard's shell: every other section opens in a frame inside it,
       // because the softphone lives on that page and a navigation away destroys it (a call then
-      // rings nowhere). See renderPhonePage. A top-level load of any page that EXISTS gets the shell
-      // with that page open in the frame: every page below returns through page(), so none can be
-      // forgotten, and a path that 404s still 404s. The frame's own request gets the plain page. A
-      // missing header (an old browser) gets the plain page too -- never the shell, which inside a
-      // frame would nest a second softphone.
+      // rings nowhere). See renderPhonePage. A top-level load of a page gets the shell with that page
+      // open in the frame; each route below returns it FIRST (topLevel), before its own queries, so
+      // they run once -- in the frame -- and a path that 404s still 404s. The frame's own request
+      // gets the plain page. A missing header (an old browser) gets the plain page too -- never the
+      // shell, which inside a frame would nest a second softphone -- and that page sends itself
+      // into the shell (layout.ts), which is also the safety net for a route that forgets topLevel.
       const dest = request.headers.get("Sec-Fetch-Dest");
       const shell = (section: string | null) =>
         adminHtml(renderPhonePage(staffOrResponse.email, staffOrResponse.role, { section }));
-      const page = (html: string) => (dest === "document" ? shell(url.pathname + url.search) : adminHtml(html));
+      const topLevel = dest === "document";
+      const shellHere = () => shell(url.pathname + url.search);
       if (url.pathname === "/admin/phone") {
         if (dest === "iframe") return adminHtml(renderPhoneFrameStub());
         // ?section= is how a browser that sends no Sec-Fetch-Dest reaches the shell (see layout.ts).
@@ -1598,37 +1595,41 @@ export default {
         const section = asked && /^\/admin\/(?!phone(?:[/?#]|$))/.test(asked) ? asked : null;
         return shell(section);
       }
-      // Pages known to exist skip straight to the shell, so a top-level load does not run the page's
-      // queries (Twilio calls, for Live Calls) only for the frame to run them again. Purely a saving:
-      // a page missing here still gets the shell through page() below, at the cost of the double work.
-      if (dest === "document" && SHELL_PAGES.test(url.pathname)) return shell(url.pathname + url.search);
 
       if (url.pathname === "/admin/messages") {
+        if (topLevel) return shellHere();
         const html = renderMessagesPage(staffOrResponse.role);
-        return page(html);
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/live") {
+        if (topLevel) return shellHere();
         const html = renderLiveCallsPage(await getLiveCalls(env), staffOrResponse.role);
-        return page(html);
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/webhooks") {
+        if (topLevel) return shellHere();
         const html = renderWebhooksPage(url.origin, env.TWILIO_WEBHOOK_SECRET ?? "", staffOrResponse.role);
-        return page(html);
+        return adminHtml(html);
       }
 
       const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
       if (callIdMatch) {
         const callId = safeDecode(callIdMatch[1]);
         if (callId === null) return new Response("not found", { status: 404 });
+        if (topLevel) {
+          const exists = await env.DB.prepare("SELECT 1 FROM calls WHERE id = ?").bind(callId).first();
+          return exists ? shellHere() : new Response("not found", { status: 404 });
+        }
         const detail = await getCallDetail(env.DB, callId);
         if (!detail) return new Response("not found", { status: 404 });
         const html = renderCallDetailPage(detail.call, detail.events, staffOrResponse.role);
-        return page(html);
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/settings") {
+        if (topLevel) return shellHere();
         const [schedule, blocklist, staffRoster, staffAccess, divertCallerId, missedCallSms] = await Promise.all([
           getBusinessHours(env.DB),
           getCallBlocklist(env.DB),
@@ -1638,15 +1639,17 @@ export default {
           getMissedCallSms(env.DB),
         ]);
         const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role, divertCallerId, missedCallSms);
-        return page(html);
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/errors") {
+        if (topLevel) return shellHere();
         const html = renderClientErrorsPage(await listClientErrors(env.DB), staffOrResponse.role);
-        return page(html);
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/voicemail") {
+        if (topLevel) return shellHere();
         // The contact names are resolved here, in one query, rather than per row: the roster is
         // small and a lookup per voicemail is a D1 round trip each.
         const [voicemails, contacts] = await Promise.all([listVoicemails(env.DB), listContacts(env.DB)]);
@@ -1657,25 +1660,28 @@ export default {
           if (name) names.set(vm.caller_number, name);
         }
         const html = renderVoicemailPage(voicemails, names, staffOrResponse.role);
-        return page(html);
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/callbacks") {
+        if (topLevel) return shellHere();
         const html = renderCallbackRequestsPage(await listCallbackRequests(env.DB), staffOrResponse.role);
-        return page(html);
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/analytics") {
+        if (topLevel) return shellHere();
         const days = 14;
         const since = Date.now() - days * 24 * 60 * 60 * 1000;
         const html = renderAnalyticsPage(await getCallStats(env.DB, since), days);
-        return page(html);
+        return adminHtml(html);
       }
 
       const ivrAdminMatch = url.pathname.match(/^\/admin\/ivr\/([^/]+)$/);
       if (ivrAdminMatch) {
         const flow = safeDecode(ivrAdminMatch[1]);
         if (flow === null) return new Response("not found", { status: 404 });
+        if (topLevel) return shellHere();
         const [nodes, audioAssets, staffRoster] = await Promise.all([
           listNodesForFlow(env.DB, flow),
           listAudioAssets(env.DB),
@@ -1687,7 +1693,7 @@ export default {
           audioAssets.map((a) => ({ id: a.id, label: a.label })),
           staffRoster.map((s) => s.email)
         );
-        return page(html);
+        return adminHtml(html);
       }
 
       return new Response("not found", { status: 404 });

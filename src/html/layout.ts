@@ -91,7 +91,20 @@ export function renderLayout(
   // read for the whole team) must ask this instead.
   window.tcbSectionHidden = function () {
     try { return !!(window.frameElement && window.frameElement.style.display === "none"); } catch (e) { return false; }
-  };${opts?.isShell ? "" : `
+  };
+  // Every section's polls pause while it is hidden, in one place rather than poll by poll: a
+  // section a page forgot to guard would otherwise keep working unseen (Messages marking threads
+  // read for the whole team). Framed sections only; the Phone page's own timers are untouched.
+  if (window.top !== window) {
+    var tcbSetInterval = window.setInterval;
+    window.setInterval = function (fn, ms) {
+      if (typeof fn !== "function") return tcbSetInterval.apply(window, arguments);
+      var args = Array.prototype.slice.call(arguments, 2);
+      return tcbSetInterval.call(window, function () {
+        if (!window.tcbSectionHidden()) fn.apply(this, args);
+      }, ms);
+    };
+  }${opts?.isShell ? "" : `
   // A section loaded as the whole window has no softphone, so calls would ring nowhere. The worker
   // serves the shell for a top-level load on Sec-Fetch-Dest; a browser that does not send it lands
   // here, and is sent into the shell with this section open.

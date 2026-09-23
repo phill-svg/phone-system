@@ -1907,7 +1907,19 @@ export function renderPhonePage(
         }
       };
       if (window.Twilio) {
-        initDevice();
+        // One softphone per browser. Every dashboard tab is now the Phone page, so without this a
+        // second tab (Ctrl-click, a bookmark) registers a second Device and every call rings twice,
+        // answerable in a tab nobody is looking at. The lock queues this tab until the one holding
+        // it closes, and is released when the page unloads.
+        if (navigator.locks && navigator.locks.request) {
+          setDeviceStatusText('Phone is open in another tab or window.');
+          navigator.locks.request('tcb-softphone', function () {
+            initDevice();
+            return new Promise(function () {}); // held for the life of the page
+          });
+        } else {
+          initDevice();
+        }
       } else {
         deviceFailed = true;
         document.getElementById('sdk-error').style.display = 'block';
@@ -1920,14 +1932,24 @@ export function renderPhonePage(
     </script>
     <script>
       // The app shell: every other section opens in #section-frame over this page. See the note on
-      // renderPhonePage. Section switches REPLACE the frame's location so they add no history.
+      // renderPhonePage. The frame's location is always REPLACED; the top page keeps the history, one
+      // entry per section the user opens, so Back moves between sections as it always did.
       (function () {
         if (window.top !== window) return;
         var frame = document.getElementById('section-frame');
         var header = document.querySelector('header');
+        var pill = document.getElementById('back-to-call');
         var PHONE_TITLE = document.title;
         var INITIAL_SECTION = ${safeJsonForScript(opts?.section ?? null)};
 
+        // A section can be hidden but still loaded -- by a ringing call, the "back to call" button,
+        // or Back to Phone -- so going back to it shows it as it was, draft and all (kept). Only a
+        // ringing call brings it back by itself when the call is over (autoRestore); the other two
+        // were the user choosing Phone.
+        var kept = false;
+        var autoRestore = false;
+
+        function busy() { return !!(window.tcbCallActive && window.tcbCallActive()); }
         // An iframe keeps its intrinsic 150px height under top/bottom insets, so size it outright.
         function place() {
           var h = header ? header.offsetHeight : 0;
@@ -1942,22 +1964,30 @@ export function renderPhonePage(
             return l.href === 'about:blank' ? '' : l.pathname + l.search + l.hash;
           } catch (e) { return ''; }
         }
+        function visible() { return frame.style.display === 'block'; }
         function markNav(pathname) {
+          // Analytics, Webhooks and the phone-menu editor are reached from Settings.
+          var sub = pathname === '/admin/analytics' || pathname === '/admin/webhooks' || pathname.indexOf('/admin/ivr/') === 0;
+          var key = sub ? '/admin/settings' : pathname;
           var links = document.querySelectorAll('header .nav-link');
           for (var i = 0; i < links.length; i++) {
             var href = links[i].getAttribute('href');
-            links[i].classList.toggle('active', pathname === href || pathname.indexOf(href + '/') === 0);
+            links[i].classList.toggle('active', key === href || key.indexOf(href + '/') === 0);
           }
         }
-        // A section hidden by a ringing call rather than left: see tcbHideSection.
-        var parked = false;
-
-        var pill = document.getElementById('back-to-call');
-        // With a section over the Phone page, the call controls are hidden under it: while a call is
+        // Only a dashboard path goes in the address bar: a refresh of anything else (/login inside
+        // the frame, an /api/ link followed there) would load without the shell or the softphone.
+        function setUrl(path, push) {
+          if (path.indexOf('/admin/') !== 0) return;
+          try {
+            if (push) history.pushState(null, '', path);
+            else history.replaceState(null, '', path);
+          } catch (e) {}
+        }
+        // With a section over the Phone page the call controls are underneath it: while a call is
         // up, keep a way back to them on screen.
         function syncPill() {
-          var up = frame.style.display === 'block' && !!(window.tcbCallActive && window.tcbCallActive());
-          if (pill) pill.style.display = up ? 'block' : 'none';
+          if (pill) pill.style.display = visible() && busy() ? 'block' : 'none';
         }
         window.tcbSyncCallPill = syncPill;
         function showFrame() {
@@ -1967,81 +1997,109 @@ export function renderPhonePage(
           syncPill();
         }
         function syncFromFrame() {
-          if (frame.style.display !== 'block') return;
+          if (!visible()) return;
           var p = framePath();
-          if (p.indexOf('/admin/') !== 0) return;
-          try { history.replaceState(null, '', p); } catch (e) {}
+          if (p.indexOf('/admin/') !== 0 || p.indexOf('/admin/phone') === 0) return;
+          setUrl(p, false);
           try { document.title = frame.contentDocument.title || PHONE_TITLE; } catch (e) {}
           markNav(p.split(/[?#]/)[0]);
         }
-        function openSection(url) {
+        function sameSection(cur, url) {
+          return cur === url || (url.indexOf('?') < 0 && cur.split(/[?#]/)[0] === url);
+        }
+        function openSection(url, push) {
           var cur = framePath();
-          var wasParked = parked;
-          parked = false;
+          var wasKept = kept;
+          kept = autoRestore = false;
           showFrame();
           markNav(url.split(/[?#]/)[0]);
-          // Going back to a section a call parked shows it as it was, so nothing typed there is lost.
-          // Anything else loads fresh -- including a click on the section already on screen, which
-          // is how these server-rendered pages have always been refreshed.
-          if (wasParked && (cur === url || (url.indexOf('?') < 0 && cur.split(/[?#]/)[0] === url))) syncFromFrame();
+          if (push) setUrl(url, true);
+          // A kept section shows as it was. Anything else loads fresh -- including a click on the
+          // section already on screen, which is how these server-rendered pages are refreshed.
+          if (wasKept && sameSection(cur, url)) syncFromFrame();
           else frame.contentWindow.location.replace(url);
         }
-        function showPhone(unload) {
+        function showPhone(unload, push) {
           frame.style.display = 'none';
           document.documentElement.style.overflow = '';
           if (unload && framePath()) frame.contentWindow.location.replace('about:blank');
-          try { history.replaceState(null, '', '/admin/phone'); } catch (e) {}
+          setUrl('/admin/phone', push);
           document.title = PHONE_TITLE;
           markNav('/admin/phone');
           syncPill();
         }
-        // Stop anything a hidden section is playing -- a voicemail must not play on under a call.
-        function pauseFrameMedia() {
+        // Keep the section loaded but out of sight, and stop anything it is playing -- a voicemail
+        // must not play on under a call.
+        function keepHidden(restoreAfterCall, push) {
+          kept = true;
+          autoRestore = restoreAfterCall;
           try {
             var media = frame.contentDocument.querySelectorAll('audio, video');
             for (var i = 0; i < media.length; i++) media[i].pause();
           } catch (e) {}
+          showPhone(false, push);
         }
 
         frame.addEventListener('load', function () {
-          // A hidden frame that loads a page on its own is Back/Forward moving through history the
-          // frame made (a link followed inside a section). Show it, or Back would appear to do
-          // nothing while a hidden page ran its polls. A parked section stays put until the call ends.
           var fp = framePath();
           // The /admin/phone stub hands over and blanks the frame; its own load event can still land
           // first, and must not put the frame back over the softphone.
           if (fp.indexOf('/admin/phone') === 0) return;
-          if (frame.style.display !== 'block' && fp && !parked) showFrame();
+          // A hidden frame loading a page on its own is Back/Forward through a link followed inside
+          // a section: show it, or Back would look dead while a hidden page ran. A kept section
+          // stays put.
+          if (!visible() && fp && !kept) showFrame();
           // ...and Forward onto the blank entry Phone leaves behind must not cover the softphone.
-          else if (frame.style.display === 'block' && !framePath()) showPhone(false);
+          else if (visible() && !fp) showPhone(false, false);
           syncFromFrame();
         });
-        window.tcbOpenSection = openSection;
-        // Called by the frame's /admin/phone stub (Messages "Call", Live Calls "Listen").
+
+        window.tcbOpenSection = function (url) { openSection(url, true); };
+        // Phone, from the nav or from the frame's /admin/phone stub (Messages "Call", Live Calls
+        // "Listen").
         window.tcbShowPhone = function (search) {
-          // Phone while a call has a section parked: it is already on screen. Unloading the parked
-          // section here would lose the draft parking exists to keep.
-          if (parked && !search) return;
-          parked = false;
-          showPhone(true);
+          var fromStub = framePath().indexOf('/admin/phone') === 0;
+          if (search && busy()) {
+            // A call is up, so the link cannot run now (tcbPhoneDeepLink says why). Leave the section
+            // where it was rather than unloading it for nothing: step the frame back off the stub.
+            if (window.tcbPhoneDeepLink) window.tcbPhoneDeepLink(search);
+            if (fromStub) { try { frame.contentWindow.history.back(); } catch (e) {} }
+            return;
+          }
+          // Already on Phone with a section kept behind it: stay, and do not pop it back later.
+          if (kept && !search) { autoRestore = false; return; }
+          kept = autoRestore = false;
+          showPhone(true, !fromStub);
           if (search && window.tcbPhoneDeepLink) window.tcbPhoneDeepLink(search);
         };
-        // A ringing call: hide the section without unloading it...
+        // A ringing call: hide the section, and bring it back when the call is over.
         window.tcbHideSection = function () {
-          if (frame.style.display !== 'block') return;
-          parked = true;
-          pauseFrameMedia();
-          showPhone(false);
+          if (visible()) keepHidden(true, false);
         };
-        if (pill) pill.addEventListener('click', window.tcbHideSection);
-        // ...and bring it back once the call is over. Left parked, a hidden Messages page would keep
-        // polling its thread, marking every new text read for the whole team with nobody looking.
+        // The "back to call" button: the user chose Phone, so it stays on Phone after the call.
+        if (pill) pill.addEventListener('click', function () { keepHidden(false, true); });
+        // A second call still up must not have a section put back over its controls.
         window.tcbRestoreSection = function () {
-          if (!parked || (window.tcbCallActive && window.tcbCallActive())) return;
-          parked = false;
+          if (!autoRestore || busy()) return;
+          kept = autoRestore = false;
           showFrame();
           syncFromFrame();
         };
+
+        window.addEventListener('popstate', function () {
+          if (location.pathname === '/admin/phone') {
+            if (visible()) keepHidden(false, false);
+          } else if (location.pathname.indexOf('/admin/') === 0) {
+            openSection(location.pathname + location.search + location.hash, false);
+          }
+        });
+        // Leaving the page hangs up a live call, so the browser asks first. The desktop app has no
+        // Back button and must never be kept from quitting.
+        window.addEventListener('beforeunload', function (e) {
+          if (window.desktopBridge || !busy()) return;
+          e.preventDefault();
+          e.returnValue = '';
+        });
 
         document.addEventListener('click', function (e) {
           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -2051,18 +2109,10 @@ export function renderPhonePage(
           if (u.origin !== location.origin || u.pathname.indexOf('/admin/') !== 0) return;
           e.preventDefault();
           if (u.pathname === '/admin/phone') window.tcbShowPhone(u.search);
-          else openSection(u.pathname + u.search + u.hash);
+          else openSection(u.pathname + u.search + u.hash, true);
         });
 
-        // Leaving the page hangs up a live call, so the browser asks first. The desktop app has no
-        // Back button and must never be kept from quitting.
-        window.addEventListener('beforeunload', function (e) {
-          if (window.desktopBridge || !(window.tcbCallActive && window.tcbCallActive())) return;
-          e.preventDefault();
-          e.returnValue = '';
-        });
-
-        if (INITIAL_SECTION) openSection(INITIAL_SECTION + (INITIAL_SECTION.indexOf('#') < 0 ? location.hash : ''));
+        if (INITIAL_SECTION) openSection(INITIAL_SECTION + (INITIAL_SECTION.indexOf('#') < 0 ? location.hash : ''), false);
       })();
     </script>`;
 

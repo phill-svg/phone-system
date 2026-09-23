@@ -127,7 +127,7 @@ function shellHarness(section: string | null = null, hash = "") {
     contentWindow: { location: frameLoc },
     addEventListener: (_: string, h: () => void) => (onFrameLoad = h),
   };
-  const nav = ["/admin/phone", "/admin/messages"].map((href) => ({
+  const nav = ["/admin/phone", "/admin/messages", "/admin/settings"].map((href) => ({
     getAttribute: () => href,
     classList: { toggle: vi.fn() },
   }));
@@ -152,8 +152,8 @@ function shellHarness(section: string | null = null, hash = "") {
     tcbCallActive: () => callUp,
   };
   win.top = win;
-  const history = { replaceState: vi.fn() };
-  const location = { href: "https://example.com/admin/phone", origin: "https://example.com", hash: hash };
+  const history = { replaceState: vi.fn(), pushState: vi.fn() };
+  const location = { href: "https://example.com/admin/phone", origin: "https://example.com", hash: hash, pathname: "/admin/phone", search: "" };
   new Function("window", "document", "history", "location", js)(win, document, history, location);
 
   const click = (href: string) => {
@@ -181,7 +181,14 @@ function shellHarness(section: string | null = null, hash = "") {
     winListeners.beforeunload(e);
     return e;
   };
-  return { win, frame, frameLoc, history, click, frameNavigates, pill, pillClick: () => pillClick(), media, setCallUp, leave };
+  // What the browser does on Back/Forward: the address changes, then popstate fires.
+  const back = (path: string) => {
+    const url = new URL(path, "https://example.com");
+    Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+    winListeners.popstate({});
+  };
+  const navActive = () => nav.filter((n) => n.classList.toggle.mock.calls.at(-1)?.[1]).map((n) => n.getAttribute());
+  return { win, frame, frameLoc, history, click, frameNavigates, pill, pillClick: () => pillClick(), media, setCallUp, leave, back, navActive };
 }
 
 describe("the shell", () => {
@@ -225,7 +232,27 @@ describe("the shell", () => {
     s.click("/admin/phone");
     expect(s.frame.style.display).toBe("none");
     expect(s.frameLoc.replace).toHaveBeenLastCalledWith("about:blank");
-    expect(s.history.replaceState).toHaveBeenLastCalledWith(null, "", "/admin/phone");
+    expect(s.history.pushState).toHaveBeenLastCalledWith(null, "", "/admin/phone");
+  });
+
+  // One history entry per section opened, so Back moves between sections instead of leaving the
+  // dashboard (and hanging up a call).
+  it("adds a history entry per section, and Back returns to the one before", () => {
+    const s = shellHarness();
+    s.click("/admin/messages");
+    expect(s.history.pushState).toHaveBeenLastCalledWith(null, "", "/admin/messages");
+    s.click("/admin/phone");
+    s.back("/admin/messages");
+    expect(s.frame.style.display).toBe("block");
+    expect(s.frameLoc.pathname).toBe("/admin/messages");
+    s.back("/admin/phone");
+    expect(s.frame.style.display).toBe("none");
+  });
+
+  it("marks Settings for the pages reached from it", () => {
+    const s = shellHarness();
+    s.click("/admin/ivr/main");
+    expect(s.navActive()).toEqual(["/admin/settings"]);
   });
 
   it("hands a Phone deep link to the running page", () => {
@@ -252,7 +279,8 @@ describe("the shell", () => {
     expect(s.media[0].pause).toHaveBeenCalled();
   });
 
-  // The parked section holds a draft; Phone is already on screen, so there is nothing to unload.
+  // The parked section holds a draft. Clicking Phone keeps it loaded (going back shows it as it
+  // was) but is the user choosing Phone, so it does not pop back when the call ends.
   it("keeps a parked section when Phone is clicked during the call", () => {
     const s = shellHarness("/admin/messages");
     (s.win.tcbHideSection as () => void)();
@@ -260,6 +288,30 @@ describe("the shell", () => {
     s.click("/admin/phone");
     expect(s.frameLoc.replace).not.toHaveBeenCalled();
     (s.win.tcbRestoreSection as () => void)();
+    expect(s.frame.style.display).toBe("none");
+    s.click("/admin/messages");
+    expect(s.frame.style.display).toBe("block");
+    expect(s.frameLoc.replace).not.toHaveBeenCalled();
+  });
+
+  it("does not bring a section back over a second call still up", () => {
+    const s = shellHarness("/admin/messages");
+    (s.win.tcbHideSection as () => void)();
+    s.setCallUp(true);
+    (s.win.tcbRestoreSection as () => void)();
+    expect(s.frame.style.display).toBe("none");
+  });
+
+  // A Listen or Call that cannot run during a call must not cost the user the page they were on.
+  it("leaves the section in place when a Phone link is refused mid-call", () => {
+    const s = shellHarness("/admin/live");
+    s.setCallUp(true);
+    const back = vi.fn();
+    (s.frame.contentWindow as Record<string, unknown>).history = { back };
+    s.frameNavigates("/admin/phone?listen=CA1");
+    (s.win.tcbShowPhone as (q: string) => void)("?listen=CA1");
+    expect(s.win.tcbPhoneDeepLink).toHaveBeenCalledWith("?listen=CA1");
+    expect(back).toHaveBeenCalled();
     expect(s.frame.style.display).toBe("block");
   });
 
@@ -272,6 +324,17 @@ describe("the shell", () => {
     s.pillClick();
     expect(s.frame.style.display).toBe("none");
     expect(s.pill.style.display).toBe("none");
+  });
+
+  // The user chose the call; hanging up must not throw the section back over the Phone page.
+  it("stays on Phone after a call the user went back to", () => {
+    const s = shellHarness();
+    s.setCallUp(true);
+    s.click("/admin/messages");
+    s.pillClick();
+    s.setCallUp(false);
+    (s.win.tcbRestoreSection as () => void)();
+    expect(s.frame.style.display).toBe("none");
   });
 
   // Back or refresh unloads the page and hangs up the call; the browser must ask first.
@@ -391,33 +454,32 @@ describe("a staff member opening App Errors", () => {
   });
 });
 
-// Every thread load marks it read for the WHOLE team. The REAL emitted helper and poll run against stubs.
-describe("Messages hidden behind a ringing call", () => {
-  async function poll(hidden: boolean | null) {
+// Every thread load marks it read for the WHOLE team, and any section's poll may have a side
+// effect. The layout pauses every framed section's setInterval while it is hidden, in one place.
+describe("a section hidden behind a ringing call", () => {
+  async function tickWhile(hidden: boolean | null) {
     const { renderMessagesPage } = await import("../../src/html/pages/messages");
     const html = renderMessagesPage("admin");
-    const helper = /(window\.tcbSectionHidden = function \(\) \{[\s\S]*?\n {2}\};)/.exec(html)?.[1];
-    const line = /(setInterval\(function\(\)\{if\(current&&!\(window\.tcbSectionHidden[^\n]*?\},5000\);)/.exec(html)?.[1];
-    if (!helper || !line) throw new Error("could not find the thread poll");
-    const loadThread = vi.fn();
+    const js = /<title>[^<]*<\/title>\s*<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
+    if (!js) throw new Error("could not find the layout head script");
     let tick: () => void = () => {};
     const frameElement = hidden === null ? null : { style: { display: hidden ? "none" : "block" } };
-    new Function("window", "setInterval", "loadThread", `var current = "+61400000000"; ${helper} ${line}`)(
-      { frameElement },
-      (f: () => void) => (tick = f),
-      loadThread
-    );
+    const win: Record<string, unknown> = { frameElement, setInterval: (f: () => void) => (tick = f) };
+    win.top = hidden === null ? win : {};
+    new Function("window", "document", "location", js)(win, { documentElement: { className: "" } }, { replace() {} });
+    const poll = vi.fn();
+    (win.setInterval as (f: () => void, ms: number) => void)(poll, 5000);
     tick();
-    return loadThread;
+    return poll;
   }
 
-  it("does not poll the thread while hidden", async () => {
-    expect(await poll(true)).not.toHaveBeenCalled();
+  it("does not run its polls while hidden", async () => {
+    expect(await tickWhile(true)).not.toHaveBeenCalled();
   });
 
-  it("polls when on screen, framed or not", async () => {
-    expect(await poll(false)).toHaveBeenCalled();
-    expect(await poll(null)).toHaveBeenCalled();
+  it("runs them when on screen, framed or not", async () => {
+    expect(await tickWhile(false)).toHaveBeenCalled();
+    expect(await tickWhile(null)).toHaveBeenCalled();
   });
 });
 
@@ -461,5 +523,46 @@ describe("a section loaded as the whole window without the shell", () => {
       const html = await (await page("/admin/phone?section=" + encodeURIComponent(bad), "document")).text();
       expect(html, bad).toContain("var INITIAL_SECTION = null;");
     }
+  });
+});
+
+// Every dashboard tab is the Phone page now; without the lock a second tab rings every call too.
+describe("more than one dashboard tab", () => {
+  function boot(locks: unknown) {
+    const html = renderPhonePage("phill@b.com");
+    const js = /(if \(window\.Twilio\) \{[\s\S]*?\n {6}\})/.exec(html)?.[1];
+    if (!js) throw new Error("could not find the softphone start-up");
+    const initDevice = vi.fn();
+    new Function("window", "navigator", "initDevice", "setDeviceStatusText", "document", "deviceFailed", js)(
+      { Twilio: {} },
+      { locks },
+      initDevice,
+      () => {},
+      { getElementById: () => ({ style: {} }) },
+      false
+    );
+    return initDevice;
+  }
+
+  it("starts the softphone only once this tab holds the lock", () => {
+    let grant: () => void = () => {};
+    const initDevice = boot({ request: (_: string, f: () => void) => (grant = f) });
+    expect(initDevice).not.toHaveBeenCalled();
+    grant();
+    expect(initDevice).toHaveBeenCalled();
+  });
+
+  it("starts it straight away in a browser without locks", () => {
+    expect(boot(undefined)).toHaveBeenCalled();
+  });
+});
+
+describe("a call-detail page loaded at the top level", () => {
+  it("gets the shell for a call that exists, without rendering the page twice", async () => {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO calls (id, caller_number, called_number, started_at, status) VALUES ('CA-shell-exists', '+61400000000', '+61261059771', 1, 'completed')"
+    ).run();
+    const html = await (await page("/admin/calls/CA-shell-exists", "document")).text();
+    expect(html).toContain('var INITIAL_SECTION = "/admin/calls/CA-shell-exists";');
   });
 });
