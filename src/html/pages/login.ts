@@ -8,10 +8,15 @@ function shell(title: string, cardBody: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} — TCB Phone System</title>
 <script>
-  // An expired session bounces a section in the Phone page's frame to here. Sign in at the TOP:
-  // a login inside the frame would leave the Phone page's softphone on the dead session, where it
-  // silently stops ringing.
-  if (window.top !== window) window.top.location.href = location.href;
+  // A signed-out session bounces a section in the Phone page's frame to here. Sign in at the TOP,
+  // which reloads the Phone page onto the new session -- unless a call is up there, which that
+  // reload would hang up. Then sign in here: the cookie is shared, so the Phone page's next token
+  // refresh picks the new session up.
+  if (window.top !== window) {
+    var tcbBusy = false;
+    try { tcbBusy = !!(window.parent.tcbCallActive && window.parent.tcbCallActive()); } catch (e) {}
+    if (!tcbBusy) window.top.location.href = location.href;
+  }
 </script>
 <style>
   :root { --bg:#0f1013; --surface:#1b1d24; --border:#26282f; --text:#eceef2; --dim:#a7adb8; --mute:#6d7280; --brand:#e4002b; --link:#ff5c78; }

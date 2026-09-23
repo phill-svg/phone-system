@@ -35,7 +35,7 @@ function harness(opts: { activeCall?: unknown; listenConnecting?: boolean; devic
     opts.activeCall ?? null,
     opts.listenConnecting ?? false,
     "device" in opts ? opts.device : { state: "registered" }
-  ) as () => string | null;
+  ) as () => { sid: string; at: number } | null;
   return { deepLink: window.tcbPhoneDeepLink, input, showDetail, listenCall, setDeviceStatusText, pending };
 }
 
@@ -75,6 +75,7 @@ describe("deep links handed to the running phone page", () => {
     const h = harness({ device: null });
     h.deepLink("?listen=CA789");
     expect(h.listenCall).not.toHaveBeenCalled();
-    expect(h.pending()).toBe("CA789");
+    expect(h.pending()?.sid).toBe("CA789");
+    expect(h.setDeviceStatusText).toHaveBeenCalledWith(expect.stringContaining("once the phone has connected"));
   });
 });

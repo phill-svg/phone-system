@@ -1,4 +1,5 @@
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
+import worker from "../../src/worker";
 import { describe, expect, it, vi } from "vitest";
 import { renderPhonePage, renderPhoneFrameStub } from "../../src/html/pages/phone";
 
@@ -18,6 +19,20 @@ describe("which requests get the shell", () => {
     expect(html).toContain('id="section-frame"');
     expect(html).toContain('var INITIAL_SECTION = "/admin/messages?to=%2B61400000000";');
     expect(res.headers.get("Vary")).toBe("Sec-Fetch-Dest");
+  });
+
+  // The frame's plain page and the top's shell share a URL. Cached without Vary, Back could put
+  // the plain page at the top -- no softphone, calls ringing nowhere.
+  it("never lets the plain page be served from cache in place of the shell", async () => {
+    const res = await page("/admin/voicemail", "iframe");
+    expect(res.headers.get("Vary")).toBe("Sec-Fetch-Dest");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  // No list of sections to keep in step with the routes: a page added later still gets the shell.
+  it("serves any /admin/ page loaded at the top level inside the shell", async () => {
+    const html = await (await page("/admin/some-future-page", "document")).text();
+    expect(html).toContain('var INITIAL_SECTION = "/admin/some-future-page";');
   });
 
   it("serves the frame's own request as the plain section, with no softphone in it", async () => {
@@ -98,7 +113,12 @@ function shellHarness(section: string | null = null) {
       Object.assign(frameLoc, { href: url.href, pathname: url.pathname, search: url.search, hash: url.hash });
     }
   });
-  const frame = { style: {} as Record<string, string>, contentWindow: { location: frameLoc }, addEventListener: vi.fn() };
+  let onFrameLoad: () => void = () => {};
+  const frame = {
+    style: {} as Record<string, string>,
+    contentWindow: { location: frameLoc },
+    addEventListener: (_: string, h: () => void) => (onFrameLoad = h),
+  };
   const nav = ["/admin/phone", "/admin/messages"].map((href) => ({
     getAttribute: () => href,
     classList: { toggle: vi.fn() },
@@ -128,7 +148,13 @@ function shellHarness(section: string | null = null) {
     clickHandler(e);
     return e;
   };
-  return { win, frame, frameLoc, history, click };
+  // What the browser does when the frame itself navigates (Back/Forward through its history).
+  const frameNavigates = (u: string) => {
+    const url = new URL(u, "https://example.com");
+    Object.assign(frameLoc, { href: url.href, pathname: url.pathname, search: url.search, hash: url.hash });
+    onFrameLoad();
+  };
+  return { win, frame, frameLoc, history, click, frameNavigates };
 }
 
 describe("the shell", () => {
@@ -171,6 +197,68 @@ describe("the shell", () => {
     expect(s.frame.style.display).toBe("block");
     expect(s.frameLoc.replace).not.toHaveBeenCalled();
   });
+
+  // Left hidden after the call, Messages would keep polling its thread and mark every new text read
+  // for the whole team with nobody looking.
+  it("brings a section back once the call that hid it is over", () => {
+    const s = shellHarness("/admin/messages");
+    (s.win.tcbHideSection as () => void)();
+    (s.win.tcbRestoreSection as () => void)();
+    expect(s.frame.style.display).toBe("block");
+  });
+
+  it("does not pop a section up after a call that did not hide one", () => {
+    const s = shellHarness();
+    (s.win.tcbHideSection as () => void)();
+    (s.win.tcbRestoreSection as () => void)();
+    expect(s.frame.style.display).not.toBe("block");
+  });
+
+  // These pages are rendered once on the server, and clicking their link has always refreshed them.
+  it("reloads the section on screen when its link is clicked again", () => {
+    const s = shellHarness("/admin/live");
+    s.frameLoc.replace.mockClear();
+    s.click("/admin/live");
+    expect(s.frameLoc.replace).toHaveBeenCalledWith("/admin/live");
+  });
+
+  // Back after "Call" from Messages moves the hidden frame; showing it keeps Back from looking dead.
+  it("shows a hidden frame that Back/Forward navigates", () => {
+    const s = shellHarness("/admin/messages");
+    s.click("/admin/phone");
+    s.frameNavigates("/admin/messages");
+    expect(s.frame.style.display).toBe("block");
+    expect(s.history.replaceState).toHaveBeenLastCalledWith(null, "", "/admin/messages");
+  });
+});
+
+describe("a call ending", () => {
+  function run(fnName: string) {
+    const html = renderPhonePage("phill@b.com");
+    const fn = new RegExp(`(function ${fnName}\\([^)]*\\) \\{[\\s\\S]*?\\n {6}\\})`).exec(html)?.[1];
+    if (!fn) throw new Error(`could not find ${fnName}`);
+    const tcbRestoreSection = vi.fn();
+    const el = () => ({ style: {} });
+    new Function(
+      "window",
+      "document",
+      `var activeCall = null, isOnHold = false;
+       function hideIncomingBanner() {}
+       function showDetail() {}
+       function setDeviceStatusText() {}
+       ${fn}
+       try { ${fnName}({}); } catch (e) {}`
+    )({ tcbRestoreSection }, { getElementById: el, querySelectorAll: () => [] });
+    return tcbRestoreSection;
+  }
+
+  it("brings back the section the ring hid, when answered then hung up", () => {
+    expect(run("onCallEnded")).toHaveBeenCalled();
+  });
+
+  it("brings it back when the ring is missed or declined", () => {
+    expect(run("onIncomingGone")).toHaveBeenCalled();
+  });
 });
 
 describe("a call ringing while a section is open", () => {
@@ -191,5 +279,22 @@ describe("a call ringing while a section is open", () => {
        showIncomingBanner({});`
     )({ tcbHideSection }, { getElementById: el });
     expect(tcbHideSection).toHaveBeenCalled();
+  });
+});
+
+// Every other admin-only page already sent staff to Phone. /admin/errors answered a bare 403,
+// which inside the shell is a blank "forbidden" in the frame under a working header.
+describe("a staff member opening App Errors", () => {
+  it("is sent to the Phone page like the other admin-only pages", async () => {
+    const STAFF = "tech@tcbpestcontrolcanberra.com.au";
+    await env.DB.prepare("INSERT OR IGNORE INTO staff_users (email, role, created_at) VALUES (?, 'staff', 1)")
+      .bind(STAFF)
+      .run();
+    const res = await worker.fetch(
+      new Request("https://example.com/admin/errors", { headers: { "Sec-Fetch-Dest": "document" } }),
+      { ...env, DEV_STAFF_EMAIL: STAFF } as never
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("https://example.com/admin/phone");
   });
 });

@@ -48,6 +48,17 @@ const ICON_TRASH = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" 
 // requests get the shell (Sec-Fetch-Dest: document) and which get the plain section (iframe).
 //
 // `section` is the section to open in the frame on load, for a refresh or bookmark of one.
+// Hands a Phone deep link (?dial=, ?listen=) from the frame to the running Phone page above it, or
+// navigates the whole window there when there is no shell above. Used by the frame's /admin/phone
+// stub and by the guard at the top of the page itself -- one copy, so the two cannot drift.
+const HANDOVER_JS = `(function () {
+    var s = location.search;
+    try {
+      if (window.parent !== window && window.parent.tcbShowPhone) { window.parent.tcbShowPhone(s); return; }
+    } catch (e) {}
+    window.top.location.href = '/admin/phone' + s;
+  })();`;
+
 export function renderPhonePage(
   staffEmail: string,
   role: "admin" | "staff" = "admin",
@@ -62,10 +73,7 @@ export function renderPhonePage(
   const extraHead = `<script>
       if (window.top !== window) {
         window.stop();
-        try {
-          if (window.parent.tcbShowPhone) window.parent.tcbShowPhone(location.search);
-          else window.top.location.href = location.href;
-        } catch (e) { window.top.location.href = location.href; }
+        ${HANDOVER_JS}
       }
     </script>
     <style>
@@ -556,7 +564,8 @@ export function renderPhonePage(
       // A listen that is mid-connect has no activeCall yet, and one requested before the Device
       // registered has nothing to connect with. See tcbPhoneDeepLink.
       var listenConnecting = false;
-      var pendingListen = null;
+      var pendingListen = null; // { sid, at }
+      var PENDING_LISTEN_MS = 30000;
       var isOnHold = false;
 
       // Direction/status glyphs used when building call-list rows in JS.
@@ -1480,7 +1489,8 @@ export function renderPhonePage(
 
       function showIncomingBanner(call) {
         // A call rings over whatever section is open: bring the Answer banner forward. The section
-        // is only hidden, not unloaded, so a half-typed text is still there to go back to.
+        // is only hidden, not unloaded, and comes back when the call ends (tcbRestoreSection), so a
+        // half-typed text is still there.
         if (window.tcbHideSection) window.tcbHideSection();
         var from = incomingCallerNumber(call) || 'Unknown';
         var contact = contactsByNorm[normalizePhoneJS(from)];
@@ -1548,6 +1558,7 @@ export function renderPhonePage(
 
       function onCallEnded() {
         hideIncomingBanner();
+        if (window.tcbRestoreSection) window.tcbRestoreSection();
         document.getElementById('active-call-controls').style.display = 'none';
         showDetail('empty');
         activeCall = null;
@@ -1562,6 +1573,7 @@ export function renderPhonePage(
       function onIncomingGone(call) {
         hideIncomingBanner();
         if (activeCall === call) activeCall = null;
+        if (window.tcbRestoreSection) window.tcbRestoreSection();
       }
 
       // Load the business's voice numbers into the dialer "Call from" row. 2+ numbers => a dropdown
@@ -1761,10 +1773,12 @@ export function renderPhonePage(
               var lc = new URLSearchParams(location.search).get('listen');
               if (lc) { listenStarted = true; listenCall(lc); }
             }
+            // A listen asked for while registering -- but only if it is still recent and nothing
+            // has started since: a re-register minutes later must not barge over an answered call.
             if (pendingListen) {
               var pl = pendingListen;
               pendingListen = null;
-              listenCall(pl);
+              if (Date.now() - pl.at < PENDING_LISTEN_MS && !activeCall && !listenConnecting) listenCall(pl.sid);
             }
           });
           device.on('unregistered', function () {
@@ -1824,11 +1838,14 @@ export function renderPhonePage(
       loadNumbers();
       setInterval(loadCalls, 30000);
       // Deep-links into this page: ?dial=<number> (Messages contact preview) pre-fills the dialpad,
-      // ?listen=<callSid> (Live Calls) joins that call muted. The desktop shell keeps this page alive
-      // in its own view and hands it a deep link through this function INSTEAD of navigating here,
+      // ?listen=<callSid> (Live Calls) joins that call muted. Sections run in the shell's frame, and
+      // the frame's /admin/phone stub hands the link to this function INSTEAD of navigating here,
       // because navigating would tear down the Twilio Device -- hanging up whatever call is live and
       // dropping any call still ringing. A listen request is refused while a call is ringing or
       // live: listenCall overwrites activeCall, which would strand that call with no controls.
+      // Read by a sign-in page in the frame: with a call up it signs in there rather than taking over
+      // the window, which would hang the call up.
+      window.tcbCallActive = function () { return !!activeCall || listenConnecting; };
       window.tcbPhoneDeepLink = function (search) {
         var p = new URLSearchParams(search || '');
         var d = p.get('dial');
@@ -1840,7 +1857,10 @@ export function renderPhonePage(
         var lc = p.get('listen');
         if (lc) {
           if (activeCall || listenConnecting) setDeviceStatusText('Hang up the current call before listening in.');
-          else if (!device || device.state !== 'registered') pendingListen = lc;
+          else if (!device || device.state !== 'registered') {
+            pendingListen = { sid: lc, at: Date.now() };
+            setDeviceStatusText('Listen will start once the phone has connected…');
+          }
           else listenCall(lc);
         }
       };
@@ -1887,6 +1907,14 @@ export function renderPhonePage(
             links[i].classList.toggle('active', pathname === href || pathname.indexOf(href + '/') === 0);
           }
         }
+        // A section hidden by a ringing call rather than left: see tcbHideSection.
+        var parked = false;
+
+        function showFrame() {
+          place();
+          frame.style.display = 'block';
+          document.documentElement.style.overflow = 'hidden';
+        }
         function syncFromFrame() {
           if (frame.style.display !== 'block') return;
           var p = framePath();
@@ -1897,13 +1925,14 @@ export function renderPhonePage(
         }
         function openSection(url) {
           var cur = framePath();
-          place();
-          frame.style.display = 'block';
-          document.documentElement.style.overflow = 'hidden';
+          var wasParked = parked;
+          parked = false;
+          showFrame();
           markNav(url.split(/[?#]/)[0]);
-          // Re-opening the section already in the frame (say after a call hid it) just shows it,
-          // so nothing typed there is lost. A deep link with its own query still loads.
-          if (cur === url || (url.indexOf('?') < 0 && cur.split(/[?#]/)[0] === url)) syncFromFrame();
+          // Going back to a section a call parked shows it as it was, so nothing typed there is lost.
+          // Anything else loads fresh -- including a click on the section already on screen, which
+          // is how these server-rendered pages have always been refreshed.
+          if (wasParked && (cur === url || (url.indexOf('?') < 0 && cur.split(/[?#]/)[0] === url))) syncFromFrame();
           else frame.contentWindow.location.replace(url);
         }
         function showPhone(unload) {
@@ -1915,14 +1944,34 @@ export function renderPhonePage(
           markNav('/admin/phone');
         }
 
-        frame.addEventListener('load', syncFromFrame);
+        frame.addEventListener('load', function () {
+          // A hidden frame that loads a page on its own is Back/Forward moving through history the
+          // frame made (a link followed inside a section). Show it, or Back would appear to do
+          // nothing while a hidden page ran its polls. A parked section stays put until the call ends.
+          if (frame.style.display !== 'block' && framePath() && !parked) showFrame();
+          syncFromFrame();
+        });
         window.tcbOpenSection = openSection;
         // Called by the frame's /admin/phone stub (Messages "Call", Live Calls "Listen").
         window.tcbShowPhone = function (search) {
+          parked = false;
           showPhone(true);
           if (search && window.tcbPhoneDeepLink) window.tcbPhoneDeepLink(search);
         };
-        window.tcbHideSection = function () { showPhone(false); };
+        // A ringing call: hide the section without unloading it...
+        window.tcbHideSection = function () {
+          if (frame.style.display !== 'block') return;
+          parked = true;
+          showPhone(false);
+        };
+        // ...and bring it back once the call is over. Left parked, a hidden Messages page would keep
+        // polling its thread, marking every new text read for the whole team with nobody looking.
+        window.tcbRestoreSection = function () {
+          if (!parked) return;
+          parked = false;
+          showFrame();
+          syncFromFrame();
+        };
 
         document.addEventListener('click', function (e) {
           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -1949,13 +1998,7 @@ export function renderPhoneFrameStub(): string {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Phone</title></head><body>
 <script>
-  (function () {
-    var s = location.search;
-    try {
-      if (window.parent !== window && window.parent.tcbShowPhone) { window.parent.tcbShowPhone(s); return; }
-    } catch (e) {}
-    window.top.location.href = '/admin/phone' + s;
-  })();
+  ${HANDOVER_JS}
 </script>
 </body></html>`;
 }
