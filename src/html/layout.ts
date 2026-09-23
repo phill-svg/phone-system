@@ -26,6 +26,9 @@ const NAV_ITEMS = [
 const NOTIFY_JS = [
   '(function(){',
   '  if (!("Notification" in window)) return;',
+  // Sections open in a frame inside the Phone page (see renderPhonePage). The frame and the page
+  // around it would both poll and toast the same message, so only the top page notifies.
+  '  if (window.top !== window) return;',
   '  function ensurePerm(){ try { if (Notification.permission === "default") Notification.requestPermission(); } catch(e){} }',
   '  ensurePerm();',
   '  document.addEventListener("click", ensurePerm, { once: true });',
@@ -35,7 +38,7 @@ const NOTIFY_JS = [
   '  function fire(title, body, url, tag){',
   '    if (Notification.permission !== "granted") return;',
   '    try { var n = new Notification(title, { body: body, icon: "/logo.png", tag: tag });',
-  '      n.onclick = function(){ try { window.focus(); } catch(e){} if (url) window.location.href = url; n.close(); }; } catch(e){}',
+  '      n.onclick = function(){ try { window.focus(); } catch(e){} if (url) { if (window.tcbOpenSection) window.tcbOpenSection(url); else window.location.href = url; } n.close(); }; } catch(e){}',
   '  }',
   '  function pollMessages(){',
   '    fetch("/api/messages", { credentials: "same-origin" }).then(function(r){ return r.ok ? r.json() : []; }).then(function(list){',
@@ -81,7 +84,11 @@ export function renderLayout(
 <head>
 <meta charset="UTF-8">
 <title>${escapeHtml(title)} — TCB Phone </title>
+<script>if (window.top !== window) document.documentElement.className += " embedded";</script>
 <style>
+  html.embedded header { display: none; }
+  /* Messages and the IVR editor size themselves as 100vh minus the header; framed, there is none. */
+  html.embedded main.full-width { height: 100vh !important; }
   :root {
     --admin-bg: #0f1013; --admin-surface: #1b1d24; --admin-surface-hover: #22242c;
     --admin-border: #26282f; --admin-text: #eceef2; --admin-dim: #a7adb8;

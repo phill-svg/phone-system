@@ -66,7 +66,7 @@ import {
   handleDeleteContact,
   handleImportContacts,
 } from "./api/contacts";
-import { renderPhonePage } from "./html/pages/phone";
+import { renderPhoneFrameStub, renderPhonePage } from "./html/pages/phone";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
 import { renderWebhooksPage } from "./html/pages/webhooks";
@@ -206,6 +206,22 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
   "AnsweredBy",
   "MachineDetectionDuration",
 ]);
+
+// The dashboard sections the Phone page's shell opens in its frame -- every /admin/ HTML page
+// except Phone itself. A top-level load of one of these gets the shell (see the /admin/ routes).
+const SHELL_SECTIONS = new Set([
+  "/admin/messages",
+  "/admin/live",
+  "/admin/webhooks",
+  "/admin/settings",
+  "/admin/errors",
+  "/admin/voicemail",
+  "/admin/callbacks",
+  "/admin/analytics",
+]);
+export function isShellSection(pathname: string): boolean {
+  return SHELL_SECTIONS.has(pathname) || /^\/admin\/(calls|ivr)\/[^/]+$/.test(pathname);
+}
 
 // Whether a recording-status callback describes a TWO-CHANNEL recording, which is the only kind
 // that can be labelled by speaker: the split in `src/audio/wav.ts` needs one channel per party.
@@ -1556,9 +1572,24 @@ export default {
         return Response.redirect(new URL("/admin/phone", url).toString(), 302);
       }
 
-      if (url.pathname === "/admin/phone") {
-        const html = renderPhonePage(staffOrResponse.email, staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      // The Phone page is the dashboard's shell: every other section opens in a frame inside it,
+      // because the softphone lives on that page and a navigation away destroys it (a call then
+      // rings nowhere). See renderPhonePage. A top-level load of a section gets the shell with that
+      // section open; the frame's own request gets the plain section. A missing header (an old
+      // browser) gets the plain page too -- never the shell, which inside a frame would nest a
+      // second softphone.
+      const dest = request.headers.get("Sec-Fetch-Dest");
+      if (url.pathname === "/admin/phone" && dest === "iframe") {
+        return new Response(renderPhoneFrameStub(), {
+          headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Sec-Fetch-Dest" },
+        });
+      }
+      if (url.pathname === "/admin/phone" || (dest === "document" && isShellSection(url.pathname))) {
+        const section = url.pathname === "/admin/phone" ? null : url.pathname + url.search;
+        const html = renderPhonePage(staffOrResponse.email, staffOrResponse.role, { section });
+        return new Response(html, {
+          headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Sec-Fetch-Dest" },
+        });
       }
 
       if (url.pathname === "/admin/messages") {

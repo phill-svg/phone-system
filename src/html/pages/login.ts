@@ -7,6 +7,12 @@ function shell(title: string, cardBody: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} — TCB Phone System</title>
+<script>
+  // An expired session bounces a section in the Phone page's frame to here. Sign in at the TOP:
+  // a login inside the frame would leave the Phone page's softphone on the dead session, where it
+  // silently stops ringing.
+  if (window.top !== window) window.top.location.href = location.href;
+</script>
 <style>
   :root { --bg:#0f1013; --surface:#1b1d24; --border:#26282f; --text:#eceef2; --dim:#a7adb8; --mute:#6d7280; --brand:#e4002b; --link:#ff5c78; }
   * { box-sizing: border-box; }

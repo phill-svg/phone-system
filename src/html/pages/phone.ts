@@ -40,11 +40,37 @@ const ICON_EDIT = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" s
 const ICON_CHAT = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5A1.5 1.5 0 014.5 4h11A1.5 1.5 0 0117 5.5v7a1.5 1.5 0 01-1.5 1.5H8l-4 3v-3H4.5A1.5 1.5 0 013 12.5z"/></svg>`;
 const ICON_TRASH = `<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M8 6V4h4v2M6 6l.7 10a1 1 0 001 1h4.6a1 1 0 001-1L15 6"/></svg>`;
 
-export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "admin"): string {
+// The Phone page is also the dashboard's app SHELL. The Twilio Device (what rings, and what
+// carries a live call) exists only on this page, and a full-page navigation destroys it -- Twilio
+// never re-offers a call to a Device that registered after the call started. So every other
+// section opens in a frame over this page instead of replacing it: a call rings whichever section
+// is on screen, and going back to Phone mid-ring still offers Answer. The worker decides which
+// requests get the shell (Sec-Fetch-Dest: document) and which get the plain section (iframe).
+//
+// `section` is the section to open in the frame on load, for a refresh or bookmark of one.
+export function renderPhonePage(
+  staffEmail: string,
+  role: "admin" | "staff" = "admin",
+  opts?: { section?: string | null }
+): string {
   const staffInitials = escapeHtml((staffEmail.split("@")[0] || "?").slice(0, 2).toUpperCase());
   const staffEmailSafe = escapeHtml(staffEmail);
 
-  const extraHead = `<style>
+  // Defence in depth: the worker never serves this page into the frame (it sends the stub below),
+  // but if it ever did, a second Device would register and ring behind the section. Stop parsing
+  // before the SDK or any script below loads, and hand over to the shell.
+  const extraHead = `<script>
+      if (window.top !== window) {
+        window.stop();
+        try {
+          if (window.parent.tcbShowPhone) window.parent.tcbShowPhone(location.search);
+          else window.top.location.href = location.href;
+        } catch (e) { window.top.location.href = location.href; }
+      }
+    </script>
+    <style>
+      #section-frame { position: fixed; left: 0; top: 0; width: 100%; height: 100vh;
+        border: 0; display: none; z-index: 40; background: var(--admin-bg); }
       :root {
         --brand: #e4002b;
         --brand-hover: #ff2247;
@@ -520,11 +546,17 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
     </div>
     </div>
 
+    <iframe id="section-frame" title="Section"></iframe>
+
     <script src="${TWILIO_SDK_JS_URL}" onerror="document.getElementById('sdk-error').style.display='block'"></script>
     <script>
       var STAFF_EMAIL = ${safeJsonForScript(staffEmail)};
       var device = null;
       var activeCall = null;
+      // A listen that is mid-connect has no activeCall yet, and one requested before the Device
+      // registered has nothing to connect with. See tcbPhoneDeepLink.
+      var listenConnecting = false;
+      var pendingListen = null;
       var isOnHold = false;
 
       // Direction/status glyphs used when building call-list rows in JS.
@@ -1094,7 +1126,9 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         if (!number) return;
         var url = '/admin/messages?to=' + encodeURIComponent(number);
         if (name) url += '&name=' + encodeURIComponent(name);
-        window.location.href = url;
+        // Through the shell's frame: navigating this page away would drop a live call.
+        if (window.tcbOpenSection) window.tcbOpenSection(url);
+        else window.location.href = url;
       }
 
       function openContactForm(c) {
@@ -1445,6 +1479,9 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       }
 
       function showIncomingBanner(call) {
+        // A call rings over whatever section is open: bring the Answer banner forward. The section
+        // is only hidden, not unloaded, so a half-typed text is still there to go back to.
+        if (window.tcbHideSection) window.tcbHideSection();
         var from = incomingCallerNumber(call) || 'Unknown';
         var contact = contactsByNorm[normalizePhoneJS(from)];
         var label = contact ? contact.name : formatAu(from);
@@ -1579,6 +1616,7 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       // muted-Conference TwiML). Triggered by /admin/phone?listen=<callSid> from the Live Calls page.
       async function listenCall(callSid) {
         if (!device || !callSid) return;
+        listenConnecting = true;
         try {
           activeCall = await device.connect({ params: { Listen: callSid } });
           activeCall.on('accept', function (c) {
@@ -1593,6 +1631,8 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
           activeCall.on('reject', onCallEnded);
         } catch (err) {
           setDeviceStatusText('Listen failed: ' + describeError(err));
+        } finally {
+          listenConnecting = false;
         }
       }
 
@@ -1721,6 +1761,11 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
               var lc = new URLSearchParams(location.search).get('listen');
               if (lc) { listenStarted = true; listenCall(lc); }
             }
+            if (pendingListen) {
+              var pl = pendingListen;
+              pendingListen = null;
+              listenCall(pl);
+            }
           });
           device.on('unregistered', function () {
             var el = document.getElementById('device-status');
@@ -1778,14 +1823,31 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
       loadContacts();
       loadNumbers();
       setInterval(loadCalls, 30000);
-      // Deep-link from the Messages contact preview: /admin/phone?dial=<number> pre-fills the dialpad.
-      (function () {
-        var d = new URLSearchParams(location.search).get('dial');
+      // Deep-links into this page: ?dial=<number> (Messages contact preview) pre-fills the dialpad,
+      // ?listen=<callSid> (Live Calls) joins that call muted. The desktop shell keeps this page alive
+      // in its own view and hands it a deep link through this function INSTEAD of navigating here,
+      // because navigating would tear down the Twilio Device -- hanging up whatever call is live and
+      // dropping any call still ringing. A listen request is refused while a call is ringing or
+      // live: listenCall overwrites activeCall, which would strand that call with no controls.
+      window.tcbPhoneDeepLink = function (search) {
+        var p = new URLSearchParams(search || '');
+        var d = p.get('dial');
         if (d) {
           var inp = document.getElementById('dial-input');
           if (inp) inp.value = d;
           showDetail('dialpad');
         }
+        var lc = p.get('listen');
+        if (lc) {
+          if (activeCall || listenConnecting) setDeviceStatusText('Hang up the current call before listening in.');
+          else if (!device || device.state !== 'registered') pendingListen = lc;
+          else listenCall(lc);
+        }
+      };
+      // On a fresh load, listen waits for the Device to register (see initDevice); dial does not.
+      (function () {
+        var d = new URLSearchParams(location.search).get('dial');
+        if (d) window.tcbPhoneDeepLink('?dial=' + encodeURIComponent(d));
       })();
       if (window.Twilio) {
         initDevice();
@@ -1793,7 +1855,107 @@ export function renderPhonePage(staffEmail: string, role: "admin" | "staff" = "a
         document.getElementById('sdk-error').style.display = 'block';
         setDeviceStatusText('Twilio Voice SDK unavailable.');
       }
+    </script>
+    <script>
+      // The app shell: every other section opens in #section-frame over this page. See the note on
+      // renderPhonePage. Section switches REPLACE the frame's location so they add no history.
+      (function () {
+        if (window.top !== window) return;
+        var frame = document.getElementById('section-frame');
+        var header = document.querySelector('header');
+        var PHONE_TITLE = document.title;
+        var INITIAL_SECTION = ${safeJsonForScript(opts?.section ?? null)};
+
+        // An iframe keeps its intrinsic 150px height under top/bottom insets, so size it outright.
+        function place() {
+          var h = header ? header.offsetHeight : 0;
+          frame.style.top = h + 'px';
+          frame.style.height = 'calc(100vh - ' + h + 'px)';
+        }
+        window.addEventListener('resize', place);
+
+        function framePath() {
+          try {
+            var l = frame.contentWindow.location;
+            return l.href === 'about:blank' ? '' : l.pathname + l.search + l.hash;
+          } catch (e) { return ''; }
+        }
+        function markNav(pathname) {
+          var links = document.querySelectorAll('header .nav-link');
+          for (var i = 0; i < links.length; i++) {
+            var href = links[i].getAttribute('href');
+            links[i].classList.toggle('active', pathname === href || pathname.indexOf(href + '/') === 0);
+          }
+        }
+        function syncFromFrame() {
+          if (frame.style.display !== 'block') return;
+          var p = framePath();
+          if (!p) return;
+          try { history.replaceState(null, '', p); } catch (e) {}
+          try { document.title = frame.contentDocument.title || PHONE_TITLE; } catch (e) {}
+          markNav(p.split(/[?#]/)[0]);
+        }
+        function openSection(url) {
+          var cur = framePath();
+          place();
+          frame.style.display = 'block';
+          document.documentElement.style.overflow = 'hidden';
+          markNav(url.split(/[?#]/)[0]);
+          // Re-opening the section already in the frame (say after a call hid it) just shows it,
+          // so nothing typed there is lost. A deep link with its own query still loads.
+          if (cur === url || (url.indexOf('?') < 0 && cur.split(/[?#]/)[0] === url)) syncFromFrame();
+          else frame.contentWindow.location.replace(url);
+        }
+        function showPhone(unload) {
+          frame.style.display = 'none';
+          document.documentElement.style.overflow = '';
+          if (unload && framePath()) frame.contentWindow.location.replace('about:blank');
+          try { history.replaceState(null, '', '/admin/phone'); } catch (e) {}
+          document.title = PHONE_TITLE;
+          markNav('/admin/phone');
+        }
+
+        frame.addEventListener('load', syncFromFrame);
+        window.tcbOpenSection = openSection;
+        // Called by the frame's /admin/phone stub (Messages "Call", Live Calls "Listen").
+        window.tcbShowPhone = function (search) {
+          showPhone(true);
+          if (search && window.tcbPhoneDeepLink) window.tcbPhoneDeepLink(search);
+        };
+        window.tcbHideSection = function () { showPhone(false); };
+
+        document.addEventListener('click', function (e) {
+          if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+          if (!a || a.target || a.hasAttribute('download')) return;
+          var u = new URL(a.href, location.href);
+          if (u.origin !== location.origin || u.pathname.indexOf('/admin/') !== 0) return;
+          e.preventDefault();
+          if (u.pathname === '/admin/phone') window.tcbShowPhone(u.search);
+          else openSection(u.pathname + u.search + u.hash);
+        });
+
+        if (INITIAL_SECTION) openSection(INITIAL_SECTION);
+      })();
     </script>`;
 
   return renderLayout("Phone", "phone", body, { extraHead: extraHead, fullWidth: true, role });
+}
+
+// What /admin/phone answers when it is requested INTO the shell's frame -- Messages "Call",
+// Live Calls "Listen", and the redirects that send a staff or demo user to Phone. Loading the real
+// page there would register a second Device, so this hands the query to the running Phone page.
+export function renderPhoneFrameStub(): string {
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Phone</title></head><body>
+<script>
+  (function () {
+    var s = location.search;
+    try {
+      if (window.parent !== window && window.parent.tcbShowPhone) { window.parent.tcbShowPhone(s); return; }
+    } catch (e) {}
+    window.top.location.href = '/admin/phone' + s;
+  })();
+</script>
+</body></html>`;
 }

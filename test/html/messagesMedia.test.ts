@@ -79,6 +79,7 @@ function renderThread(msgs: FakeMessage[]): string {
     addEventListener() {},
     createElement: () => node(),
     body: node(),
+    documentElement: node(),
   };
   const noop = () => 0;
   const body = `

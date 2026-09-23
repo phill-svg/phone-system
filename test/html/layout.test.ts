@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { escapeHtml, renderLayout } from "../../src/html/layout";
 
 describe("escapeHtml", () => {
@@ -66,5 +66,45 @@ describe("desktop notification script", () => {
     expect(js).toContain('fire(fbm ? "New Facebook message" : "New SMS"');
     // A Messenger peer has no phone number worth showing — never put a raw PSID in the toast.
     expect(js).toContain('(c.name || (fbm ? "Facebook user" : c.number))');
+  });
+});
+
+// Every section opens in a frame inside the Phone page, and both carry this script. Without the
+// gate every new text would be polled and toasted twice. The REAL emitted script runs against stubs.
+describe("desktop notification script inside the Phone page's frame", () => {
+  function runNotify(framed: boolean) {
+    const html = renderLayout("Voicemail", "voicemail", "");
+    const at = html.indexOf('var LS_MSG = "tcbNotifyLastMsgTs";');
+    const js = html.slice(html.lastIndexOf("<script>", at) + "<script>".length, html.indexOf("</script>", at));
+    const fetch = vi.fn(() => new Promise(() => {}));
+    const win: Record<string, unknown> = { Notification: function () {} };
+    win.top = framed ? {} : win;
+    new Function("window", "Notification", "document", "localStorage", "fetch", "setInterval", js)(
+      win,
+      { permission: "granted" },
+      { addEventListener() {} },
+      { getItem: () => null, setItem() {} },
+      fetch,
+      () => 0
+    );
+    return { fetch, win };
+  }
+
+  it("stays silent inside the frame", () => {
+    const { fetch, win } = runNotify(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(win.tcbNotifyPollNow).toBeUndefined();
+  });
+
+  it("still polls in the top page", () => {
+    expect(runNotify(false).fetch).toHaveBeenCalledWith("/api/messages", expect.anything());
+  });
+});
+
+describe("a section rendered inside the Phone page's frame", () => {
+  it("hides its own header, since the Phone page's nav is already above it", () => {
+    const html = renderLayout("Voicemail", "voicemail", "");
+    expect(html).toContain('if (window.top !== window) document.documentElement.className += " embedded";');
+    expect(html).toContain("html.embedded header { display: none; }");
   });
 });
