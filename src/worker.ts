@@ -213,7 +213,14 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
 function adminHtml(html: string, status = 200): Response {
   return new Response(html, {
     status,
-    headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Sec-Fetch-Dest", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      Vary: "Sec-Fetch-Dest",
+      "Cache-Control": "no-store",
+      // Framing its own pages is how the dashboard works now; nobody else may frame them.
+      "Content-Security-Policy": "frame-ancestors 'self'",
+      "X-Frame-Options": "SAMEORIGIN",
+    },
   });
 }
 
@@ -1569,31 +1576,32 @@ export default {
 
       // The Phone page is the dashboard's shell: every other section opens in a frame inside it,
       // because the softphone lives on that page and a navigation away destroys it (a call then
-      // rings nowhere). See renderPhonePage. A top-level load of ANY /admin/ page gets the shell
-      // with that page open in the frame -- no list of sections, so a new page cannot be forgotten
-      // and silently serve a desk with no softphone. The frame's own request gets the plain page. A
+      // rings nowhere). See renderPhonePage. A top-level load of any page that EXISTS gets the shell
+      // with that page open in the frame: every page below returns through page(), so none can be
+      // forgotten, and a path that 404s still 404s. The frame's own request gets the plain page. A
       // missing header (an old browser) gets the plain page too -- never the shell, which inside a
       // frame would nest a second softphone.
       const dest = request.headers.get("Sec-Fetch-Dest");
-      if (url.pathname === "/admin/phone" && dest === "iframe") return adminHtml(renderPhoneFrameStub());
-      if (url.pathname === "/admin/phone" || dest === "document") {
-        const section = url.pathname === "/admin/phone" ? null : url.pathname + url.search;
-        return adminHtml(renderPhonePage(staffOrResponse.email, staffOrResponse.role, { section }));
+      const shell = (section: string | null) =>
+        adminHtml(renderPhonePage(staffOrResponse.email, staffOrResponse.role, { section }));
+      const page = (html: string) => (dest === "document" ? shell(url.pathname + url.search) : adminHtml(html));
+      if (url.pathname === "/admin/phone") {
+        return dest === "iframe" ? adminHtml(renderPhoneFrameStub()) : shell(null);
       }
 
       if (url.pathname === "/admin/messages") {
         const html = renderMessagesPage(staffOrResponse.role);
-        return adminHtml(html);
+        return page(html);
       }
 
       if (url.pathname === "/admin/live") {
         const html = renderLiveCallsPage(await getLiveCalls(env), staffOrResponse.role);
-        return adminHtml(html);
+        return page(html);
       }
 
       if (url.pathname === "/admin/webhooks") {
         const html = renderWebhooksPage(url.origin, env.TWILIO_WEBHOOK_SECRET ?? "", staffOrResponse.role);
-        return adminHtml(html);
+        return page(html);
       }
 
       const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
@@ -1603,7 +1611,7 @@ export default {
         const detail = await getCallDetail(env.DB, callId);
         if (!detail) return new Response("not found", { status: 404 });
         const html = renderCallDetailPage(detail.call, detail.events, staffOrResponse.role);
-        return adminHtml(html);
+        return page(html);
       }
 
       if (url.pathname === "/admin/settings") {
@@ -1616,13 +1624,12 @@ export default {
           getMissedCallSms(env.DB),
         ]);
         const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role, divertCallerId, missedCallSms);
-        return adminHtml(html);
+        return page(html);
       }
 
       if (url.pathname === "/admin/errors") {
-        if (staffOrResponse.role !== "admin") return new Response("forbidden", { status: 403 });
         const html = renderClientErrorsPage(await listClientErrors(env.DB), staffOrResponse.role);
-        return adminHtml(html);
+        return page(html);
       }
 
       if (url.pathname === "/admin/voicemail") {
@@ -1636,19 +1643,19 @@ export default {
           if (name) names.set(vm.caller_number, name);
         }
         const html = renderVoicemailPage(voicemails, names, staffOrResponse.role);
-        return adminHtml(html);
+        return page(html);
       }
 
       if (url.pathname === "/admin/callbacks") {
         const html = renderCallbackRequestsPage(await listCallbackRequests(env.DB), staffOrResponse.role);
-        return adminHtml(html);
+        return page(html);
       }
 
       if (url.pathname === "/admin/analytics") {
         const days = 14;
         const since = Date.now() - days * 24 * 60 * 60 * 1000;
         const html = renderAnalyticsPage(await getCallStats(env.DB, since), days);
-        return adminHtml(html);
+        return page(html);
       }
 
       const ivrAdminMatch = url.pathname.match(/^\/admin\/ivr\/([^/]+)$/);
@@ -1666,7 +1673,7 @@ export default {
           audioAssets.map((a) => ({ id: a.id, label: a.label })),
           staffRoster.map((s) => s.email)
         );
-        return adminHtml(html);
+        return page(html);
       }
 
       return new Response("not found", { status: 404 });

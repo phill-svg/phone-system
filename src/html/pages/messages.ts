@@ -226,5 +226,9 @@ const CLIENT_JS = [
   'loadNumbers();',
   '(function(){var p=new URLSearchParams(location.search);var to=p.get("to");if(to){loadContacts().then(function(){openThread(to,p.get("name"));});}})();',
   'setInterval(loadConversations,6000);',
-  'setInterval(function(){if(current)loadThread();},5000);',
+  // Every thread load marks it read for the WHOLE team. Hidden in the Phone page's frame (a call is
+  // ringing or up), nobody is reading it, so it must not poll -- a hidden frame still reports
+  // visibilityState "visible", so the frame's own display is what says so.
+  'function tcbFrameHidden(){try{return !!(window.frameElement&&window.frameElement.style.display==="none");}catch(e){return false;}}',
+  'setInterval(function(){if(current&&!tcbFrameHidden())loadThread();},5000);',
 ].join("\n");

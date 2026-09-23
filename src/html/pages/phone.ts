@@ -1389,6 +1389,19 @@ export function renderPhonePage(
         el.textContent = text;
         el.classList.toggle('registered', !!registered);
       }
+      // A passing note (a refused or queued deep link) over the device status. The real status is
+      // put back after a few seconds -- unless the Device reported something new meanwhile -- so a
+      // note never stands in for "Registered" or hides a registration error.
+      function flashDeviceNote(text) {
+        var el = document.getElementById('device-status');
+        var prevText = el.textContent;
+        var prevReg = el.classList.contains('registered');
+        el.textContent = text;
+        el.classList.remove('registered');
+        setTimeout(function () {
+          if (el.textContent === text) setDeviceStatusText(prevText, prevReg);
+        }, 5000);
+      }
 
       function highlightStatusButtons(status) {
         ['available', 'away', 'offline'].forEach(function (s) {
@@ -1764,17 +1777,12 @@ export function renderPhonePage(
           var data = await res.json();
           device = new Twilio.Device(data.token, { codecPreferences: ['opus', 'pcmu'], edge: 'sydney' });
           if (device.audio && device.audio.on) device.audio.on('deviceChange', populateAudioDevices);
-          var listenStarted = false;
           device.on('registered', function () {
             setDeviceStatusText('Registered', true);
             populateAudioDevices();
-            // Auto-start a listen session if we arrived via /admin/phone?listen=<callSid>.
-            if (!listenStarted) {
-              var lc = new URLSearchParams(location.search).get('listen');
-              if (lc) { listenStarted = true; listenCall(lc); }
-            }
-            // A listen asked for while registering -- but only if it is still recent and nothing
-            // has started since: a re-register minutes later must not barge over an answered call.
+            // A listen asked for while registering (including /admin/phone?listen= on a fresh load) --
+            // but only if it is still recent and nothing has started since: a re-register minutes
+            // later must not barge over an answered call.
             if (pendingListen) {
               var pl = pendingListen;
               pendingListen = null;
@@ -1852,23 +1860,24 @@ export function renderPhonePage(
         if (d) {
           var inp = document.getElementById('dial-input');
           if (inp) inp.value = d;
-          showDetail('dialpad');
+          // Mid-call, the pane on screen holds Hang up / Mute / Hold / Transfer, and nothing in the
+          // rail brings it back -- so the number waits in the dialpad instead of replacing them.
+          if (activeCall) flashDeviceNote('Number ready in the dial pad for after this call.');
+          else showDetail('dialpad');
         }
         var lc = p.get('listen');
         if (lc) {
-          if (activeCall || listenConnecting) setDeviceStatusText('Hang up the current call before listening in.');
+          if (activeCall || listenConnecting) flashDeviceNote('Hang up the current call before listening in.');
           else if (!device || device.state !== 'registered') {
             pendingListen = { sid: lc, at: Date.now() };
-            setDeviceStatusText('Listen will start once the phone has connected…');
+            flashDeviceNote('Listen will start once the phone has connected…');
           }
           else listenCall(lc);
         }
       };
-      // On a fresh load, listen waits for the Device to register (see initDevice); dial does not.
-      (function () {
-        var d = new URLSearchParams(location.search).get('dial');
-        if (d) window.tcbPhoneDeepLink('?dial=' + encodeURIComponent(d));
-      })();
+      // A fresh load of /admin/phone?dial= or ?listen= goes through the same path. A listen then waits
+      // for the Device to register (pendingListen, see initDevice).
+      if (location.search) window.tcbPhoneDeepLink(location.search);
       if (window.Twilio) {
         initDevice();
       } else {
@@ -1949,6 +1958,8 @@ export function renderPhonePage(
           // frame made (a link followed inside a section). Show it, or Back would appear to do
           // nothing while a hidden page ran its polls. A parked section stays put until the call ends.
           if (frame.style.display !== 'block' && framePath() && !parked) showFrame();
+          // ...and Forward onto the blank entry Phone leaves behind must not cover the softphone.
+          else if (frame.style.display === 'block' && !framePath()) showPhone(false);
           syncFromFrame();
         });
         window.tcbOpenSection = openSection;
@@ -1984,7 +1995,7 @@ export function renderPhonePage(
           else openSection(u.pathname + u.search + u.hash);
         });
 
-        if (INITIAL_SECTION) openSection(INITIAL_SECTION);
+        if (INITIAL_SECTION) openSection(INITIAL_SECTION + (INITIAL_SECTION.indexOf('#') < 0 ? location.hash : ''));
       })();
     </script>`;
 

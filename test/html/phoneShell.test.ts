@@ -29,10 +29,18 @@ describe("which requests get the shell", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  // No list of sections to keep in step with the routes: a page added later still gets the shell.
-  it("serves any /admin/ page loaded at the top level inside the shell", async () => {
-    const html = await (await page("/admin/some-future-page", "document")).text();
-    expect(html).toContain('var INITIAL_SECTION = "/admin/some-future-page";');
+  // The shell is chosen after the route resolves, so a path that does not exist still 404s --
+  // /admin/calls is removed on purpose and pinned as a 404 elsewhere.
+  it("still 404s a page that does not exist", async () => {
+    for (const path of ["/admin/calls", "/admin/calls/CA-no-such-call", "/admin/typo"]) {
+      expect((await page(path, "document")).status, path).toBe(404);
+    }
+  });
+
+  it("lets only the dashboard itself frame its pages", async () => {
+    const res = await page("/admin/voicemail", "iframe");
+    expect(res.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'self'");
+    expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
   });
 
   it("serves the frame's own request as the plain section, with no softphone in it", async () => {
@@ -100,7 +108,7 @@ describe("the Phone page loaded into a frame anyway", () => {
 });
 
 // The shell's REAL emitted script, run against a stub DOM.
-function shellHarness(section: string | null = null) {
+function shellHarness(section: string | null = null, hash = "") {
   const html = renderPhonePage("phill@b.com", "admin", { section });
   const js = /<script>\s*\/\/ The app shell:[\s\S]*?(\(function \(\) \{[\s\S]*?\n {6}\}\)\(\);)\s*<\/script>/.exec(html)?.[1];
   if (!js) throw new Error("could not find the shell script");
@@ -135,7 +143,7 @@ function shellHarness(section: string | null = null) {
   const win: Record<string, unknown> = { addEventListener() {}, tcbPhoneDeepLink: vi.fn() };
   win.top = win;
   const history = { replaceState: vi.fn() };
-  const location = { href: "https://example.com/admin/phone", origin: "https://example.com" };
+  const location = { href: "https://example.com/admin/phone", origin: "https://example.com", hash: hash };
   new Function("window", "document", "history", "location", js)(win, document, history, location);
 
   const click = (href: string) => {
@@ -150,8 +158,11 @@ function shellHarness(section: string | null = null) {
   };
   // What the browser does when the frame itself navigates (Back/Forward through its history).
   const frameNavigates = (u: string) => {
-    const url = new URL(u, "https://example.com");
-    Object.assign(frameLoc, { href: url.href, pathname: url.pathname, search: url.search, hash: url.hash });
+    if (u === "about:blank") Object.assign(frameLoc, { href: u, pathname: "blank", search: "", hash: "" });
+    else {
+      const url = new URL(u, "https://example.com");
+      Object.assign(frameLoc, { href: url.href, pathname: url.pathname, search: url.search, hash: url.hash });
+    }
     onFrameLoad();
   };
   return { win, frame, frameLoc, history, click, frameNavigates };
@@ -170,6 +181,19 @@ describe("the shell", () => {
     const s = shellHarness("/admin/voicemail");
     expect(s.frame.style.display).toBe("block");
     expect(s.frameLoc.replace).toHaveBeenCalledWith("/admin/voicemail");
+  });
+
+  // The browser never sends the #fragment, so the server cannot put it in INITIAL_SECTION.
+  it("keeps the #fragment across a refresh", () => {
+    const s = shellHarness("/admin/settings", "#staff");
+    expect(s.frameLoc.replace).toHaveBeenCalledWith("/admin/settings#staff");
+  });
+
+  // Phone leaves about:blank as the frame's entry; Forward onto it must not cover the softphone.
+  it("hides the frame again when Forward lands on the blank entry", () => {
+    const s = shellHarness("/admin/messages");
+    s.frameNavigates("about:blank");
+    expect(s.frame.style.display).toBe("none");
   });
 
   it("goes back to Phone without a reload, unloading the section", () => {
@@ -296,5 +320,36 @@ describe("a staff member opening App Errors", () => {
     );
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("https://example.com/admin/phone");
+  });
+});
+
+// Every thread load marks it read for the WHOLE team. The REAL emitted poll runs against stubs.
+describe("Messages hidden behind a ringing call", () => {
+  function poll(hidden: boolean | null) {
+    return import("../../src/html/pages/messages").then(({ renderMessagesPage }) => {
+      const html = renderMessagesPage("admin");
+      const fn = /(function tcbFrameHidden\(\)\{[^\n]*\})/.exec(html)?.[1];
+      const line = /(setInterval\(function\(\)\{if\(current&&!tcbFrameHidden\(\)\)loadThread\(\);\},5000\);)/.exec(html)?.[1];
+      if (!fn || !line) throw new Error("could not find the thread poll");
+      const loadThread = vi.fn();
+      let tick: () => void = () => {};
+      const frameElement = hidden === null ? null : { style: { display: hidden ? "none" : "block" } };
+      new Function("window", "setInterval", "loadThread", `var current = "+61400000000"; ${fn} ${line}`)(
+        { frameElement },
+        (f: () => void) => (tick = f),
+        loadThread
+      );
+      tick();
+      return loadThread;
+    });
+  }
+
+  it("does not poll the thread while hidden", async () => {
+    expect(await poll(true)).not.toHaveBeenCalled();
+  });
+
+  it("polls when on screen, framed or not", async () => {
+    expect(await poll(false)).toHaveBeenCalled();
+    expect(await poll(null)).toHaveBeenCalled();
   });
 });

@@ -12,14 +12,14 @@ function harness(opts: { activeCall?: unknown; listenConnecting?: boolean; devic
   const input = { value: "" };
   const showDetail = vi.fn();
   const listenCall = vi.fn();
-  const setDeviceStatusText = vi.fn();
+  const flashDeviceNote = vi.fn();
   const window: Record<string, (s: string) => void> = {};
   const pending = new Function(
     "window",
     "document",
     "showDetail",
     "listenCall",
-    "setDeviceStatusText",
+    "flashDeviceNote",
     "activeCall",
     "listenConnecting",
     "device",
@@ -31,12 +31,12 @@ function harness(opts: { activeCall?: unknown; listenConnecting?: boolean; devic
     { getElementById: () => input },
     showDetail,
     listenCall,
-    setDeviceStatusText,
+    flashDeviceNote,
     opts.activeCall ?? null,
     opts.listenConnecting ?? false,
     "device" in opts ? opts.device : { state: "registered" }
   ) as () => { sid: string; at: number } | null;
-  return { deepLink: window.tcbPhoneDeepLink, input, showDetail, listenCall, setDeviceStatusText, pending };
+  return { deepLink: window.tcbPhoneDeepLink, input, showDetail, listenCall, flashDeviceNote, pending };
 }
 
 describe("deep links handed to the running phone page", () => {
@@ -46,6 +46,14 @@ describe("deep links handed to the running phone page", () => {
     expect(h.input.value).toBe("+61400000000");
     expect(h.showDetail).toHaveBeenCalledWith("dialpad");
     expect(h.listenCall).not.toHaveBeenCalled();
+  });
+
+  // Mid-call the pane on screen holds Hang up / Mute / Hold / Transfer, and nothing brings it back.
+  it("never swaps a live call's controls away for the dial pad", () => {
+    const h = harness({ activeCall: {} });
+    h.deepLink("?dial=0400000000");
+    expect(h.input.value).toBe("0400000000");
+    expect(h.showDetail).not.toHaveBeenCalled();
   });
 
   it("starts a listen for ?listen= when no call is up", () => {
@@ -58,7 +66,7 @@ describe("deep links handed to the running phone page", () => {
     const h = harness({ activeCall: {} });
     h.deepLink("?listen=CA123");
     expect(h.listenCall).not.toHaveBeenCalled();
-    expect(h.setDeviceStatusText).toHaveBeenCalledWith(expect.stringContaining("Hang up"));
+    expect(h.flashDeviceNote).toHaveBeenCalledWith(expect.stringContaining("Hang up"));
   });
 
   // listenCall only sets activeCall once device.connect resolves, so a double click would start
@@ -76,6 +84,6 @@ describe("deep links handed to the running phone page", () => {
     h.deepLink("?listen=CA789");
     expect(h.listenCall).not.toHaveBeenCalled();
     expect(h.pending()?.sid).toBe("CA789");
-    expect(h.setDeviceStatusText).toHaveBeenCalledWith(expect.stringContaining("once the phone has connected"));
+    expect(h.flashDeviceNote).toHaveBeenCalledWith(expect.stringContaining("once the phone has connected"));
   });
 });
