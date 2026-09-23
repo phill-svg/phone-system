@@ -26,6 +26,9 @@ const NAV_ITEMS = [
 const NOTIFY_JS = [
   '(function(){',
   '  if (!("Notification" in window)) return;',
+  // Sections open in a frame inside the Phone page (see renderPhonePage). The frame and the page
+  // around it would both poll and toast the same message, so only the top page notifies.
+  '  if (window.top !== window) return;',
   '  function ensurePerm(){ try { if (Notification.permission === "default") Notification.requestPermission(); } catch(e){} }',
   '  ensurePerm();',
   '  document.addEventListener("click", ensurePerm, { once: true });',
@@ -35,7 +38,7 @@ const NOTIFY_JS = [
   '  function fire(title, body, url, tag){',
   '    if (Notification.permission !== "granted") return;',
   '    try { var n = new Notification(title, { body: body, icon: "/logo.png", tag: tag });',
-  '      n.onclick = function(){ try { window.focus(); } catch(e){} if (url) window.location.href = url; n.close(); }; } catch(e){}',
+  '      n.onclick = function(){ try { window.focus(); } catch(e){} if (url && !(window.tcbCallActive && window.tcbCallActive())) { if (window.tcbOpenSection) window.tcbOpenSection(url); else window.location.href = url; } n.close(); }; } catch(e){}',
   '  }',
   '  function pollMessages(){',
   '    fetch("/api/messages", { credentials: "same-origin" }).then(function(r){ return r.ok ? r.json() : []; }).then(function(list){',
@@ -65,7 +68,7 @@ export function renderLayout(
   title: string,
   activeNav: string,
   body: string,
-  opts?: { extraHead?: string; fullWidth?: boolean; role?: "admin" | "staff" }
+  opts?: { extraHead?: string; fullWidth?: boolean; role?: "admin" | "staff"; isShell?: boolean }
 ): string {
   const isAdmin = (opts?.role ?? "admin") === "admin";
   const nav = NAV_ITEMS.filter((item) => isAdmin || !item.adminOnly)
@@ -81,7 +84,36 @@ export function renderLayout(
 <head>
 <meta charset="UTF-8">
 <title>${escapeHtml(title)} — TCB Phone </title>
+<script>
+  if (window.top !== window) document.documentElement.className += " embedded";
+  // True while the Phone page's shell has this section hidden behind a call. A hidden iframe still
+  // reports visibilityState "visible", so any poll with a side effect (Messages marking a thread
+  // read for the whole team) must ask this instead.
+  window.tcbSectionHidden = function () {
+    try { return !!(window.frameElement && window.frameElement.style.display === "none"); } catch (e) { return false; }
+  };
+  // Every section's polls pause while it is hidden, in one place rather than poll by poll: a
+  // section a page forgot to guard would otherwise keep working unseen (Messages marking threads
+  // read for the whole team). Framed sections only; the Phone page's own timers are untouched.
+  if (window.top !== window) {
+    var tcbSetInterval = window.setInterval;
+    window.setInterval = function (fn, ms) {
+      if (typeof fn !== "function") return tcbSetInterval.apply(window, arguments);
+      var args = Array.prototype.slice.call(arguments, 2);
+      return tcbSetInterval.call(window, function () {
+        if (!window.tcbSectionHidden()) fn.apply(this, args);
+      }, ms);
+    };
+  }${opts?.isShell ? "" : `
+  // A section loaded as the whole window has no softphone, so calls would ring nowhere. The worker
+  // serves the shell for a top-level load on Sec-Fetch-Dest; a browser that does not send it lands
+  // here, and is sent into the shell with this section open.
+  if (window.top === window) location.replace("/admin/phone?section=" + encodeURIComponent(location.pathname + location.search + location.hash));`}
+</script>
 <style>
+  html.embedded header { display: none; }
+  /* Messages and the IVR editor size themselves as 100vh minus the header; framed, there is none. */
+  html.embedded main.full-width { height: 100vh !important; }
   :root {
     --admin-bg: #0f1013; --admin-surface: #1b1d24; --admin-surface-hover: #22242c;
     --admin-border: #26282f; --admin-text: #eceef2; --admin-dim: #a7adb8;

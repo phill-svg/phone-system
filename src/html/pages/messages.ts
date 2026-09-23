@@ -226,5 +226,7 @@ const CLIENT_JS = [
   'loadNumbers();',
   '(function(){var p=new URLSearchParams(location.search);var to=p.get("to");if(to){loadContacts().then(function(){openThread(to,p.get("name"));});}})();',
   'setInterval(loadConversations,6000);',
+  // Every thread load marks it read for the WHOLE team; while hidden behind a call this poll is
+  // paused by the layout's setInterval wrapper (tcbSectionHidden).
   'setInterval(function(){if(current)loadThread();},5000);',
 ].join("\n");

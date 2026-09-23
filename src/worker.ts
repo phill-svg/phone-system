@@ -66,7 +66,7 @@ import {
   handleDeleteContact,
   handleImportContacts,
 } from "./api/contacts";
-import { renderPhonePage } from "./html/pages/phone";
+import { renderPhoneFrameStub, renderPhonePage } from "./html/pages/phone";
 import { renderCallDetailPage } from "./html/pages/callDetail";
 import { renderSettingsPage } from "./html/pages/settings";
 import { renderWebhooksPage } from "./html/pages/webhooks";
@@ -206,6 +206,23 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
   "AnsweredBy",
   "MachineDetectionDuration",
 ]);
+
+// Every /admin/ page is served either as the Phone page's shell or as the plain page its frame
+// shows, depending on Sec-Fetch-Dest -- so the same URL must never be answered from cache with the
+// other variant. Back would otherwise put the plain page at the top, with no softphone on it.
+function adminHtml(html: string, status = 200): Response {
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      Vary: "Sec-Fetch-Dest",
+      "Cache-Control": "no-store",
+      // Framing its own pages is how the dashboard works now; nobody else may frame them.
+      "Content-Security-Policy": "frame-ancestors 'self'",
+      "X-Frame-Options": "SAMEORIGIN",
+    },
+  });
+}
 
 // Whether a recording-status callback describes a TWO-CHANNEL recording, which is the only kind
 // that can be labelled by speaker: the split in `src/audio/wav.ts` needs one channel per party.
@@ -1551,42 +1568,68 @@ export default {
         url.pathname === "/admin/settings" ||
         url.pathname === "/admin/analytics" ||
         url.pathname === "/admin/webhooks" ||
+        url.pathname === "/admin/errors" ||
         url.pathname.startsWith("/admin/ivr/");
       if (adminOnlyPage && staffOrResponse.role !== "admin") {
         return Response.redirect(new URL("/admin/phone", url).toString(), 302);
       }
 
+      // The Phone page is the dashboard's shell: every other section opens in a frame inside it,
+      // because the softphone lives on that page and a navigation away destroys it (a call then
+      // rings nowhere). See renderPhonePage. A top-level load of a page gets the shell with that page
+      // open in the frame; each route below returns it FIRST (topLevel), before its own queries, so
+      // they run once -- in the frame -- and a path that 404s still 404s. The frame's own request
+      // gets the plain page. A missing header (an old browser) gets the plain page too -- never the
+      // shell, which inside a frame would nest a second softphone -- and that page sends itself
+      // into the shell (layout.ts), which is also the safety net for a route that forgets topLevel.
+      const dest = request.headers.get("Sec-Fetch-Dest");
+      const shell = (section: string | null) =>
+        adminHtml(renderPhonePage(staffOrResponse.email, staffOrResponse.role, { section }));
+      const topLevel = dest === "document";
+      const shellHere = () => shell(url.pathname + url.search);
       if (url.pathname === "/admin/phone") {
-        const html = renderPhonePage(staffOrResponse.email, staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        if (dest === "iframe") return adminHtml(renderPhoneFrameStub());
+        // ?section= is how a browser that sends no Sec-Fetch-Dest reaches the shell (see layout.ts).
+        // Only a dashboard path: never another origin, never Phone itself inside its own frame.
+        const asked = url.searchParams.get("section");
+        const section = asked && /^\/admin\/(?!phone(?:[/?#]|$))/.test(asked) ? asked : null;
+        return shell(section);
       }
 
       if (url.pathname === "/admin/messages") {
+        if (topLevel) return shellHere();
         const html = renderMessagesPage(staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/live") {
+        if (topLevel) return shellHere();
         const html = renderLiveCallsPage(await getLiveCalls(env), staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/webhooks") {
+        if (topLevel) return shellHere();
         const html = renderWebhooksPage(url.origin, env.TWILIO_WEBHOOK_SECRET ?? "", staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       const callIdMatch = url.pathname.match(/^\/admin\/calls\/([^/]+)$/);
       if (callIdMatch) {
         const callId = safeDecode(callIdMatch[1]);
         if (callId === null) return new Response("not found", { status: 404 });
+        if (topLevel) {
+          const exists = await env.DB.prepare("SELECT 1 FROM calls WHERE id = ? AND deleted_at IS NULL").bind(callId).first();
+          return exists ? shellHere() : new Response("not found", { status: 404 });
+        }
         const detail = await getCallDetail(env.DB, callId);
         if (!detail) return new Response("not found", { status: 404 });
         const html = renderCallDetailPage(detail.call, detail.events, staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/settings") {
+        if (topLevel) return shellHere();
         const [schedule, blocklist, staffRoster, staffAccess, divertCallerId, missedCallSms] = await Promise.all([
           getBusinessHours(env.DB),
           getCallBlocklist(env.DB),
@@ -1596,16 +1639,17 @@ export default {
           getMissedCallSms(env.DB),
         ]);
         const html = renderSettingsPage(schedule, blocklist, staffRoster, staffAccess, staffOrResponse.role, divertCallerId, missedCallSms);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/errors") {
-        if (staffOrResponse.role !== "admin") return new Response("forbidden", { status: 403 });
+        if (topLevel) return shellHere();
         const html = renderClientErrorsPage(await listClientErrors(env.DB), staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/voicemail") {
+        if (topLevel) return shellHere();
         // The contact names are resolved here, in one query, rather than per row: the roster is
         // small and a lookup per voicemail is a D1 round trip each.
         const [voicemails, contacts] = await Promise.all([listVoicemails(env.DB), listContacts(env.DB)]);
@@ -1616,25 +1660,28 @@ export default {
           if (name) names.set(vm.caller_number, name);
         }
         const html = renderVoicemailPage(voicemails, names, staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/callbacks") {
+        if (topLevel) return shellHere();
         const html = renderCallbackRequestsPage(await listCallbackRequests(env.DB), staffOrResponse.role);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       if (url.pathname === "/admin/analytics") {
+        if (topLevel) return shellHere();
         const days = 14;
         const since = Date.now() - days * 24 * 60 * 60 * 1000;
         const html = renderAnalyticsPage(await getCallStats(env.DB, since), days);
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       const ivrAdminMatch = url.pathname.match(/^\/admin\/ivr\/([^/]+)$/);
       if (ivrAdminMatch) {
         const flow = safeDecode(ivrAdminMatch[1]);
         if (flow === null) return new Response("not found", { status: 404 });
+        if (topLevel) return shellHere();
         const [nodes, audioAssets, staffRoster] = await Promise.all([
           listNodesForFlow(env.DB, flow),
           listAudioAssets(env.DB),
@@ -1646,7 +1693,7 @@ export default {
           audioAssets.map((a) => ({ id: a.id, label: a.label })),
           staffRoster.map((s) => s.email)
         );
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return adminHtml(html);
       }
 
       return new Response("not found", { status: 404 });
