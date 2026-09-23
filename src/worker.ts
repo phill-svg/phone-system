@@ -211,9 +211,9 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
 // shows, depending on Sec-Fetch-Dest -- so the same URL must never be answered from cache with the
 // other variant. Back would otherwise put the plain page at the top, with no softphone on it.
 // Dashboard pages that always render (no 404 to preserve), for the shortcut in the /admin/ routes.
-// /admin/calls/:id is deliberately absent: an unknown call must still 404.
-const SHELL_PAGES =
-  /^\/admin\/(messages|live|webhooks|settings|errors|voicemail|callbacks|analytics|ivr\/[^/]+)$/;
+// Pages that can 404 on their own input (/admin/calls/:id, /admin/ivr/:flow) are deliberately
+// absent and go through page(), so a bad id or encoding still 404s.
+const SHELL_PAGES = /^\/admin\/(messages|live|webhooks|settings|errors|voicemail|callbacks|analytics)$/;
 
 function adminHtml(html: string, status = 200): Response {
   return new Response(html, {

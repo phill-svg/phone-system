@@ -5,7 +5,7 @@ import { renderPhonePage } from "../../src/html/pages/phone";
 // contact") or Live Calls ("listen") is handed to the running page rather than navigating to it --
 // a navigation tears down the Twilio Device and hangs up the live call. The REAL emitted
 // tcbPhoneDeepLink is pulled out of the page and run against stubs.
-function harness(opts: { activeCall?: unknown; listenConnecting?: boolean; device?: unknown } = {}) {
+function harness(opts: { activeCall?: unknown; listenConnecting?: boolean; device?: unknown; deviceFailed?: boolean } = {}) {
   const html = renderPhonePage("phill@b.com");
   const fn = /(window\.tcbPhoneDeepLink = function \(search\) \{[\s\S]*?\n {6}\};)/.exec(html)?.[1];
   if (!fn) throw new Error("could not find tcbPhoneDeepLink in the emitted phone script");
@@ -24,6 +24,7 @@ function harness(opts: { activeCall?: unknown; listenConnecting?: boolean; devic
     "listenConnecting",
     "device",
     `var pendingListen = null;
+     var deviceFailed = ${opts.deviceFailed ? "true" : "false"};
      function callBusy() { return !!activeCall || listenConnecting; }
      ${fn}
      return function () { return pendingListen; };`
@@ -76,6 +77,15 @@ describe("deep links handed to the running phone page", () => {
     const h = harness({ listenConnecting: true });
     h.deepLink("?listen=CA456");
     expect(h.listenCall).not.toHaveBeenCalled();
+  });
+
+  // A softphone that failed to start will never register: queueing would promise a listen that
+  // never comes.
+  it("says a listen is unavailable when the phone failed to start", () => {
+    const h = harness({ device: null, deviceFailed: true });
+    h.deepLink("?listen=CA1");
+    expect(h.pending()).toBeNull();
+    expect(h.flashDeviceNote).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
   });
 
   // listenCall returns silently without a Device, so a listen that arrives while the page is

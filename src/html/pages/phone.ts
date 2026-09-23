@@ -77,6 +77,9 @@ export function renderPhonePage(
       }
     </script>
     <style>
+      #back-to-call { display: none; position: fixed; right: 1rem; bottom: 1rem; z-index: 45;
+        background: #16a34a; color: #fff; border: 0; border-radius: 999px; padding: 0.6rem 1rem;
+        font-weight: 600; box-shadow: 0 4px 16px rgba(0,0,0,0.4); cursor: pointer; }
       #section-frame { position: fixed; left: 0; top: 0; width: 100%; height: 100vh;
         border: 0; display: none; z-index: 40; background: var(--admin-bg); }
       :root {
@@ -555,6 +558,7 @@ export function renderPhonePage(
     </div>
 
     <iframe id="section-frame" title="Section"></iframe>
+    <button type="button" id="back-to-call">● On a call — back to call</button>
 
     <script src="${TWILIO_SDK_JS_URL}" onerror="document.getElementById('sdk-error').style.display='block'"></script>
     <script>
@@ -566,6 +570,9 @@ export function renderPhonePage(
       var listenConnecting = false;
       // Likewise an outbound call: placeCall only sets activeCall once device.connect resolves.
       var placingCall = false;
+      // Set when the softphone cannot start at all (no token, SDK missing, register threw). A listen
+      // queued then would wait for a registration that never comes.
+      var deviceFailed = false;
       var pendingListen = null; // { sid, at }
       var PENDING_LISTEN_MS = 60000;
       var isOnHold = false;
@@ -1562,6 +1569,7 @@ export function renderPhonePage(
 
       function onCallConnected(call) {
         hideIncomingBanner();
+        if (window.tcbSyncCallPill) window.tcbSyncCallPill();
         isOnHold = false;
         var peer = incomingCallerNumber(call) || (call.parameters && call.parameters.To) || document.getElementById('dial-input').value || 'call';
         var peerContact = contactsByNorm[normalizePhoneJS(peer)];
@@ -1579,11 +1587,13 @@ export function renderPhonePage(
 
       function onCallEnded() {
         hideIncomingBanner();
-        if (window.tcbRestoreSection) window.tcbRestoreSection();
         document.getElementById('active-call-controls').style.display = 'none';
         showDetail('empty');
         activeCall = null;
         isOnHold = false;
+        // After activeCall is cleared, so the section comes back without the "back to call" button.
+        if (window.tcbRestoreSection) window.tcbRestoreSection();
+        if (window.tcbSyncCallPill) window.tcbSyncCallPill();
         // The just-ended call now exists in history -- refresh the list shortly after.
         setTimeout(loadCalls, 1500);
       }
@@ -1595,6 +1605,7 @@ export function renderPhonePage(
         hideIncomingBanner();
         if (activeCall === call) activeCall = null;
         if (window.tcbRestoreSection) window.tcbRestoreSection();
+        if (window.tcbSyncCallPill) window.tcbSyncCallPill();
       }
 
       // Load the business's voice numbers into the dialer "Call from" row. 2+ numbers => a dropdown
@@ -1784,6 +1795,7 @@ export function renderPhonePage(
         try {
           var res = await fetch('/api/softphone/token');
           if (!res.ok) {
+            deviceFailed = true;
             setDeviceStatusText('No access token (status ' + res.status + ').');
             return;
           }
@@ -1806,7 +1818,8 @@ export function renderPhonePage(
           });
           device.on('unregistered', function () {
             var el = document.getElementById('device-status');
-            if (el && el.textContent.indexOf('Device error') === 0) return;
+            var shown = noteSaved ? noteSaved.text : el && el.textContent;
+            if (shown && shown.indexOf('Device error') === 0) return;
             setDeviceStatusText('Unregistered');
           });
           device.on('error', function (err) {
@@ -1835,6 +1848,7 @@ export function renderPhonePage(
           });
           await device.register();
         } catch (err) {
+          deviceFailed = true;
           if (err !== undefined) setDeviceStatusText('Registration failed: ' + describeError(err));
         }
       }
@@ -1884,6 +1898,7 @@ export function renderPhonePage(
         var lc = p.get('listen');
         if (lc) {
           if (callBusy()) flashDeviceNote('Hang up the current call before listening in.');
+          else if (deviceFailed) flashDeviceNote('Listen unavailable: the phone is not connected.');
           else if (!device || device.state !== 'registered') {
             pendingListen = { sid: lc, at: Date.now() };
             flashDeviceNote('Listen will start once the phone has connected…');
@@ -1891,15 +1906,17 @@ export function renderPhonePage(
           else listenCall(lc);
         }
       };
-      // A fresh load of /admin/phone?dial= or ?listen= goes through the same path. A listen then waits
-      // for the Device to register (pendingListen, see initDevice).
-      if (location.search) window.tcbPhoneDeepLink(location.search);
       if (window.Twilio) {
         initDevice();
       } else {
+        deviceFailed = true;
         document.getElementById('sdk-error').style.display = 'block';
         setDeviceStatusText('Twilio Voice SDK unavailable.');
       }
+      // A fresh load of /admin/phone?dial= or ?listen= goes through the same path; a listen then waits
+      // for the Device to register (pendingListen, see initDevice). Only on /admin/phone itself: the
+      // shell is also served for section URLs, whose query strings are that section's business.
+      if (location.pathname === '/admin/phone' && location.search) window.tcbPhoneDeepLink(location.search);
     </script>
     <script>
       // The app shell: every other section opens in #section-frame over this page. See the note on
@@ -1935,10 +1952,19 @@ export function renderPhonePage(
         // A section hidden by a ringing call rather than left: see tcbHideSection.
         var parked = false;
 
+        var pill = document.getElementById('back-to-call');
+        // With a section over the Phone page, the call controls are hidden under it: while a call is
+        // up, keep a way back to them on screen.
+        function syncPill() {
+          var up = frame.style.display === 'block' && !!(window.tcbCallActive && window.tcbCallActive());
+          if (pill) pill.style.display = up ? 'block' : 'none';
+        }
+        window.tcbSyncCallPill = syncPill;
         function showFrame() {
           place();
           frame.style.display = 'block';
           document.documentElement.style.overflow = 'hidden';
+          syncPill();
         }
         function syncFromFrame() {
           if (frame.style.display !== 'block') return;
@@ -1967,6 +1993,14 @@ export function renderPhonePage(
           try { history.replaceState(null, '', '/admin/phone'); } catch (e) {}
           document.title = PHONE_TITLE;
           markNav('/admin/phone');
+          syncPill();
+        }
+        // Stop anything a hidden section is playing -- a voicemail must not play on under a call.
+        function pauseFrameMedia() {
+          try {
+            var media = frame.contentDocument.querySelectorAll('audio, video');
+            for (var i = 0; i < media.length; i++) media[i].pause();
+          } catch (e) {}
         }
 
         frame.addEventListener('load', function () {
@@ -1985,6 +2019,9 @@ export function renderPhonePage(
         window.tcbOpenSection = openSection;
         // Called by the frame's /admin/phone stub (Messages "Call", Live Calls "Listen").
         window.tcbShowPhone = function (search) {
+          // Phone while a call has a section parked: it is already on screen. Unloading the parked
+          // section here would lose the draft parking exists to keep.
+          if (parked && !search) return;
           parked = false;
           showPhone(true);
           if (search && window.tcbPhoneDeepLink) window.tcbPhoneDeepLink(search);
@@ -1993,8 +2030,10 @@ export function renderPhonePage(
         window.tcbHideSection = function () {
           if (frame.style.display !== 'block') return;
           parked = true;
+          pauseFrameMedia();
           showPhone(false);
         };
+        if (pill) pill.addEventListener('click', window.tcbHideSection);
         // ...and bring it back once the call is over. Left parked, a hidden Messages page would keep
         // polling its thread, marking every new text read for the whole team with nobody looking.
         window.tcbRestoreSection = function () {

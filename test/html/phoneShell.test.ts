@@ -32,7 +32,7 @@ describe("which requests get the shell", () => {
   // The shell is chosen after the route resolves, so a path that does not exist still 404s --
   // /admin/calls is removed on purpose and pinned as a 404 elsewhere.
   it("still 404s a page that does not exist", async () => {
-    for (const path of ["/admin/calls", "/admin/calls/CA-no-such-call", "/admin/typo"]) {
+    for (const path of ["/admin/calls", "/admin/calls/CA-no-such-call", "/admin/typo", "/admin/ivr/%E0"]) {
       expect((await page(path, "document")).status, path).toBe(404);
     }
   });
@@ -132,15 +132,20 @@ function shellHarness(section: string | null = null, hash = "") {
     classList: { toggle: vi.fn() },
   }));
   let clickHandler: (e: unknown) => void = () => {};
+  let pillClick: () => void = () => {};
+  const pill = { style: {} as Record<string, string>, addEventListener: (_: string, h: () => void) => (pillClick = h) };
+  const media = [{ pause: vi.fn() }];
+  (frame as Record<string, unknown>).contentDocument = { querySelectorAll: () => media };
   const document = {
     title: "Phone — TCB Phone",
     documentElement: { style: {} as Record<string, string> },
-    getElementById: () => frame,
+    getElementById: (id: string) => (id === "back-to-call" ? pill : frame),
     querySelector: () => ({ offsetHeight: 60 }),
     querySelectorAll: () => nav,
     addEventListener: (_: string, h: (e: unknown) => void) => (clickHandler = h),
   };
-  const win: Record<string, unknown> = { addEventListener() {}, tcbPhoneDeepLink: vi.fn() };
+  let callUp = false;
+  const win: Record<string, unknown> = { addEventListener() {}, tcbPhoneDeepLink: vi.fn(), tcbCallActive: () => callUp };
   win.top = win;
   const history = { replaceState: vi.fn() };
   const location = { href: "https://example.com/admin/phone", origin: "https://example.com", hash: hash };
@@ -165,7 +170,8 @@ function shellHarness(section: string | null = null, hash = "") {
     }
     onFrameLoad();
   };
-  return { win, frame, frameLoc, history, click, frameNavigates };
+  const setCallUp = (v: boolean) => (callUp = v);
+  return { win, frame, frameLoc, history, click, frameNavigates, pill, pillClick: () => pillClick(), media, setCallUp };
 }
 
 describe("the shell", () => {
@@ -228,6 +234,40 @@ describe("the shell", () => {
     s.click("/admin/messages");
     expect(s.frame.style.display).toBe("block");
     expect(s.frameLoc.replace).not.toHaveBeenCalled();
+  });
+
+  it("pauses what a section was playing when a call hides it", () => {
+    const s = shellHarness("/admin/voicemail");
+    (s.win.tcbHideSection as () => void)();
+    expect(s.media[0].pause).toHaveBeenCalled();
+  });
+
+  // The parked section holds a draft; Phone is already on screen, so there is nothing to unload.
+  it("keeps a parked section when Phone is clicked during the call", () => {
+    const s = shellHarness("/admin/messages");
+    (s.win.tcbHideSection as () => void)();
+    s.frameLoc.replace.mockClear();
+    s.click("/admin/phone");
+    expect(s.frameLoc.replace).not.toHaveBeenCalled();
+    (s.win.tcbRestoreSection as () => void)();
+    expect(s.frame.style.display).toBe("block");
+  });
+
+  // A section opened mid-call covers Hang up / Mute / Hold / Transfer.
+  it("offers a way back to the call while a section covers it", () => {
+    const s = shellHarness();
+    s.setCallUp(true);
+    s.click("/admin/messages");
+    expect(s.pill.style.display).toBe("block");
+    s.pillClick();
+    expect(s.frame.style.display).toBe("none");
+    expect(s.pill.style.display).toBe("none");
+  });
+
+  it("shows no call button with no call up", () => {
+    const s = shellHarness();
+    s.click("/admin/messages");
+    expect(s.pill.style.display).toBe("none");
   });
 
   // Left hidden after the call, Messages would keep polling its thread and mark every new text read
