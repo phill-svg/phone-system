@@ -169,7 +169,7 @@ export function orderNodes(flow: IvrFlow): { ordered: IvrNode[]; unreachable: Iv
     // it -- but the callback step it names IS in use, so it is listed rather than shown as an orphan.
     // Only while callbacks are on (calls ignore the key otherwise), and only a callback step.
     if (node.type === "wait" && node.config.allowCallbackStar === true) {
-      const cb = byId.get(str(node.config.callbackNextNodeId));
+      const cb = byId.get(str(node.config.callbackNextNodeId).trim());
       if (cb && cb.type === "callback" && !seen.has(cb.id)) queue.push(cb);
     }
   }

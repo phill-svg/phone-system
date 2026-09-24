@@ -2179,6 +2179,27 @@ describe("Task 13 callback-requests routes", () => {
     expect(html).toContain("Jane Customer");
     expect(html).toContain(formatAuNumber("+61400000008"));
   });
+  // One number saved as two contacts gets ONE name everywhere: the first by name, as the push and the
+  // ringing screen (findContactByPhone) pick it.
+  it("GET /admin/callbacks names a number saved twice by the first contact name", async () => {
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('Zed Plumbing', NULL, '0400 000 009', '61400000009', 1, 1)"
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('Alice Smith', NULL, '0400 000 009', '61400000009', 1, 1)"
+    ).run();
+    await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+      .bind("CA-cbr-dup", "+61400000009", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-dup", "+61400000009", Date.now())
+      .run();
+    const html = await (await SELF.fetch("https://example.com/admin/callbacks")).text();
+    expect(html).toContain("Alice Smith");
+    expect(html).not.toContain("Zed Plumbing");
+  });
 
   it("requires staff auth for both new routes in a genuine production-shaped env (no dev bypass)", async () => {
     const prodEnv = {

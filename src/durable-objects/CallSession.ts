@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { advanceFlow, isCallbackKey, loadNodeById, parseConfig, walkFromNode, type FlowCommand } from "../ivr/flowEngine";
+import { advanceFlow, isCallbackKey, walkFromNode, type FlowCommand } from "../ivr/flowEngine";
 import { renderFlowTwiml, renderFlowCommandsFragment, wrapResponse, escapeXml } from "../twilio/flowTwiml";
 import {
   renderEnqueue,
@@ -71,6 +71,8 @@ type ActiveRing = {
   // (`callbackNextNodeId` on the wait node), so the wording is the admin's to edit. Unset keeps
   // the built-in wording. See holdCallbackAck.
   callbackNextNodeId?: string;
+  // The hold step itself: the callback step must be in the same menu (holdCallbackAck).
+  holdNodeId?: string;
   ringConfig: RingConfig;
   ringPlanState: RingPlanState;
   attemptSids: string[];
@@ -558,6 +560,7 @@ export class CallSession extends DurableObject<Env> {
         allowCallbackStar,
         callbackKey,
         callbackNextNodeId,
+        holdNodeId: viaWait ? walkResult.nextNodeId : undefined,
         ringConfig,
         ringPlanState,
         attemptSids,
@@ -805,10 +808,8 @@ export class CallSession extends DurableObject<Env> {
     if (outcome === "callback_requested") {
       // The caller pressed the hold step's callback key. Always the same bookkeeping as a `callback`
       // step (row, push, event, message recording); only the WORDS come from the step the hold
-      // step's callback line leads to, so they are the admin's to edit. A caller who already hung up
-      // hears nothing, so the words are not looked up for them.
-      const ack =
-        body.queueResult === "hangup" ? "" : await this.holdCallbackAck(activeRing.callbackNextNodeId, body.callSid, origin);
+      // step's callback line leads to, so they are the admin's to edit.
+      const ack = await this.holdCallbackAck(activeRing.callbackNextNodeId, activeRing.holdNodeId, body.callSid, origin);
       return this.xml(await this.recordCallbackRequest(body.callSid, ack, origin));
     }
 
@@ -1273,25 +1274,36 @@ export class CallSession extends DurableObject<Env> {
 
 
   // The wording for a callback asked for from a hold step: the prompt of the `callback` step the hold
-  // step's callback line leads to, rendered, or "" for recordCallbackRequest's built-in line. The
-  // line may lead ONLY to a callback step (refused on write, api/ivrFlow.ts), and nothing here walks
-  // the flow -- a line to a ring step would otherwise re-ring the team, and one to a voicemail or
-  // menu would skip logging the callback the caller was promised. Every unusable case -- no line, a
-  // deleted step, the wrong type, a recording that no longer exists -- is the built-in wording, never
-  // a throw: a throw reaches the DO catch-all, which says "we're experiencing a technical issue" and
-  // hangs up on someone who just asked to be called back. Nothing here has a side effect, so falling
-  // back can never double anything up.
-  private async holdCallbackAck(nodeId: string | undefined, callSid: string, origin: string): Promise<string> {
+  // step's callback line leads to, rendered, or "" for recordCallbackRequest's built-in line. It is
+  // the same rule the save check (api/ivrFlow.ts) and both editors apply: a callback step, in the
+  // hold step's own menu -- anything else is the built-in wording, so what an editor shows is what
+  // callers hear. Nothing here walks the flow: a line to a ring step would otherwise re-ring the
+  // team, and one to a voicemail or menu would skip logging the callback the caller was promised.
+  // Every unusable case -- no line, a deleted step, the wrong type, another menu, a corrupt config, a
+  // recording that no longer exists -- is the built-in wording, never a throw: a throw reaches the DO
+  // catch-all, which says "we're experiencing a technical issue" and hangs up on someone who just
+  // asked to be called back. Nothing here has a side effect, so falling back never doubles anything.
+  private async holdCallbackAck(
+    nodeId: string | undefined,
+    holdNodeId: string | undefined,
+    callSid: string,
+    origin: string
+  ): Promise<string> {
     if (!nodeId) return "";
     try {
-      // loadNodeById throws for a missing step and parseConfig for a corrupt one: both land in the
-      // catch below, i.e. the built-in wording.
-      const row = await loadNodeById(this.env.DB, nodeId);
-      if (row.type !== "callback") {
-        console.log("HOLD_CALLBACK_STEP_UNUSABLE", JSON.stringify({ callSid, node: nodeId, type: row.type }));
+      const row = await this.env.DB.prepare(
+        "SELECT cb.type, cb.config, cb.flow = hold.flow AS same_flow FROM ivr_nodes cb LEFT JOIN ivr_nodes hold ON hold.id = ? WHERE cb.id = ?"
+      )
+        .bind(holdNodeId ?? "", nodeId)
+        .first<{ type: string; config: string; same_flow: number | null }>();
+      if (!row || row.type !== "callback" || row.same_flow !== 1) {
+        console.log(
+          "HOLD_CALLBACK_STEP_UNUSABLE",
+          JSON.stringify({ callSid, node: nodeId, type: row?.type ?? null, sameFlow: row?.same_flow ?? null })
+        );
         return "";
       }
-      const play = await this.playFromConfig(parseConfig(row));
+      const play = await this.playFromConfig(JSON.parse(row.config) as Record<string, unknown>);
       return play ? renderFlowCommandsFragment([play], { baseUrl: origin }) : "";
     } catch (err) {
       console.log(

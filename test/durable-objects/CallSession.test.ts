@@ -1888,6 +1888,27 @@ describe("CallSession", () => {
     expect(cb?.status).toBe("open");
   });
 
+  // A callback step in ANOTHER menu is refused on save and shown by the app as the built-in message,
+  // so a call must not play it either -- what the editor shows is what the caller hears.
+  it("uses the built-in words when the callback step is in another menu", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "ah_cb" });
+    await seedNode({ id: "ah_cb", flow: "after_hours", type: "callback", config: { audioAssetId: null, ttsText: "After hours words." } });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbflow");
+    await send(stub, mainEvent("CA-cbflow"));
+    await send(stub, mainEvent("CA-cbflow", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbflow", "1"));
+    const left = await send(stub, queueLeft("CA-cbflow", "leave"));
+    expect(left.xml).not.toContain("After hours words.");
+    expect(left.xml).toContain("call you back");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbflow").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
   // A deleted callback step must not hang up on a caller who just asked to be called back.
   it("falls back to the built-in wording when the callback step no longer exists", async () => {
     await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });

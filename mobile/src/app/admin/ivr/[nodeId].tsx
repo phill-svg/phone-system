@@ -222,12 +222,13 @@ export default function IvrNodeScreen() {
     const target = flow.nodes.find((n) => n.id === id);
     return target ? nodePickerLabel(target) : "Not set — callers reaching this are cut off";
   };
-  // The callback line never cuts anyone off: unset, or naming a step that is gone, callers hear the
-  // built-in callback wording (CallSession.holdCallbackAck).
+  // The callback line never cuts anyone off: callers hear a callback step in this menu, or else the
+  // built-in wording -- the same rule, id trimmed, as CallSession.holdCallbackAck.
   const callbackLineLabel = (id: unknown) => {
-    const target = flow.nodes.find((n) => n.id === id);
+    const wanted = typeof id === "string" ? id.trim() : "";
+    const target = flow.nodes.find((n) => n.id === wanted && n.type === "callback");
     if (target) return nodePickerLabel(target);
-    return id ? "Built-in message (the linked step is missing)" : "Built-in message";
+    return wanted ? "Built-in message (the linked step is missing or not a callback step)" : "Built-in message";
   };
 
   // A "go to" field. Expands in place rather than pushing a picker screen: the list is short, and

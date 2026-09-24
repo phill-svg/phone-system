@@ -44,7 +44,8 @@ export async function findContactByPhone(db: D1Database, phone: string): Promise
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
   const row = await db
-    .prepare("SELECT * FROM contacts WHERE phone_normalized = ? LIMIT 1")
+    // Ordered like listContacts, so a number saved twice gets the same name everywhere.
+    .prepare("SELECT * FROM contacts WHERE phone_normalized = ? ORDER BY name COLLATE NOCASE ASC LIMIT 1")
     .bind(normalized)
     .first<Contact>();
   return row ?? null;

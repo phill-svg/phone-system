@@ -362,6 +362,24 @@ describe("handlePutFlow", () => {
     expect((await handlePutFlow(payload("callback"), env.DB, "test_flow", ADMIN)).status).toBe(200);
   });
 
+  // With callbacks off, calls ignore the line and both editors hide it: refusing over it would block
+  // every save of the menu over a field nobody can see or clear.
+  it("does not refuse a hidden callback line while callbacks are off", async () => {
+    const res = await handlePutFlow(
+      putRequest({
+        entryNodeId: "w",
+        nodes: [
+          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: false, nextNodeId: "", callbackNextNodeId: "vm" } },
+          { id: "vm", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(res.status).toBe(200);
+  });
+
   // startRing trims the id before using it, so the check must see the same id or a padded one slips by.
   it("checks a padded callback line id as the call would use it", async () => {
     const res = await handlePutFlow(

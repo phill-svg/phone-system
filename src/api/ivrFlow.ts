@@ -303,9 +303,11 @@ export async function handlePutFlow(
   // Both are refused, naming the step. An id that exists nowhere is left alone like every other
   // next-field (see below) -- callers hear the built-in words. Trimmed exactly as startRing trims it,
   // so what is checked is what runs. After the duplicate-id checks, so a clash reads as the clash.
+  // Only while callbacks are on: with them off, calls ignore the line and both editors hide it, so
+  // refusing over it would block every save of the menu over a field nobody can see or clear.
   const typeInPayload = new Map(typedNodes.map((n) => [n.id, n.type]));
   for (const node of typedNodes) {
-    const raw = node.type === "wait" ? node.config.callbackNextNodeId : undefined;
+    const raw = node.type === "wait" && node.config.allowCallbackStar === true ? node.config.callbackNextNodeId : undefined;
     const target = typeof raw === "string" ? raw.trim() : "";
     if (!target) continue;
     const targetType = typeInPayload.get(target);

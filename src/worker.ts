@@ -213,8 +213,12 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
 // Takes the contacts rather than reading them, so the caller can read them alongside its own list.
 function contactNamesFor(contacts: { phone_normalized: string; name: string }[], numbers: string[]): Map<string, string> {
   // Blank on either side never matches: a withheld caller ("" or "anonymous") must not borrow the
-  // name of some contact saved without a number.
-  const byNormalized = new Map(contacts.filter((c) => c.phone_normalized).map((c) => [c.phone_normalized, c.name]));
+  // name of some contact saved without a number. Two contacts on one number: the FIRST wins -- the
+  // list is ordered by name, the same pick as findContactByPhone, so every surface agrees.
+  const byNormalized = new Map<string, string>();
+  for (const c of contacts) {
+    if (c.phone_normalized && !byNormalized.has(c.phone_normalized)) byNormalized.set(c.phone_normalized, c.name);
+  }
   const names = new Map<string, string>();
   for (const n of numbers) {
     const key = normalizePhone(n);
