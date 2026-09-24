@@ -807,16 +807,24 @@ export class CallSession extends DurableObject<Env> {
       // otherwise the built-in wording, same bookkeeping as a `callback` step either way.
       // A link to a step that no longer exists must not reach the DO catch-all, which says "we're
       // experiencing a technical issue" and hangs up on a caller who just asked to be called back.
-      if (activeRing.callbackNextNodeId) {
-        await this.ctx.storage.delete("activeRing");
-        const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
+      // Only the step LOOKUP is guarded: it has no side effects, so falling back after it fails
+      // cannot double up. Past it, the step runs like any other (a callback step's own bookkeeping
+      // must not be repeated by a fallback). A caller who hung up gets the built-in bookkeeping only,
+      // never a walk -- a line leading to a ring step would re-ring the whole team for nobody.
+      if (activeRing.callbackNextNodeId && body.queueResult !== "hangup") {
+        let walked: { result: Awaited<ReturnType<typeof walkFromNode>>; isAfterHours: boolean } | null = null;
         try {
-          return this.xml(await this.renderNoAnswerFallthrough(body.callSid, activeRing.callbackNextNodeId, isAfterHours, origin));
+          const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
+          walked = { result: await walkFromNode(this.env.DB, activeRing.callbackNextNodeId, isAfterHours), isAfterHours };
         } catch (err) {
           console.log(
             "HOLD_CALLBACK_STEP_FAILED",
             JSON.stringify({ callSid: body.callSid, node: activeRing.callbackNextNodeId, error: err instanceof Error ? err.message : String(err) })
           );
+        }
+        if (walked) {
+          await this.ctx.storage.delete("activeRing");
+          return this.xml(await this.applyWalkResult(body.callSid, walked.result, walked.isAfterHours, origin));
         }
       }
       return this.xml(await this.recordCallbackRequest(body.callSid, "", origin));

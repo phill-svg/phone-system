@@ -122,12 +122,12 @@ export function renderIvrFlowPage(
       function outsFor(n){
         var c=n.config||{}, o=[];
         if(n.type==="play"||n.type==="input"||n.type==="wait") o.push({label:"Next", field:"nextNodeId"});
-        // The hold step's callback key gets a line of its own, so its message is a step you can edit.
-        if(n.type==="wait" && c.allowCallbackStar) o.push({label:"Press "+(c.callbackKey||"*")+" (callback)", field:"callbackNextNodeId"});
         else if(n.type==="gather"){ var opts=c.options||[]; for(var i=0;i<opts.length;i++){ o.push({label:"Press "+(opts[i].digit||"?"), opt:i}); } o.push({label:"No/invalid key", field:"defaultNextNodeId"}); }
         else if(n.type==="ring") o.push({label:"No answer", field:"noAnswerNextNodeId"});
         else if(n.type==="business_hours"){ o.push({label:"Open", field:"openNextNodeId"}); o.push({label:"Closed", field:"closedNextNodeId"}); }
         else if(n.type==="date_rule"){ o.push({label:"Normal day", field:"openNextNodeId"}); o.push({label:"Closed date", field:"closedNextNodeId"}); }
+        // The hold step's callback key gets a line of its own, so its message is a step you can edit.
+        if(n.type==="wait" && c.allowCallbackStar) o.push({label:"Press "+(c.callbackKey||"*")+" (callback)", field:"callbackNextNodeId"});
         return o;
       }
       function outTarget(n, out){ var c=n.config||{}; return out.opt!=null ? (c.options[out.opt]||{}).nextNodeId : c[out.field]; }
@@ -211,7 +211,7 @@ export function renderIvrFlowPage(
             out+='<label class="pf"><span><input type="checkbox" data-fld="allowCallbackStar" data-bool="1"'+(c.allowCallbackStar?" checked":"")+'> Let caller request a callback</span></label>';
             // Only with callbacks on, as on mobile: a key picked with the box unticked does nothing.
             if(c.allowCallbackStar) out+='<label class="pf">Callback key (match what the message tells callers to press)<select data-fld="callbackKey">'+ko+'</select></label>';
-            out+='<div class="pf" style="font-weight:400;opacity:.8">Phones keep ringing while the caller holds. The message plays once, then the caller hears ringing. Connect the “Press '+h(ck)+' (callback)” line to a “Request a callback” step to set what callers hear when they press it.</div>'; }
+            out+='<div class="pf" style="font-weight:400;opacity:.8">Phones keep ringing while the caller holds. The message plays once, then the caller hears ringing.'+(c.allowCallbackStar?' Connect the “Press '+h(ck)+' (callback)” line to a “Request a callback” step to set what callers hear when they press it.':'')+'</div>'; }
         } else if(n.type==="gather"){ out+=promptPanel(n,c);
           out+='<div class="pf">Menu keys (each key gets a line to drag)';
           var opts=c.options||[]; for(var i=0;i<opts.length;i++){ out+='<div class="p-opt"><input type="text" class="p-key" data-optkey="'+i+'" value="'+h(opts[i].digit||"")+'" placeholder="key"><button type="button" class="ivr-link p-delopt" data-opt="'+i+'">remove</button></div>'; }
@@ -242,7 +242,7 @@ export function renderIvrFlowPage(
         if(t.getAttribute("data-optkey")!=null){ n.config.options[parseInt(t.getAttribute("data-optkey"),10)].digit=t.value; drawLines(); syncNode(n); return; }
         var fld=t.getAttribute("data-fld"); if(!fld) return;
         if(t.getAttribute("data-bool")){ n.config[fld]=t.checked; if(fld==="allowCallbackStar"){ renderPanel(); render(); } return; }
-        if(fld==="callbackKey"){ n.config.callbackKey=t.value; render(); return; }
+        if(fld==="callbackKey"){ n.config.callbackKey=t.value; renderPanel(); render(); return; }
         // An empty box commits nothing rather than 0, which would be a live Gather collecting no digits.
         if(t.getAttribute("data-num")){ var num=parseInt(t.value,10); if(!isNaN(num)) n.config[fld]=num; return; }
         if(t.getAttribute("data-list")){ n.config[fld]=t.value.split(",").map(function(x){return x.trim();}).filter(function(x){return x;}); return; }

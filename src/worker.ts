@@ -213,8 +213,9 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
 // Saved-contact names for a page's caller numbers, keyed by the number as stored. One query for the
 // whole page rather than one per row: the contact list is small, and each lookup would be a D1 round
 // trip. Matched on the normalised number, so "0412 345 678" finds a contact saved as +61412345678.
-async function contactNamesFor(db: D1Database, numbers: string[]): Promise<Map<string, string>> {
-  const byNormalized = new Map((await listContacts(db)).map((c) => [c.phone_normalized, c.name]));
+// Takes the contacts rather than reading them, so the caller can read them alongside its own list.
+function contactNamesFor(contacts: { phone_normalized: string; name: string }[], numbers: string[]): Map<string, string> {
+  const byNormalized = new Map(contacts.map((c) => [c.phone_normalized, c.name]));
   const names = new Map<string, string>();
   for (const n of numbers) {
     const name = byNormalized.get(normalizePhone(n));
@@ -1663,16 +1664,16 @@ export default {
 
       if (url.pathname === "/admin/voicemail") {
         if (topLevel) return shellHere();
-        const voicemails = await listVoicemails(env.DB);
-        const names = await contactNamesFor(env.DB, voicemails.map((vm) => vm.caller_number));
+        const [voicemails, contacts] = await Promise.all([listVoicemails(env.DB), listContacts(env.DB)]);
+        const names = contactNamesFor(contacts, voicemails.map((vm) => vm.caller_number));
         const html = renderVoicemailPage(voicemails, names, staffOrResponse.role);
         return adminHtml(html);
       }
 
       if (url.pathname === "/admin/callbacks") {
         if (topLevel) return shellHere();
-        const requests = await listCallbackRequests(env.DB);
-        const names = await contactNamesFor(env.DB, requests.map((r) => r.caller_number));
+        const [requests, contacts] = await Promise.all([listCallbackRequests(env.DB), listContacts(env.DB)]);
+        const names = contactNamesFor(contacts, requests.map((r) => r.caller_number));
         const html = renderCallbackRequestsPage(requests, names, staffOrResponse.role);
         return adminHtml(html);
       }

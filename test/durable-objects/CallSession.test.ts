@@ -1824,6 +1824,27 @@ describe("CallSession", () => {
     expect(cb?.status).toBe("open");
   });
 
+  // A caller who pressed the key and hung up is gone: following the callback line to a ring step
+  // would re-ring the whole team for nobody. The request is still logged.
+  it("does not follow the callback line for a caller who hung up", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_ring2" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedRing("main_ring2", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbhang");
+    await send(stub, mainEvent("CA-cbhang"));
+    await send(stub, mainEvent("CA-cbhang", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbhang", "1"));
+    const dialsBefore = outboundDials(fetchMock).length;
+    await send(stub, queueLeft("CA-cbhang", "hangup"));
+    expect(outboundDials(fetchMock).length).toBe(dialsBefore);
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbhang").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
   // A deleted callback step must not hang up on a caller who just asked to be called back.
   it("falls back to the built-in wording when the callback step no longer exists", async () => {
     await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
