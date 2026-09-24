@@ -214,7 +214,7 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
 function contactNamesFor(contacts: { phone_normalized: string; name: string }[], numbers: string[]): Map<string, string> {
   // Blank on either side never matches: a withheld caller ("" or "anonymous") must not borrow the
   // name of some contact saved without a number. Two contacts on one number: the FIRST wins -- the
-  // list is ordered by name, the same pick as findContactByPhone, so every surface agrees.
+  // list is ordered by name, the same pick as findContactByPhone and the web Phone/Messages pages.
   const byNormalized = new Map<string, string>();
   for (const c of contacts) {
     if (c.phone_normalized && !byNormalized.has(c.phone_normalized)) byNormalized.set(c.phone_normalized, c.name);

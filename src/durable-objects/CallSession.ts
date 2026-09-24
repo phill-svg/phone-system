@@ -475,8 +475,9 @@ export class CallSession extends DurableObject<Env> {
       play = await this.playFromConfig(waitConfig);
       allowCallbackStar = waitConfig.allowCallbackStar === true;
       if (isCallbackKey(waitConfig.callbackKey)) callbackKey = waitConfig.callbackKey;
-      if (typeof waitConfig.callbackNextNodeId === "string" && waitConfig.callbackNextNodeId.trim()) {
-        callbackNextNodeId = waitConfig.callbackNextNodeId.trim();
+      // Used exactly as stored, like every other next-field and as both editors match it.
+      if (typeof waitConfig.callbackNextNodeId === "string" && waitConfig.callbackNextNodeId) {
+        callbackNextNodeId = waitConfig.callbackNextNodeId;
       }
     } else {
       // nextNodeId IS the ring node itself; no preceding wait → no hold content, no callback star.
@@ -809,9 +810,6 @@ export class CallSession extends DurableObject<Env> {
       // The caller pressed the hold step's callback key. Always the same bookkeeping as a `callback`
       // step (row, push, event, message recording); only the WORDS come from the step the hold
       // step's callback line leads to, so they are the admin's to edit.
-      // Cleared FIRST, before any D1 read: D1 I/O lets another event into this object, and a
-      // redelivered queue-left that still found the ring would log a second callback and push again.
-      await this.ctx.storage.delete("activeRing");
       const ack = await this.holdCallbackAck(activeRing.callbackNextNodeId, activeRing.holdNodeId, body.callSid, origin);
       return this.xml(await this.recordCallbackRequest(body.callSid, ack, origin));
     }

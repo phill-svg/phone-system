@@ -105,8 +105,9 @@ function isVoicemailConfig(c: Record<string, unknown>): boolean {
   return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText) && isNonEmptyString(c.mailboxLabel);
 }
 
-// A callback node is a terminal step (log the number, hang up), so it has no nextNodeId -- only the
-// optional acknowledgement prompt, exactly like a voicemail's minus the mailbox label.
+// A callback node is a terminal step (log the number, play this prompt, then record a message -- see
+// CallSession.recordCallbackRequest), so it has no nextNodeId -- only the optional prompt, exactly
+// like a voicemail's minus the mailbox label.
 function isCallbackConfig(c: Record<string, unknown>): boolean {
   return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText);
 }

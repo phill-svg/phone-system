@@ -169,7 +169,7 @@ export function orderNodes(flow: IvrFlow): { ordered: IvrNode[]; unreachable: Iv
     // it -- but the callback step it names IS in use, so it is listed rather than shown as an orphan.
     // Only while callbacks are on (calls ignore the key otherwise), and only a callback step.
     if (node.type === "wait" && node.config.allowCallbackStar === true) {
-      const cb = byId.get(str(node.config.callbackNextNodeId).trim());
+      const cb = byId.get(str(node.config.callbackNextNodeId));
       if (cb && cb.type === "callback" && !seen.has(cb.id)) queue.push(cb);
     }
   }
@@ -316,8 +316,8 @@ export function incompleteReason(node: IvrNode): string | null {
 //               which is the INTENDED configuration, not a gap. Flagging it would invite someone to
 //               "fix" it by typing text, replacing the ring cadence with a spoken line on every
 //               hold poll.
-//   callback -- recordCallbackRequest answers renderCallbackAck("Thanks, we'll call you back
-//               soon."). The web editor says so in its own hint.
+//   callback -- recordCallbackRequest says "Thanks, we'll call you back soon." when the prompt is
+//               blank. The web editor says so in its own hint.
 //   voicemail -- a blank prompt is a beep-only mailbox: terse, but a real choice. The mailboxLabel
 //               check above is the gap that actually matters there.
 const PROMPT_REQUIRED = new Set<string>(["play", "gather", "input"]);
