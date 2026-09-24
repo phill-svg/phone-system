@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createContact,
+  findContactByPhone,
   importContacts,
   listContacts,
   normalizePhone,
@@ -68,5 +69,19 @@ describe("contacts db", () => {
     await deleteContact(env.DB, c.id);
     all = await listContacts(env.DB);
     expect(all.length).toBe(0);
+  });
+});
+
+// A number saved as two contacts is named the same on every surface: the first by name, which is
+// what the web pages pick from listContacts.
+describe("findContactByPhone with a number saved twice", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM contacts").run();
+  });
+
+  it("returns the first contact by name, not the first saved", async () => {
+    await createContact(env.DB, { name: "Zed Plumbing", phone: "0400 111 222" });
+    await createContact(env.DB, { name: "alice smith", phone: "+61 400 111 222" });
+    expect((await findContactByPhone(env.DB, "+61400111222"))?.name).toBe("alice smith");
   });
 });

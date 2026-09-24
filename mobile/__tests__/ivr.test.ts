@@ -71,6 +71,30 @@ describe("orderNodes", () => {
     expect(orderNodes(cyclic).ordered.map((n) => n.id)).toEqual(["a", "b"]);
   });
 
+  // The callback step a Hold step names supplies the words callers hear, so it is in use -- but
+  // only while callbacks are on, and only a callback step (the line runs nothing else).
+  describe("a Hold step's callback line", () => {
+    const flow = (allowCallbackStar: boolean, targetType: IvrNodeType): IvrFlow => ({
+      entryNodeId: "w",
+      nodes: [
+        node("w", "wait", { audioAssetId: null, ttsText: "", nextNodeId: "", allowCallbackStar, callbackNextNodeId: "t" }, true),
+        node("t", targetType, targetType === "callback" ? { ttsText: "Logged" } : { mailboxLabel: "VM" }),
+      ],
+    });
+
+    it("lists the callback step it names while callbacks are on", () => {
+      expect(orderNodes(flow(true, "callback")).ordered.map((n) => n.id)).toEqual(["w", "t"]);
+    });
+
+    it("leaves that step unreachable while callbacks are off", () => {
+      expect(orderNodes(flow(false, "callback")).unreachable.map((n) => n.id)).toEqual(["t"]);
+    });
+
+    it("does not reach a step that is not a callback step", () => {
+      expect(orderNodes(flow(true, "voicemail")).unreachable.map((n) => n.id)).toEqual(["t"]);
+    });
+  });
+
   it("treats every step as unreachable when no entry is set", () => {
     const { ordered, unreachable } = orderNodes({ ...FLOW, entryNodeId: null });
     expect(ordered).toEqual([]);
@@ -83,6 +107,13 @@ describe("outgoingIds", () => {
   // piece -- so it must not read as a link to a step called "".
   it("ignores blank references", () => {
     expect(outgoingIds(node("x", "play", { nextNodeId: "" }))).toEqual([]);
+  });
+
+  // Nothing is run through a Hold step's callback line -- calls only read the callback step's words.
+  it("never treats a Hold step's callback line as a route", () => {
+    const base = { audioAssetId: null, ttsText: "", nextNodeId: "ring1", callbackNextNodeId: "cb1" };
+    expect(outgoingIds(node("w", "wait", { ...base, allowCallbackStar: true }))).toEqual(["ring1"]);
+    expect(outgoingIds(node("w", "wait", { ...base, allowCallbackStar: false }))).toEqual(["ring1"]);
   });
 });
 
@@ -354,5 +385,13 @@ describe("normalizeFlowName", () => {
     expect(normalizeFlowName("sales/main")).toBe("");
     expect(normalizeFlowName("sales?x=1")).toBe("");
     expect(normalizeFlowName("a".repeat(41))).toBe("");
+  });
+});
+
+// A Hold step's callback line is optional: blank means the built-in wording, not an unfinished step.
+describe("a Hold step's callback line", () => {
+  it("is not flagged as unfinished when left blank", () => {
+    const n = node("w", "wait", { audioAssetId: null, ttsText: "", allowCallbackStar: true, callbackKey: "1", nextNodeId: "ring1" });
+    expect(incompleteReason(n)).toBeNull();
   });
 });

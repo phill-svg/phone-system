@@ -46,6 +46,8 @@ const NEXT_FIELDS: Record<string, string[]> = {
   gather: ["defaultNextNodeId"],
   input: ["nextNodeId"],
   ring: ["noAnswerNextNodeId"],
+  // Not `callbackNextNodeId`: a hold step's callback line only supplies a callback step's WORDS
+  // (CallSession.holdCallbackAck) -- nothing is ever rung through it, so it is not a route here.
   wait: ["nextNodeId"],
 };
 

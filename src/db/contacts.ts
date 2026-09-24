@@ -33,7 +33,7 @@ export function normalizePhone(raw: string): string {
 
 export async function listContacts(db: D1Database): Promise<Contact[]> {
   const result = await db
-    .prepare("SELECT * FROM contacts ORDER BY name COLLATE NOCASE ASC")
+    .prepare("SELECT * FROM contacts ORDER BY name COLLATE NOCASE ASC, id ASC")
     .all<Contact>();
   return result.results;
 }
@@ -44,7 +44,9 @@ export async function findContactByPhone(db: D1Database, phone: string): Promise
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
   const row = await db
-    .prepare("SELECT * FROM contacts WHERE phone_normalized = ? LIMIT 1")
+    // Ordered like listContacts (id breaks a tie NOCASE cannot), so a number saved twice gets the same
+    // name everywhere -- the web pages keep the FIRST contact per number from that list.
+    .prepare("SELECT * FROM contacts WHERE phone_normalized = ? ORDER BY name COLLATE NOCASE ASC, id ASC LIMIT 1")
     .bind(normalized)
     .first<Contact>();
   return row ?? null;

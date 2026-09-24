@@ -96,6 +96,7 @@ function isWaitConfig(c: Record<string, unknown>): boolean {
     isStringOrNull(c.ttsText) &&
     typeof c.allowCallbackStar === "boolean" &&
     (c.callbackKey === undefined || isCallbackKey(c.callbackKey)) &&
+    (c.callbackNextNodeId === undefined || isString(c.callbackNextNodeId)) &&
     isString(c.nextNodeId)
   );
 }
@@ -104,8 +105,9 @@ function isVoicemailConfig(c: Record<string, unknown>): boolean {
   return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText) && isNonEmptyString(c.mailboxLabel);
 }
 
-// A callback node is a terminal step (log the number, hang up), so it has no nextNodeId -- only the
-// optional acknowledgement prompt, exactly like a voicemail's minus the mailbox label.
+// A callback node is a terminal step (log the number, play this prompt, then record a message -- see
+// CallSession.recordCallbackRequest), so it has no nextNodeId -- only the optional prompt, exactly
+// like a voicemail's minus the mailbox label.
 function isCallbackConfig(c: Record<string, unknown>): boolean {
   return isStringOrNull(c.audioAssetId) && isStringOrNull(c.ttsText);
 }
@@ -295,6 +297,12 @@ export async function handlePutFlow(
     }
   }
 
+  // A hold step's callback line (callbackNextNodeId) is not checked against its target either: calls
+  // use it only when it names a callback step in the same menu, and otherwise play the built-in
+  // words (CallSession.holdCallbackAck) -- both editors offer only that, and show the same rule. A
+  // refusal here could only lock a whole menu out of saving over a line nobody can see (callbacks
+  // off) or over a step added later in another menu.
+  //
   // Deliberately no dangling-reference check here: a node's config fields (openNextNodeId,
   // noAnswerNextNodeId, etc.) are allowed to point at ids that don't exist yet, so a flow can
   // be built up incrementally in any order rather than strictly back-to-front from a terminal

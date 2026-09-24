@@ -1,6 +1,7 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
+import { formatAuNumber } from "../src/html/formatPhone";
 import { setCallBlocklist } from "../src/db/settings";
 import { insertMessage } from "../src/db/messages";
 
@@ -2140,7 +2141,64 @@ describe("Task 13 callback-requests routes", () => {
     const response = await SELF.fetch("https://example.com/admin/callbacks");
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("+61400000009");
+    expect(html).toContain(formatAuNumber("+61400000009"));
+  });
+
+  // A withheld caller must not borrow the name of a contact saved without a number.
+  it("GET /admin/callbacks never names a caller with no number", async () => {
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('No Number Pty', NULL, '', '', 1, 1)"
+    ).run();
+    await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+      .bind("CA-cbr-anon", "", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-anon", "", Date.now())
+      .run();
+    const html = await (await SELF.fetch("https://example.com/admin/callbacks")).text();
+    expect(html).not.toContain("No Number Pty");
+  });
+
+  // The page used to print the bare number even for a caller saved as a contact.
+  it("GET /admin/callbacks names a caller who is a saved contact, with the number beneath", async () => {
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('Jane Customer', NULL, '0400 000 008', '61400000008', 1, 1)"
+    ).run();
+    await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+      .bind("CA-cbr-3", "+61400000008", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-3", "+61400000008", Date.now())
+      .run();
+
+    const html = await (await SELF.fetch("https://example.com/admin/callbacks")).text();
+    expect(html).toContain("Jane Customer");
+    expect(html).toContain(formatAuNumber("+61400000008"));
+  });
+  // One number saved as two contacts gets ONE name everywhere: the first by name, as the push and the
+  // ringing screen (findContactByPhone) pick it.
+  it("GET /admin/callbacks names a number saved twice by the first contact name", async () => {
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('Zed Plumbing', NULL, '0400 000 009', '61400000009', 1, 1)"
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('Alice Smith', NULL, '0400 000 009', '61400000009', 1, 1)"
+    ).run();
+    await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+      .bind("CA-cbr-dup", "+61400000009", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-dup", "+61400000009", Date.now())
+      .run();
+    const html = await (await SELF.fetch("https://example.com/admin/callbacks")).text();
+    expect(html).toContain("Alice Smith");
+    expect(html).not.toContain("Zed Plumbing");
   });
 
   it("requires staff auth for both new routes in a genuine production-shaped env (no dev bypass)", async () => {

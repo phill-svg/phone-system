@@ -110,7 +110,7 @@ export function renderIvrFlowPage(
         if(type==="gather") return {audioAssetId:null, ttsText:null, options:[], defaultNextNodeId:"", retryLimit:3};
         if(type==="ring") return {target:"all", strategy:"simultaneous", timeoutSeconds:20, noAnswerNextNodeId:""};
         if(type==="voicemail") return {audioAssetId:null, ttsText:null, mailboxLabel:"Voicemail"};
-        if(type==="wait") return {audioAssetId:null, ttsText:null, allowCallbackStar:false, nextNodeId:""};
+        if(type==="wait") return {audioAssetId:null, ttsText:null, allowCallbackStar:false, nextNodeId:"", callbackNextNodeId:""};
         if(type==="redirect") return {number:""};
         if(type==="input") return {audioAssetId:null, ttsText:null, numDigits:4, nextNodeId:""};
         if(type==="business_hours") return {openNextNodeId:"", closedNextNodeId:""};
@@ -126,10 +126,18 @@ export function renderIvrFlowPage(
         else if(n.type==="ring") o.push({label:"No answer", field:"noAnswerNextNodeId"});
         else if(n.type==="business_hours"){ o.push({label:"Open", field:"openNextNodeId"}); o.push({label:"Closed", field:"closedNextNodeId"}); }
         else if(n.type==="date_rule"){ o.push({label:"Normal day", field:"openNextNodeId"}); o.push({label:"Closed date", field:"closedNextNodeId"}); }
+        // The hold step's callback key gets a line of its own, so its message is a step you can edit.
+        if(n.type==="wait" && c.allowCallbackStar) o.push({label:"Press "+(c.callbackKey||"*")+" (callback)", field:"callbackNextNodeId"});
         return o;
       }
       function outTarget(n, out){ var c=n.config||{}; return out.opt!=null ? (c.options[out.opt]||{}).nextNodeId : c[out.field]; }
-      function setOutTarget(n, out, val){ var c=n.config||{}; if(out.opt!=null) c.options[out.opt].nextNodeId=val; else c[out.field]=val; }
+      // The hold step's callback line leads only to a "Request a callback" step: calls play no other
+      // kind (they fall back to the built-in words), so refuse the connection and say why.
+      function setOutTarget(n, out, val){ var c=n.config||{};
+        if(out.field==="callbackNextNodeId"){ var tn=getNode(val); if(tn && tn.type!=="callback"){ alert("The callback line can only connect to a “Request a callback” step."); return; } }
+        if(out.opt!=null) c.options[out.opt].nextNodeId=val; else c[out.field]=val;
+        // The hold panel's "built-in message" button depends on this line, so keep the panel current.
+        if(n.id===selId) renderPanel(); }
 
       function summary(n){
         var c=n.config||{};
@@ -209,7 +217,10 @@ export function renderIvrFlowPage(
             out+='<label class="pf"><span><input type="checkbox" data-fld="allowCallbackStar" data-bool="1"'+(c.allowCallbackStar?" checked":"")+'> Let caller request a callback</span></label>';
             // Only with callbacks on, as on mobile: a key picked with the box unticked does nothing.
             if(c.allowCallbackStar) out+='<label class="pf">Callback key (match what the message tells callers to press)<select data-fld="callbackKey">'+ko+'</select></label>';
-            out+='<div class="pf" style="font-weight:400;opacity:.8">Phones keep ringing while the caller holds. The message plays once, then the caller hears ringing.</div>'; }
+            // The callback line is optional, and a drag can only CONNECT it -- this is the way back to
+            // the built-in words (mobile offers the same as "Built-in message").
+            if(c.allowCallbackStar && c.callbackNextNodeId) out+='<button type="button" class="ivr-link" id="pfCbDefault">Use the built-in callback message instead</button>';
+            out+='<div class="pf" style="font-weight:400;opacity:.8">Phones keep ringing while the caller holds. The message plays once, then the caller hears ringing.'+(c.allowCallbackStar?' Connect the “Press '+h(ck)+' (callback)” line to a “Request a callback” step to set what callers hear when they press it.':'')+'</div>'; }
         } else if(n.type==="gather"){ out+=promptPanel(n,c);
           out+='<div class="pf">Menu keys (each key gets a line to drag)';
           var opts=c.options||[]; for(var i=0;i<opts.length;i++){ out+='<div class="p-opt"><input type="text" class="p-key" data-optkey="'+i+'" value="'+h(opts[i].digit||"")+'" placeholder="key"><button type="button" class="ivr-link p-delopt" data-opt="'+i+'">remove</button></div>'; }
@@ -224,7 +235,7 @@ export function renderIvrFlowPage(
           out+='<label class="pf">Ring for (seconds)<input type="number" min="5" max="120" data-fld="timeoutSeconds" data-num="1" value="'+h(c.timeoutSeconds||20)+'"></label>';
         } else if(n.type==="voicemail"){ out+=promptPanel(n,c); out+='<label class="pf">Mailbox name<input type="text" data-fld="mailboxLabel" value="'+h(c.mailboxLabel||"")+'"></label>';
         } else if(n.type==="callback"){ out+=promptPanel(n,c);
-          out+='<div class="pf" style="font-weight:400;opacity:0.75">Logs the caller&#39;s number as an open task on the Callbacks page, then hangs up. Nothing is recorded &mdash; use Voicemail if you want a message. Leave the prompt empty to use the default spoken line.</div>';
+          out+='<div class="pf" style="font-weight:400;opacity:0.75">Logs the caller&#39;s number as an open task on the Callbacks page, plays this message, then asks the caller to leave a message after the beep and records it. Leave the prompt empty to use the default spoken line.</div>';
         } else if(n.type==="redirect"){ out+='<label class="pf">Forward to number<input type="text" data-fld="number" value="'+h(c.number||"")+'" placeholder="+61400000000"></label>';
         } else if(n.type==="business_hours"){ out+='<div class="pf">Drag the “Open” and “Closed” handles to the next steps.</div>';
         } else if(n.type==="date_rule"){ var dates=Array.isArray(c.closedDates)?c.closedDates.join(", "):""; out+='<label class="pf">Closed dates (comma separated, e.g. 2026-12-25)<input type="text" data-fld="closedDates" data-list="1" value="'+h(dates)+'"></label>'; }
@@ -239,7 +250,8 @@ export function renderIvrFlowPage(
       panel.addEventListener("input", function(ev){ var t=ev.target, n=getNode(selId); if(!n) return;
         if(t.getAttribute("data-optkey")!=null){ n.config.options[parseInt(t.getAttribute("data-optkey"),10)].digit=t.value; drawLines(); syncNode(n); return; }
         var fld=t.getAttribute("data-fld"); if(!fld) return;
-        if(t.getAttribute("data-bool")){ n.config[fld]=t.checked; if(fld==="allowCallbackStar") renderPanel(); return; }
+        if(t.getAttribute("data-bool")){ n.config[fld]=t.checked; if(fld==="allowCallbackStar"){ renderPanel(); render(); } return; }
+        if(fld==="callbackKey"){ n.config.callbackKey=t.value; renderPanel(); render(); return; }
         // An empty box commits nothing rather than 0, which would be a live Gather collecting no digits.
         if(t.getAttribute("data-num")){ var num=parseInt(t.value,10); if(!isNaN(num)) n.config[fld]=num; return; }
         if(t.getAttribute("data-list")){ n.config[fld]=t.value.split(",").map(function(x){return x.trim();}).filter(function(x){return x;}); return; }
@@ -255,6 +267,7 @@ export function renderIvrFlowPage(
         if(t.id==="pfAddOpt"){ n.config.options.push({digit:"", nextNodeId:""}); renderPanel(); render(); return; }
         if(t.classList.contains("p-delopt")){ n.config.options.splice(parseInt(t.getAttribute("data-opt"),10),1); renderPanel(); render(); return; }
         if(t.id==="pfMakeStart"){ entryId=n.id; renderPanel(); render(); return; }
+        if(t.id==="pfCbDefault"){ n.config.callbackNextNodeId=""; renderPanel(); render(); return; }
         if(t.id==="pfPlay"){ var aid=n.config.audioAssetId; if(!aid){ status("Pick a recording first.",false); return; } var pl=document.getElementById("ivrPlayer"); pl.src="/media/ivr-audio/"+encodeURIComponent(aid); pl.play().catch(function(){ status("Could not play.",false); }); return; }
       });
       function syncNode(n){ var el=nodeEl(n.id); if(el){ var s=el.querySelector(".node-sum"); if(s) s.textContent=summary(n); } }
@@ -303,10 +316,13 @@ export function renderIvrFlowPage(
       function addNode(type, x, y){ var n={id:uid(), type:type, config:defaultConfig(type), x:(x==null?80:x), y:(y==null?80:y)}; nodes.push(n); if(!entryId) entryId=n.id; return n; }
       function deleteNode(id){
         for(var i=nodes.length-1;i>=0;i--){ if(nodes[i].id===id){ nodes.splice(i,1); break; } }
-        var flds=["nextNodeId","defaultNextNodeId","openNextNodeId","closedNextNodeId","noAnswerNextNodeId"];
+        var flds=["nextNodeId","defaultNextNodeId","openNextNodeId","closedNextNodeId","noAnswerNextNodeId","callbackNextNodeId"];
         for(var k=0;k<nodes.length;k++){ var c=nodes[k].config||{}; for(var f=0;f<flds.length;f++){ if(c[flds[f]]===id) c[flds[f]]=""; } if(nodes[k].type==="gather"&&c.options){ for(var o=0;o<c.options.length;o++){ if(c.options[o].nextNodeId===id) c.options[o].nextNodeId=""; } } }
         if(entryId===id) entryId=nodes.length?nodes[0].id:"";
-        if(selId===id){ selId=null; renderPanel(); }
+        // Always re-render the panel: deleting a step clears lines into it, which the selected step's
+        // panel may show (the hold step's "built-in message" button).
+        if(selId===id) selId=null;
+        renderPanel();
         render();
       }
 
@@ -315,7 +331,9 @@ export function renderIvrFlowPage(
       function showAddMenu(clientX, clientY, pending){ pendingConnect=pending||null; closeAddMenu();
         var back=document.createElement("div"); back.className="ivr-backdrop"; back.id="ivrBackdrop"; back.addEventListener("mousedown", closeAddMenu); document.body.appendChild(back);
         var m=document.createElement("div"); m.className="ivr-add-menu"; m.id="ivrAddMenu"; var html="";
-        for(var i=0;i<TYPES.length;i++){ html+='<button data-addtype="'+TYPES[i][0]+'">'+h(TYPES[i][1])+'</button>'; }
+        // Dragged from a hold step's callback line: only a callback step can go there.
+        var pSrc=pending?getNode(pending.srcId):null, pOut=pSrc?outsFor(pSrc)[pending.outIdx]:null, onlyCb=!!(pOut && pOut.field==="callbackNextNodeId");
+        for(var i=0;i<TYPES.length;i++){ if(onlyCb && TYPES[i][0]!=="callback") continue; html+='<button data-addtype="'+TYPES[i][0]+'">'+h(TYPES[i][1])+'</button>'; }
         m.innerHTML=html; m.style.left=Math.min(clientX, window.innerWidth-240)+"px"; m.style.top=Math.min(clientY, window.innerHeight-360)+"px";
         m.addEventListener("click", function(ev){ var b=ev.target.closest("[data-addtype]"); if(!b) return; var p=pendingConnect;
           var nx = p?p.x:120, ny=p?p.y:120; var n=addNode(b.getAttribute("data-addtype"), nx, ny);

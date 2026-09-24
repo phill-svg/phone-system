@@ -207,6 +207,27 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
   "MachineDetectionDuration",
 ]);
 
+// Saved-contact names for a page's caller numbers, keyed by the number as stored. One query for the
+// whole page rather than one per row: the contact list is small, and each lookup would be a D1 round
+// trip. Matched on the normalised number, so "0412 345 678" finds a contact saved as +61412345678.
+// Takes the contacts rather than reading them, so the caller can read them alongside its own list.
+function contactNamesFor(contacts: { phone_normalized: string; name: string }[], numbers: string[]): Map<string, string> {
+  // Blank on either side never matches: a withheld caller ("" or "anonymous") must not borrow the
+  // name of some contact saved without a number. Two contacts on one number: the FIRST wins -- the
+  // list is ordered by name, the same pick as findContactByPhone and the web Phone/Messages pages.
+  const byNormalized = new Map<string, string>();
+  for (const c of contacts) {
+    if (c.phone_normalized && !byNormalized.has(c.phone_normalized)) byNormalized.set(c.phone_normalized, c.name);
+  }
+  const names = new Map<string, string>();
+  for (const n of numbers) {
+    const key = normalizePhone(n);
+    const name = key ? byNormalized.get(key) : undefined;
+    if (name) names.set(n, name);
+  }
+  return names;
+}
+
 // Every /admin/ page is served either as the Phone page's shell or as the plain page its frame
 // shows, depending on Sec-Fetch-Dest -- so the same URL must never be answered from cache with the
 // other variant. Back would otherwise put the plain page at the top, with no softphone on it.
@@ -1650,22 +1671,17 @@ export default {
 
       if (url.pathname === "/admin/voicemail") {
         if (topLevel) return shellHere();
-        // The contact names are resolved here, in one query, rather than per row: the roster is
-        // small and a lookup per voicemail is a D1 round trip each.
         const [voicemails, contacts] = await Promise.all([listVoicemails(env.DB), listContacts(env.DB)]);
-        const byNormalized = new Map(contacts.map((c) => [c.phone_normalized, c.name]));
-        const names = new Map<string, string>();
-        for (const vm of voicemails) {
-          const name = byNormalized.get(normalizePhone(vm.caller_number));
-          if (name) names.set(vm.caller_number, name);
-        }
+        const names = contactNamesFor(contacts, voicemails.map((vm) => vm.caller_number));
         const html = renderVoicemailPage(voicemails, names, staffOrResponse.role);
         return adminHtml(html);
       }
 
       if (url.pathname === "/admin/callbacks") {
         if (topLevel) return shellHere();
-        const html = renderCallbackRequestsPage(await listCallbackRequests(env.DB), staffOrResponse.role);
+        const [requests, contacts] = await Promise.all([listCallbackRequests(env.DB), listContacts(env.DB)]);
+        const names = contactNamesFor(contacts, requests.map((r) => r.caller_number));
+        const html = renderCallbackRequestsPage(requests, names, staffOrResponse.role);
         return adminHtml(html);
       }
 

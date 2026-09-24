@@ -343,6 +343,50 @@ describe("handlePutFlow", () => {
     }
   });
 
+  // Where the callback line points is not refused on save -- calls use only a callback step in the
+  // same menu and otherwise play the built-in words -- so no target can lock a menu out of saving.
+  it("accepts any callback line target on save", async () => {
+    await env.DB.prepare(
+      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('elsewhere_cb', 'other_flow', 0, 'callback', ?, 1, 1)"
+    )
+      .bind(JSON.stringify({ audioAssetId: null, ttsText: "We will call." }))
+      .run();
+    for (const target of ["vm", "elsewhere_cb", "nowhere", " vm "]) {
+      const res = await handlePutFlow(
+        putRequest({
+          entryNodeId: "w",
+          nodes: [
+            { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: target } },
+            { id: "vm", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
+          ],
+        }),
+        env.DB,
+        "test_flow",
+        ADMIN
+      );
+      expect(res.status, target).toBe(200);
+    }
+  });
+
+  it("returns 400 when a wait node's callbackNextNodeId is not a string", async () => {
+    const res = await handlePutFlow(
+      putRequest({
+        entryNodeId: "w",
+        nodes: [
+          {
+            id: "w",
+            type: "wait",
+            config: { audioAssetId: null, ttsText: "hold please", allowCallbackStar: true, callbackNextNodeId: 5, nextNodeId: "" },
+          },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(res.status).toBe(400);
+  });
+
   it("accepts a wait node with a one-key callbackKey, or none", async () => {
     for (const extra of [{ callbackKey: "1" }, { callbackKey: "*" }, {}]) {
       const res = await handlePutFlow(

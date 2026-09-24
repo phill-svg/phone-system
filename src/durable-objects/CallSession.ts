@@ -67,6 +67,12 @@ type ActiveRing = {
   // The key that requests a callback on this hold step (`callbackKey` on the wait node, default *).
   // Per step, not global: it has to match what that step's announcement tells callers to press.
   callbackKey?: string;
+  // The `callback` step whose message plays when the callback key is pressed
+  // (`callbackNextNodeId` on the wait node), so the wording is the admin's to edit. Unset keeps
+  // the built-in wording. See holdCallbackAck.
+  callbackNextNodeId?: string;
+  // The hold step itself: the callback step must be in the same menu (holdCallbackAck).
+  holdNodeId?: string;
   ringConfig: RingConfig;
   ringPlanState: RingPlanState;
   attemptSids: string[];
@@ -460,6 +466,7 @@ export class CallSession extends DurableObject<Env> {
     let play: FlowCommand | null;
     let allowCallbackStar: boolean;
     let callbackKey = "*";
+    let callbackNextNodeId: string | undefined;
 
     if (viaWait) {
       // nextNodeId is the WAIT node's own id; load its config for the real ring node id + hold content.
@@ -468,6 +475,10 @@ export class CallSession extends DurableObject<Env> {
       play = await this.playFromConfig(waitConfig);
       allowCallbackStar = waitConfig.allowCallbackStar === true;
       if (isCallbackKey(waitConfig.callbackKey)) callbackKey = waitConfig.callbackKey;
+      // Used exactly as stored, like every other next-field and as both editors match it.
+      if (typeof waitConfig.callbackNextNodeId === "string" && waitConfig.callbackNextNodeId) {
+        callbackNextNodeId = waitConfig.callbackNextNodeId;
+      }
     } else {
       // nextNodeId IS the ring node itself; no preceding wait → no hold content, no callback star.
       ringNodeId = walkResult.nextNodeId;
@@ -549,6 +560,8 @@ export class CallSession extends DurableObject<Env> {
         play,
         allowCallbackStar,
         callbackKey,
+        callbackNextNodeId,
+        holdNodeId: viaWait ? walkResult.nextNodeId : undefined,
         ringConfig,
         ringPlanState,
         attemptSids,
@@ -794,8 +807,11 @@ export class CallSession extends DurableObject<Env> {
     }
 
     if (outcome === "callback_requested") {
-      // The caller pressed * while held. Same feature, same bookkeeping as a `callback` flow node.
-      return this.xml(await this.recordCallbackRequest(body.callSid, "", origin));
+      // The caller pressed the hold step's callback key. Always the same bookkeeping as a `callback`
+      // step (row, push, event, message recording); only the WORDS come from the step the hold
+      // step's callback line leads to, so they are the admin's to edit.
+      const ack = await this.holdCallbackAck(activeRing.callbackNextNodeId, activeRing.holdNodeId, body.callSid, origin);
+      return this.xml(await this.recordCallbackRequest(body.callSid, ack, origin));
     }
 
     // no_answer, OR the caller hung up mid-ring (plan still DIALING with outstanding legs).
@@ -1257,6 +1273,48 @@ export class CallSession extends DurableObject<Env> {
     });
   }
 
+
+  // The wording for a callback asked for from a hold step: the prompt of the `callback` step the hold
+  // step's callback line leads to, rendered, or "" for recordCallbackRequest's built-in line. Only
+  // a callback step in the hold step's own menu counts -- anything else is the built-in wording. This
+  // is THE rule (saving does not check it); both editors offer only such a step and label the line
+  // by the same rule, so what an editor shows is what callers hear. Nothing here walks the flow: a
+  // line to a ring step would otherwise re-ring the team, and one to a voicemail or menu would skip
+  // logging the callback the caller was promised.
+  // Every unusable case -- no line, a deleted step, the wrong type, another menu, a corrupt config, a
+  // recording that no longer exists -- is the built-in wording, never a throw: a throw reaches the DO
+  // catch-all, which says "we're experiencing a technical issue" and hangs up on someone who just
+  // asked to be called back. Nothing here has a side effect, so falling back never doubles anything.
+  private async holdCallbackAck(
+    nodeId: string | undefined,
+    holdNodeId: string | undefined,
+    callSid: string,
+    origin: string
+  ): Promise<string> {
+    if (!nodeId) return "";
+    try {
+      const row = await this.env.DB.prepare(
+        "SELECT cb.type, cb.config, cb.flow = hold.flow AS same_flow FROM ivr_nodes cb LEFT JOIN ivr_nodes hold ON hold.id = ? WHERE cb.id = ?"
+      )
+        .bind(holdNodeId ?? "", nodeId)
+        .first<{ type: string; config: string; same_flow: number | null }>();
+      if (!row || row.type !== "callback" || row.same_flow !== 1) {
+        console.log(
+          "HOLD_CALLBACK_STEP_UNUSABLE",
+          JSON.stringify({ callSid, node: nodeId, type: row?.type ?? null, sameFlow: row?.same_flow ?? null })
+        );
+        return "";
+      }
+      const play = await this.playFromConfig(JSON.parse(row.config) as Record<string, unknown>);
+      return play ? renderFlowCommandsFragment([play], { baseUrl: origin }) : "";
+    } catch (err) {
+      console.log(
+        "HOLD_CALLBACK_STEP_FAILED",
+        JSON.stringify({ callSid, node: nodeId, error: err instanceof Error ? err.message : String(err) })
+      );
+      return "";
+    }
+  }
 
   // The twin of flowEngine's playCommandFor, and it needs the same normalisation for a worse
   // reason: this one runs INSIDE startRing. A blank audioAssetId ("" survives `?? null`) throws in

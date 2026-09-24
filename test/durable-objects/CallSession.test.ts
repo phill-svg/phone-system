@@ -89,7 +89,7 @@ async function seedVoicemail(id: string, mailboxLabel: string): Promise<void> {
 
 async function seedWait(
   id: string,
-  opts: { nextNodeId: string; allowCallbackStar: boolean; callbackKey?: string }
+  opts: { nextNodeId: string; allowCallbackStar: boolean; callbackKey?: string; callbackNextNodeId?: string }
 ): Promise<void> {
   await seedNode({
     id,
@@ -100,6 +100,7 @@ async function seedWait(
       allowCallbackStar: opts.allowCallbackStar,
       nextNodeId: opts.nextNodeId,
       ...(opts.callbackKey !== undefined ? { callbackKey: opts.callbackKey } : {}),
+      ...(opts.callbackNextNodeId !== undefined ? { callbackNextNodeId: opts.callbackNextNodeId } : {}),
     },
   });
 }
@@ -1799,6 +1800,131 @@ describe("CallSession", () => {
     expect(left.xml).toContain("call you back");
     const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cb1").first<{ status: string }>();
     expect(cb?.status).toBe("open");
+  });
+
+  // What a caller hears after pressing the callback key is an editable step of its own, not
+  // hard-coded wording.
+  it("continues to the hold step's own callback step, with that step's words", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_cb" });
+    await seedNode({ id: "main_cb", type: "callback", config: { audioAssetId: null, ttsText: "Righto, we will ring you back." } });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbstep");
+    await send(stub, mainEvent("CA-cbstep"));
+    await send(stub, mainEvent("CA-cbstep", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbstep", "1"));
+    const left = await send(stub, queueLeft("CA-cbstep", "leave"));
+    expect(left.xml).toContain("Righto, we will ring you back.");
+    expect(left.xml).not.toContain("call you back soon");
+    expect(left.xml).toContain("<Record");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbstep").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
+  // Nothing reached through the callback line is ever RUN -- only a callback step's words are read.
+  // A line to a ring step (the editors never offer one, but saving does not refuse it) must not re-ring the team, whether or
+  // not the caller is still there; the callback is still logged.
+  for (const queueResult of ["hangup", "leave"]) {
+    it(`never rings anyone from the callback line (queue result ${queueResult})`, async () => {
+      await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+      await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_ring2" });
+      await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+      await seedRing("main_ring2", { noAnswerNextNodeId: "main_vm" });
+      await seedVoicemail("main_vm", "default");
+      await seedStaff("phill@b.com");
+
+      const sid = `CA-cbnoring-${queueResult}`;
+      const stub = stubFor(sid);
+      await send(stub, mainEvent(sid));
+      await send(stub, mainEvent(sid, { digits: "1" }));
+      await send(stub, holdDigit(sid, "1"));
+      const dialsBefore = outboundDials(fetchMock).length;
+      await send(stub, queueLeft(sid, queueResult));
+      expect(outboundDials(fetchMock).length).toBe(dialsBefore);
+      const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind(sid).first<{ status: string }>();
+      expect(cb?.status).toBe("open");
+    });
+  }
+
+  // A line to a voicemail step (again, not refused on save) still logs the callback the caller was
+  // promised, with the built-in words -- it does not drop them into a mailbox.
+  it("uses the built-in words when the callback line leads to a step that is not a callback step", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_vm" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbvm");
+    await send(stub, mainEvent("CA-cbvm"));
+    await send(stub, mainEvent("CA-cbvm", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbvm", "1"));
+    const left = await send(stub, queueLeft("CA-cbvm", "leave"));
+    expect(left.xml).toContain("call you back");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbvm").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
+  // A callback step whose recording has been deleted must not hang up on the caller.
+  it("uses the built-in words when the callback step's recording no longer exists", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_cb" });
+    await seedNode({ id: "main_cb", type: "callback", config: { audioAssetId: "no-such-asset", ttsText: null } });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbaudio");
+    await send(stub, mainEvent("CA-cbaudio"));
+    await send(stub, mainEvent("CA-cbaudio", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbaudio", "1"));
+    const left = await send(stub, queueLeft("CA-cbaudio", "leave"));
+    expect(left.xml).toContain("call you back");
+    expect(left.xml).not.toContain("technical issue");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbaudio").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
+  // A callback step in ANOTHER menu is shown by the app as the built-in message, so a call must not
+  // play it either -- what the editor shows is what the caller hears.
+  it("uses the built-in words when the callback step is in another menu", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "ah_cb" });
+    await seedNode({ id: "ah_cb", flow: "after_hours", type: "callback", config: { audioAssetId: null, ttsText: "After hours words." } });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbflow");
+    await send(stub, mainEvent("CA-cbflow"));
+    await send(stub, mainEvent("CA-cbflow", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbflow", "1"));
+    const left = await send(stub, queueLeft("CA-cbflow", "leave"));
+    expect(left.xml).not.toContain("After hours words.");
+    expect(left.xml).toContain("call you back");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbflow").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
+  // A deleted callback step must not hang up on a caller who just asked to be called back.
+  it("falls back to the built-in wording when the callback step no longer exists", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "gone" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbgone");
+    await send(stub, mainEvent("CA-cbgone"));
+    await send(stub, mainEvent("CA-cbgone", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbgone", "1"));
+    const left = await send(stub, queueLeft("CA-cbgone", "leave"));
+    expect(left.xml).toContain("call you back");
+    expect(left.xml).toContain("<Record");
+    expect(left.xml).not.toContain("technical issue");
   });
 
   // Default stays *, so a step reached by pressing 1 in a menu is not cancelled by a repeated 1.

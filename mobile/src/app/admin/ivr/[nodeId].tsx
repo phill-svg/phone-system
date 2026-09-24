@@ -11,6 +11,7 @@ import {
   NEXT_FIELDS,
   NEXT_FIELD_LABELS,
   NODE_TYPE_LABELS,
+  OPTIONAL_NEXT_FIELDS,
   CALLBACK_KEYS,
   callbackKeyOf,
   configsEqual,
@@ -221,6 +222,13 @@ export default function IvrNodeScreen() {
     const target = flow.nodes.find((n) => n.id === id);
     return target ? nodePickerLabel(target) : "Not set — callers reaching this are cut off";
   };
+  // The callback line never cuts anyone off: callers hear a callback step in this menu, or else the
+  // built-in wording -- the same rule as CallSession.holdCallbackAck.
+  const callbackLineLabel = (id: unknown) => {
+    const target = flow.nodes.find((n) => n.id === id && n.type === "callback");
+    if (target) return nodePickerLabel(target);
+    return id ? "Built-in message (the linked step is missing or not a callback step)" : "Built-in message";
+  };
 
   // A "go to" field. Expands in place rather than pushing a picker screen: the list is short, and
   // a modal would lose the surrounding context of what you are wiring.
@@ -231,7 +239,16 @@ export default function IvrNodeScreen() {
         style={{ paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: t.colors.separator }}
       >
         <Text style={[type.footnote, { color: t.colors.labelSecondary }]}>{label}</Text>
-        <Text style={[type.body, { color: draft[key] ? t.colors.label : t.colors.accent, marginTop: 2 }]}>{nameOf(draft[key])}</Text>
+        {/* The callback line is optional -- blank plays the built-in wording -- so it is not shown in
+            the "goes nowhere" accent a required line gets. */}
+        <Text
+          style={[
+            type.body,
+            { color: draft[key] || OPTIONAL_NEXT_FIELDS.has(key) ? t.colors.label : t.colors.accent, marginTop: 2 },
+          ]}
+        >
+          {key === "callbackNextNodeId" ? callbackLineLabel(draft[key]) : nameOf(draft[key])}
+        </Text>
       </Pressable>
       {openPicker === key ? (
         <View style={{ backgroundColor: t.colors.bg }}>
@@ -242,9 +259,12 @@ export default function IvrNodeScreen() {
             }}
             style={{ paddingHorizontal: 24, paddingVertical: 10 }}
           >
-            <Text style={[type.body, { color: t.colors.labelSecondary }]}>Not set</Text>
+            <Text style={[type.body, { color: t.colors.labelSecondary }]}>
+              {key === "callbackNextNodeId" ? "Built-in message" : "Not set"}
+            </Text>
           </Pressable>
-          {others.map((o) => (
+          {/* The callback line leads only to a "Request a callback" step (calls use no other kind). */}
+          {others.filter((o) => key !== "callbackNextNodeId" || o.type === "callback").map((o) => (
             <Pressable
               key={o.id}
               onPress={() => {
@@ -418,7 +438,9 @@ export default function IvrNodeScreen() {
 
         {NEXT_FIELDS[node.type].length > 0 ? (
           <Group title="Where it goes next">
-            {NEXT_FIELDS[node.type].map((field) => gotoField(field, NEXT_FIELD_LABELS[field] ?? field))}
+            {NEXT_FIELDS[node.type]
+              .filter((field) => field !== "callbackNextNodeId" || draft.allowCallbackStar === true)
+              .map((field) => gotoField(field, NEXT_FIELD_LABELS[field] ?? field))}
           </Group>
         ) : null}
 

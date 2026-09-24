@@ -58,11 +58,15 @@ export const NEXT_FIELDS: Record<IvrNodeType, string[]> = {
   gather: ["defaultNextNodeId"],
   input: ["nextNodeId"],
   ring: ["noAnswerNextNodeId"],
-  wait: ["nextNodeId"],
+  wait: ["nextNodeId", "callbackNextNodeId"],
   voicemail: [],
   callback: [],
   redirect: [],
 };
+
+// Next fields a step works without: `callbackNextNodeId` on a Hold step falls back to the built-in
+// callback wording, so leaving it blank is a choice, not an unfinished step.
+export const OPTIONAL_NEXT_FIELDS = new Set(["callbackNextNodeId"]);
 
 // Human labels for those fields, so an edit screen never shows a raw config key.
 export const NEXT_FIELD_LABELS: Record<string, string> = {
@@ -71,6 +75,7 @@ export const NEXT_FIELD_LABELS: Record<string, string> = {
   nextNodeId: "Then go to",
   defaultNextNodeId: "No key pressed, go to",
   noAnswerNextNodeId: "Nobody answers, go to",
+  callbackNextNodeId: "Callback key pressed, say",
 };
 
 export function nodeTitle(node: IvrNode): string {
@@ -160,6 +165,13 @@ export function orderNodes(flow: IvrFlow): { ordered: IvrNode[]; unreachable: Iv
       const next = byId.get(id);
       if (next && !seen.has(next.id)) queue.push(next);
     }
+    // A Hold step's callback line is not a route -- calls only read a callback step's words through
+    // it -- but the callback step it names IS in use, so it is listed rather than shown as an orphan.
+    // Only while callbacks are on (calls ignore the key otherwise), and only a callback step.
+    if (node.type === "wait" && node.config.allowCallbackStar === true) {
+      const cb = byId.get(str(node.config.callbackNextNodeId));
+      if (cb && cb.type === "callback" && !seen.has(cb.id)) queue.push(cb);
+    }
   }
 
   return { ordered, unreachable: flow.nodes.filter((n) => !seen.has(n.id)) };
@@ -168,7 +180,10 @@ export function orderNodes(flow: IvrFlow): { ordered: IvrNode[]; unreachable: Iv
 // Every step this one can lead to. A blank reference is legal and common -- a flow is built up
 // incrementally -- so empties are dropped rather than treated as a dangling link.
 export function outgoingIds(node: IvrNode): string[] {
-  const ids = NEXT_FIELDS[node.type].map((field) => str(node.config[field]));
+  const ids = NEXT_FIELDS[node.type]
+    // A Hold step's callback line is never a route: nothing is run through it (see orderNodes).
+    .filter((field) => field !== "callbackNextNodeId")
+    .map((field) => str(node.config[field]));
   if (node.type === "gather" && Array.isArray(node.config.options)) {
     for (const opt of node.config.options) ids.push(str((opt as { nextNodeId?: unknown }).nextNodeId));
   }
@@ -200,7 +215,7 @@ export function blankConfigFor(type: IvrNodeType): Record<string, unknown> {
     case "ring":
       return { target: "all", strategy: "simultaneous", timeoutSeconds: 20, noAnswerNextNodeId: "" };
     case "wait":
-      return { audioAssetId: null, ttsText: "", allowCallbackStar: false, nextNodeId: "" };
+      return { audioAssetId: null, ttsText: "", allowCallbackStar: false, nextNodeId: "", callbackNextNodeId: "" };
     case "voicemail":
       return { audioAssetId: null, ttsText: "", mailboxLabel: "Voicemail" };
     case "callback":
@@ -279,7 +294,8 @@ export function incompleteReason(node: IvrNode): string | null {
   if (node.type === "gather" && (!Array.isArray(c.options) || c.options.length === 0)) {
     return "No menu keys set";
   }
-  const missing = NEXT_FIELDS[node.type].filter((f) => blank(c[f]));
+  // A hold step's callback line is optional: left blank, the built-in callback wording plays.
+  const missing = NEXT_FIELDS[node.type].filter((f) => !OPTIONAL_NEXT_FIELDS.has(f) && blank(c[f]));
   if (missing.length > 0) {
     return missing.map((f) => `"${NEXT_FIELD_LABELS[f] ?? f}" goes nowhere`).join(", ");
   }
@@ -300,8 +316,8 @@ export function incompleteReason(node: IvrNode): string | null {
 //               which is the INTENDED configuration, not a gap. Flagging it would invite someone to
 //               "fix" it by typing text, replacing the ring cadence with a spoken line on every
 //               hold poll.
-//   callback -- recordCallbackRequest answers renderCallbackAck("Thanks, we'll call you back
-//               soon."). The web editor says so in its own hint.
+//   callback -- recordCallbackRequest says "Thanks, we'll call you back soon." when the prompt is
+//               blank. The web editor says so in its own hint.
 //   voicemail -- a blank prompt is a beep-only mailbox: terse, but a real choice. The mailboxLabel
 //               check above is the gap that actually matters there.
 const PROMPT_REQUIRED = new Set<string>(["play", "gather", "input"]);
