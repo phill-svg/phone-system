@@ -343,6 +343,25 @@ describe("handlePutFlow", () => {
     }
   });
 
+  it("returns 400 when a wait node's callbackNextNodeId is not a string", async () => {
+    const res = await handlePutFlow(
+      putRequest({
+        entryNodeId: "w",
+        nodes: [
+          {
+            id: "w",
+            type: "wait",
+            config: { audioAssetId: null, ttsText: "hold please", allowCallbackStar: true, callbackNextNodeId: 5, nextNodeId: "" },
+          },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(res.status).toBe(400);
+  });
+
   it("accepts a wait node with a one-key callbackKey, or none", async () => {
     for (const extra of [{ callbackKey: "1" }, { callbackKey: "*" }, {}]) {
       const res = await handlePutFlow(

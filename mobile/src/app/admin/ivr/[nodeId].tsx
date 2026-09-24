@@ -418,7 +418,9 @@ export default function IvrNodeScreen() {
 
         {NEXT_FIELDS[node.type].length > 0 ? (
           <Group title="Where it goes next">
-            {NEXT_FIELDS[node.type].map((field) => gotoField(field, NEXT_FIELD_LABELS[field] ?? field))}
+            {NEXT_FIELDS[node.type]
+              .filter((field) => field !== "callbackNextNodeId" || draft.allowCallbackStar === true)
+              .map((field) => gotoField(field, NEXT_FIELD_LABELS[field] ?? field))}
           </Group>
         ) : null}
 

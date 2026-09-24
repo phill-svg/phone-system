@@ -356,3 +356,11 @@ describe("normalizeFlowName", () => {
     expect(normalizeFlowName("a".repeat(41))).toBe("");
   });
 });
+
+// A Hold step's callback line is optional: blank means the built-in wording, not an unfinished step.
+describe("a Hold step's callback line", () => {
+  it("is not flagged as unfinished when left blank", () => {
+    const n = node("w", "wait", { audioAssetId: null, ttsText: "", allowCallbackStar: true, callbackKey: "1", nextNodeId: "ring1" });
+    expect(incompleteReason(n)).toBeNull();
+  });
+});

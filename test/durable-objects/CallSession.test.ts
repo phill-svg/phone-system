@@ -89,7 +89,7 @@ async function seedVoicemail(id: string, mailboxLabel: string): Promise<void> {
 
 async function seedWait(
   id: string,
-  opts: { nextNodeId: string; allowCallbackStar: boolean; callbackKey?: string }
+  opts: { nextNodeId: string; allowCallbackStar: boolean; callbackKey?: string; callbackNextNodeId?: string }
 ): Promise<void> {
   await seedNode({
     id,
@@ -100,6 +100,7 @@ async function seedWait(
       allowCallbackStar: opts.allowCallbackStar,
       nextNodeId: opts.nextNodeId,
       ...(opts.callbackKey !== undefined ? { callbackKey: opts.callbackKey } : {}),
+      ...(opts.callbackNextNodeId !== undefined ? { callbackNextNodeId: opts.callbackNextNodeId } : {}),
     },
   });
 }
@@ -1799,6 +1800,46 @@ describe("CallSession", () => {
     expect(left.xml).toContain("call you back");
     const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cb1").first<{ status: string }>();
     expect(cb?.status).toBe("open");
+  });
+
+  // What a caller hears after pressing the callback key is an editable step of its own, not
+  // hard-coded wording.
+  it("continues to the hold step's own callback step, with that step's words", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_cb" });
+    await seedNode({ id: "main_cb", type: "callback", config: { audioAssetId: null, ttsText: "Righto, we will ring you back." } });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbstep");
+    await send(stub, mainEvent("CA-cbstep"));
+    await send(stub, mainEvent("CA-cbstep", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbstep", "1"));
+    const left = await send(stub, queueLeft("CA-cbstep", "leave"));
+    expect(left.xml).toContain("Righto, we will ring you back.");
+    expect(left.xml).not.toContain("call you back soon");
+    expect(left.xml).toContain("<Record");
+    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbstep").first<{ status: string }>();
+    expect(cb?.status).toBe("open");
+  });
+
+  // A deleted callback step must not hang up on a caller who just asked to be called back.
+  it("falls back to the built-in wording when the callback step no longer exists", async () => {
+    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "gone" });
+    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+    await seedVoicemail("main_vm", "default");
+    await seedStaff("phill@b.com");
+
+    const stub = stubFor("CA-cbgone");
+    await send(stub, mainEvent("CA-cbgone"));
+    await send(stub, mainEvent("CA-cbgone", { digits: "1" }));
+    await send(stub, holdDigit("CA-cbgone", "1"));
+    const left = await send(stub, queueLeft("CA-cbgone", "leave"));
+    expect(left.xml).toContain("call you back");
+    expect(left.xml).toContain("<Record");
+    expect(left.xml).not.toContain("technical issue");
   });
 
   // Default stays *, so a step reached by pressing 1 in a menu is not cancelled by a repeated 1.

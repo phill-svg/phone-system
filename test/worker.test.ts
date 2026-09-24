@@ -1,6 +1,7 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
+import { formatAuNumber } from "../src/html/formatPhone";
 import { setCallBlocklist } from "../src/db/settings";
 import { insertMessage } from "../src/db/messages";
 
@@ -2140,7 +2141,26 @@ describe("Task 13 callback-requests routes", () => {
     const response = await SELF.fetch("https://example.com/admin/callbacks");
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("+61400000009");
+    expect(html).toContain(formatAuNumber("+61400000009"));
+  });
+
+  // The page used to print the bare number even for a caller saved as a contact.
+  it("GET /admin/callbacks names a caller who is a saved contact, with the number beneath", async () => {
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('Jane Customer', NULL, '0400 000 008', '61400000008', 1, 1)"
+    ).run();
+    await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+      .bind("CA-cbr-3", "+61400000008", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-3", "+61400000008", Date.now())
+      .run();
+
+    const html = await (await SELF.fetch("https://example.com/admin/callbacks")).text();
+    expect(html).toContain("Jane Customer");
+    expect(html).toContain(formatAuNumber("+61400000008"));
   });
 
   it("requires staff auth for both new routes in a genuine production-shaped env (no dev bypass)", async () => {

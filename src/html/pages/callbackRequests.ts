@@ -1,20 +1,29 @@
 import { escapeHtml, renderLayout } from "../layout";
 import { formatSydney } from "../formatTime";
+import { formatAuNumber } from "../formatPhone";
 import type { CallbackRequest } from "../../db/callbackRequests";
 
-function openRow(r: CallbackRequest): string {
+// The saved contact's name when there is one, with the number beneath it so calling back never
+// needs a second click -- the same layout as the Voicemail page.
+function who(r: CallbackRequest, names: Map<string, string>): string {
+  const number = escapeHtml(formatAuNumber(r.caller_number));
+  const name = names.get(r.caller_number);
+  return name ? `${escapeHtml(name)}<div style="opacity:.7;font-size:.85em">${number}</div>` : number;
+}
+
+function openRow(r: CallbackRequest, names: Map<string, string>): string {
   return `<tr>
-    <td>${escapeHtml(r.caller_number)}</td>
+    <td>${who(r, names)}</td>
     <td>${escapeHtml(formatSydney(r.requested_at))}</td>
     <td><button type="button" data-cb-id="${r.id}" data-cb-status="done">Mark done</button></td>
   </tr>`;
 }
 
-function doneRow(r: CallbackRequest): string {
+function doneRow(r: CallbackRequest, names: Map<string, string>): string {
   const by = r.done_by ? escapeHtml(r.done_by) : "unknown";
   const when = r.done_at ? escapeHtml(formatSydney(r.done_at)) : "—";
   return `<tr>
-    <td>${escapeHtml(r.caller_number)}</td>
+    <td>${who(r, names)}</td>
     <td>${escapeHtml(formatSydney(r.requested_at))}</td>
     <td>${by}, ${when}</td>
     <td><button type="button" data-cb-id="${r.id}" data-cb-status="open">Reopen</button></td>
@@ -38,6 +47,7 @@ const CLIENT_JS = [
 // page shows the work queue first and the history below it.
 export function renderCallbackRequestsPage(
   requests: CallbackRequest[],
+  names: Map<string, string>,
   role: "admin" | "staff" = "admin"
 ): string {
   const open = requests.filter((r) => r.status === "open");
@@ -45,14 +55,14 @@ export function renderCallbackRequestsPage(
 
   const openTable = `<table>
       <thead><tr><th>Caller</th><th>Requested</th><th></th></tr></thead>
-      <tbody>${open.map(openRow).join("") || '<tr><td colspan="3">No open callback requests.</td></tr>'}</tbody>
+      <tbody>${open.map((r) => openRow(r, names)).join("") || '<tr><td colspan="3">No open callback requests.</td></tr>'}</tbody>
     </table>`;
 
   const doneTable = done.length
     ? `<h3>Completed</h3>
     <table>
       <thead><tr><th>Caller</th><th>Requested</th><th>Called back by</th><th></th></tr></thead>
-      <tbody>${done.map(doneRow).join("")}</tbody>
+      <tbody>${done.map((r) => doneRow(r, names)).join("")}</tbody>
     </table>`
     : "";
 

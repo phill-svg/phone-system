@@ -58,11 +58,15 @@ export const NEXT_FIELDS: Record<IvrNodeType, string[]> = {
   gather: ["defaultNextNodeId"],
   input: ["nextNodeId"],
   ring: ["noAnswerNextNodeId"],
-  wait: ["nextNodeId"],
+  wait: ["nextNodeId", "callbackNextNodeId"],
   voicemail: [],
   callback: [],
   redirect: [],
 };
+
+// Next fields a step works without: `callbackNextNodeId` on a Hold step falls back to the built-in
+// callback wording, so leaving it blank is a choice, not an unfinished step.
+export const OPTIONAL_NEXT_FIELDS = new Set(["callbackNextNodeId"]);
 
 // Human labels for those fields, so an edit screen never shows a raw config key.
 export const NEXT_FIELD_LABELS: Record<string, string> = {
@@ -71,6 +75,7 @@ export const NEXT_FIELD_LABELS: Record<string, string> = {
   nextNodeId: "Then go to",
   defaultNextNodeId: "No key pressed, go to",
   noAnswerNextNodeId: "Nobody answers, go to",
+  callbackNextNodeId: "Callback key pressed, go to",
 };
 
 export function nodeTitle(node: IvrNode): string {
@@ -200,7 +205,7 @@ export function blankConfigFor(type: IvrNodeType): Record<string, unknown> {
     case "ring":
       return { target: "all", strategy: "simultaneous", timeoutSeconds: 20, noAnswerNextNodeId: "" };
     case "wait":
-      return { audioAssetId: null, ttsText: "", allowCallbackStar: false, nextNodeId: "" };
+      return { audioAssetId: null, ttsText: "", allowCallbackStar: false, nextNodeId: "", callbackNextNodeId: "" };
     case "voicemail":
       return { audioAssetId: null, ttsText: "", mailboxLabel: "Voicemail" };
     case "callback":
@@ -279,7 +284,8 @@ export function incompleteReason(node: IvrNode): string | null {
   if (node.type === "gather" && (!Array.isArray(c.options) || c.options.length === 0)) {
     return "No menu keys set";
   }
-  const missing = NEXT_FIELDS[node.type].filter((f) => blank(c[f]));
+  // A hold step's callback line is optional: left blank, the built-in callback wording plays.
+  const missing = NEXT_FIELDS[node.type].filter((f) => !OPTIONAL_NEXT_FIELDS.has(f) && blank(c[f]));
   if (missing.length > 0) {
     return missing.map((f) => `"${NEXT_FIELD_LABELS[f] ?? f}" goes nowhere`).join(", ");
   }

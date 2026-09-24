@@ -46,7 +46,7 @@ const NEXT_FIELDS: Record<string, string[]> = {
   gather: ["defaultNextNodeId"],
   input: ["nextNodeId"],
   ring: ["noAnswerNextNodeId"],
-  wait: ["nextNodeId"],
+  wait: ["nextNodeId", "callbackNextNodeId"],
 };
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");

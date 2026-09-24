@@ -67,6 +67,9 @@ type ActiveRing = {
   // The key that requests a callback on this hold step (`callbackKey` on the wait node, default *).
   // Per step, not global: it has to match what that step's announcement tells callers to press.
   callbackKey?: string;
+  // The step the callback key leads to (`callbackNextNodeId` on the wait node) -- normally a
+  // `callback` step, so its wording is the admin's to edit. Unset keeps the built-in wording.
+  callbackNextNodeId?: string;
   ringConfig: RingConfig;
   ringPlanState: RingPlanState;
   attemptSids: string[];
@@ -460,6 +463,7 @@ export class CallSession extends DurableObject<Env> {
     let play: FlowCommand | null;
     let allowCallbackStar: boolean;
     let callbackKey = "*";
+    let callbackNextNodeId: string | undefined;
 
     if (viaWait) {
       // nextNodeId is the WAIT node's own id; load its config for the real ring node id + hold content.
@@ -468,6 +472,9 @@ export class CallSession extends DurableObject<Env> {
       play = await this.playFromConfig(waitConfig);
       allowCallbackStar = waitConfig.allowCallbackStar === true;
       if (isCallbackKey(waitConfig.callbackKey)) callbackKey = waitConfig.callbackKey;
+      if (typeof waitConfig.callbackNextNodeId === "string" && waitConfig.callbackNextNodeId.trim()) {
+        callbackNextNodeId = waitConfig.callbackNextNodeId.trim();
+      }
     } else {
       // nextNodeId IS the ring node itself; no preceding wait → no hold content, no callback star.
       ringNodeId = walkResult.nextNodeId;
@@ -549,6 +556,7 @@ export class CallSession extends DurableObject<Env> {
         play,
         allowCallbackStar,
         callbackKey,
+        callbackNextNodeId,
         ringConfig,
         ringPlanState,
         attemptSids,
@@ -794,7 +802,23 @@ export class CallSession extends DurableObject<Env> {
     }
 
     if (outcome === "callback_requested") {
-      // The caller pressed * while held. Same feature, same bookkeeping as a `callback` flow node.
+      // The caller pressed the hold step's callback key. When the step is wired to a step of its
+      // own (normally a `callback` step, whose message the admin edits), continue the flow there;
+      // otherwise the built-in wording, same bookkeeping as a `callback` step either way.
+      // A link to a step that no longer exists must not reach the DO catch-all, which says "we're
+      // experiencing a technical issue" and hangs up on a caller who just asked to be called back.
+      if (activeRing.callbackNextNodeId) {
+        await this.ctx.storage.delete("activeRing");
+        const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
+        try {
+          return this.xml(await this.renderNoAnswerFallthrough(body.callSid, activeRing.callbackNextNodeId, isAfterHours, origin));
+        } catch (err) {
+          console.log(
+            "HOLD_CALLBACK_STEP_FAILED",
+            JSON.stringify({ callSid: body.callSid, node: activeRing.callbackNextNodeId, error: err instanceof Error ? err.message : String(err) })
+          );
+        }
+      }
       return this.xml(await this.recordCallbackRequest(body.callSid, "", origin));
     }
 

@@ -96,6 +96,7 @@ function isWaitConfig(c: Record<string, unknown>): boolean {
     isStringOrNull(c.ttsText) &&
     typeof c.allowCallbackStar === "boolean" &&
     (c.callbackKey === undefined || isCallbackKey(c.callbackKey)) &&
+    (c.callbackNextNodeId === undefined || isString(c.callbackNextNodeId)) &&
     isString(c.nextNodeId)
   );
 }
