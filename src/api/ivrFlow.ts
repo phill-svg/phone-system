@@ -272,6 +272,20 @@ export async function handlePutFlow(
     });
   }
 
+  // A hold step's callback line may lead only to a "Request a callback" step: that step supplies the
+  // words, and the call-time code reads nothing else from it (CallSession.holdCallbackAck). Pointed
+  // at a voicemail, menu or ring step it would do nothing the admin intended, so it is refused here,
+  // naming both steps. A target not in this payload is left alone, like every other next-field.
+  const typeOf = new Map(typedNodes.map((n) => [n.id, n.type]));
+  for (const node of typedNodes) {
+    const target = node.type === "wait" ? node.config.callbackNextNodeId : undefined;
+    if (typeof target === "string" && target && typeOf.has(target) && typeOf.get(target) !== "callback") {
+      return badRequest(
+        `node '${node.id}': the callback key can only lead to a "Request a callback" step, not '${target}' (a ${typeOf.get(target)} step)`
+      );
+    }
+  }
+
   const entryMatches = typedNodes.filter((n) => n.id === entryNodeId);
   if (entryMatches.length !== 1) {
     return badRequest(`entryNodeId '${entryNodeId}' must match exactly one node in the payload (matched ${entryMatches.length})`);

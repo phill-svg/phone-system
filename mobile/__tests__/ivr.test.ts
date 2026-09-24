@@ -84,6 +84,13 @@ describe("outgoingIds", () => {
   it("ignores blank references", () => {
     expect(outgoingIds(node("x", "play", { nextNodeId: "" }))).toEqual([]);
   });
+
+  // Calls ignore the callback key while callbacks are off, so that line leads nowhere real.
+  it("follows a Hold step's callback line only while callbacks are on", () => {
+    const base = { audioAssetId: null, ttsText: "", nextNodeId: "ring1", callbackNextNodeId: "cb1" };
+    expect(outgoingIds(node("w", "wait", { ...base, allowCallbackStar: true }))).toEqual(["ring1", "cb1"]);
+    expect(outgoingIds(node("w", "wait", { ...base, allowCallbackStar: false }))).toEqual(["ring1"]);
+  });
 });
 
 describe("removeNode", () => {

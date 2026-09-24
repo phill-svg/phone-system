@@ -343,6 +343,25 @@ describe("handlePutFlow", () => {
     }
   });
 
+  // The callback line supplies only a callback step's words; aimed anywhere else it would do nothing
+  // the admin meant, so it is refused on save, naming the step.
+  it("refuses a hold step's callback line that leads to a step other than a callback step", async () => {
+    const payload = (targetType: string) =>
+      putRequest({
+        entryNodeId: "w",
+        nodes: [
+          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: "t" } },
+          targetType === "callback"
+            ? { id: "t", type: "callback", config: { audioAssetId: null, ttsText: "We will call you back." } }
+            : { id: "t", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
+        ],
+      });
+    const refused = await handlePutFlow(payload("voicemail"), env.DB, "test_flow", ADMIN);
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: string }).error).toContain("Request a callback");
+    expect((await handlePutFlow(payload("callback"), env.DB, "test_flow", ADMIN)).status).toBe(200);
+  });
+
   it("returns 400 when a wait node's callbackNextNodeId is not a string", async () => {
     const res = await handlePutFlow(
       putRequest({

@@ -207,23 +207,26 @@ const TWILIO_STANDARD_CALL_PARAMS = new Set([
   "MachineDetectionDuration",
 ]);
 
-// Every /admin/ page is served either as the Phone page's shell or as the plain page its frame
-// shows, depending on Sec-Fetch-Dest -- so the same URL must never be answered from cache with the
-// other variant. Back would otherwise put the plain page at the top, with no softphone on it.
 // Saved-contact names for a page's caller numbers, keyed by the number as stored. One query for the
 // whole page rather than one per row: the contact list is small, and each lookup would be a D1 round
 // trip. Matched on the normalised number, so "0412 345 678" finds a contact saved as +61412345678.
 // Takes the contacts rather than reading them, so the caller can read them alongside its own list.
 function contactNamesFor(contacts: { phone_normalized: string; name: string }[], numbers: string[]): Map<string, string> {
-  const byNormalized = new Map(contacts.map((c) => [c.phone_normalized, c.name]));
+  // Blank on either side never matches: a withheld caller ("" or "anonymous") must not borrow the
+  // name of some contact saved without a number.
+  const byNormalized = new Map(contacts.filter((c) => c.phone_normalized).map((c) => [c.phone_normalized, c.name]));
   const names = new Map<string, string>();
   for (const n of numbers) {
-    const name = byNormalized.get(normalizePhone(n));
+    const key = normalizePhone(n);
+    const name = key ? byNormalized.get(key) : undefined;
     if (name) names.set(n, name);
   }
   return names;
 }
 
+// Every /admin/ page is served either as the Phone page's shell or as the plain page its frame
+// shows, depending on Sec-Fetch-Dest -- so the same URL must never be answered from cache with the
+// other variant. Back would otherwise put the plain page at the top, with no softphone on it.
 function adminHtml(html: string, status = 200): Response {
   return new Response(html, {
     status,

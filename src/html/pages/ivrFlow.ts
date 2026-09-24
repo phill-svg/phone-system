@@ -131,7 +131,11 @@ export function renderIvrFlowPage(
         return o;
       }
       function outTarget(n, out){ var c=n.config||{}; return out.opt!=null ? (c.options[out.opt]||{}).nextNodeId : c[out.field]; }
-      function setOutTarget(n, out, val){ var c=n.config||{}; if(out.opt!=null) c.options[out.opt].nextNodeId=val; else c[out.field]=val; }
+      // The hold step's callback line leads only to a "Request a callback" step (the server refuses
+      // anything else on save); say so at the moment of connecting rather than at Save.
+      function setOutTarget(n, out, val){ var c=n.config||{};
+        if(out.field==="callbackNextNodeId"){ var tn=getNode(val); if(tn && tn.type!=="callback"){ alert("The callback line can only connect to a “Request a callback” step."); return; } }
+        if(out.opt!=null) c.options[out.opt].nextNodeId=val; else c[out.field]=val; }
 
       function summary(n){
         var c=n.config||{};
@@ -226,7 +230,7 @@ export function renderIvrFlowPage(
           out+='<label class="pf">Ring for (seconds)<input type="number" min="5" max="120" data-fld="timeoutSeconds" data-num="1" value="'+h(c.timeoutSeconds||20)+'"></label>';
         } else if(n.type==="voicemail"){ out+=promptPanel(n,c); out+='<label class="pf">Mailbox name<input type="text" data-fld="mailboxLabel" value="'+h(c.mailboxLabel||"")+'"></label>';
         } else if(n.type==="callback"){ out+=promptPanel(n,c);
-          out+='<div class="pf" style="font-weight:400;opacity:0.75">Logs the caller&#39;s number as an open task on the Callbacks page, then hangs up. Nothing is recorded &mdash; use Voicemail if you want a message. Leave the prompt empty to use the default spoken line.</div>';
+          out+='<div class="pf" style="font-weight:400;opacity:0.75">Logs the caller&#39;s number as an open task on the Callbacks page, plays this message, then asks the caller to leave a message after the beep and records it. Leave the prompt empty to use the default spoken line.</div>';
         } else if(n.type==="redirect"){ out+='<label class="pf">Forward to number<input type="text" data-fld="number" value="'+h(c.number||"")+'" placeholder="+61400000000"></label>';
         } else if(n.type==="business_hours"){ out+='<div class="pf">Drag the “Open” and “Closed” handles to the next steps.</div>';
         } else if(n.type==="date_rule"){ var dates=Array.isArray(c.closedDates)?c.closedDates.join(", "):""; out+='<label class="pf">Closed dates (comma separated, e.g. 2026-12-25)<input type="text" data-fld="closedDates" data-list="1" value="'+h(dates)+'"></label>'; }
@@ -318,7 +322,9 @@ export function renderIvrFlowPage(
       function showAddMenu(clientX, clientY, pending){ pendingConnect=pending||null; closeAddMenu();
         var back=document.createElement("div"); back.className="ivr-backdrop"; back.id="ivrBackdrop"; back.addEventListener("mousedown", closeAddMenu); document.body.appendChild(back);
         var m=document.createElement("div"); m.className="ivr-add-menu"; m.id="ivrAddMenu"; var html="";
-        for(var i=0;i<TYPES.length;i++){ html+='<button data-addtype="'+TYPES[i][0]+'">'+h(TYPES[i][1])+'</button>'; }
+        // Dragged from a hold step's callback line: only a callback step can go there.
+        var pSrc=pending?getNode(pending.srcId):null, pOut=pSrc?outsFor(pSrc)[pending.outIdx]:null, onlyCb=!!(pOut && pOut.field==="callbackNextNodeId");
+        for(var i=0;i<TYPES.length;i++){ if(onlyCb && TYPES[i][0]!=="callback") continue; html+='<button data-addtype="'+TYPES[i][0]+'">'+h(TYPES[i][1])+'</button>'; }
         m.innerHTML=html; m.style.left=Math.min(clientX, window.innerWidth-240)+"px"; m.style.top=Math.min(clientY, window.innerHeight-360)+"px";
         m.addEventListener("click", function(ev){ var b=ev.target.closest("[data-addtype]"); if(!b) return; var p=pendingConnect;
           var nx = p?p.x:120, ny=p?p.y:120; var n=addNode(b.getAttribute("data-addtype"), nx, ny);

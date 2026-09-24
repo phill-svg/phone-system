@@ -2144,6 +2144,23 @@ describe("Task 13 callback-requests routes", () => {
     expect(html).toContain(formatAuNumber("+61400000009"));
   });
 
+  // A withheld caller must not borrow the name of a contact saved without a number.
+  it("GET /admin/callbacks never names a caller with no number", async () => {
+    await env.DB.prepare(
+      "INSERT INTO contacts (name, company, phone, phone_normalized, created_at, updated_at) VALUES ('No Number Pty', NULL, '', '', 1, 1)"
+    ).run();
+    await env.DB.prepare("INSERT INTO calls (id, caller_number, called_number, started_at) VALUES (?, ?, ?, ?)")
+      .bind("CA-cbr-anon", "", "+61200000000", Date.now())
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO callback_requests (call_id, caller_number, requested_at, status) VALUES (?, ?, ?, 'open')"
+    )
+      .bind("CA-cbr-anon", "", Date.now())
+      .run();
+    const html = await (await SELF.fetch("https://example.com/admin/callbacks")).text();
+    expect(html).not.toContain("No Number Pty");
+  });
+
   // The page used to print the bare number even for a caller saved as a contact.
   it("GET /admin/callbacks names a caller who is a saved contact, with the number beneath", async () => {
     await env.DB.prepare(

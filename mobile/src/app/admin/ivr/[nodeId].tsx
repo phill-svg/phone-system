@@ -11,6 +11,7 @@ import {
   NEXT_FIELDS,
   NEXT_FIELD_LABELS,
   NODE_TYPE_LABELS,
+  OPTIONAL_NEXT_FIELDS,
   CALLBACK_KEYS,
   callbackKeyOf,
   configsEqual,
@@ -231,7 +232,16 @@ export default function IvrNodeScreen() {
         style={{ paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: t.colors.separator }}
       >
         <Text style={[type.footnote, { color: t.colors.labelSecondary }]}>{label}</Text>
-        <Text style={[type.body, { color: draft[key] ? t.colors.label : t.colors.accent, marginTop: 2 }]}>{nameOf(draft[key])}</Text>
+        {/* The callback line is optional -- blank plays the built-in wording -- so it is not shown in
+            the "goes nowhere" accent a required line gets. */}
+        <Text
+          style={[
+            type.body,
+            { color: draft[key] || OPTIONAL_NEXT_FIELDS.has(key) ? t.colors.label : t.colors.accent, marginTop: 2 },
+          ]}
+        >
+          {!draft[key] && key === "callbackNextNodeId" ? "Built-in message" : nameOf(draft[key])}
+        </Text>
       </Pressable>
       {openPicker === key ? (
         <View style={{ backgroundColor: t.colors.bg }}>
@@ -242,9 +252,12 @@ export default function IvrNodeScreen() {
             }}
             style={{ paddingHorizontal: 24, paddingVertical: 10 }}
           >
-            <Text style={[type.body, { color: t.colors.labelSecondary }]}>Not set</Text>
+            <Text style={[type.body, { color: t.colors.labelSecondary }]}>
+              {key === "callbackNextNodeId" ? "Built-in message" : "Not set"}
+            </Text>
           </Pressable>
-          {others.map((o) => (
+          {/* The callback line leads only to a "Request a callback" step (the server refuses others). */}
+          {others.filter((o) => key !== "callbackNextNodeId" || o.type === "callback").map((o) => (
             <Pressable
               key={o.id}
               onPress={() => {

@@ -173,7 +173,11 @@ export function orderNodes(flow: IvrFlow): { ordered: IvrNode[]; unreachable: Iv
 // Every step this one can lead to. A blank reference is legal and common -- a flow is built up
 // incrementally -- so empties are dropped rather than treated as a dangling link.
 export function outgoingIds(node: IvrNode): string[] {
-  const ids = NEXT_FIELDS[node.type].map((field) => str(node.config[field]));
+  const ids = NEXT_FIELDS[node.type]
+    // A Hold step's callback line is dead while callbacks are off (calls ignore the key), so a step
+    // reached only through it is an orphan, as the server's Health Check also treats it.
+    .filter((field) => field !== "callbackNextNodeId" || node.config.allowCallbackStar === true)
+    .map((field) => str(node.config[field]));
   if (node.type === "gather" && Array.isArray(node.config.options)) {
     for (const opt of node.config.options) ids.push(str((opt as { nextNodeId?: unknown }).nextNodeId));
   }

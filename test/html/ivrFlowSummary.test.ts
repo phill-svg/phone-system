@@ -25,3 +25,35 @@ describe("the phone-menu editor's Hold card", () => {
     expect(outsFor()(hold)).toEqual([{ label: "Next", field: "nextNodeId" }]);
   });
 });
+
+// Refused at the moment of connecting, not only at Save.
+describe("connecting a Hold card's callback line", () => {
+  function setOutTarget(nodes: Record<string, { type: string }>) {
+    const html = renderIvrFlowPage("main", [], [], []);
+    const start = html.indexOf("function setOutTarget(n, out, val){");
+    const end = html.indexOf("\n", html.indexOf("if(out.opt!=null) c.options[out.opt].nextNodeId=val;", start));
+    if (start < 0 || end < 0) throw new Error("could not find setOutTarget() in the emitted editor script");
+    const alerts: string[] = [];
+    const fn = new Function("getNode", "alert", `${html.slice(start, end)}; return setOutTarget;`)(
+      (id: string) => nodes[id],
+      (msg: string) => alerts.push(msg)
+    ) as (n: unknown, out: unknown, val: string) => void;
+    return { fn, alerts };
+  }
+
+  it("refuses a step that is not a callback step", () => {
+    const { fn, alerts } = setOutTarget({ vm: { type: "voicemail" } });
+    const hold = { config: { callbackNextNodeId: "" } };
+    fn(hold, { field: "callbackNextNodeId" }, "vm");
+    expect(hold.config.callbackNextNodeId).toBe("");
+    expect(alerts.length).toBe(1);
+  });
+
+  it("connects a callback step", () => {
+    const { fn, alerts } = setOutTarget({ cb: { type: "callback" } });
+    const hold = { config: { callbackNextNodeId: "" } };
+    fn(hold, { field: "callbackNextNodeId" }, "cb");
+    expect(hold.config.callbackNextNodeId).toBe("cb");
+    expect(alerts.length).toBe(0);
+  });
+});

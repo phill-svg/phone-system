@@ -67,8 +67,9 @@ type ActiveRing = {
   // The key that requests a callback on this hold step (`callbackKey` on the wait node, default *).
   // Per step, not global: it has to match what that step's announcement tells callers to press.
   callbackKey?: string;
-  // The step the callback key leads to (`callbackNextNodeId` on the wait node) -- normally a
-  // `callback` step, so its wording is the admin's to edit. Unset keeps the built-in wording.
+  // The `callback` step whose message plays when the callback key is pressed
+  // (`callbackNextNodeId` on the wait node), so the wording is the admin's to edit. Unset keeps
+  // the built-in wording. See holdCallbackAck.
   callbackNextNodeId?: string;
   ringConfig: RingConfig;
   ringPlanState: RingPlanState;
@@ -802,32 +803,11 @@ export class CallSession extends DurableObject<Env> {
     }
 
     if (outcome === "callback_requested") {
-      // The caller pressed the hold step's callback key. When the step is wired to a step of its
-      // own (normally a `callback` step, whose message the admin edits), continue the flow there;
-      // otherwise the built-in wording, same bookkeeping as a `callback` step either way.
-      // A link to a step that no longer exists must not reach the DO catch-all, which says "we're
-      // experiencing a technical issue" and hangs up on a caller who just asked to be called back.
-      // Only the step LOOKUP is guarded: it has no side effects, so falling back after it fails
-      // cannot double up. Past it, the step runs like any other (a callback step's own bookkeeping
-      // must not be repeated by a fallback). A caller who hung up gets the built-in bookkeeping only,
-      // never a walk -- a line leading to a ring step would re-ring the whole team for nobody.
-      if (activeRing.callbackNextNodeId && body.queueResult !== "hangup") {
-        let walked: { result: Awaited<ReturnType<typeof walkFromNode>>; isAfterHours: boolean } | null = null;
-        try {
-          const isAfterHours = !isWithinBusinessHours(await getBusinessHours(this.env.DB), new Date());
-          walked = { result: await walkFromNode(this.env.DB, activeRing.callbackNextNodeId, isAfterHours), isAfterHours };
-        } catch (err) {
-          console.log(
-            "HOLD_CALLBACK_STEP_FAILED",
-            JSON.stringify({ callSid: body.callSid, node: activeRing.callbackNextNodeId, error: err instanceof Error ? err.message : String(err) })
-          );
-        }
-        if (walked) {
-          await this.ctx.storage.delete("activeRing");
-          return this.xml(await this.applyWalkResult(body.callSid, walked.result, walked.isAfterHours, origin));
-        }
-      }
-      return this.xml(await this.recordCallbackRequest(body.callSid, "", origin));
+      // The caller pressed the hold step's callback key. Always the same bookkeeping as a `callback`
+      // step (row, push, event, message recording); only the WORDS come from the step the hold
+      // step's callback line leads to, so they are the admin's to edit.
+      const ack = await this.holdCallbackAck(activeRing.callbackNextNodeId, body.callSid, origin);
+      return this.xml(await this.recordCallbackRequest(body.callSid, ack, origin));
     }
 
     // no_answer, OR the caller hung up mid-ring (plan still DIALING with outstanding legs).
@@ -1289,6 +1269,36 @@ export class CallSession extends DurableObject<Env> {
     });
   }
 
+
+  // The wording for a callback asked for from a hold step: the prompt of the `callback` step the hold
+  // step's callback line leads to, rendered, or "" for recordCallbackRequest's built-in line. The
+  // line may lead ONLY to a callback step (refused on write, api/ivrFlow.ts), and nothing here walks
+  // the flow -- a line to a ring step would otherwise re-ring the team, and one to a voicemail or
+  // menu would skip logging the callback the caller was promised. Every unusable case -- no line, a
+  // deleted step, the wrong type, a recording that no longer exists -- is the built-in wording, never
+  // a throw: a throw reaches the DO catch-all, which says "we're experiencing a technical issue" and
+  // hangs up on someone who just asked to be called back. Nothing here has a side effect, so falling
+  // back can never double anything up.
+  private async holdCallbackAck(nodeId: string | undefined, callSid: string, origin: string): Promise<string> {
+    if (!nodeId) return "";
+    try {
+      const row = await this.env.DB.prepare("SELECT type, config FROM ivr_nodes WHERE id = ?")
+        .bind(nodeId)
+        .first<{ type: string; config: string }>();
+      if (!row || row.type !== "callback") {
+        console.log("HOLD_CALLBACK_STEP_UNUSABLE", JSON.stringify({ callSid, node: nodeId, type: row?.type ?? null }));
+        return "";
+      }
+      const play = await this.playFromConfig(JSON.parse(row.config) as Record<string, unknown>);
+      return play ? renderFlowCommandsFragment([play], { baseUrl: origin }) : "";
+    } catch (err) {
+      console.log(
+        "HOLD_CALLBACK_STEP_FAILED",
+        JSON.stringify({ callSid, node: nodeId, error: err instanceof Error ? err.message : String(err) })
+      );
+      return "";
+    }
+  }
 
   // The twin of flowEngine's playCommandFor, and it needs the same normalisation for a worse
   // reason: this one runs INSIDE startRing. A blank audioAssetId ("" survives `?? null`) throws in
