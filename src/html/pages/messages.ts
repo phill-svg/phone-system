@@ -140,7 +140,7 @@ const CLIENT_JS = [
   'function isMessenger(number){ return String(number==null?"":number).indexOf("messenger:")===0; }',
   'function avatarText(c){ return (isMessenger(c.number)&&!c.name)?"FB":initials(label(c)); }',
   'function chanChip(number){ return isMessenger(number)?"<span class=\\"chan chan-fb\\">Messenger</span>":"<span class=\\"chan chan-sms\\">SMS</span>"; }',
-  'function loadContacts(){ return api("/api/contacts").then(function(list){ contactsByNorm={}; (list||[]).forEach(function(c){ if(c&&c.phone_normalized) contactsByNorm[c.phone_normalized]=c; }); }).catch(function(){}); }',
+  'function loadContacts(){ return api("/api/contacts").then(function(list){ contactsByNorm={}; (list||[]).forEach(function(c){ if(c&&c.phone_normalized&&!contactsByNorm[c.phone_normalized]) contactsByNorm[c.phone_normalized]=c; }); }).catch(function(){}); }',
   'var smsNumbers=[];',
   'function loadNumbers(){ return api("/api/numbers").then(function(nums){ smsNumbers=(nums||[]).filter(function(n){return n.sms_enabled;}); }).catch(function(){}); }',
   // "From" row above the composer: 2+ SMS numbers => a dropdown; exactly 1 => a static line; 0 => hidden.

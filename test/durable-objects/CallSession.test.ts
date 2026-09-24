@@ -1825,7 +1825,7 @@ describe("CallSession", () => {
   });
 
   // Nothing reached through the callback line is ever RUN -- only a callback step's words are read.
-  // A line to a ring step (hand-edited past the save check) must not re-ring the team, whether or
+  // A line to a ring step (the editors never offer one, but saving does not refuse it) must not re-ring the team, whether or
   // not the caller is still there; the callback is still logged.
   for (const queueResult of ["hangup", "leave"]) {
     it(`never rings anyone from the callback line (queue result ${queueResult})`, async () => {
@@ -1849,7 +1849,7 @@ describe("CallSession", () => {
     });
   }
 
-  // A line to a voicemail step (again past the save check) still logs the callback the caller was
+  // A line to a voicemail step (again, not refused on save) still logs the callback the caller was
   // promised, with the built-in words -- it does not drop them into a mailbox.
   it("uses the built-in words when the callback line leads to a step that is not a callback step", async () => {
     await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
@@ -1888,8 +1888,8 @@ describe("CallSession", () => {
     expect(cb?.status).toBe("open");
   });
 
-  // A callback step in ANOTHER menu is refused on save and shown by the app as the built-in message,
-  // so a call must not play it either -- what the editor shows is what the caller hears.
+  // A callback step in ANOTHER menu is shown by the app as the built-in message, so a call must not
+  // play it either -- what the editor shows is what the caller hears.
   it("uses the built-in words when the callback step is in another menu", async () => {
     await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
     await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "ah_cb" });

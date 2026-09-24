@@ -296,33 +296,12 @@ export async function handlePutFlow(
     }
   }
 
-  // A hold step's callback line may lead only to a "Request a callback" step IN THIS MENU: that step
-  // supplies the words, and call time reads nothing else from it (CallSession.holdCallbackAck).
-  // Pointed at a voicemail, menu or ring step it would do nothing the admin intended; pointed into
-  // another menu (ids are global, so call time would find it) neither editor can show or change it.
-  // Both are refused, naming the step. An id that exists nowhere is left alone like every other
-  // next-field (see below) -- callers hear the built-in words. Trimmed exactly as startRing trims it,
-  // so what is checked is what runs. After the duplicate-id checks, so a clash reads as the clash.
-  // Only while callbacks are on: with them off, calls ignore the line and both editors hide it, so
-  // refusing over it would block every save of the menu over a field nobody can see or clear.
-  const typeInPayload = new Map(typedNodes.map((n) => [n.id, n.type]));
-  for (const node of typedNodes) {
-    const raw = node.type === "wait" && node.config.allowCallbackStar === true ? node.config.callbackNextNodeId : undefined;
-    const target = typeof raw === "string" ? raw.trim() : "";
-    if (!target) continue;
-    const targetType = typeInPayload.get(target);
-    if (targetType === undefined && (await nodeExistsInOtherFlow(db, target, flow))) {
-      return badRequest(
-        `node '${node.id}': the callback key must lead to a "Request a callback" step in this menu, and '${target}' is in another menu`
-      );
-    }
-    if (targetType !== undefined && targetType !== "callback") {
-      return badRequest(
-        `node '${node.id}': the callback key can only lead to a "Request a callback" step, not '${target}' (a ${targetType} step)`
-      );
-    }
-  }
-
+  // A hold step's callback line (callbackNextNodeId) is not checked against its target either: calls
+  // use it only when it names a callback step in the same menu, and otherwise play the built-in
+  // words (CallSession.holdCallbackAck) -- both editors offer only that, and show the same rule. A
+  // refusal here could only lock a whole menu out of saving over a line nobody can see (callbacks
+  // off) or over a step added later in another menu.
+  //
   // Deliberately no dangling-reference check here: a node's config fields (openNextNodeId,
   // noAnswerNextNodeId, etc.) are allowed to point at ids that don't exist yet, so a flow can
   // be built up incrementally in any order rather than strictly back-to-front from a terminal

@@ -1044,7 +1044,8 @@ export function renderPhonePage(
           if (!res.ok) return;
           contacts = await res.json();
           contactsByNorm = {};
-          contacts.forEach(function (c) { if (c.phone_normalized) contactsByNorm[c.phone_normalized] = c; });
+          // First per number wins, as everywhere else (the list is ordered by name).
+          contacts.forEach(function (c) { if (c.phone_normalized && !contactsByNorm[c.phone_normalized]) contactsByNorm[c.phone_normalized] = c; });
           if (listMode === 'contacts') renderContacts(); else renderCalls();
         } catch (e) {
           // Non-fatal -- names just fall back to raw numbers.

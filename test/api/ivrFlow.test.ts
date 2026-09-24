@@ -343,87 +343,29 @@ describe("handlePutFlow", () => {
     }
   });
 
-  // The callback line supplies only a callback step's words; aimed anywhere else it would do nothing
-  // the admin meant, so it is refused on save, naming the step.
-  it("refuses a hold step's callback line that leads to a step other than a callback step", async () => {
-    const payload = (targetType: string) =>
-      putRequest({
-        entryNodeId: "w",
-        nodes: [
-          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: "t" } },
-          targetType === "callback"
-            ? { id: "t", type: "callback", config: { audioAssetId: null, ttsText: "We will call you back." } }
-            : { id: "t", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
-        ],
-      });
-    const refused = await handlePutFlow(payload("voicemail"), env.DB, "test_flow", ADMIN);
-    expect(refused.status).toBe(400);
-    expect(((await refused.json()) as { error: string }).error).toContain("Request a callback");
-    expect((await handlePutFlow(payload("callback"), env.DB, "test_flow", ADMIN)).status).toBe(200);
-  });
-
-  // With callbacks off, calls ignore the line and both editors hide it: refusing over it would block
-  // every save of the menu over a field nobody can see or clear.
-  it("does not refuse a hidden callback line while callbacks are off", async () => {
-    const res = await handlePutFlow(
-      putRequest({
-        entryNodeId: "w",
-        nodes: [
-          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: false, nextNodeId: "", callbackNextNodeId: "vm" } },
-          { id: "vm", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
-        ],
-      }),
-      env.DB,
-      "test_flow",
-      ADMIN
-    );
-    expect(res.status).toBe(200);
-  });
-
-  // startRing trims the id before using it, so the check must see the same id or a padded one slips by.
-  it("checks a padded callback line id as the call would use it", async () => {
-    const res = await handlePutFlow(
-      putRequest({
-        entryNodeId: "w",
-        nodes: [
-          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: " vm " } },
-          { id: "vm", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
-        ],
-      }),
-      env.DB,
-      "test_flow",
-      ADMIN
-    );
-    expect(res.status).toBe(400);
-  });
-
-  // Node ids are global and calls load them with no flow check, so a line into ANOTHER menu would
-  // play there while neither editor can show it -- refused, even to a callback step.
-  it("refuses a callback line into another menu", async () => {
+  // Where the callback line points is not refused on save -- calls use only a callback step in the
+  // same menu and otherwise play the built-in words -- so no target can lock a menu out of saving.
+  it("accepts any callback line target on save", async () => {
     await env.DB.prepare(
-      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, 'other_flow', 0, ?, ?, 1, 1)"
+      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES ('elsewhere_cb', 'other_flow', 0, 'callback', ?, 1, 1)"
     )
-      .bind("elsewhere_vm", "voicemail", JSON.stringify({ audioAssetId: null, ttsText: null, mailboxLabel: "VM" }))
+      .bind(JSON.stringify({ audioAssetId: null, ttsText: "We will call." }))
       .run();
-    await env.DB.prepare(
-      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, 'other_flow', 0, ?, ?, 1, 1)"
-    )
-      .bind("elsewhere_cb", "callback", JSON.stringify({ audioAssetId: null, ttsText: "We will call." }))
-      .run();
-    const payload = (target: string) =>
-      putRequest({
-        entryNodeId: "w",
-        nodes: [
-          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: target } },
-        ],
-      });
-    for (const target of ["elsewhere_vm", "elsewhere_cb", " elsewhere_cb "]) {
-      const refused = await handlePutFlow(payload(target), env.DB, "test_flow", ADMIN);
-      expect(refused.status, target).toBe(400);
-      expect(((await refused.json()) as { error: string }).error).toContain("another menu");
+    for (const target of ["vm", "elsewhere_cb", "nowhere", " vm "]) {
+      const res = await handlePutFlow(
+        putRequest({
+          entryNodeId: "w",
+          nodes: [
+            { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: target } },
+            { id: "vm", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
+          ],
+        }),
+        env.DB,
+        "test_flow",
+        ADMIN
+      );
+      expect(res.status, target).toBe(200);
     }
-    // A target that exists nowhere is left alone, like every other next-field.
-    expect((await handlePutFlow(payload("nowhere"), env.DB, "test_flow", ADMIN)).status).toBe(200);
   });
 
   it("returns 400 when a wait node's callbackNextNodeId is not a string", async () => {

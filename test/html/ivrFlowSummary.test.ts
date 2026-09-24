@@ -28,17 +28,21 @@ describe("the phone-menu editor's Hold card", () => {
 
 // Refused at the moment of connecting, not only at Save.
 describe("connecting a Hold card's callback line", () => {
-  function setOutTarget(nodes: Record<string, { type: string }>) {
+  function setOutTarget(nodes: Record<string, { type: string }>, selId: string | null = null) {
     const html = renderIvrFlowPage("main", [], [], []);
     const start = html.indexOf("function setOutTarget(n, out, val){");
-    const end = html.indexOf("\n", html.indexOf("if(out.opt!=null) c.options[out.opt].nextNodeId=val;", start));
+    const endMarker = "if(n.id===selId) renderPanel(); }";
+    const end = html.indexOf(endMarker, start);
     if (start < 0 || end < 0) throw new Error("could not find setOutTarget() in the emitted editor script");
     const alerts: string[] = [];
-    const fn = new Function("getNode", "alert", `${html.slice(start, end)}; return setOutTarget;`)(
+    const panels: number[] = [];
+    const fn = new Function("getNode", "alert", "selId", "renderPanel", `${html.slice(start, end + endMarker.length)}; return setOutTarget;`)(
       (id: string) => nodes[id],
-      (msg: string) => alerts.push(msg)
+      (msg: string) => alerts.push(msg),
+      selId,
+      () => panels.push(1)
     ) as (n: unknown, out: unknown, val: string) => void;
-    return { fn, alerts };
+    return { fn, alerts, panels };
   }
 
   it("refuses a step that is not a callback step", () => {
@@ -55,5 +59,12 @@ describe("connecting a Hold card's callback line", () => {
     fn(hold, { field: "callbackNextNodeId" }, "cb");
     expect(hold.config.callbackNextNodeId).toBe("cb");
     expect(alerts.length).toBe(0);
+  });
+
+  // The open panel's "built-in message" button depends on the line, so connecting redraws it.
+  it("redraws the panel of the step being edited", () => {
+    const { fn, panels } = setOutTarget({ cb: { type: "callback" } }, "h");
+    fn({ id: "h", config: { callbackNextNodeId: "" } }, { field: "callbackNextNodeId" }, "cb");
+    expect(panels.length).toBe(1);
   });
 });

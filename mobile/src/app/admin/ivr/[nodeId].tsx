@@ -264,7 +264,7 @@ export default function IvrNodeScreen() {
               {key === "callbackNextNodeId" ? "Built-in message" : "Not set"}
             </Text>
           </Pressable>
-          {/* The callback line leads only to a "Request a callback" step (the server refuses others). */}
+          {/* The callback line leads only to a "Request a callback" step (calls use no other kind). */}
           {others.filter((o) => key !== "callbackNextNodeId" || o.type === "callback").map((o) => (
             <Pressable
               key={o.id}

@@ -131,11 +131,13 @@ export function renderIvrFlowPage(
         return o;
       }
       function outTarget(n, out){ var c=n.config||{}; return out.opt!=null ? (c.options[out.opt]||{}).nextNodeId : c[out.field]; }
-      // The hold step's callback line leads only to a "Request a callback" step (the server refuses
-      // anything else on save); say so at the moment of connecting rather than at Save.
+      // The hold step's callback line leads only to a "Request a callback" step: calls play no other
+      // kind (they fall back to the built-in words), so refuse the connection and say why.
       function setOutTarget(n, out, val){ var c=n.config||{};
         if(out.field==="callbackNextNodeId"){ var tn=getNode(val); if(tn && tn.type!=="callback"){ alert("The callback line can only connect to a “Request a callback” step."); return; } }
-        if(out.opt!=null) c.options[out.opt].nextNodeId=val; else c[out.field]=val; }
+        if(out.opt!=null) c.options[out.opt].nextNodeId=val; else c[out.field]=val;
+        // The hold panel's "built-in message" button depends on this line, so keep the panel current.
+        if(n.id===selId) renderPanel(); }
 
       function summary(n){
         var c=n.config||{};
@@ -317,7 +319,10 @@ export function renderIvrFlowPage(
         var flds=["nextNodeId","defaultNextNodeId","openNextNodeId","closedNextNodeId","noAnswerNextNodeId","callbackNextNodeId"];
         for(var k=0;k<nodes.length;k++){ var c=nodes[k].config||{}; for(var f=0;f<flds.length;f++){ if(c[flds[f]]===id) c[flds[f]]=""; } if(nodes[k].type==="gather"&&c.options){ for(var o=0;o<c.options.length;o++){ if(c.options[o].nextNodeId===id) c.options[o].nextNodeId=""; } } }
         if(entryId===id) entryId=nodes.length?nodes[0].id:"";
-        if(selId===id){ selId=null; renderPanel(); }
+        // Always re-render the panel: deleting a step clears lines into it, which the selected step's
+        // panel may show (the hold step's "built-in message" button).
+        if(selId===id) selId=null;
+        renderPanel();
         render();
       }
 

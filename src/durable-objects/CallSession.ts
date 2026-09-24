@@ -809,6 +809,9 @@ export class CallSession extends DurableObject<Env> {
       // The caller pressed the hold step's callback key. Always the same bookkeeping as a `callback`
       // step (row, push, event, message recording); only the WORDS come from the step the hold
       // step's callback line leads to, so they are the admin's to edit.
+      // Cleared FIRST, before any D1 read: D1 I/O lets another event into this object, and a
+      // redelivered queue-left that still found the ring would log a second callback and push again.
+      await this.ctx.storage.delete("activeRing");
       const ack = await this.holdCallbackAck(activeRing.callbackNextNodeId, activeRing.holdNodeId, body.callSid, origin);
       return this.xml(await this.recordCallbackRequest(body.callSid, ack, origin));
     }
@@ -1274,11 +1277,12 @@ export class CallSession extends DurableObject<Env> {
 
 
   // The wording for a callback asked for from a hold step: the prompt of the `callback` step the hold
-  // step's callback line leads to, rendered, or "" for recordCallbackRequest's built-in line. It is
-  // the same rule the save check (api/ivrFlow.ts) and both editors apply: a callback step, in the
-  // hold step's own menu -- anything else is the built-in wording, so what an editor shows is what
-  // callers hear. Nothing here walks the flow: a line to a ring step would otherwise re-ring the
-  // team, and one to a voicemail or menu would skip logging the callback the caller was promised.
+  // step's callback line leads to, rendered, or "" for recordCallbackRequest's built-in line. Only
+  // a callback step in the hold step's own menu counts -- anything else is the built-in wording. This
+  // is THE rule (saving does not check it); both editors offer only such a step and label the line
+  // by the same rule, so what an editor shows is what callers hear. Nothing here walks the flow: a
+  // line to a ring step would otherwise re-ring the team, and one to a voicemail or menu would skip
+  // logging the callback the caller was promised.
   // Every unusable case -- no line, a deleted step, the wrong type, another menu, a corrupt config, a
   // recording that no longer exists -- is the built-in wording, never a throw: a throw reaches the DO
   // catch-all, which says "we're experiencing a technical issue" and hangs up on someone who just
