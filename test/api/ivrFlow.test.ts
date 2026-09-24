@@ -362,6 +362,34 @@ describe("handlePutFlow", () => {
     expect((await handlePutFlow(payload("callback"), env.DB, "test_flow", ADMIN)).status).toBe(200);
   });
 
+  // Node ids are global and calls load them with no flow check, so a line into ANOTHER menu is
+  // checked against that menu's step too.
+  it("refuses a callback line into another menu's step that is not a callback step", async () => {
+    await env.DB.prepare(
+      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, 'other_flow', 0, ?, ?, 1, 1)"
+    )
+      .bind("elsewhere_vm", "voicemail", JSON.stringify({ audioAssetId: null, ttsText: null, mailboxLabel: "VM" }))
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, 'other_flow', 0, ?, ?, 1, 1)"
+    )
+      .bind("elsewhere_cb", "callback", JSON.stringify({ audioAssetId: null, ttsText: "We will call." }))
+      .run();
+    const payload = (target: string) =>
+      putRequest({
+        entryNodeId: "w",
+        nodes: [
+          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: target } },
+        ],
+      });
+    const refused = await handlePutFlow(payload("elsewhere_vm"), env.DB, "test_flow", ADMIN);
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: string }).error).toContain("Request a callback");
+    expect((await handlePutFlow(payload("elsewhere_cb"), env.DB, "test_flow", ADMIN)).status).toBe(200);
+    // A target that exists nowhere is left alone, like every other next-field.
+    expect((await handlePutFlow(payload("nowhere"), env.DB, "test_flow", ADMIN)).status).toBe(200);
+  });
+
   it("returns 400 when a wait node's callbackNextNodeId is not a string", async () => {
     const res = await handlePutFlow(
       putRequest({

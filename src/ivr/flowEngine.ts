@@ -37,7 +37,7 @@ type GatherOption = { digit: string; nextNodeId: string };
 // <Gather> convention elsewhere in this repo (src/twilio/twiml.ts) hardcodes timeout="8".
 const DEFAULT_GATHER_TIMEOUT_SECONDS = 8;
 
-async function loadNodeById(db: D1Database, nodeId: string): Promise<NodeRow> {
+export async function loadNodeById(db: D1Database, nodeId: string): Promise<NodeRow> {
   const row = await db
     .prepare("SELECT id, flow, is_entry, type, config FROM ivr_nodes WHERE id = ?")
     .bind(nodeId)
@@ -59,7 +59,7 @@ async function loadEntryNode(db: D1Database, flow: string): Promise<NodeRow> {
   return row;
 }
 
-function parseConfig(node: NodeRow): Record<string, any> {
+export function parseConfig(node: NodeRow): Record<string, any> {
   try {
     const parsed = JSON.parse(node.config);
     if (typeof parsed !== "object" || parsed === null) {

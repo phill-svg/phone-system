@@ -222,6 +222,13 @@ export default function IvrNodeScreen() {
     const target = flow.nodes.find((n) => n.id === id);
     return target ? nodePickerLabel(target) : "Not set — callers reaching this are cut off";
   };
+  // The callback line never cuts anyone off: unset, or naming a step that is gone, callers hear the
+  // built-in callback wording (CallSession.holdCallbackAck).
+  const callbackLineLabel = (id: unknown) => {
+    const target = flow.nodes.find((n) => n.id === id);
+    if (target) return nodePickerLabel(target);
+    return id ? "Built-in message (the linked step is missing)" : "Built-in message";
+  };
 
   // A "go to" field. Expands in place rather than pushing a picker screen: the list is short, and
   // a modal would lose the surrounding context of what you are wiring.
@@ -240,7 +247,7 @@ export default function IvrNodeScreen() {
             { color: draft[key] || OPTIONAL_NEXT_FIELDS.has(key) ? t.colors.label : t.colors.accent, marginTop: 2 },
           ]}
         >
-          {!draft[key] && key === "callbackNextNodeId" ? "Built-in message" : nameOf(draft[key])}
+          {key === "callbackNextNodeId" ? callbackLineLabel(draft[key]) : nameOf(draft[key])}
         </Text>
       </Pressable>
       {openPicker === key ? (

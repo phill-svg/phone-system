@@ -75,7 +75,7 @@ export const NEXT_FIELD_LABELS: Record<string, string> = {
   nextNodeId: "Then go to",
   defaultNextNodeId: "No key pressed, go to",
   noAnswerNextNodeId: "Nobody answers, go to",
-  callbackNextNodeId: "Callback key pressed, go to",
+  callbackNextNodeId: "Callback key pressed, say",
 };
 
 export function nodeTitle(node: IvrNode): string {
@@ -165,6 +165,13 @@ export function orderNodes(flow: IvrFlow): { ordered: IvrNode[]; unreachable: Iv
       const next = byId.get(id);
       if (next && !seen.has(next.id)) queue.push(next);
     }
+    // A Hold step's callback line is not a route -- calls only read a callback step's words through
+    // it -- but the callback step it names IS in use, so it is listed rather than shown as an orphan.
+    // Only while callbacks are on (calls ignore the key otherwise), and only a callback step.
+    if (node.type === "wait" && node.config.allowCallbackStar === true) {
+      const cb = byId.get(str(node.config.callbackNextNodeId));
+      if (cb && cb.type === "callback" && !seen.has(cb.id)) queue.push(cb);
+    }
   }
 
   return { ordered, unreachable: flow.nodes.filter((n) => !seen.has(n.id)) };
@@ -174,9 +181,8 @@ export function orderNodes(flow: IvrFlow): { ordered: IvrNode[]; unreachable: Iv
 // incrementally -- so empties are dropped rather than treated as a dangling link.
 export function outgoingIds(node: IvrNode): string[] {
   const ids = NEXT_FIELDS[node.type]
-    // A Hold step's callback line is dead while callbacks are off (calls ignore the key), so a step
-    // reached only through it is an orphan, as the server's Health Check also treats it.
-    .filter((field) => field !== "callbackNextNodeId" || node.config.allowCallbackStar === true)
+    // A Hold step's callback line is never a route: nothing is run through it (see orderNodes).
+    .filter((field) => field !== "callbackNextNodeId")
     .map((field) => str(node.config[field]));
   if (node.type === "gather" && Array.isArray(node.config.options)) {
     for (const opt of node.config.options) ids.push(str((opt as { nextNodeId?: unknown }).nextNodeId));

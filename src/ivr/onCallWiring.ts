@@ -46,7 +46,9 @@ const NEXT_FIELDS: Record<string, string[]> = {
   gather: ["defaultNextNodeId"],
   input: ["nextNodeId"],
   ring: ["noAnswerNextNodeId"],
-  wait: ["nextNodeId", "callbackNextNodeId"],
+  // Not `callbackNextNodeId`: a hold step's callback line only supplies a callback step's WORDS
+  // (CallSession.holdCallbackAck) -- nothing is ever rung through it, so it is not a route here.
+  wait: ["nextNodeId"],
 };
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -120,12 +122,7 @@ function safeParse(raw: string): Record<string, unknown> {
 }
 
 function outgoing(type: string, config: Record<string, unknown>): string[] {
-  const ids = (NEXT_FIELDS[type] ?? [])
-    // A hold step's callback line is dead while callbacks are off (the key is ignored at call time),
-    // so a rota wired only through it is not reachable -- reporting it as reachable would be a green
-    // check over a rota nobody can ring.
-    .filter((field) => field !== "callbackNextNodeId" || config.allowCallbackStar === true)
-    .map((field) => str(config[field]));
+  const ids = (NEXT_FIELDS[type] ?? []).map((field) => str(config[field]));
   // A menu key is a route like any other, and the "press 1 if this is urgent" split this feature is
   // meant to sit behind is built out of exactly these. Not followed from the two branch types,
   // which have no options anyway -- CLOSED_ONLY is what keeps the daytime side out of the walk.

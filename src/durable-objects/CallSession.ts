@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { advanceFlow, isCallbackKey, walkFromNode, type FlowCommand } from "../ivr/flowEngine";
+import { advanceFlow, isCallbackKey, loadNodeById, parseConfig, walkFromNode, type FlowCommand } from "../ivr/flowEngine";
 import { renderFlowTwiml, renderFlowCommandsFragment, wrapResponse, escapeXml } from "../twilio/flowTwiml";
 import {
   renderEnqueue,
@@ -1282,14 +1282,14 @@ export class CallSession extends DurableObject<Env> {
   private async holdCallbackAck(nodeId: string | undefined, callSid: string, origin: string): Promise<string> {
     if (!nodeId) return "";
     try {
-      const row = await this.env.DB.prepare("SELECT type, config FROM ivr_nodes WHERE id = ?")
-        .bind(nodeId)
-        .first<{ type: string; config: string }>();
-      if (!row || row.type !== "callback") {
-        console.log("HOLD_CALLBACK_STEP_UNUSABLE", JSON.stringify({ callSid, node: nodeId, type: row?.type ?? null }));
+      // loadNodeById throws for a missing step and parseConfig for a corrupt one: both land in the
+      // catch below, i.e. the built-in wording.
+      const row = await loadNodeById(this.env.DB, nodeId);
+      if (row.type !== "callback") {
+        console.log("HOLD_CALLBACK_STEP_UNUSABLE", JSON.stringify({ callSid, node: nodeId, type: row.type }));
         return "";
       }
-      const play = await this.playFromConfig(JSON.parse(row.config) as Record<string, unknown>);
+      const play = await this.playFromConfig(parseConfig(row));
       return play ? renderFlowCommandsFragment([play], { baseUrl: origin }) : "";
     } catch (err) {
       console.log(
