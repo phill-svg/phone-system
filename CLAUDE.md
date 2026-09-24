@@ -43,6 +43,17 @@ the decisions and the hard-won gotchas. Do not rediscover them.
   hour, because `.eas/workflows/` already existed (`publish-update.yml`) and EAS holding the
   credentials is strictly less to go wrong than a `.p8` pasted into a repository secret.
 
+## Agent skills
+
+`.claude/skills/` carries **committed copies** of the Superpowers (v6.4.1, MIT) and caveman
+(v2.7.0, MIT skills only — not its BSL engine) skills, added 2026-09-24. Cloud sessions start in a
+fresh container and never installed the plugins that `.claude/settings.json` enables, so the skills
+were simply absent; project skills load in every session with no setup script. They are frozen
+copies: to update, `claude plugin install` the plugin, copy its `skills/*/` folders (those with a
+`SKILL.md`) back over, and `git add -f` — `.claude/skills/` is gitignored for `npx skills add`
+junk, so a plain `git add` silently stages nothing. caveman's hooks and slash commands are not
+included, only its skills.
+
 ## Layout
 
 - `src/worker.ts` — Cloudflare Worker entry point; `src/{api,db,dial,ivr,twilio,facebook,push,

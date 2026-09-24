@@ -11,7 +11,9 @@ play-service-account*.json
 *.keystore
 *.jks
 
-# Locally installed agent skills (npx skills add)
+# Locally installed agent skills (npx skills add). The Superpowers and caveman
+# skills under .claude/skills/ are committed with `git add -f` on purpose, so
+# every cloud session loads them; anything else installed there stays ignored.
 .agents/
 skills-lock.json
 .claude/skills/
