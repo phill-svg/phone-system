@@ -215,6 +215,9 @@ export function renderIvrFlowPage(
             out+='<label class="pf"><span><input type="checkbox" data-fld="allowCallbackStar" data-bool="1"'+(c.allowCallbackStar?" checked":"")+'> Let caller request a callback</span></label>';
             // Only with callbacks on, as on mobile: a key picked with the box unticked does nothing.
             if(c.allowCallbackStar) out+='<label class="pf">Callback key (match what the message tells callers to press)<select data-fld="callbackKey">'+ko+'</select></label>';
+            // The callback line is optional, and a drag can only CONNECT it -- this is the way back to
+            // the built-in words (mobile offers the same as "Built-in message").
+            if(c.allowCallbackStar && c.callbackNextNodeId) out+='<button type="button" class="ivr-link" id="pfCbDefault">Use the built-in callback message instead</button>';
             out+='<div class="pf" style="font-weight:400;opacity:.8">Phones keep ringing while the caller holds. The message plays once, then the caller hears ringing.'+(c.allowCallbackStar?' Connect the “Press '+h(ck)+' (callback)” line to a “Request a callback” step to set what callers hear when they press it.':'')+'</div>'; }
         } else if(n.type==="gather"){ out+=promptPanel(n,c);
           out+='<div class="pf">Menu keys (each key gets a line to drag)';
@@ -262,6 +265,7 @@ export function renderIvrFlowPage(
         if(t.id==="pfAddOpt"){ n.config.options.push({digit:"", nextNodeId:""}); renderPanel(); render(); return; }
         if(t.classList.contains("p-delopt")){ n.config.options.splice(parseInt(t.getAttribute("data-opt"),10),1); renderPanel(); render(); return; }
         if(t.id==="pfMakeStart"){ entryId=n.id; renderPanel(); render(); return; }
+        if(t.id==="pfCbDefault"){ n.config.callbackNextNodeId=""; renderPanel(); render(); return; }
         if(t.id==="pfPlay"){ var aid=n.config.audioAssetId; if(!aid){ status("Pick a recording first.",false); return; } var pl=document.getElementById("ivrPlayer"); pl.src="/media/ivr-audio/"+encodeURIComponent(aid); pl.play().catch(function(){ status("Could not play.",false); }); return; }
       });
       function syncNode(n){ var el=nodeEl(n.id); if(el){ var s=el.querySelector(".node-sum"); if(s) s.textContent=summary(n); } }

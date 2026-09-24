@@ -1827,24 +1827,27 @@ describe("CallSession", () => {
   // Nothing reached through the callback line is ever RUN -- only a callback step's words are read.
   // A line to a ring step (hand-edited past the save check) must not re-ring the team, whether or
   // not the caller is still there; the callback is still logged.
-  it("never rings anyone from the callback line", async () => {
-    await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
-    await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_ring2" });
-    await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
-    await seedRing("main_ring2", { noAnswerNextNodeId: "main_vm" });
-    await seedVoicemail("main_vm", "default");
-    await seedStaff("phill@b.com");
+  for (const queueResult of ["hangup", "leave"]) {
+    it(`never rings anyone from the callback line (queue result ${queueResult})`, async () => {
+      await seedEntryGather({ option1: "main_wait", defaultNextNodeId: "main_vm" });
+      await seedWait("main_wait", { nextNodeId: "main_ring", allowCallbackStar: true, callbackKey: "1", callbackNextNodeId: "main_ring2" });
+      await seedRing("main_ring", { noAnswerNextNodeId: "main_vm" });
+      await seedRing("main_ring2", { noAnswerNextNodeId: "main_vm" });
+      await seedVoicemail("main_vm", "default");
+      await seedStaff("phill@b.com");
 
-    const stub = stubFor("CA-cbhang");
-    await send(stub, mainEvent("CA-cbhang"));
-    await send(stub, mainEvent("CA-cbhang", { digits: "1" }));
-    await send(stub, holdDigit("CA-cbhang", "1"));
-    const dialsBefore = outboundDials(fetchMock).length;
-    await send(stub, queueLeft("CA-cbhang", "hangup"));
-    expect(outboundDials(fetchMock).length).toBe(dialsBefore);
-    const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind("CA-cbhang").first<{ status: string }>();
-    expect(cb?.status).toBe("open");
-  });
+      const sid = `CA-cbnoring-${queueResult}`;
+      const stub = stubFor(sid);
+      await send(stub, mainEvent(sid));
+      await send(stub, mainEvent(sid, { digits: "1" }));
+      await send(stub, holdDigit(sid, "1"));
+      const dialsBefore = outboundDials(fetchMock).length;
+      await send(stub, queueLeft(sid, queueResult));
+      expect(outboundDials(fetchMock).length).toBe(dialsBefore);
+      const cb = await env.DB.prepare("SELECT status FROM callback_requests WHERE call_id = ?").bind(sid).first<{ status: string }>();
+      expect(cb?.status).toBe("open");
+    });
+  }
 
   // A line to a voicemail step (again past the save check) still logs the callback the caller was
   // promised, with the built-in words -- it does not drop them into a mailbox.

@@ -45,17 +45,6 @@ export async function nodeExistsInOtherFlow(db: D1Database, id: string, excludeF
   return row !== null;
 }
 
-// The type of a node that belongs to a flow OTHER than `excludeFlow`, or null. Ids are a global
-// primary key and the engine loads them with no flow predicate, so a reference from one flow can
-// land in another; rows of `excludeFlow` itself are about to be replaced on save and do not count.
-export async function nodeTypeInOtherFlow(db: D1Database, id: string, excludeFlow: string): Promise<string | null> {
-  const row = await db
-    .prepare("SELECT type FROM ivr_nodes WHERE id = ? AND flow != ? LIMIT 1")
-    .bind(id, excludeFlow)
-    .first<{ type: string }>();
-  return row?.type ?? null;
-}
-
 export async function replaceFlowNodes(
   db: D1Database,
   flow: string,

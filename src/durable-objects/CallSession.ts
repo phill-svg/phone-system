@@ -805,8 +805,10 @@ export class CallSession extends DurableObject<Env> {
     if (outcome === "callback_requested") {
       // The caller pressed the hold step's callback key. Always the same bookkeeping as a `callback`
       // step (row, push, event, message recording); only the WORDS come from the step the hold
-      // step's callback line leads to, so they are the admin's to edit.
-      const ack = await this.holdCallbackAck(activeRing.callbackNextNodeId, body.callSid, origin);
+      // step's callback line leads to, so they are the admin's to edit. A caller who already hung up
+      // hears nothing, so the words are not looked up for them.
+      const ack =
+        body.queueResult === "hangup" ? "" : await this.holdCallbackAck(activeRing.callbackNextNodeId, body.callSid, origin);
       return this.xml(await this.recordCallbackRequest(body.callSid, ack, origin));
     }
 

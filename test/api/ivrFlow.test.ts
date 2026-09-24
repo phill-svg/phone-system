@@ -362,9 +362,26 @@ describe("handlePutFlow", () => {
     expect((await handlePutFlow(payload("callback"), env.DB, "test_flow", ADMIN)).status).toBe(200);
   });
 
-  // Node ids are global and calls load them with no flow check, so a line into ANOTHER menu is
-  // checked against that menu's step too.
-  it("refuses a callback line into another menu's step that is not a callback step", async () => {
+  // startRing trims the id before using it, so the check must see the same id or a padded one slips by.
+  it("checks a padded callback line id as the call would use it", async () => {
+    const res = await handlePutFlow(
+      putRequest({
+        entryNodeId: "w",
+        nodes: [
+          { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: " vm " } },
+          { id: "vm", type: "voicemail", config: { audioAssetId: null, ttsText: null, mailboxLabel: "VM" } },
+        ],
+      }),
+      env.DB,
+      "test_flow",
+      ADMIN
+    );
+    expect(res.status).toBe(400);
+  });
+
+  // Node ids are global and calls load them with no flow check, so a line into ANOTHER menu would
+  // play there while neither editor can show it -- refused, even to a callback step.
+  it("refuses a callback line into another menu", async () => {
     await env.DB.prepare(
       "INSERT INTO ivr_nodes (id, flow, is_entry, type, config, created_at, updated_at) VALUES (?, 'other_flow', 0, ?, ?, 1, 1)"
     )
@@ -382,10 +399,11 @@ describe("handlePutFlow", () => {
           { id: "w", type: "wait", config: { audioAssetId: null, ttsText: "hold", allowCallbackStar: true, nextNodeId: "", callbackNextNodeId: target } },
         ],
       });
-    const refused = await handlePutFlow(payload("elsewhere_vm"), env.DB, "test_flow", ADMIN);
-    expect(refused.status).toBe(400);
-    expect(((await refused.json()) as { error: string }).error).toContain("Request a callback");
-    expect((await handlePutFlow(payload("elsewhere_cb"), env.DB, "test_flow", ADMIN)).status).toBe(200);
+    for (const target of ["elsewhere_vm", "elsewhere_cb", " elsewhere_cb "]) {
+      const refused = await handlePutFlow(payload(target), env.DB, "test_flow", ADMIN);
+      expect(refused.status, target).toBe(400);
+      expect(((await refused.json()) as { error: string }).error).toContain("another menu");
+    }
     // A target that exists nowhere is left alone, like every other next-field.
     expect((await handlePutFlow(payload("nowhere"), env.DB, "test_flow", ADMIN)).status).toBe(200);
   });
