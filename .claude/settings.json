@@ -1,5 +1,13 @@
 {
+  "extraKnownMarketplaces": {
+    "caveman": {
+      "source": { "source": "github", "repo": "JuliusBrussee/caveman" }
+    }
+  },
   "enabledPlugins": {
-    "atomic-agents@claude-plugins-official": true
+    "atomic-agents@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true,
+    "caveman@caveman": true
   }
 }
+
