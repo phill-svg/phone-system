@@ -1420,6 +1420,17 @@ before adding one, or you will duplicate a path that already works.
   deliberately left alone: giving it a `max` risks the exact divergence bug documented on that
   component (a clamp that fires mid-typing, before the field is "finished") for a case the server
   now guards regardless of which client sends it.
+  **It regressed, and 15s stopped being enough (2026-09-25).** `n_e6wrtx7` was back at **60s** and
+  Phill's carrier voicemail answered ~32s into it; on the same day it also answered at **14.4s** into
+  the 15s first round, so the carrier's timer varies and 15 is no margin at all. Every `main` ring
+  step is now **10s**, and the old single long ring is a CHAIN of short ones:
+  greeting -> ring 10 (`n_5frbzxd`) -> hold/callback (`n_holdcb1`) -> ring 10 (`n_e6wrtx7`) ->
+  ring 10 (`n_ring03`) -> ring 10 (`n_ring04`) -> voicemail (`n_pkqmsmd`). Each ring step is a new
+  leg, which restarts the carrier's no-answer timer, so it never reaches its own voicemail. Written
+  straight to D1 at Phill's request. **To ring longer, add another 10s step; never raise a timeout.**
+  What this cannot fix: a DECLINED call or a phone that is off goes to carrier voicemail instantly,
+  and the caller still hears 3-4s of the personal greeting before async AMD rescues them. The cure
+  for that is press-1-to-accept screening on the mobile leg, offered and not yet chosen.
 - **Auto missed-call SMS, added 2026-09-15 (migration `0037`, `/admin/settings`, admin-only, OFF by
   default).** When a call ends having never produced an `answered` event, `sendMissedCallSmsIfDue`
   (`src/api/missedCallSms.ts`) texts the caller from the business number. It is hooked into
