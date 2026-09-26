@@ -89,6 +89,9 @@ export async function sendMissedCallSmsIfDue(env: Env, callSid: string): Promise
     // own manual texts do not count. Folded into the UPDATE so two different calls from the same
     // number ending together cannot both pass it. A skipped call keeps the column NULL, so it still
     // means "a text went out for this call".
+    // ponytail: a claim that is still in flight also counts, so if call A's send then FAILS, a call
+    // B from the same number that ended in that same second stays untexted. Needs a Twilio failure
+    // and two calls ending together; a separate "sent" column would close it if it ever matters.
     const now = Date.now();
     const claim = await env.DB.prepare(
       `UPDATE calls SET missed_sms_sent_at = ? WHERE id = ? AND missed_sms_sent_at IS NULL
