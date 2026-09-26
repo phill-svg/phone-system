@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sendMissedCallSmsIfDue } from "../../src/api/missedCallSms";
+import { sendMissedCallSmsIfDue, sydneyDayStart } from "../../src/api/missedCallSms";
 import { setMissedCallSms } from "../../src/db/settings";
 import { appendCallEvent } from "../../src/db/calls";
 
@@ -334,5 +334,88 @@ describe("sendMissedCallSmsIfDue", () => {
       .bind("CA-vm-then-status")
       .first<{ missed_sms_sent_at: number | null }>();
     expect(row?.missed_sms_sent_at).toBeGreaterThan(0);
+  });
+
+  // One text per caller per Sydney day: a customer who rings three times in a row and misses us
+  // each time gets one "sorry we missed you", not three.
+  describe("once per caller per day", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    async function seedTextedCall(id: string, caller: string, sentAt: number) {
+      await insertCall(id, { caller });
+      await env.DB.prepare("UPDATE calls SET missed_sms_sent_at = ? WHERE id = ?").bind(sentAt, id).run();
+    }
+
+    function countSends(): () => number {
+      let n = 0;
+      const realFetch = globalThis.fetch;
+      vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes("twilio.com")) {
+          n++;
+          return Promise.resolve(new Response(JSON.stringify({ sid: `SM-day-${n}` }), { status: 201 }));
+        }
+        return realFetch(input as RequestInfo, init);
+      });
+      return () => n;
+    }
+
+    it("does not text a caller already texted earlier the same day", async () => {
+      // 2026-09-27 15:00 Sydney (AEST, +10); the earlier text went at 09:00 the same morning.
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-27T05:00:00Z"));
+      await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+      await seedTextedCall("CA-earlier", "+61411000111", Date.parse("2026-09-26T23:00:00Z"));
+      await insertCall("CA-again", { caller: "+61411000111" });
+      await appendCallEvent(env.DB, "CA-again", "ring_started");
+      const sends = countSends();
+
+      await sendMissedCallSmsIfDue(SMS_ENV, "CA-again");
+
+      expect(sends()).toBe(0);
+      const row = await env.DB.prepare("SELECT missed_sms_sent_at FROM calls WHERE id = 'CA-again'").first<{ missed_sms_sent_at: number | null }>();
+      expect(row?.missed_sms_sent_at).toBeNull();
+    });
+
+    // The day is Sydney's, not UTC's and not a rolling 24 hours. 23:00 last night and 08:00 this
+    // morning share a UTC date and sit 9 hours apart, so either wrong version would suppress this.
+    it("texts again once the Sydney day has turned over", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-26T22:00:00Z")); // 08:00 on the 27th
+      await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+      await seedTextedCall("CA-last-night", "+61411000111", Date.parse("2026-09-26T13:00:00Z")); // 23:00 on the 26th
+      await insertCall("CA-morning", { caller: "+61411000111" });
+      await appendCallEvent(env.DB, "CA-morning", "ring_started");
+      const sends = countSends();
+
+      await sendMissedCallSmsIfDue(SMS_ENV, "CA-morning");
+
+      expect(sends()).toBe(1);
+    });
+
+    it("still texts a different caller the same day", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-27T05:00:00Z"));
+      await setMissedCallSms(env.DB, { enabled: true, template: "sorry we missed you" });
+      await seedTextedCall("CA-other", "+61499999999", Date.parse("2026-09-27T01:00:00Z"));
+      await insertCall("CA-new", { caller: "+61411000111" });
+      await appendCallEvent(env.DB, "CA-new", "ring_started");
+      const sends = countSends();
+
+      await sendMissedCallSmsIfDue(SMS_ENV, "CA-new");
+
+      expect(sends()).toBe(1);
+    });
+  });
+});
+
+describe("sydneyDayStart", () => {
+  it("is Sydney midnight on an ordinary day", () => {
+    expect(new Date(sydneyDayStart(Date.parse("2026-09-27T05:00:00Z"))).toISOString()).toBe("2026-09-26T14:00:00.000Z");
+  });
+
+  // Reading the offset at `now` instead of at midnight gets both of these wrong by an hour.
+  it("uses the pre-change offset on the day daylight saving starts", () => {
+    expect(new Date(sydneyDayStart(Date.parse("2026-10-04T01:00:00Z"))).toISOString()).toBe("2026-10-03T14:00:00.000Z");
+  });
+
+  it("uses the pre-change offset on the day daylight saving ends", () => {
+    expect(new Date(sydneyDayStart(Date.parse("2027-04-04T02:00:00Z"))).toISOString()).toBe("2027-04-03T13:00:00.000Z");
   });
 });
