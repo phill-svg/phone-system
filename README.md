@@ -8,11 +8,11 @@ VOIP phone system built on Cloudflare Workers: Twilio IVR call routing, call his
 - **D1** — call/settings storage (migrations in `migrations/`)
 - **Durable Objects** — `CallSession` tracks in-progress call state
 - **Twilio** — inbound call webhooks, TwiML responses, signature verification
-- **Custom auth** — email + password staff authentication for the admin dashboard (cookie sessions, SendGrid-delivered invite/reset links)
+- **Custom auth** — email + password staff authentication for the admin dashboard (cookie sessions, invite/reset links sent through Cloudflare's `send_email` binding)
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22 (what CI uses)
 - A [Cloudflare account](https://dash.cloudflare.com/) with Workers/D1 enabled
 - [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (installed via `npm install`, no global install needed)
 - A Twilio account with a phone number, for the IVR flow
@@ -64,7 +64,7 @@ VOIP phone system built on Cloudflare Workers: Twilio IVR call routing, call his
 
 5. **Point your Twilio number at the worker**
 
-   Once deployed, set your Twilio phone number's voice webhook to your worker's URL (e.g. `https://tcb-voip.<your-subdomain>.workers.dev/twilio/voice`) — see `src/twilio/` and `src/worker.ts` for the exact routes.
+   Production is `https://tcbvoip.app`. Copy the webhook URLs for each number from `/admin/webhooks` (admin-only): they carry the `?whsec=` secret, which is how the worker authenticates Twilio. The voice webhook is `/webhooks/twilio` and the call-status webhook is `/webhooks/twilio/status`. The voice number must be homed in au1 — see `CLAUDE.md`.
 
 ## Development
 
@@ -145,12 +145,12 @@ The mobile app authenticates via `POST /api/login` (JSON body, returns a
 bearer token + user — no cookie), then sends `Authorization: Bearer <token>`
 on subsequent API calls. `POST /api/logout` revokes the token.
 
-- `TWILIO_PUSH_CREDENTIAL_SID_IOS` / `TWILIO_PUSH_CREDENTIAL_SID_ANDROID`
-  (optional Worker vars) — Twilio Push Credential SIDs used to wake the app
-  for incoming calls while backgrounded. Unset until Phase 4 (push
-  notifications); with them unset, `GET /api/softphone/token` mints a Voice
-  grant with no `push_credential_sid`, so the softphone still works in the
-  foreground — only background call push is unavailable.
+- `TWILIO_PUSH_CREDENTIAL_SID_IOS` (worker secret) / `TWILIO_PUSH_CREDENTIAL_SID_ANDROID`
+  (plain var in `wrangler.jsonc`) — Twilio Push Credential SIDs used to wake the app
+  for incoming calls while backgrounded. Both are set in production and both must
+  live in au1. If one is unset, `GET /api/softphone/token` mints a Voice grant with
+  no `push_credential_sid` and that platform's softphone never rings unless the app
+  is open. Admin > Health Checks > Ringing the app checks them.
 
 ## Desktop app
 
@@ -167,7 +167,7 @@ src/
   api/          JSON API routes (calls, settings, current user)
   db/           D1 query helpers
   durable-objects/  CallSession durable object
-  email/        SendGrid client for invite/reset emails
+  email/        invite/reset emails via the Cloudflare send_email binding
   html/         Server-rendered admin dashboard pages
   ivr/          IVR state machine, business hours logic
   twilio/       TwiML generation, signature verification, status callbacks

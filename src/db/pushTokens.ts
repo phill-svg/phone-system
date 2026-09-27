@@ -41,10 +41,19 @@ export async function upsertPushToken(
     .run();
 }
 
+// D1 refuses a query with more than 100 bound parameters, and miniflare does NOT enforce that, so an
+// unbounded `IN (?,?,...)` passes every local test and 500s in production. Delete in chunks.
+export const DELETE_CHUNK = 90;
+
 export async function deletePushTokens(db: D1Database, tokens: string[]): Promise<void> {
   if (tokens.length === 0) return;
-  const placeholders = tokens.map(() => "?").join(",");
-  await db.prepare(`DELETE FROM push_tokens WHERE token IN (${placeholders})`).bind(...tokens).run();
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < tokens.length; i += DELETE_CHUNK) {
+    const chunk = tokens.slice(i, i + DELETE_CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    statements.push(db.prepare(`DELETE FROM push_tokens WHERE token IN (${placeholders})`).bind(...chunk));
+  }
+  await db.batch(statements);
 }
 
 // Tokens to notify for a given push type. A token is included when its owner has NOT disabled that

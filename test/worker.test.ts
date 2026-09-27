@@ -697,10 +697,7 @@ describe("Task 8 queue/ring webhook routes", () => {
     // A mono CONFERENCE recording is the tell that the Console's dual-channel switch is off, and it
     // is skipped before Twilio is ever asked -- so no `intelligence_sid` is written and Health
     // Checks, which counted rows by that sid, could not see it. The skip is persisted now.
-    //
-    // TWILIO_INTELLIGENCE_SERVICE_SID is bound in vitest.config.ts, not here: mutating the imported
-    // `env` does NOT reach SELF.fetch (the worker holds its own), so a test that set it inline
-    // passed every assertion with the branch never running at all.
+
     describe("a mono recording that should have been dual-channel", () => {
       async function seedCall(id: string) {
         await env.DB.prepare(

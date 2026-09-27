@@ -13,7 +13,8 @@ export type RingNodeTarget = "all" | "on_call" | string[];
 // Each on-shift staff member contributes exactly ONE leg. Ring-my-mobile is a DIVERT, not an
 // "also ring": when it is on and the number is dialable, the call goes to their personal mobile
 // (`pstn:{email}|{e164}`) and their softphone is deliberately NOT rung. Otherwise they get their
-// softphone leg (`client:{email}`), provided a fresh heartbeat proves the app is online.
+// softphone leg (`client:{email}`). The heartbeat does NOT gate ringing: it only ticks while the
+// app is in the foreground, and a VoIP push reaches a closed app (see isStaffAvailable).
 //
 // An unusable mobile number falls back to the softphone rather than dropping the person silently,
 // so a typo can never route a caller straight to voicemail. The mobile leg ignores the softphone
@@ -26,12 +27,13 @@ export type RingNodeTarget = "all" | "on_call" | string[];
 // `excludeEmails` keeps the App Review demo account out of the roster. Signing in flips a staff
 // row to `available`, and the simultaneous ring strategy rings everyone available at once --
 // `ring_priority` protects nobody there -- so without this an Apple reviewer would become a live
-// destination and could answer a real customer's call.
+// destination and could answer a real customer's call. It is REQUIRED, not defaulted: a defaulted
+// exclusion list fails open, so a new caller that forgot it would compile and ring the reviewer.
 export async function resolveRingTargets(
   db: D1Database,
   target: RingNodeTarget,
   now: Date,
-  excludeEmails: string[] = []
+  excludeEmails: string[]
 ): Promise<string[]> {
   // The ROSTER read needs the same guard as the per-person read below, and for the same reason: a
   // throw here escapes startRing to the DO catch-all and hangs up on a live customer. Guarding only
@@ -86,7 +88,7 @@ export async function resolveRingTargets(
     // there costs: it escapes handleMainWebhook to the DO's catch-all, which answers "we're
     // experiencing a technical issue" and HANGS UP on a live customer -- and via performDeferredDial
     // does that to someone already waiting on hold. `callerId()` was fixed for exactly this; this
-    // read sits one line away at CallSession.ts:402 and was missed.
+    // read sits one line away in startRing and was missed.
     //
     // The fallback is the softphone leg, which is simply what this person gets when ring-my-mobile
     // is off. A caller reaching a handset that might not be the preferred one is strictly better
