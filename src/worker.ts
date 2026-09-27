@@ -118,9 +118,6 @@ type Env = {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   TWILIO_AUTH_TOKEN_SECONDARY?: string;
-  // Conversational Intelligence service (GA...), set as a worker secret. Unset = the
-  // speaker-labelled transcript is simply off and Whisper's unlabelled one stands.
-  TWILIO_INTELLIGENCE_SERVICE_SID?: string;
   TWILIO_WEBHOOK_SECRET?: string;
   TWILIO_WEBHOOK_SECRET_SECONDARY?: string;
   TWILIO_FROM_NUMBER: string;
@@ -148,9 +145,9 @@ type Env = {
   SERVICEM8_API_KEY?: string;
 };
 
-// The extra cron added purely so the ServiceM8 sweep can fire near its 3-minute mark; the 5-minute
-// tick everything else uses would have stretched that to anywhere from 3 to 8 minutes. Must stay in
-// step with the "crons" array in wrangler.jsonc.
+// The extra cron exists purely so the ServiceM8 sweep fires close to SERVICEM8_SYNC_DELAY_MS
+// (15 minutes) after a call ends; on the 5-minute tick everything else uses, that would stretch to
+// 15-20 minutes. Must stay in step with the "crons" array in wrangler.jsonc.
 const MINUTE_CRON = "* * * * *";
 
 // Staff dial numbers as they'd say them ("0472 762 158"), but Twilio only accepts E.164.
@@ -397,8 +394,9 @@ export default {
         }
 
         // OUTSIDE the `changes > 0` block on purpose. This is the only moment the call is
-        // genuinely over -- Twilio has reported a terminal status for the caller's own leg -- and
-        // it is the ONLY place the missed-call text is sent. A caller who leaves a voicemail or
+        // genuinely over -- Twilio has reported a terminal status for the caller's own leg. (The
+        // only other sender is CallSession's `<Record>` action on `Digits=hangup`; see
+        // sendMissedCallSmsIfDue for why both exist.) A caller who leaves a voicemail or
         // asks for a callback has `ended_at` stamped mid-call by CallSession, on the `<Record>`
         // action, while they are still connected; gating on `changes > 0` meant either texting
         // them from there (their phone buzzing during the call, the reported bug) or not at all.
@@ -1524,7 +1522,7 @@ export default {
 
       // Retry the Graph API name lookup for Messenger senders still showing as "Facebook user".
       if (url.pathname === "/api/facebook/resolve-names" && request.method === "POST") {
-        return handleResolveFacebookNames(env.DB, env.FB_PAGE_ACCESS_TOKEN);
+        return handleResolveFacebookNames(env.DB, env.FB_PAGE_ACCESS_TOKEN, env.TWILIO_MESSENGER_FROM);
       }
 
       // Diagnostic: what this Page token can actually read from Facebook. Admin-only.

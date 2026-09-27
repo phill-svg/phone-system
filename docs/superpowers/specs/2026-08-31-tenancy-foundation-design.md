@@ -8,11 +8,12 @@ and its Current Status.
 **Date:** 2026-08-31
 **Sub-project:** 1 of 7 (see "Where this sits" below)
 
-> Migration `0026` and the `tnt_tcb` tenant row DID land, so `tenant_id` columns exist in
-> production — `CLAUDE.md`'s "Tenancy is fail-closed" constraint is live and still applies: those
-> columns are `TEXT NOT NULL DEFAULT ''` deliberately, and must never default to a real tenant.
-> What is shelved is everything after that: the scoped data layer, the CI guard, and sub-projects
-> 2-7.
+> **Nothing from this spec was built, not even the migration.** This note used to say migration
+> `0026` and the `tnt_tcb` row "DID land" and that `tenant_id` columns exist in production — false,
+> checked 2026-09-27 against the code and live D1: no `tenants` table, no `tenant_id` column, no
+> `tnt_tcb`, and the `0026` slot is `0026_message_delivery_errors.sql`. If tenancy is ever revived,
+> the fail-closed rule still stands: `tenant_id TEXT NOT NULL DEFAULT ''`, never defaulted to a real
+> tenant.
 
 ## Why
 

@@ -24,7 +24,7 @@ describe("resolveRingTargets", () => {
   it("'all' resolves to every currently-available staff member, as client identities", async () => {
     await insertStaff("a@b.com", "available", NOW.getTime());
     await insertStaff("c@b.com", "offline", NOW.getTime());
-    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:a@b.com"]);
+    expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual(["client:a@b.com"]);
   });
 
   // Signing in flips a staff row to `available`, and the simultaneous strategy rings everyone
@@ -53,18 +53,18 @@ describe("resolveRingTargets", () => {
   it("a specific staff list only considers those staff, filtered by availability", async () => {
     await insertStaff("a@b.com", "available", NOW.getTime());
     await insertStaff("b@b.com", "available", NOW.getTime());
-    expect(await resolveRingTargets(env.DB, ["a@b.com"], NOW)).toEqual(["client:a@b.com"]);
+    expect(await resolveRingTargets(env.DB, ["a@b.com"], NOW, [])).toEqual(["client:a@b.com"]);
   });
 
   it("returns an empty array when nobody targeted is available", async () => {
     await insertStaff("a@b.com", "away", NOW.getTime());
-    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual([]);
+    expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual([]);
   });
 
   it("rings staff in ascending priority order (lower rings first), regardless of insert order", async () => {
     await insertStaff("general@b.com", "available", NOW.getTime(), 100);
     await insertStaff("senior@b.com", "available", NOW.getTime(), 10);
-    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:senior@b.com", "client:general@b.com"]);
+    expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual(["client:senior@b.com", "client:general@b.com"]);
   });
 });
 
@@ -96,20 +96,20 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
   it("diverts to the mobile INSTEAD of the softphone - the app must not ring", async () => {
     await seedStaff("phill@b.com");
     await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
-    const targets = await resolveRingTargets(env.DB, "all", new Date());
+    const targets = await resolveRingTargets(env.DB, "all", new Date(), []);
     expect(targets).toEqual(["pstn:phill@b.com|+61412345678"]);
   });
 
   it("rings the mobile even when the softphone is OFFLINE (stale heartbeat), if on-shift", async () => {
     await seedStaff("phill@b.com", { online: false });
     await setUserSettings(env.DB, "phill@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
-    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["pstn:phill@b.com|+61412345678"]);
+    expect(await resolveRingTargets(env.DB, "all", new Date(), [])).toEqual(["pstn:phill@b.com|+61412345678"]);
   });
 
   it("rings the softphone when ring_my_mobile is off", async () => {
     await seedStaff("a@b.com");
     await setUserSettings(env.DB, "a@b.com", { ring_my_mobile: false, mobile_number: "0412345678" });
-    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["client:a@b.com"]);
+    expect(await resolveRingTargets(env.DB, "all", new Date(), [])).toEqual(["client:a@b.com"]);
   });
 
   // An unusable number must never silently drop the person from the ring list -- falling back to
@@ -117,7 +117,7 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
   it("falls back to the softphone when ring_my_mobile is on but the number is invalid", async () => {
     await seedStaff("c@b.com");
     await setUserSettings(env.DB, "c@b.com", { ring_my_mobile: true, mobile_number: "nope" });
-    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["client:c@b.com"]);
+    expect(await resolveRingTargets(env.DB, "all", new Date(), [])).toEqual(["client:c@b.com"]);
   });
 
   // Previously an unusable mobile plus a stale heartbeat dropped the person from the roster
@@ -127,14 +127,14 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
   it("still rings the softphone when the number is invalid and the app is closed", async () => {
     await seedStaff("c@b.com", { online: false });
     await setUserSettings(env.DB, "c@b.com", { ring_my_mobile: true, mobile_number: "nope" });
-    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual(["client:c@b.com"]);
+    expect(await resolveRingTargets(env.DB, "all", new Date(), [])).toEqual(["client:c@b.com"]);
   });
 
   // What DOES still exclude someone: their own presence, and their schedule.
   it("drops a staff member who is marked away or offline, however fresh their heartbeat", async () => {
     await seedStaff("away@b.com", { status: "away" });
     await seedStaff("off@b.com", { status: "offline" });
-    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual([]);
+    expect(await resolveRingTargets(env.DB, "all", new Date(), [])).toEqual([]);
   });
 
   // Tier 1's lesson, third instance: a throw inside startRing escapes handleMainWebhook to the DO's
@@ -145,7 +145,7 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
     await insertStaff("a@b.com", "available", NOW.getTime());
     await env.DB.exec("ALTER TABLE user_settings RENAME TO user_settings_hidden");
     try {
-      expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:a@b.com"]);
+      expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual(["client:a@b.com"]);
     } finally {
       await env.DB.exec("ALTER TABLE user_settings_hidden RENAME TO user_settings");
     }
@@ -158,7 +158,7 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
     await insertStaff("a@b.com", "available", NOW.getTime());
     await env.DB.exec("ALTER TABLE staff_users RENAME TO staff_users_hidden");
     try {
-      expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual([]);
+      expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual([]);
     } finally {
       await env.DB.exec("ALTER TABLE staff_users_hidden RENAME TO staff_users");
     }
@@ -173,7 +173,7 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
     )
       .bind("broken@b.com", Date.now(), "{not json", NOW.getTime())
       .run();
-    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:good@b.com"]);
+    expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual(["client:good@b.com"]);
   });
 
   // Catching the JSON.parse THROW is not enough: a column holding the literal text `null` parses
@@ -186,7 +186,7 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
     )
       .bind("nullsched@b.com", Date.now(), "null", NOW.getTime())
       .run();
-    expect(await resolveRingTargets(env.DB, "all", NOW)).toEqual(["client:good@b.com"]);
+    expect(await resolveRingTargets(env.DB, "all", NOW, [])).toEqual(["client:good@b.com"]);
   });
 
   // The old implementation returned [...clientLegs, ...pstnLegs], which reordered people by leg
@@ -195,7 +195,7 @@ describe("resolveRingTargets ring-my-mobile (divert)", () => {
     await seedStaff("senior@b.com", { priority: 10 });
     await seedStaff("general@b.com", { priority: 100 });
     await setUserSettings(env.DB, "senior@b.com", { ring_my_mobile: true, mobile_number: "0412345678" });
-    expect(await resolveRingTargets(env.DB, "all", new Date())).toEqual([
+    expect(await resolveRingTargets(env.DB, "all", new Date(), [])).toEqual([
       "pstn:senior@b.com|+61412345678",
       "client:general@b.com",
     ]);

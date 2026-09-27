@@ -1,26 +1,51 @@
 import { jsonResponse } from "./respond";
 import { listUnnamedFacebookPsids, upsertFacebookName } from "../db/fbContacts";
 import { lookupFacebookName } from "../facebook/graph";
+import { fetchPageInboxNames } from "../facebook/pageInbox";
 
-// Retry the Graph API name lookup for every Messenger sender still showing as "Facebook user".
+// Retry the name lookup for every Messenger sender still showing as "Facebook user".
 // Inbound messages resolve a name once and then never try again, so a spell of failed lookups (an
 // expired Page token is the usual one) leaves those conversations nameless forever. This is the
 // button that fixes them once the token is good again — and, when it still isn't, the one place
 // that says out loud what Facebook is objecting to.
-export async function handleResolveFacebookNames(db: D1Database, token?: string): Promise<Response> {
+//
+// The Page's own inbox is asked FIRST, exactly as the webhook and the cron do: the per-psid profile
+// lookup returns code 100 for every ordinary customer (pages_messaging is only at Standard Access),
+// so a button that used it alone failed for precisely the people it exists to name. Only whoever
+// the inbox does not list (a thread aged out of it) falls back to the per-psid call.
+export async function handleResolveFacebookNames(
+  db: D1Database,
+  token: string | undefined,
+  messengerFrom: string | undefined
+): Promise<Response> {
   if (!token) {
     return jsonResponse({ error: "Facebook name lookup isn't set up: the FB_PAGE_ACCESS_TOKEN secret is missing." }, 400);
   }
   const psids = await listUnnamedFacebookPsids(db);
   const resolved: string[] = [];
   const failed: { psid: string; error: string }[] = [];
-  for (const psid of psids) {
+  const wanted = new Set(psids);
+
+  const pageId = (messengerFrom ?? "").replace(/^messenger:/, "");
+  const inbox = await fetchPageInboxNames(pageId, token);
+  if ("names" in inbox) {
+    for (const [psid, name] of inbox.names) {
+      if (!wanted.has(psid)) continue;
+      await upsertFacebookName(db, psid, name);
+      wanted.delete(psid);
+      resolved.push(name);
+    }
+  }
+
+  for (const psid of wanted) {
     const result = await lookupFacebookName(psid, token);
     if ("name" in result) {
       await upsertFacebookName(db, psid, result.name);
       resolved.push(result.name);
     } else {
-      failed.push({ psid, error: result.error });
+      // Say both routes failed when the inbox did too, so the error names the real blocker.
+      const error = "error" in inbox ? `${result.error} (Page inbox: ${inbox.error})` : result.error;
+      failed.push({ psid, error });
     }
   }
   return jsonResponse({ checked: psids.length, resolved, failed });

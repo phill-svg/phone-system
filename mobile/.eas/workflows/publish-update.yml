@@ -7,8 +7,13 @@
 #
 #   cd mobile && npx eas workflow:run .eas/workflows/publish-update.yml
 #
-# Bump OTA_BUILD in src/app/(tabs)/settings.tsx first -- that constant is how you
-# confirm on-device (Settings -> Check for Updates) that the update actually landed.
+# Bump OTA_BUILD in src/lib/build.ts first (read it off origin/master, never your checkout) --
+# that constant is how you confirm on-device (Settings) that the update actually landed.
+#
+# The GitHub Actions "Publish OTA" workflow (.github/workflows/publish-ota.yml) is the preferred
+# path: it also prefixes the message with the OTA number. This one now runs the same typecheck and
+# tests before publishing -- it used to publish with neither, so a broken bundle could go straight
+# to every handset on the channel.
 name: Publish OTA update
 
 on:
@@ -29,8 +34,19 @@ on:
         description: Shown against the update in the EAS dashboard.
 
 jobs:
+  checks:
+    name: Typecheck and test
+    steps:
+      - uses: eas/checkout
+      - uses: eas/install_node_modules
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test -- --ci
+
   publish_update:
     name: Publish update
+    needs: [checks]
     type: update
     # Matches the production build profile, so env vars resolve the same way here
     # as they did when the installed binary was built.

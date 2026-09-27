@@ -1636,8 +1636,9 @@ name, not line number.
   `TWILIO_PUSH_CREDENTIAL_SID_ANDROID`, `TWILIO_MESSENGER_FROM`, `DEMO_ACCOUNT_EMAILS`. **Without
   the US1 key**, manual send returns 500 "SMS is not configured." and missed-call SMS silently does
   nothing (`globalAuthHeader` falls back to the au1 token, which 401s on US1).
-  `TWILIO_INTELLIGENCE_SERVICE_SID` is DEAD — declared in `Env` and bound in `vitest.config.ts`,
-  read by nothing — and can be deleted from all three.
+  `TWILIO_INTELLIGENCE_SERVICE_SID` is dead: nothing reads it, and its `Env` field and
+  `vitest.config.ts` binding were removed on 2026-09-27. The Cloudflare secret itself may still
+  exist; `npx wrangler secret delete TWILIO_INTELLIGENCE_SERVICE_SID` is safe.
 - **Webhook auth is the `?whsec=` URL secret first; `X-Twilio-Signature` is only a fallback**
   (`authorizeTwilioWebhook`, `src/twilio/webhookAuth.ts`), because this account's signatures have
   repeatedly failed to match its own token since the rotations. An unset or wrong
@@ -1673,11 +1674,12 @@ name, not line number.
   `TWILIO_AUTH_TOKEN` and `TEST_MIGRATIONS` (every file in `migrations/`); excludes `mobile/**`
   (Jest) and `.claude/**` (agent worktrees are whole stale repo copies); 20s timeout.
   `AUTH_MODE=dev` + `DEV_STAFF_EMAIL` belong in `.dev.vars` only.
-- **The root `eas.json` and `app.json` are strays.** EAS builds use `mobile/eas.json` and
-  `mobile/app.json`; the "`eas.json` must NOT name `ascApiKeyPath`" rule above means
+- **EAS config is `mobile/eas.json` and `mobile/app.json` only.** A stray root `eas.json` and
+  `app.json` (`{"expo":{}}`, added by accident in #109) were deleted on 2026-09-27; do not run
+  `eas` from the repo root. The "`eas.json` must NOT name `ascApiKeyPath`" rule above means
   `mobile/eas.json`. `.claude/settings.json` also enables `atomic-agents`, which has no committed
-  skills copy, so it is absent in cloud sessions. `README.md` is stale (workers.dev webhook URL,
-  push SIDs "unset until Phase 4", Node 18) — trust this file over it.
+  skills copy, so it is absent in cloud sessions. `README.md` was corrected the same day (webhook
+  URLs, push SIDs, Node 22, email binding); this file still wins where they differ.
 
 ### Scheduled work
 
@@ -1860,10 +1862,11 @@ name, not line number.
   resolved cookie-first in `requireStaffUser`; a valid session whose email is not in `staff_users`
   gets 403 "not provisioned".
 - **Every new `/api/` route must be checked against `handleDemoRequest`** (`src/demo/index.ts`);
-  only `$`-anchored paths are substituted. Still OPEN to the demo account as of 2026-09-27:
-  `PUT /api/facebook/name` (renames a real Messenger sender), `POST /api/facebook/resolve-names`,
-  `POST /api/calls/:id/restore` and `POST /api/messages/:peer/restore`. The media route was closed
-  only after review found it streaming real photos.
+  only `$`-anchored paths are substituted, so a route ending in its own suffix falls through to the
+  real handler. Four did until 2026-09-27 (`PUT /api/facebook/name`, which renamed a real Messenger
+  sender; `POST /api/facebook/resolve-names`; and the two `/restore` undo routes); all are swallowed
+  now and pinned in `test/demo/demoAccount.test.ts`. The media route was closed only after review
+  found it streaming real photos.
 - **Inline page scripts inside TS template literals: no backticks and no `${…}`** — use `+`
   concatenation (`ivrFlow.ts`, `layout.ts`'s `NOTIFY_JS`). Same trap family as the `\/` regex in
   `phone.ts`. Desktop/web OS notifications for SMS fire only from the top page
@@ -1872,23 +1875,29 @@ name, not line number.
 
 ### Mobile release
 
-- **RELEASE HAZARD: the committed iOS build number is behind.** `mobile/app.json` has
-  `ios.buildNumber: "4"` and `android.versionCode: 1` with `appVersionSource: "local"` and
-  `autoIncrement: true` on the production profile — but build 5 is on TestFlight and its bump was
-  never committed. The next production build from the repo would produce 5 again, which Apple
-  rejects. Set it to at least 5 (and check Play's last `versionCode`) BEFORE the next build, and
-  commit the bump afterwards, as the Android runbook says.
+- **The build number in `mobile/app.json` is the LAST ONE SHIPPED, and must be committed after
+  every build.** The production profile has `appVersionSource: "local"` and `autoIncrement: true`,
+  so EAS increments the file's value on the builder and uses that — but the bump lives only on the
+  builder unless someone commits it. It was left at `"4"` after build 5 shipped, so the next build
+  would have been 5 again, which Apple rejects permanently. Set to `"5"` on 2026-09-27 (checked
+  against the EAS build list: build 5, 2026-09-10, is the last iOS build that finished), so the next
+  build is 6. `android.versionCode` stays 1: EAS has never run a production Android build (every
+  Android build is a `preview` APK), so no code has been used on Play through EAS. **After any
+  production build, commit the new number.**
 - **Every binary ever built shares runtime `1.0.0`** (`runtimeVersion` policy `appVersion`,
   `version` 1.0.0), so every binary receives every OTA. An OTA that imports a native module an
   older binary lacks crashes that binary on launch; the guard is bumping `expo.version`, which
-  starts a new runtime. The Settings "Version" row is hardcoded `"1.0.0"` and would not follow.
+  starts a new runtime. The Settings "Version" row reads `NATIVE_VERSION`
+  (`expo-application`'s `nativeApplicationVersion`, in `src/lib/build.ts`) since OTA 82; it was
+  hardcoded `"1.0.0"` before and would not have followed a bump.
 - **Two OTA publish paths, and they differ.** GitHub `publish-ota.yml`: inputs channel
   (`preview`/`production`/`both`, default `preview`) and message; needs repo secret `EXPO_TOKEN`
   (Expo account `skiptoolow`); runs mobile typecheck and tests first; prefixes `#<OTA_BUILD>`;
   publishes `--platform all`; warns (does not block) on production during App Store review. EAS
-  `mobile/.eas/workflows/publish-update.yml`: defaults to `production`, runs NO typecheck or tests
-  (a broken bundle goes straight to handsets), adds no OTA number — and its header comment still
-  points `OTA_BUILD` at `settings.tsx` (it lives in `src/lib/build.ts`). Prefer the GitHub one.
+  `mobile/.eas/workflows/publish-update.yml`: defaults to `production` and adds no OTA number. It
+  published with NO typecheck or tests until 2026-09-27; it now has a `checks` job (checkout,
+  install, `npm run typecheck`, `npm test -- --ci`) that `publish_update` `needs`, validated with
+  EAS's workflow validator. Prefer the GitHub one anyway, for the OTA number in the message.
 - **Channels:** `preview` = Android test handsets; `production` = iOS TestFlight/store AND
   Play-internal Android (built with the production profile). `development` and `test` have their
   own channels.
@@ -1909,8 +1918,8 @@ name, not line number.
   `refetchInterval` in the background), the crash reporter, and `primePushRegistry()`. The Twilio SDK
   import there is safe only because the SDK is compiled into every build — if it ever becomes
   optional, make it a lazy require or a missing SDK is a launch crash with no UI.
-- **Tooling traps:** never run `npm run reset-project` in `mobile/` (the stock Expo script moves
-  `src/` and `scripts/` to `example/`, wiping the app). The Twilio SDK is a PREVIEW release,
+- **Tooling traps:** the stock Expo `reset-project` script (it moves `src/` and `scripts/` to
+  `example/`, wiping the app) was deleted from `mobile/` on 2026-09-27 — do not restore it. The Twilio SDK is a PREVIEW release,
   `@twilio/voice-react-native-sdk@2.0.0-preview.2`, under a caret range — the lockfile is what pins
   it. `mobile/.npmrc` sets `legacy-peer-deps=true`, and `npm ci` depends on it. Settings >
   "Preview Incoming Call" shows the ringing UI with a dummy number, no real call.
@@ -1929,17 +1938,32 @@ name, not line number.
   stale `release/latest.yml`. `electron-updater` polls `https://tcbvoip.app/desktop/latest.yml` on
   launch and every 6 hours.
 
-### Known bugs and hazards found by the audit (not fixed)
+### Hazards found by the audit, and what was done (2026-09-27)
 
-- **Manual Facebook name refresh fails for ordinary customers.** `handleResolveFacebookNames` uses
-  ONLY the per-psid lookup, which returns code 100 for them; it should try the Page-inbox route
-  first like the webhook and cron do.
-- **`deletePushTokens` builds an unbounded `IN (?,…)` list** — it will 500 in production past 100
-  tokens (the D1 cap above), though no test can show it.
-- **`resolveRingTargets(..., excludeEmails = [])` is still DEFAULTED** — the fail-open shape this
-  file says was removed. Safe today only because its one call site passes `demoEmails(this.env)`.
-- **Stale code comments** that contradict the code: `missedCallSms.ts` "Called from ONE place",
-  `worker.ts` "the ONLY place the missed-call text is sent", `ringQueue.ts` heartbeat comment and its
-  `CallSession.ts:402` reference, the `MINUTE_CRON` "3-minute mark", and `publish-update.yml`'s
-  `OTA_BUILD` path.
-- The iOS build-number hazard and the dead `TWILIO_INTELLIGENCE_SERVICE_SID` are recorded above.
+All fixed in the same PR as this section, each with a test that fails against the old code where a
+test is possible:
+- **Manual Facebook name refresh** (`handleResolveFacebookNames`) used only the per-psid lookup,
+  which returns code 100 for ordinary customers. It now asks the Page inbox first, like the webhook
+  and the cron, and falls back per-psid only for whoever the inbox does not list.
+- **`deletePushTokens`** built one unbounded `IN (?,…)` list, which would 500 in production past
+  100 tokens. It now deletes in chunks of `DELETE_CHUNK` (90) in one `db.batch`. Its test wraps D1
+  in a proxy that throws on more than 100 bound values, because miniflare does not.
+- **`resolveRingTargets`'s `excludeEmails` is REQUIRED now**, not defaulted to `[]`.
+- **Four demo-account write routes are swallowed now:** `PUT /api/facebook/name`,
+  `POST /api/facebook/resolve-names`, `POST /api/calls/:id/restore`,
+  `POST /api/messages/:peer/restore`.
+- **Stale comments rewritten:** `missedCallSms.ts` (two senders), `worker.ts` (the status-webhook
+  send and `MINUTE_CRON`'s 15 minutes), `ringQueue.ts` (heartbeat, and the `CallSession.ts:402`
+  reference), `publish-update.yml` (`OTA_BUILD` path).
+- **Also:** iOS `buildNumber` set to 5, EAS publish checks added, dead
+  `TWILIO_INTELLIGENCE_SERVICE_SID` removed, stray root EAS files and `reset-project` deleted,
+  README corrected, tenancy spec and plan corrected, Settings "Version" reads the real version.
+  `OTA_BUILD` 81 -> **82** for that last change; **82 is NOT published** — publish it with the
+  GitHub "Publish OTA" workflow.
+
+Still open, deliberately:
+- The `test` EAS profile cannot receive incoming-call pushes (its package is not in
+  `google-services.json` and the VoIP credential is for the production bundle ID). Fixing it needs
+  a Firebase app and an Apple VoIP certificate for the `.test` IDs — console work, not code.
+- No retention job exists (see Scheduled work). Deciding what to delete, and after how long, is
+  Phill's call.

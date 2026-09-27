@@ -63,6 +63,20 @@ export function handleDemoRequest(
     return jsonResponse(demoConversations(now));
   }
 
+  // Writes that reach REAL rows by a path the fixture rules above do not anchor: renaming a real
+  // Messenger sender, re-running the Facebook name lookup against the real inbox, and the two undo
+  // routes, which restore a real soft-deleted call or conversation. Each is `$`-anchored on its own
+  // suffix, so the `/api/calls/:id` and `/api/messages/:peer` rules never saw them and they fell
+  // through to the real handlers. Swallowed like every other demo write.
+  if (
+    (url.pathname === "/api/facebook/name" && method === "PUT") ||
+    (url.pathname === "/api/facebook/resolve-names" && method === "POST") ||
+    (/^\/api\/calls\/[^/]+\/restore$/.test(url.pathname) && method === "POST") ||
+    (/^\/api\/messages\/[^/]+\/restore$/.test(url.pathname) && method === "POST")
+  ) {
+    return jsonResponse({ ok: true });
+  }
+
   const threadMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
   if (threadMatch) {
     const peer = safeDecode(threadMatch[1]);

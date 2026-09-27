@@ -58,6 +58,12 @@ describe("demo request handling", () => {
       // Every notification goes to every stored token, carrying real customer names and message
       // text. A reviewer's handset registering one would receive all of it.
       ["/api/push/register", "POST"],
+      // These four reached REAL rows: their paths end in a suffix the $-anchored fixture rules
+      // never matched, so they fell through to the real handlers.
+      ["/api/facebook/name", "PUT"],
+      ["/api/facebook/resolve-names", "POST"],
+      ["/api/calls/CA123/restore", "POST"],
+      ["/api/messages/%2B61400000000/restore", "POST"],
     ] as const) {
       const res = handleDemoRequest(new URL("https://x" + path), req(path, method), NOW);
       expect(res, `${method} ${path}`).not.toBeNull();

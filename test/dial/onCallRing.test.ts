@@ -38,8 +38,8 @@ describe("resolveRingTargets: on_call", () => {
     await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
 
     // Same instant, same roster: the daytime target still finds nobody. That contrast IS the test.
-    expect(await resolveRingTargets(env.DB, "all", AFTER_HOURS)).toEqual([]);
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:tech@x.com|+61412345678"]);
+    expect(await resolveRingTargets(env.DB, "all", AFTER_HOURS, [])).toEqual([]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:tech@x.com|+61412345678"]);
   });
 
   // Ring-my-mobile is a daytime preference. On call, the mobile is used regardless: the softphone
@@ -50,7 +50,7 @@ describe("resolveRingTargets: on_call", () => {
     await setUserSettings(env.DB, "tech@x.com", { mobile_number: "0412 345 678", ring_my_mobile: false });
     await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
 
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:tech@x.com|+61412345678"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:tech@x.com|+61412345678"]);
   });
 
   // `away` is sticky and meant for the working day. Honouring it here would let one forgotten
@@ -60,10 +60,10 @@ describe("resolveRingTargets: on_call", () => {
     await insertStaff("tech@x.com", "away");
     await setUserSettings(env.DB, "tech@x.com", { mobile_number: "0412345678" });
     await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:tech@x.com|+61412345678"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:tech@x.com|+61412345678"]);
 
     await env.DB.prepare("UPDATE staff_users SET status = 'offline' WHERE email = ?").bind("tech@x.com").run();
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:tech@x.com|+61412345678"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:tech@x.com|+61412345678"]);
   });
 
   it("gives the week to the override instead of the rotation when one is set", async () => {
@@ -73,28 +73,28 @@ describe("resolveRingTargets: on_call", () => {
     await setUserSettings(env.DB, "swapped@x.com", { mobile_number: "0499999999" });
     await setOnCallRotation(env.DB, { members: ["rostered@x.com"], anchorWeekStart: WEEK });
 
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:rostered@x.com|+61412345678"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:rostered@x.com|+61412345678"]);
     await setOnCallOverride(env.DB, WEEK, "swapped@x.com", "admin@x.com");
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:swapped@x.com|+61499999999"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:swapped@x.com|+61499999999"]);
   });
 
   // A rotation outlives the people in it. Dialling a number that is no longer ours would be worse
   // than voicemail, so this falls through -- loudly enough for Health Checks to report it.
   it("rings nobody when the rotation names someone who has left", async () => {
     await setOnCallRotation(env.DB, { members: ["departed@x.com"], anchorWeekStart: WEEK });
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual([]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual([]);
   });
 
   it("rings nobody when no rotation has been set at all", async () => {
     await insertStaff("tech@x.com");
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual([]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual([]);
   });
 
   // Better a handset that might be asleep than a caller sent to voicemail.
   it("falls back to the softphone when the on-call person has no mobile saved", async () => {
     await insertStaff("tech@x.com");
     await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["client:tech@x.com"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["client:tech@x.com"]);
   });
 
   // An unusable number is the same case: never drop the person over a typo.
@@ -102,7 +102,7 @@ describe("resolveRingTargets: on_call", () => {
     await insertStaff("tech@x.com");
     await setUserSettings(env.DB, "tech@x.com", { mobile_number: "12" });
     await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["client:tech@x.com"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["client:tech@x.com"]);
   });
 
   // The demo account is excluded from the roster before anything else is considered, and being
@@ -124,9 +124,9 @@ describe("resolveRingTargets: on_call", () => {
     await setUserSettings(env.DB, "b@x.com", { mobile_number: "0422222222" });
     await setOnCallRotation(env.DB, { members: ["a@x.com", "b@x.com"], anchorWeekStart: WEEK });
 
-    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:a@x.com|+61411111111"]);
+    expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:a@x.com|+61411111111"]);
     const nextWeek = new Date(AFTER_HOURS.getTime() + 7 * 86_400_000);
-    expect(await resolveRingTargets(env.DB, "on_call", nextWeek)).toEqual(["pstn:b@x.com|+61422222222"]);
+    expect(await resolveRingTargets(env.DB, "on_call", nextWeek, [])).toEqual(["pstn:b@x.com|+61422222222"]);
   });
 
   // resolveRingTargets is called from startRing, where a throw does not lose a feature -- it
@@ -144,7 +144,7 @@ describe("resolveRingTargets: on_call", () => {
       // reaching voicemail while settings.on_call_rotation sat intact in D1 naming a reachable
       // tech. The two reads are guarded separately now: a failed override read degrades to "no swap
       // this week", which is the state it normally holds anyway.
-      expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual(["pstn:tech@x.com|+61412345678"]);
+      expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual(["pstn:tech@x.com|+61412345678"]);
     } finally {
       await env.DB.exec("ALTER TABLE on_call_overrides_hidden RENAME TO on_call_overrides");
     }
@@ -157,7 +157,7 @@ describe("resolveRingTargets: on_call", () => {
     await setOnCallRotation(env.DB, { members: ["tech@x.com"], anchorWeekStart: WEEK });
     await env.DB.exec("ALTER TABLE settings RENAME TO settings_hidden");
     try {
-      expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS)).toEqual([]);
+      expect(await resolveRingTargets(env.DB, "on_call", AFTER_HOURS, [])).toEqual([]);
     } finally {
       await env.DB.exec("ALTER TABLE settings_hidden RENAME TO settings");
     }

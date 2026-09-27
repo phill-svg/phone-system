@@ -15,18 +15,16 @@ type Env = {
   TWILIO_SMS_NUMBER?: string;
 };
 
-// Called from ONE place: the caller leg's own terminal status callback (`/webhooks/twilio/status`,
-// configured on the Twilio number). That is the only moment the call is genuinely over, and being
-// genuinely over is the whole requirement -- a customer must not be texted "sorry we missed you"
-// while they are still on the phone to us.
-//
-// It used to be called from CallSession as well, on the voicemail `<Record>` action and the
-// callback request, because those paths stamp `calls.ended_at` themselves and the webhook's send
-// sat behind that same `ended_at IS NULL` write (0 rows changed -> never ran). But the `<Record>`
-// action is NOT the end of a call: the caller is still connected and about to hear "Thanks,
-// goodbye", so the text landed on their handset mid-call. The webhook still fires for those calls
-// -- `ended_at` being already set only stops it re-stamping the row -- so the send simply moved
-// OUT of that guard rather than being duplicated into the IVR.
+// Called from TWO places, and the claim below is what makes that safe:
+//   1. The caller leg's own terminal status callback (`/webhooks/twilio/status`, configured on the
+//      Twilio number) -- the moment the call is genuinely over. It runs OUTSIDE that webhook's
+//      `ended_at IS NULL` guard, because the voicemail/callback paths stamp `ended_at` mid-call.
+//   2. CallSession's voicemail `<Record>` action, ONLY when Twilio posts `Digits=hangup` (the
+//      caller hung up to end the recording, so they are gone). Any other value means they are
+//      still connected, and a text then buzzes their phone mid-call -- the bug that moved the send
+//      out of the IVR in the first place. This sender exists because Twilio fires the action and
+//      the status callback concurrently, and if the webhook lands first `voicemail_left` is not
+//      written yet and nothing else would ever text that caller.
 //
 // "Missed" is four shapes, not one:
 //   1. `voicemail_left` -- reached a mailbox and recorded something. Never requires `ring_started`:

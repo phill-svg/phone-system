@@ -2,9 +2,10 @@
 
 > **SHELVED — do not execute this plan** (noted 2026-09-23). Multi-tenancy is not being pursued;
 > the backend stays TCB-only. See the status note on
-> `../specs/2026-08-31-tenancy-foundation-design.md` and `CLAUDE.md`. Task 1's migration (`0026`,
-> the `tenant_id` columns and the `tnt_tcb` row) DID land and is live; nothing from Task 2 onward
-> was built. Kept for reference only — **do not resume without Phill explicitly asking**.
+> `../specs/2026-08-31-tenancy-foundation-design.md` and `CLAUDE.md`. NOTHING from this plan was
+> built, Task 1 included. This line used to say Task 1's migration "DID land and is live" — false,
+> checked 2026-09-27 against the code and live D1: there is no `tenants` table, no `tenant_id`
+> column and no `tnt_tcb` anywhere, and the `0026` slot went to `0026_message_delivery_errors.sql`. Kept for reference only — **do not resume without Phill explicitly asking**.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -7,7 +7,7 @@ import * as Application from "expo-application";
 // constant the handset displays, or the two can disagree.
 //
 // The publish workflow greps this file's value, so keep the literal on one line.
-export const OTA_BUILD = "81";
+export const OTA_BUILD = "82";
 
 // What Settings shows, and the only way to tell whether a NATIVE fix is on a handset.
 //
@@ -30,6 +30,11 @@ export const OTA_BUILD = "81";
 // drift onto different sources -- which is exactly how the broken one survived: two call sites, one
 // of them wrong, and nothing comparing them.
 export const NATIVE_BUILD: string | null = Application.nativeBuildVersion;
+
+// The installed binary's marketing version (CFBundleShortVersionString / versionName). Settings
+// hardcoded "1.0.0" here, which would silently keep saying 1.0.0 after the first `expo.version`
+// bump -- and that bump is exactly what starts a new runtime, so it is the version that matters.
+export const NATIVE_VERSION: string | null = Application.nativeApplicationVersion;
 
 export function buildLabel(nativeBuildVersion: string | null): string {
   return nativeBuildVersion ? `#${OTA_BUILD} · b${nativeBuildVersion}` : `#${OTA_BUILD}`;
