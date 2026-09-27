@@ -197,7 +197,7 @@ export function renderSettingsPage(
     </form>
     <form class="settings-form" id="missed-call-sms-form">
       <h3>Auto Missed-Call SMS</h3>
-      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">When a call rings out with nobody answering, automatically text the caller from the business number. This fires once the call is fully over — a caller who gets through on a second ring round is never texted mid-conversation — and only for a call that actually reached a ring (a wrong number who hangs up during the greeting is not "missed"). Off by default.</p>
+      <p style="color:var(--admin-dim);font-size:0.85rem;margin-top:0">When a call rings out with nobody answering, automatically text the caller from the business number. This fires once the call is fully over — a caller who gets through on a second ring round is never texted mid-conversation — and only for a call that actually reached a ring (a wrong number who hangs up during the greeting is not "missed"). A caller is texted at most once a day, however many times they ring. Off by default.</p>
       <label><input type="checkbox" id="missed-call-sms-enabled"${missedCallSms.enabled ? " checked" : ""}> Send an automatic text on a missed call</label>
       <label style="display:block;margin-top:0.6rem">Message
         <textarea id="missed-call-sms-template" rows="3" maxlength="320">${escapeHtml(missedCallSms.template)}</textarea>

@@ -82,12 +82,27 @@ export async function sendMissedCallSmsIfDue(env: Env, callSid: string): Promise
     // try/catch below would hold the claim forever with no text ever sent.
     const from = (await resolveSendingNumber(env.DB, "sms", null)) ?? env.TWILIO_SMS_NUMBER ?? env.TWILIO_FROM_NUMBER;
 
+    // The same claim also enforces ONE TEXT PER CALLER PER SYDNEY DAY: a customer who rings three
+    // times in a row and misses us each time gets one "sorry we missed you", not three. It reads
+    // `missed_sms_sent_at` on the caller's other calls rather than the messages table, because the
+    // messages insert below is best-effort and can be missing for a text that did go out. Staff's
+    // own manual texts do not count. Folded into the UPDATE so two different calls from the same
+    // number ending together cannot both pass it. A skipped call keeps the column NULL, so it still
+    // means "a text went out for this call".
+    // ponytail: a claim that is still in flight also counts, so if call A's send then FAILS, a call
+    // B from the same number that ended in that same second stays untexted. Needs a Twilio failure
+    // and two calls ending together; a separate "sent" column would close it if it ever matters.
+    const now = Date.now();
     const claim = await env.DB.prepare(
-      "UPDATE calls SET missed_sms_sent_at = ? WHERE id = ? AND missed_sms_sent_at IS NULL"
+      `UPDATE calls SET missed_sms_sent_at = ? WHERE id = ? AND missed_sms_sent_at IS NULL
+         AND NOT EXISTS(SELECT 1 FROM calls p WHERE p.caller_number = ? AND p.id <> ? AND p.missed_sms_sent_at >= ?)`
     )
-      .bind(Date.now(), callSid)
+      .bind(now, callSid, row.caller_number, callSid, sydneyDayStart(now))
       .run();
-    if ((claim.meta.changes ?? 0) === 0) return;
+    if ((claim.meta.changes ?? 0) === 0) {
+      console.log("MISSED_CALL_SMS_SKIPPED", JSON.stringify({ callSid, caller: row.caller_number, reason: "this call or this caller already texted today" }));
+      return;
+    }
 
     let sid: string;
     try {
@@ -127,4 +142,32 @@ export async function sendMissedCallSmsIfDue(env: Env, callSid: string): Promise
     // notifyVoicemail): never let this break the status webhook Twilio is waiting on.
     console.log("MISSED_CALL_SMS_FAILED", JSON.stringify({ callSid, error: e instanceof Error ? e.message : String(e) }));
   }
+}
+
+// Epoch ms of the most recent midnight in Australia/Sydney. The timezone is a local constant for the
+// same reason as `dial/onCall.ts`: this is a decision, not a label, so it does not import from
+// src/html/. The offset is read AT the midnight guess, not at `now`: on a daylight-saving day the
+// two differ by an hour. Sydney's transitions happen at 2-3am, never at midnight, so one refinement
+// is exact.
+export function sydneyDayStart(now: number): number {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Sydney",
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  // Sydney's UTC offset at `t`, rounded to the minute: formatToParts drops the milliseconds.
+  const offset = (t: number) => {
+    const p = Object.fromEntries(fmt.formatToParts(t).map((x) => [x.type, x.value]));
+    const wall = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+    return Math.round((wall - t) / 60000) * 60000;
+  };
+  const wallNow = now + offset(now);
+  const midnightAsUtc = wallNow - (((wallNow % 86400000) + 86400000) % 86400000);
+  const guess = midnightAsUtc - offset(now);
+  return midnightAsUtc - offset(guess);
 }

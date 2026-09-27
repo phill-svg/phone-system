@@ -65,7 +65,7 @@ export default function MissedCallSmsScreen() {
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
         <Group
           title="Auto Missed-Call SMS"
-          footer="When a call rings out with nobody answering, automatically text the caller from the business number. This fires once the call is fully over -- a caller who gets through on a second ring round is never texted mid-conversation -- and only for a call that actually reached a ring (a wrong number who hangs up during the greeting is not counted)."
+          footer="When a call rings out with nobody answering, automatically text the caller from the business number. This fires once the call is fully over -- a caller who gets through on a second ring round is never texted mid-conversation -- and only for a call that actually reached a ring (a wrong number who hangs up during the greeting is not counted). A caller is texted at most once a day, however many times they ring."
         >
           <Row icon="message.fill" iconFallback="chatbubble" iconColor="#34C759" label="Send an automatic text on a missed call"
             toggle={enabled} onToggle={setEnabled} />
