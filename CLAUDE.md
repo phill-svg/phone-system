@@ -60,7 +60,9 @@ included, only its skills.
   email,access,html,durable-objects}/`
 - `migrations/` — D1 SQL migrations, sequentially numbered
 - `mobile/` — Expo app (TCB Phone). **Has its own `AGENTS.md` — read it before touching mobile.**
-- `desktop/` — Electron wrapper
+- `desktop/` — Electron wrapper. One window plus `requestSingleInstanceLock`; Task Manager showing
+  ~6 "TCB Phone" processes is normal Electron (main, GPU, network, renderer, helpers), not duplicate
+  instances — asked 2026-09-25.
 - `test/` — Vitest, via `@cloudflare/vitest-pool-workers`
 
 ## Commands
@@ -77,6 +79,15 @@ Deploys also run from `.github/workflows/deploy.yml` on push to `master` or manu
 request: **pull requests do not run CI in this repo**, so a PR with no checks is normal, not
 broken. Mobile release jobs also live on EAS, in `mobile/.eas/workflows/` — check BOTH places
 before adding one, or you will duplicate a path that already works.
+The one check that DOES show up on a PR is GitHub's own **`github-advanced-security`**, and as of
+2026-09-25 it fails on every PR with `CAPIError: 400 The requested model is not supported` — a
+fault in GitHub's Copilot backend, not in the diff (#147 was docs-only and failed it). A session
+cannot re-run it (403). It is not a merge blocker; do not chase it as a code failure.
+
+**Querying live D1:** database id `c6d72eb4-9a3d-43cb-9678-69e5151b81fb` (also in
+`wrangler.jsonc`). Two column names that are easy to guess wrong: `call_events` timestamps are
+`ts` (there is no `created_at`), and `user_settings` is keyed by `email` (not `user_email`).
+When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
 
 ## Standing constraints
 
@@ -1431,6 +1442,10 @@ before adding one, or you will duplicate a path that already works.
   What this cannot fix: a DECLINED call or a phone that is off goes to carrier voicemail instantly,
   and the caller still hears 3-4s of the personal greeting before async AMD rescues them. The cure
   for that is press-1-to-accept screening on the mobile leg, offered and not yet chosen.
+  **Not yet proven with a real call** (as of 2026-09-27): the proof is ringing the main line, leaving
+  the mobile unanswered, and checking `call_events` shows successive `ring_started` rounds ending in
+  `voicemail_left` with no `mobile_machine_answered`. Phill has ring-my-mobile ON, so his leg is the
+  PSTN mobile, which is why his carrier voicemail is in the race at all.
 - **Auto missed-call SMS, added 2026-09-15 (migration `0037`, `/admin/settings`, admin-only, OFF by
   default).** When a call ends having never produced an `answered` event, `sendMissedCallSmsIfDue`
   (`src/api/missedCallSms.ts`) texts the caller from the business number. It is hooked into
