@@ -1471,9 +1471,11 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   What this cannot fix: a DECLINED call or a phone that is off goes to carrier voicemail instantly,
   and the caller still hears 3-4s of the personal greeting before async AMD rescues them. The cure
   for that is press-1-to-accept screening on the mobile leg, offered and not yet chosen.
-  **Not yet proven with a real call** (as of 2026-09-27): the proof is ringing the main line, leaving
-  the mobile unanswered, and checking `call_events` shows successive `ring_started` rounds ending in
-  `voicemail_left` with no `mobile_machine_answered`. Phill has ring-my-mobile ON, so his leg is the
+  **Proven with a real call on 2026-09-27 07:46 Sydney** (`CA248f1a7612c4b9a6e4a43780980ed1f4`,
+  Phill's mobile to the landline, left unanswered): four `ring_started`/`no_answer` rounds at 16s,
+  29s, 48s and 61s (each round lasted 12-19s, since Twilio's setup time adds to the 10s timeout), then
+  `voicemail_left` in "Voicemail during hours" at 90s, with NO `mobile_machine_answered` — the
+  carrier voicemail never got in. Re-run that same `call_events` check if this ever regresses. Phill has ring-my-mobile ON, so his leg is the
   PSTN mobile, which is why his carrier voicemail is in the race at all.
 - **Auto missed-call SMS, added 2026-09-15 (migration `0037`, `/admin/settings`, admin-only, OFF by
   default).** When a call ends having never produced an `answered` event, `sendMissedCallSmsIfDue`
@@ -1958,8 +1960,8 @@ test is possible:
 - **Also:** iOS `buildNumber` set to 5, EAS publish checks added, dead
   `TWILIO_INTELLIGENCE_SERVICE_SID` removed, stray root EAS files and `reset-project` deleted,
   README corrected, tenancy spec and plan corrected, Settings "Version" reads the real version.
-  `OTA_BUILD` 81 -> **82** for that last change; **82 is NOT published** — publish it with the
-  GitHub "Publish OTA" workflow.
+  `OTA_BUILD` 81 -> **82** for that last change; **82 was published** 2026-09-27 05:43 UTC
+  (Publish OTA run #43, green), and the worker deployed from the same commit (Deploy #171).
 
 Still open, deliberately:
 - The `test` EAS profile cannot receive incoming-call pushes (its package is not in
