@@ -1,5 +1,5 @@
 import { wrapResponse, escapeXml } from "./flowTwiml";
-import { RINGBACK_URL } from "./ringback";
+import { CONFERENCE_WAIT_URL, RINGBACK_URL } from "./ringback";
 
 // Media-mixing region only (this is a plain us1 account; conferences are account-global). Pinned
 // to Sydney because both the callers and the staff softphone are in Australia -- keeps audio
@@ -47,7 +47,7 @@ export function renderJoinConference(opts: {
       ? ` record="record-from-answer-dual" recordingStatusCallback="${escapeXml(opts.recordingStatusCallbackUrl)}" recordingStatusCallbackMethod="POST"`
       : "";
   return wrapResponse(
-    `<Dial${rec}><Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}">${escapeXml(opts.conferenceName)}</Conference></Dial>`
+    `<Dial${rec}><Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${CONFERENCE_WAIT_URL}">${escapeXml(opts.conferenceName)}</Conference></Dial>`
   );
 }
 
@@ -112,7 +112,7 @@ export function renderDialAgentIntoConference(opts: {
   return wrapResponse(
     (opts.whisper ? `<Say>${escapeXml(WORK_CALL_WHISPER)}</Say>` : "") +
       `<Dial action="${escapeXml(opts.actionUrl)}" method="POST"${dialRec}>` +
-      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${RINGBACK_URL}"${confRec}>${escapeXml(opts.conferenceName)}</Conference>` +
+      `<Conference region="${CONFERENCE_REGION}" beep="false" waitUrl="${CONFERENCE_WAIT_URL}"${confRec}>${escapeXml(opts.conferenceName)}</Conference>` +
       `</Dial>`
   );
 }
@@ -156,4 +156,10 @@ export function renderBridgeToCustomer(opts: {
 // connecting them to a stranger's voicemail greeting.
 export function renderAbandonToVoicemail(): string {
   return wrapResponse("<Hangup/>");
+}
+
+// What CONFERENCE_WAIT_URL answers: the Australian ringback on an unbounded loop. See ringback.ts for
+// why the waitUrl cannot simply be the wav file.
+export function renderConferenceRingback(): string {
+  return wrapResponse(`<Play loop="0">${RINGBACK_URL}</Play>`);
 }

@@ -908,9 +908,22 @@ describe("Task 8 queue/ring webhook routes", () => {
       const xml = await response.text();
       // Ringback (not silence) plays while the first participant waits; no join beep.
       expect(xml).toContain(
-        '<Conference region="au1" beep="false" waitUrl="https://tcbvoip.app/media/system/ringback-au.wav">CAcaller</Conference>'
+        '<Conference region="au1" beep="false" waitUrl="https://tcbvoip.app/twiml/ringback-wait">CAcaller</Conference>'
       );
     });
+  });
+
+  describe("/twiml/ringback-wait", () => {
+    // The conference waitUrl Twilio fetches with no credentials; it must answer TwiML that LOOPS,
+    // because Twilio plays a waitUrl's content once and then leaves the participant in silence.
+    for (const method of ["POST", "GET"]) {
+      it(`answers a looping ringback document to ${method}`, async () => {
+        const response = await SELF.fetch("https://example.com/twiml/ringback-wait", { method });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Content-Type")).toBe("text/xml");
+        expect(await response.text()).toContain('<Play loop="0">https://tcbvoip.app/media/system/ringback-au.wav</Play>');
+      });
+    }
   });
 });
 
