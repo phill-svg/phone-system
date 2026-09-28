@@ -3,12 +3,161 @@
 VOIP phone system for TCB Pest Control Canberra: Twilio IVR call routing, SMS + Facebook
 Messenger inbox, call history, a staff admin dashboard, and an Expo mobile softphone.
 
-**Read this first, then read the doc that matches your task** — the specs and runbooks below carry
-the decisions and the hard-won gotchas. Do not rediscover them.
+**THIS FILE IS THE PROJECT'S MEMORY -- the one place.** It loads into every session by itself;
+nothing else does. In order:
 
-## Where the knowledge lives
+1. **Rules checklist** -- every standing rule, one line each. Read it before any change.
+2. **Status today** -- what is live, what is open, what is waiting on a person.
+3. **Where things are** -- docs, skills, code layout, commands, standing constraints.
+4. **Detailed notes, by topic** -- the incident behind each rule: what broke, how it was found, why
+   the fix is shaped the way it is. The checklist names the topic; the heading finds it.
+5. **Reference** -- how production, deploys, crons, routing and releases actually work.
+6. **Repair log** -- every fix ever shipped, by date and PR number.
+7. **History** -- superseded notes, kept for the record only.
 
-`docs/superpowers/` is the project's memory. Nothing here is decorative.
+`docs/superpowers/` (specs, plans, runbooks) and `mobile/AGENTS.md` are **background reading**, not
+memory: read the spec for the area you are touching, but where they and this file disagree, **this
+file wins** and the doc is stale. **Keeping this file true is part of every change**: a PR that
+makes a line here wrong fixes that line in the same PR, and a new rule or repair is added here
+before the work is called done.
+
+## Rules checklist (read before any change)
+
+**Working rules**
+- Read this file, then the `docs/superpowers/specs/` doc for the area. Do not rediscover gotchas.
+- Run `/code-review` BEFORE shipping, then review the fix, then the fix to the fix. The count of
+  findings has repeatedly NOT fallen between rounds.
+- Every regression test must FAIL against the reverted code -- revert and watch it fail. A test
+  that reads source text, reads through a normalising read, sets `process.env.TZ`, or mutates the
+  `env` from `cloudflare:test` (SELF.fetch never sees it) is not a test.
+- Commit trailer `Co-Authored-By` YES, `Claude-Session` URL NO -- whatever a session reminder says.
+- Never commit credentials: `mobile/credentials/`, `play-service-account*.json`, `*.keystore`,
+  `*.jks`, `.dev.vars`. Say WHERE a secret lives; never paste its value.
+- `git checkout -B <branch> origin/master` throws away unmerged commits on that branch. Check they
+  are merged first.
+- A business-wide feature or setting is not done until it is on BOTH web and mobile.
+- Pull requests run no CI. `github-advanced-security` fails on every PR (GitHub's own Copilot
+  `CAPIError: 400`); it is not a merge blocker and a session cannot re-run it.
+
+**Database, deploy and release**
+- Migrations: take the next number from `origin/master`, not your checkout (next free: `0043` as
+  of 2026-09-27). Additive only -- `deploy.yml` applies them BEFORE the new code ships. Never
+  rename one that has been applied (wrangler re-runs it); a duplicate number is survivable.
+- D1 caps a query at 100 bound parameters and miniflare does not enforce it -- chunk any `IN (...)`.
+- `call_events` timestamps are `ts`; `user_settings` is keyed by `email`. When unsure, read
+  `SELECT sql FROM sqlite_master WHERE name = '<table>'`.
+- `OTA_BUILD` lives in `mobile/src/lib/build.ts`; read it off `origin/master`, bump it before any
+  publish, and never trust an unconflicted merge to mean the number is free.
+- After any production EAS build, commit the new `buildNumber` in `mobile/app.json` (next iOS
+  build is **6**). Every binary shares runtime `1.0.0`: an OTA that imports a new native module
+  crashes older binaries -- bump `expo.version` for that.
+- Native iOS code (`TwilioEarlyInit.swift`, plugins) ships only in a native build, never by OTA,
+  and is unverified until an EAS build goes green.
+- Expo is pinned to SDK 54 on purpose. iOS submit runs on EAS (`mobile/.eas/workflows/submit-ios.yml`);
+  `mobile/eas.json` must NOT name `ascApiKeyPath`. Do not rebuild it as a GitHub Actions job.
+- Store identifiers (`au.com.tcbpestcontrolcanberra.tcbphone`) and Play version codes are permanent.
+- Worker secrets are set with `npx wrangler secret put` -- `deploy.yml` sets none of them.
+- `AUTH_MODE=dev` is local only, never production.
+- `npm test` needs a Cloudflare login (the `ai` binding). Without one: copy `wrangler.jsonc` minus
+  `"ai"` and point a throwaway vitest config at it; delete both after. The full suite is flaky under
+  load -- re-run failed files alone before investigating. `SELF.fetch` serialises requests, so a
+  concurrency test must call the handler directly.
+
+**Live calls -- the ring path**
+- Nothing read inside `startRing` may throw: a throw hangs up on a live caller ("technical issue").
+  Guarded today: `callerId`, `resolveRingTargets` (roster + prefs), `resolveNumberRouting`,
+  `resolveOnCallEmail`, `playFromConfig`, the contact-name lookup, `recordCallLeg`,
+  `holdCallbackAck`, `ringNoAnswerFromCall`, the `outbound_target_sid` read. Anything new joins.
+- `cancelStaff` must swallow its errors; keep that tolerance inside it.
+- `dialRound` holds other events while dialling -- keep anything that can throw OUT of it.
+- Never make the queue hold document infinite (`<Play loop="0">`): the caller can never be released.
+- Ring steps are **10s**. To ring longer, add another 10s step; never raise a timeout (the staff
+  member's carrier voicemail wins the race). The server caps a ring timeout at 120s.
+- AMD is ASYNC on the inbound mobile leg (redirect the caller out FIRST, then hang up the voicemail
+  leg) and SYNCHRONOUS on call-via-mobile. Both are deliberate.
+- A `<Dial action>` URL must answer TwiML, never a status endpoint's plain `ok`.
+- Divert caller ID retries with the business number on **HTTP 400 only**.
+- Every `client:` leg carries `CallerNumber` and `CallerName`, encoded with `encodeURIComponent`
+  (never `URLSearchParams`), and never falls back to the business number. Deploy the worker before
+  any OTA that reads a new key.
+- Only the CALLER's leg records (`record-from-answer-dual`); staff legs pass `record: false`. Each
+  flow declares `staffch=`. A reversed transcript is fixed at that flow's call site.
+- Outbound rows store the BUSINESS number in `caller_number` -- branch on `direction`.
+- A voice number must be homed in **au1**, and so must every VoIP push credential (create those by
+  REST on the au1 host; the Console cannot). Twilio webhooks authenticate by the `?whsec=` URL
+  secret first -- rotate it primary=new/secondary=old, repoint, then unset.
+- The ringback is self-hosted and exactly one 3.0s cycle; `/media/` is public and immutable-cached,
+  so nothing private goes in that R2 bucket and a changed file needs a new name.
+- The on-call rota stays UNWIRED from the IVR until AMD on that leg is tuned or removed. Its anchor
+  must be a Monday.
+- "Was this call missed?" is `answered`/`event_count` -- never `ivr_path` -- on every surface.
+
+**Web dashboard and desktop app**
+- Never let a dashboard navigation leave `/admin/phone`: the Twilio Device lives only there. Other
+  sections open in the frame; one softphone per browser (Web Lock `tcb-softphone`).
+- An outbound call shows its pane (with Hang up) the moment Call is pressed, not on `accept`.
+- Inline scripts inside TS template literals: no backticks, no `${...}`, no regex with `\/`.
+- Client escapers must escape quotes too (`h()`, `esc()`).
+- Server-rendered admin times go through `formatSydney` (Workers run UTC).
+- Mirrored copies change together: `msgStatusLabel`/`messageStatusLabel`, `msgTime`/
+  `messageTimeLabel`, `normalizePhone` (three copies), `CALLBACK_KEYS` (web and mobile).
+- Every new `/api/` route is checked against `handleDemoRequest`; `/api/admin/` is admin-only;
+  `excludeEmails`-style exclusion lists are REQUIRED parameters, never defaulted.
+- A desktop release is only for Electron shell changes: bump `desktop/package.json` and add a
+  `releaseNotes.js` entry. Feature changes ship with the worker deploy.
+
+**Mobile app**
+- Read `mobile/AGENTS.md` before touching `mobile/`.
+- `Icon` needs a `fallback` or Android shows a blank circle.
+- Any screen that loads on `useFocusEffect` needs `keepEdits`, `setError(null)` on success, and a
+  re-read before writing.
+- `PUT /api/ivr/flows/:flow` is delete-and-reinsert: send every field back (`IVR_NODE_PUT_FIELDS`).
+- `expo-application` must stay a direct dependency. `Alert.prompt` is iOS-only.
+- Module state plus a timeout-less `apiFetch` wedges forever -- use a time window instead of a flag.
+- A route group that is a sibling of `(tabs)` needs its own way back.
+- Only a locked or killed handset tests VoIP push; a foreground app rings without it.
+
+**Data writes**
+- Validate on write, and name the offending entry in a JSON `{error}`: business hours, closed
+  dates, blocklist (E.164), IVR nodes, ring timeouts. Check live D1 before tightening a validator.
+- A callback may never erase what an earlier one recorded: recording fields are COALESCEd with
+  `blankToNull`; a terminal message status is never overwritten by a non-terminal one.
+- The conversation-undo token is an exact millisecond stamp: never re-read the clock, and never
+  mutate hidden rows behind it.
+- `handleGetDiagnostics` destructures its `Promise.all` by position -- add the binding with the check.
+
+## Status today (2026-09-28 -- update this when it changes)
+
+- **Live:** worker deployed 2026-09-27 (Deploy #171). Handsets on **OTA 82** (published
+  2026-09-27, both channels). iOS **build 5** installed via internal TestFlight -- it **expires
+  around 2026-12-09** and needs re-uploading; the next iOS build is 6. Android ships to the Play
+  internal track. Desktop app 1.2.2.
+- **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
+  `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
+- **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
+- **Open PR:** #153 -- outbound call screen shows immediately on web/desktop. Not yet tested with
+  a real desktop call.
+- **Waiting on Phill (not code):**
+  - Rotate the Twilio auth token exposed on 2026-09-10, if not done (order in the notes below).
+  - Delete the dead secret: `npx wrangler secret delete TWILIO_INTELLIGENCE_SERVICE_SID`.
+  - A second technician in `staff_users` -- today only Phill and the demo account.
+  - File the unlisted App Store request (prep in `specs/2026-08-28-appstore-listing.md`).
+  - Decide a retention period (nothing is ever purged today).
+  - Decide on press-1-to-accept screening for the mobile leg (declined/off phones still leak 3-4s
+    of carrier voicemail greeting).
+- **Still unproven on a real call:** a call-via-mobile transcript (the one flow with reversed
+  channels); the web shell's ring-while-on-Messages / Phone-mid-ring / Call-from-Messages cases;
+  the #153 outbound pane on desktop.
+- **Known, not yet fixed:** the on-call rota is unwired from the IVR (AMD misfire); a ServiceM8
+  `no-match` is never retried; a mobile business-hours save with an inverted window says only
+  "request failed (400)"; most `Row` call sites lack an Android `iconFallback`; the `test` EAS
+  profile cannot receive incoming-call pushes; the mobile "no hang-up button" report was never
+  reproduced.
+
+## Where things are
+
+`docs/superpowers/` is background reading -- the approved designs and procedures. Read the one
+for your area before implementing; where it disagrees with this file, this file wins.
 
 - **`specs/`** — approved designs. Read the relevant one *before* implementing.
   - `2026-08-31-tenancy-foundation-design.md` — multi-tenancy, and the 7 sub-project roadmap to
@@ -93,7 +242,7 @@ cannot re-run it (403). It is not a merge blocker; do not chase it as a code fai
 `ts` (there is no `created_at`), and `user_settings` is keyed by `email` (not `user_email`).
 When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
 
-## Standing constraints
+## Standing constraints (detail)
 
 - **Expo is pinned to SDK 54 on purpose.** Do not upgrade without a plan for how Phill runs it.
   The reason is in `mobile/AGENTS.md`. Two things about that pin, established 2026-09-10 rather
@@ -152,7 +301,12 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   force-pushing shared history to remove it.
 - `AUTH_MODE=dev` bypasses staff login. Local development only, never in production.
 
-## Current status (update this when it changes)
+## Detailed notes, by topic
+
+The incident behind each rule in the checklist: what broke, how it was found, and why the fix
+is shaped the way it is. Newest status is in **Status today** above; these are the reasons.
+
+### Phone numbers, regions and app distribution
 
 - **iOS: internal TestFlight TODAY, unlisted App Store INTENDED.** Keep the two apart — this file
   recorded only the first and `specs/2026-08-28-appstore-listing.md` only the second, so each read
@@ -184,6 +338,26 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   inbound routing reads that table for ONE thing only -- which IVR flow the call enters (see the
   per-number routing bullet below). Everything else about how a number behaves still lives in the
   Twilio console.
+- **A voice number must be homed in au1.** A Twilio number is global but its config is per-region,
+  and inbound calls are processed in whichever region its Inbound Processing Region (`voice_region`)
+  names — where, if no voice handler is set, Twilio rejects the call at the network edge: no call
+  log, no webhook, and the caller hears a carrier "not connected" intercept. That is exactly how the
+  ported landline lost a day: it arrived on **us1**. It has to be au1 specifically, because
+  softphone clients register in au1 and Twilio only connects an SDK client to calls processed in its
+  own region — and `src/twilio/restClient.ts` hardcodes `api.sydney.au1.twilio.com` besides. Fix it
+  in the console (the number's **Regional** tab) or via
+  `POST routes.twilio.com/v2/PhoneNumbers/<e164>` with `VoiceRegion=au1`; a 404 on the GET means no
+  explicit config, which defaults to us1. `/admin/settings` records the region per number and warns
+  when a voice number is not au1. `+61485034869` is `us1` but its `voice_enabled` is **0** (checked
+  against live D1 on 2026-09-06). That did NOT stop it taking a call: on 2026-09-18 a leftover
+  Twilio voice webhook sent one in, the us1 call failed an au1 redirect with a 404, and both sides
+  heard "technical issue" (#123). `CallSession` now answers `<Reject reason="rejected"/>`
+  (`VOICE_DISABLED_NUMBER`) for any number whose row says `voice_enabled = 0`; it fails OPEN for a
+  number with no row or a failed read. `+61866108941` has no `phone_numbers` row at all.
+  Re-check its region before ever turning voice back on.
+
+### Inbound routing and the ring path
+
 - **Every number can have its OWN IVR, and that is a property of `phone_numbers` (migration `0041`).**
   `ivr_flow` and `after_hours_flow` are nullable columns; NULL means "follow the shared default"
   (`main` in hours, `after_hours` outside them), which is exactly what every number did before, so
@@ -251,29 +425,6 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   that then 400'd on every save, with no way to fix it on the handset -- which is what the
   `addStepTo` change above closes. The count did not fall between finding and fixing: review the
   fix, then review the fix to the fix.
-- **A voice number must be homed in au1.** A Twilio number is global but its config is per-region,
-  and inbound calls are processed in whichever region its Inbound Processing Region (`voice_region`)
-  names — where, if no voice handler is set, Twilio rejects the call at the network edge: no call
-  log, no webhook, and the caller hears a carrier "not connected" intercept. That is exactly how the
-  ported landline lost a day: it arrived on **us1**. It has to be au1 specifically, because
-  softphone clients register in au1 and Twilio only connects an SDK client to calls processed in its
-  own region — and `src/twilio/restClient.ts` hardcodes `api.sydney.au1.twilio.com` besides. Fix it
-  in the console (the number's **Regional** tab) or via
-  `POST routes.twilio.com/v2/PhoneNumbers/<e164>` with `VoiceRegion=au1`; a 404 on the GET means no
-  explicit config, which defaults to us1. `/admin/settings` records the region per number and warns
-  when a voice number is not au1. `+61485034869` is `us1` but its `voice_enabled` is **0** (checked
-  against live D1 on 2026-09-06). That did NOT stop it taking a call: on 2026-09-18 a leftover
-  Twilio voice webhook sent one in, the us1 call failed an au1 redirect with a 404, and both sides
-  heard "technical issue" (#123). `CallSession` now answers `<Reject reason="rejected"/>`
-  (`VOICE_DISABLED_NUMBER`) for any number whose row says `voice_enabled = 0`; it fails OPEN for a
-  number with no row or a failed read. `+61866108941` has no `phone_numbers` row at all.
-  Re-check its region before ever turning voice back on.
-- **Ring-my-mobile is a DIVERT**, decided 2026-09-02: when a staff member enables it, their leg
-  becomes their mobile and their softphone is **not** rung. Per-person — other staff still ring.
-  This deliberately supersedes the "additive / also ring" wording in
-  `specs/2026-08-27-settings-functional-design.md`; read the Superseded note there before "fixing"
-  it back. Each on-shift person contributes exactly one leg, which is also what keeps
-  `ring_priority` ordering meaningful under the cascade strategy.
 - **AMD must stay async.** The pstn mobile leg dials with `AsyncAmd=true`; Twilio's default is
   synchronous and *blocks the call*, so the caller keeps hearing ringback for 2-4s after staff
   answer. The verdict therefore lands after bridging, and the machine case undoes a live bridge —
@@ -286,165 +437,6 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   callers on 2026-09-04; fixed in #45 with a finite `HOLD_RINGBACK_LOOPS` plus a regression test.
   The conference ringback is a different case — there the caller is released by the conference
   join, not by a poll — so its unbounded loop is correct. Never make the hold document infinite.
-- **Recent work (2026-09-02/03):** the divert above (#26), async AMD (#27), recording playback —
-  `calls.recording_duration` persisted from Twilio plus a proxy that always sends `Content-Length`
-  and honours Range (#26) — and a sending-number dropdown in the mobile app (#28, OTA 34).
-  Then in-page message composing and contact saving on web (#31) and mobile (#33), the Android
-  compose-field fix plus a manual-dispatch **Publish OTA** workflow (#34), and #35: a region field
-  on `/admin/settings` numbers, contact search in the web composer's To field, and a tappable
-  contact name in mobile threads (OTA 37). Before that: ServiceM8 call logging (`src/servicem8/`),
-  mobile reconnect-loop fix, and Facebook Messenger delivery-status tracking.
-- **Recent work (2026-09-04/06):** the hold-queue release fix (#45, see the hold-document note
-  above), an IVR **callback node** so a menu key logs a callback request (#46), an Australian
-  ringback tone (#47), a Settings **connection test** for call quality (#48), then the CallKit
-  native-answer chain — #49 (accepting a non-pending `CallInvite` aborts the process), #50 (adopt
-  the `Call` on `CallInvite.Event.Accepted`) and #51 (hand that adopted call back, or the ringing
-  screen pops an empty stack and goes black over a live call). Then #52: the mobile **Inbox** tab
-  (Voicemail | Callbacks segmented, replacing the Voicemail tab), `PUT /api/callback-requests/:id`
-  to mark one handled or reopen it, migration 0030's `done_at`/`done_by`, a `notif_callback` push,
-  and the same mark-done actions on `/admin/callbacks`. OTA 45. Then the mobile **Admin** section
-  (Settings > Administration, admin role only): business hours, call blocklist, phone numbers with
-  the au1 region warning, and staff (working hours, ring order, availability, invite/reset/remove).
-  It reads `GET /api/admin/staff` — a new admin-only endpoint, because the plain roster
-  (`/api/staff`) deliberately omits schedules, ring order and password state so the softphone's
-  transfer picker can stay ungated. Everything under `/api/admin/` is admin-only by construction.
-  The IVR editor and Analytics stayed web-only at the time; the IVR is now on mobile too (see the
-  phone-menu bullet below). OTA 46.
-- **ServiceM8 needs `SERVICEM8_API_KEY` set as a worker secret, and nothing tells you if it isn't.**
-  `deploy.yml` does not set it — wrangler secrets are separate (`npx wrangler secret put
-  SERVICEM8_API_KEY`). Both halves of the integration (the job diary note and the auto-created
-  contact) are gated on that one env var and used to fail in total silence, which is how it sat
-  inert while callers who ARE in ServiceM8 kept landing as bare numbers. Checked 2026-09-06: no
-  "Logged automatically by TCB Phone" note on any job, no contact created since 09-04. The paths
-  now log `SERVICEM8_DISABLED` (no key), `SERVICEM8_SEARCH_FAILED` (missing/revoked key — a 401
-  looks identical to no key), `SERVICEM8_NO_MATCH`, `SERVICEM8_NO_NAME` and
-  `SERVICEM8_CONTACT_CREATED`, so `wrangler tail | grep SERVICEM8_` answers "is it on?".
-- **ServiceM8 runs 15 minutes AFTER a call ends, on a cron — not from the status webhook.** Staff
-  routinely create the ServiceM8 client or job during the call or right after hanging up, so firing
-  the instant it ended searched for a record that did not exist yet, found nothing, and never tried
-  again — the note and the contact were both lost for that call. The status webhook now only leaves
-  `calls.servicem8_synced_at` NULL (migration `0031`) and `src/servicem8/syncQueue.ts` sweeps on the
-  cron. A **second cron, `* * * * *`, exists solely for this sweep** — the `*/5` tick would have
-  stretched the original "3 minutes" to 3–8; `scheduled()` branches on `event.cron` so everything
-  else stays on `*/5`. Each call is CLAIMED in D1 before any work, because two overlapping ticks
-  would otherwise post the diary note twice. The sweep reaches back only 2 hours, which is what
-  stops the first tick after a deploy noting every call in history, and also bounds retries.
-  **Raised from 3 to 15 on 2026-09-11** (`SERVICEM8_SYNC_DELAY_MS`), after a call that ended at
-  13:03:18 was looked at at 13:06:50 and the job was created at 13:09:33 — after the only look it
-  would ever get. Two things follow. The wait still gets exactly ONE look: a `no-match` claims the
-  row permanently (only `failed` releases it), so a job written up at minute sixteen is lost exactly
-  as before — 15 minutes moves the line, it does not remove it, and the durable fix is to retry a
-  `no-match` inside the existing 2-hour window. And the caller's NAME now takes 15 minutes to appear,
-  so a new customer sits in Recents and in the thread as a bare number until then. The number is
-  quoted in Admin > Health Checks, which DERIVES it from the constant — do not retype it there.
-- **ServiceM8 search tokenizes; its OData filters do not.** `search.json?q=` matches a number
-  however it is stored ("0402 430 107" matches a query of "0402430107"), but
-  `jobcontact.json?$filter=mobile eq '...'` is an exact string compare, so the old name lookup
-  missed every customer whose number carries spaces. The name now comes from the search results
-  themselves — the `company` result's `name` IS the customer — with jobcontact only as a fallback,
-  widened to several stored formats. One search per call now serves both the note and the contact.
-- **Admin > Health Checks (mobile) is where "is it actually working?" gets answered.**
-  `GET /api/admin/diagnostics` runs eleven checks as of 2026-09-27 (display order: twilio, regions,
-  number_routes, roster, on_call, divert_caller_id, servicem8, transcripts, email, voip_push, push),
-  each one added because it failed silently in production. The original six: Twilio credentials, **live** voice-number regions (asks `routes.twilio.com` rather
-  than trusting the region recorded on `/admin/settings` — a 404 there means no explicit config,
-  which defaults to us1), who is on call right now, ServiceM8 (distinguishing "no key" from "key
-  rejected"), the email binding, and the caller's registered push devices. `POST
-  /api/admin/test-push` and `/api/admin/test-email` are end-to-end and deliberately target only the
-  CALLER's own account, so a test never pages the team; the push one prunes any token Expo reports
-  as `DeviceNotRegistered`.
-- **"Call via my mobile" is the OUTBOUND counterpart to ring-my-mobile, and is a separate toggle.**
-  `POST /api/softphone/call-via-mobile` asks Twilio to ring the staff member's mobile, and
-  `/twiml/mobile-bridge` dials the customer once they answer, with the business number as caller ID
-  on both legs. No VoIP leg exists, so the **native dialler owns the call** — mute, speaker, keypad
-  and hangup come free, and there is deliberately no in-call screen. The trade is no in-app
-  hold/transfer/notes mid-call. AMD on the staff leg is **synchronous here** — the exact opposite of
-  the inbound pstn leg, and not a mistake: no caller is waiting yet, so blocking for the verdict is
-  what lets us hang up instead of connecting a customer to someone's voicemail greeting. The row is
-  keyed on the mobile leg's CallSid so history, the status webhook, recording and the ServiceM8
-  sweep all treat it as an ordinary outbound call.
-- **Recent work (2026-09-07/08):** call-via-mobile carried `<Dial action="…/webhooks/twilio/status">`
-  and a `<Dial action>` URL must answer with TwiML — that endpoint is a status callback answering
-  the plain text `ok`, so Twilio played "an application error has occurred" on **every** such call
-  (#60). Then the **crash-loop day**: with no crash logs available anywhere (TestFlight needs an App
-  Store Connect API key that is not configured, and Play's Developer Reporting API is disabled on
-  the project), the only move was rolling the OTA back to #49 — so #61 added crash reporting the app
-  had never had. Reports are written to the device FIRST and sent on the NEXT launch, because a
-  fatal error kills the app before an HTTP request finishes; `occurred_at` and `received_at` are
-  separate columns so the gap between them identifies a crash that really took the app down. A
-  global handler chains to the previous one (observes, does not change behaviour) and an error
-  boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
-  (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
-  falling over must be able to say so whoever holds it). Handsets were on **OTA 78** (published
-  2026-09-22 07:30, both channels); master has since bumped `OTA_BUILD` to 79 (#136), 80 (#137)
-  and **81** (#146) — whether each was PUBLISHED is not recorded here, so check the Publish OTA run
-  history before assuming. And the first binary carrying the native CallKit fix is
-  **build 5** (2026-09-10), **confirmed installed on Phill's iPhone on 2026-09-11**. Settings shows
-  that as `#<OTA> · b5` (it read `#78 · b5` on 2026-09-22) — and the `· b5` half only renders from OTA 67 onwards (see the bullet on it
-  below). **Build 5 expires around 2026-12-09**: internal TestFlight builds last 90 days, so the
-  binary needs re-uploading quarterly even when no native code has changed.
-- **Recent work (2026-09-09/10):** the day the missed calls were root-caused. `0xBAADCA11` turned
-  out to be the iOS CallKit watchdog rather than any JavaScript fault (see the two bullets on it
-  below — most of a day went into chasing it as a JS crash, which it can never be), the cure shipped
-  natively as **build 5**, and the TestFlight submit that carries it was finally made to work from
-  EAS with no Mac and no `.p8` anywhere. Then, in order: **#89** the after-hours **on-call
-  rotation**, migration `0035`, editable on web `/admin/settings` and mobile
-  `Admin > After-hours On Call`, with a Health Check for it; **#90** a back button on the mobile
-  **Admin hub**, which had no way out at all, plus the missing `Icon` fallbacks on the on-call
-  screen; **#91** the **phone menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than
-  the web's node canvas, reversing this file's old "IVR stays web-only" line — and the PR that
-  actually added `iconFallback` to `Row`, which this line used to credit to #90; then **#92** and **#94**, two rounds of
-  `/code-review` fixes over #89 — see the review bullet below, which is the durable lesson from the
-  whole day. OTA **66** on both channels; worker deployed.
-  Superseded on 2026-09-11: **OTA 67** on both channels, worker deployed, migration `0036` applied.
-  **Still outstanding at the end of it, and almost none of it is code:**
-  * ~~Build 5 has never been proven on a device.~~ **2026-09-11: build 5 IS installed, and a real
-    call still did not ring the softphone** — so the CallKit watchdog is ruled out as the remaining
-    cause and the lead is the VoIP push credential (see that bullet below). A locked-phone test call
-    is still the proof, but only once `TWILIO_PUSH_CREDENTIAL_SID_IOS` is confirmed set and not
-    sandbox; until then there is nothing for the handset to be woken BY.
-  * **The IVR's after-hours branch was wired to the on-call rotation on 2026-09-16, then UNWIRED
-    the same night** after it AMD-misfired a live caller into voicemail mid-conversation — see the
-    on-call-wiring bullet lower in this file. `main`'s closed branch is back to plain voicemail.
-    The rotation itself still holds Phill (anchor `2026-09-07`) but nothing in the IVR reaches it.
-  * `staff_users` still holds only Phill plus the demo reviewer account, so there is nobody ELSE to
-    rotate between — the rota rings the one person there is until a second tech is added.
-  * ~~Speaker-labelled transcripts need the Console's **Dual-channel Recording for Conference**
-    switch.~~ **Resolved 2026-09-12 by not depending on it**: that switch was Enabled and saved and
-    Twilio was still returning mono, so the recording moved to `record-from-answer-dual` on the
-    `<Dial>`. See the bullet on it below. **Settled 2026-09-22**: Twilio's Conversational
-    Intelligence turned out to be unusable here at all (unsupported in AU1) and was deleted; the
-    labelling is done in the worker now, and the first real labelled transcript came out correct.
-    Only **call-via-mobile** — the one flow with the channels reversed — is still unread.
-  * **A Twilio Auth Token was exposed in chat on 2026-09-10 and needs rotating** if it has not been.
-    The ORDER matters: create a SECONDARY token in Twilio, update `TWILIO_AUTH_TOKEN` in the
-    Cloudflare dashboard (Workers & Pages > tcb-voip > Settings > Variables and Secrets), make one
-    test call in and out, and only then promote it. Killing the old token before the worker holds
-    the new one breaks live calls — not because of webhook auth (webhooks authenticate by the
-    `?whsec=` URL secret first; see the webhook-auth bullet in the reference section) but because
-    the answer-time `redirectCall`, `hangupCall` and every conference operation authenticate with
-    `TWILIO_AUTH_TOKEN`. (Corrected 2026-09-27; this line used to blame webhook signatures.)
-    `TWILIO_AUTH_TOKEN_SECONDARY` lets both tokens pass signature checks during the swap.
-  * The **web** `/admin/settings` on-call section and the mobile screen are separate
-    implementations of the same rota; a change to one usually needs the other.
-- **Recent work (2026-09-13): a whole-repo bug scan, and all 49 findings fixed.** The `bug-hunter`
-  skill scanned `origin/master` in 9 domain groups (one agent finds, a separate agent challenges and
-  rules), giving 49 confirmed bugs. #105 shipped 5 (worker only); **#106** shipped the other 44 (worker +
-  **OTA 70**, both channels). The findings, fix list and raw verdicts are NOT in the repo, on purpose:
-  `C:\Users\Phill\Documents\TCB Phone bug audit 2026-09-13\`. Every fix has a test that failed first,
-  and each batch was run through `/code-review` until clean. **That took up to four rounds per batch
-  and caught about 20 real defects in the fixes themselves**, one of which (a first attempt at the
-  sibling-voicemail race) made things worse and was reverted, not patched. The rule stands: review
-  the fix, then review the fix to the fix. Still needing a handset: a locked-phone launch, answering
-  from the lock screen then opening the app, an attended transfer, call waiting, mute while dialling.
-- **Hold, transfer and complete-transfer resolve the conference from the staff member's OWN leg**
-  (`ownLegConference`, `softphone_call_legs.conference_name`). A client-supplied `conferenceName` is
-  ignored: an inbound call's conference is named after the CALLER's leg, which no client knows, so
-  web Hold 404'd on every inbound call and mobile Hold only ever flipped local state. Complete-transfer
-  removes **only the requester's own leg** (it used to remove any `callSid` it was given, i.e. a staff
-  member could hang up the customer) and refuses with 409 until the colleague has joined, or the
-  lone-conference cleanup ends the call on the customer. Mobile transfer is **attended only**; Blind
-  was removed deliberately, because an unanswered blind transfer strands the customer alone.
 - **Only the first answer of a ring round bridges, and each round is dialled with other events held.**
   `dialRound` wraps the dial-and-store of `startRing`, `performDeferredDial` and the cascade advance
   in `ctx.blockConcurrencyWhile`: creating legs is several Twilio/D1 round trips, and without the hold
@@ -465,145 +457,6 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   dials the customer before the staff leg has joined, so there may be no conference to end yet. And
   `handleQueueLeft` with `queueResult === "hangup"` returns `<Hangup/>` without walking the no-answer
   branch, which in production is a second ring round (it re-rang the whole team for nobody).
-- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Transcripts: a refused request is marked `request_failed` and reported.** It fails Health Checks
-  when nothing was transcribed and warns alongside working transcripts (the marker is permanent and a
-  single 5xx sets it). Live D1 on 2026-09-13: 76 recorded calls, **zero** ever given a transcript sid.
-  **Three separate causes, each hiding the next, and `intelligence_error` is what made them
-  legible.** Read that column on the newest recorded call before diagnosing anything here — it holds
-  Twilio's own words, and the answer has changed twice.
-  (1) The AU1 `TWILIO_AUTH_TOKEN` was being sent to the US1 host `intelligence.twilio.com` (tokens
-  are per-region). Real, fixed in **#115** (`globalAuthHeader`).
-  (2) `TWILIO_INTELLIGENCE_SERVICE_SID` was stored **with a stray quote** —
-  `400: {"code":1302,"message":"GAfa08e9518a03474beb8a4c6b9c07b412\" is invalid"}` on 2026-09-17.
-  Re-saved unquoted with `npx wrangler secret put` (effective immediately, no deploy). A Cloudflare
-  secret can never be read back, so this was only ever confirmable by the error going away — which
-  it did: the next call carried a different 400.
-  (3) The request itself was malformed, and had been since the feature shipped. The 21:34 call on
-  2026-09-17 reads
-  `400: The media_participant_id can only be set for transcript with media url`. We create from a
-  recording sid, and Twilio documents the `participants` override only with `media_url`. It is a
-  WHOLE-REQUEST rejection, so the call got no transcript at all. The array is gone entirely — it only
-  labelled channels in Twilio's own viewer, and nothing reads those roles back (see the staff-channel
-  bullet below). Dropping `role` with it means no second media-url-only field can take its place.
-  Do not widen the search: voicemail transcripts work (under ~5s legitimately comes back empty) and
-  plain unlabelled call transcripts work on nearly every answered call, both directions; it is only
-  the SPEAKER-LABELLED ones that have never once succeeded. The 14 rows already at `request_failed`
-  are terminal — the sweep selects on `intelligence_sid IS NOT NULL` — so nothing retries them and
-  those calls have no labelled transcript, permanently.
-- **The App Review demo account is denied by default on `/admin/`**, except `/admin/phone` and
-  `/admin/messages`, which render from the substituted `/api/`; everything else read real D1 and a web
-  login lands on `/admin/live`. Its `POST /api/push/register` is swallowed too, since every push goes
-  to every stored token with real customer names and message text.
-- **The login lockout is `reserveAttempt`: one conditional INSERT before the password hash.** Count,
-  hash, then record let a parallel burst all pass the count (20 of 20 in the test). A success clears.
-  **`SELF.fetch` serialises requests in the test worker, so a concurrency test must call the handler
-  directly**; the SELF version of this test passed against the broken code.
-- **Message threads are keyed by `threadPeer`**, which normalises only phone-shaped strings
-  (`0412 345 678` -> `+61412345678`) and leaves Messenger ids and alphanumeric senders ("Service NSW")
-  untouched. Sending normalised but lookup did not, so a new message showed an empty thread.
-- **Mobile, the durable pieces.** There is ONE native CallInvite handler with a subscriber stack in
-  `voice.ts` (the newest registration is told; two registrations used to open two ringing screens);
-  `unregisterFromIncoming` bumps a generation that stops a pending registration retry re-registering
-  a signed-out phone. The session token is `tcb_session_token_v2` with `AFTER_FIRST_UNLOCK`: the old
-  default could not be read on a locked-phone VoIP launch, the restore threw and the app sat on its
-  spinner with no call UI (a candidate cause of the "no hang-up button" report). `getTokenWhenReadable`
-  waits for unlock, then backs off ~3s before treating refusal as signed out; launch reads share one
-  in-flight read so the key migration cannot race. `createScreenExit` makes a screen leave exactly
-  once and only while on top (call-active). The thread query is **disabled while the thread is not
-  focused**: every load marks the thread read for the WHOLE team, and polling or the app-foreground
-  refetch under a call screen cleared everyone's unread dot.
-- **Test-runner gotchas met on 2026-09-13.** The full worker suite is flaky under load on this machine
-  (timeouts in files unrelated to the change, and once `workerd` crashed at startup with
-  `std::terminate`); re-run the failed files alone before investigating. And `mobile/__tests__/auth.test.tsx`
-  shows as a failing suite on Windows because its `testPathIgnorePatterns` entry uses `/`; it is
-  ignored correctly on Linux, including in `publish-ota.yml`.
-- **READ `docs/superpowers/` BEFORE IMPLEMENTING. It is not decorative, and skipping it cost a day.**
-  This file says so at the top and it was ignored on 2026-09-11 through an entire softphone
-  investigation. `specs/2026-08-19-ios-softphone-phase1-design.md` lists, under Risks: *"APNs
-  environment mismatch (sandbox vs production push credential) is a common cause of 'no incoming
-  ring'"* and *"VoIP background mode + push entitlement must be exactly right or background ringing
-  silently fails"*. Both were written a month before the morning they explained, and both were
-  unread while the same symptom was chased through CallKit, build numbers and OTA versions instead.
-  The 24 documents in there are the cheapest reading in this repo.
-- **A missing VoIP push credential is why a softphone never rings, and NOTHING said so.**
-  `mintAccessToken` sets `push_credential_sid` only `if (opts.pushCredentialSid)` — so an unset
-  secret mints a perfectly valid access token with no push credential on it. The app registers
-  happily, presence goes green, and Twilio has no way to wake it: an inbound call rings
-  `client:{email}` for the FULL timeout and the handset never stirs. No error, no log line, no
-  crash, and `/admin/errors` stays empty because no JavaScript ever runs. That is exactly the
-  10:28 call on 2026-09-11 — 22s then 62s of ringing into a phone that was never told.
-  `TWILIO_PUSH_CREDENTIAL_SID_ANDROID` is a plain var in `wrangler.jsonc`; **the iOS one is not
-  there at all**, so it has always depended on a wrangler secret (`deploy.yml` does not set
-  secrets) that nothing verified. `Admin > Health Checks > Ringing the app` now answers it, and it
-  asks Twilio rather than trusting the var: a 404 means the SID is not in au1 (see the next
-  bullet), and `sandbox: "true"` on an APNs credential means silence on any TestFlight or App Store
-  build, because those talk to PRODUCTION APNs. Could-not-reach is a warn, never a fail — a Twilio
-  blip must not send someone rebuilding credentials that were fine.
-- **A PUSH CREDENTIAL MUST LIVE IN au1, AND THE CONSOLE CANNOT MAKE ONE. This cost two days.**
-  Twilio's Voice SDK regional guide states the binding rule: *"The Twilio resources referred to by
-  the Access Token (the API Key, TwiML Application, **and Push Credential**) must exist in the
-  Twilio Region specified in the Access Token."* `mintAccessToken` sets `twr: "au1"`, so a us1
-  credential on the token is not a near-miss — Twilio has nothing to send a VoIP push with and the
-  handset is never woken. That is **error 52161**, and it is what commit `8822611` hit on Android
-  on 2026-08-23.
-  What makes this a trap is that Twilio ALSO says *"Mobile push credential creation for the AU1
-  region is not supported"* and *"REST API operations that manage Push Credentials … are supported
-  only in US1"*. **Both are true of the CONSOLE and false of the REST API.** The au1 host creates
-  and reads them perfectly well:
-  ```bash
-  curl -X POST https://notify.sydney.au1.twilio.com/v1/Credentials -u "$ACCOUNT_SID:$AU1_AUTH_TOKEN" \
-    --data-urlencode Type=apn --data-urlencode FriendlyName="..." \
-    --data-urlencode Certificate@voip_cert.pem --data-urlencode PrivateKey@voip_key_rsa.pem \
-    --data-urlencode Sandbox=false
-  ```
-  (the AU1 **auth token**, which is a different value from the us1 one — API keys and auth tokens
-  are per-region. `Invoke-WebRequest` fails this POST with "Cannot follow an insecure redirection";
-  use curl.)
-  So **the US1 Console list is NOT the account's list**, and a 404 from `notify.twilio.com` says
-  nothing whatsoever about an au1-homed account. Checked live 2026-09-12: the au1 host returns 200
-  for `CRa514b67c…` (Android FCM) and `CRa85b8607…` (iOS APNs) and **404 for `CR7b85225…`**, a real
-  credential that simply sits in us1.
-  The iOS credential is `CRa85b8607a3c0fa5a465024590c9ff96a` (apn, sandbox false), created
-  2026-09-12 from an Apple **VoIP Services Certificate** — not a standard APNs cert, which Twilio's
-  own FAQ says fails exactly this way, and not a `.p8` key, which their APNs credential does not
-  take. Use a **fresh CSR**: reusing one that already made a regular APNs certificate causes
-  "service type confusion" and the certificate then looks fine and silently does not work.
-  **The iPhone rang, locked, at 07:28 on 2026-09-12** — the first time it ever has.
-  Two things that wasted most of that investigation, recorded so nobody repeats them. A **foreground**
-  app is rung over the Voice SDK's own signalling connection with **no push involved**, so "it rang
-  while I had the app open" is never evidence about the push credential — only a locked or killed
-  handset tests it. And the Expo dashboard's push graph is the **other** push system entirely (SMS,
-  voicemail, missed-call alerts); 100% delivery there says nothing about VoIP push. Getting the
-  missed-call notification but no ring is the signature of exactly this bug.
-- **The `· b5` in Settings never rendered, on any device, ever.** It read
-  `Constants.nativeBuildVersion`, which is not a property of `Constants` in SDK 54 — only a
-  `@deprecated` comment pointing at `expo-application`. `Constants` is typed `& Record<string, any>`,
-  so it compiled clean and was `undefined` everywhere, from the day it shipped in OTA 60. This file
-  called that half "the ONLY thing that says whether the fix is on the handset"; it printed nothing.
-  It comes from `expo-application` now, through one `NATIVE_BUILD` constant that both the Settings
-  screen and push registration read. **And `expo-application` must stay in `mobile/package.json`**:
-  the first version imported it while it resolved only as a transitive dep of `expo-notifications`,
-  and its native module loads with `requireNativeModule`, which THROWS — `api.ts` is imported by
-  nearly every screen, so the day that hoist changed every handset would white-screen on launch
-  with no JS left to report it.
-- **The handset reports its build to the server now** (migration `0036`, on push registration —
-  the one call every signed-in handset makes on launch), so "is the native fix on that phone?" is a
-  Health Check rather than a question someone answers by reading their own screen aloud. An iPhone
-  below `b5` FAILS and names the fix; one that has not reported WARNS rather than passing, because
-  unknown is not the same as fine. Bounded to 30 days so a spare phone in a drawer cannot pin it
-  red forever, and the build is parsed strictly — `Number("1.0.4")` is NaN and `NaN < 5` is false,
-  which would have cleared a handset the check never actually read.
-- **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
-  the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
-  moving it again means moving the grep in the same commit or every publish fails at "Read
-  OTA_BUILD".
-- **A voicemail is a call with a `mailbox_label`, NOT one with a transcript.** The mobile Inbox
-  filtered on `transcription`, so every message Whisper produced nothing for was invisible — which
-  is most short ones; both voicemails left on 2026-09-08 (4s and 5s) had `transcribe_attempts`
-  exhausted at 3 and `transcription` NULL while sitting playable in D1. `mailbox_label` is written
-  only by the voicemail path (`CallSession.ts`, beside the `voicemail_left` event); every recording
-  in production without one carries an `answered` event, i.e. is a recorded conversation. Fixed in
-  #61; `/admin/voicemail` (added in #60, restyled in #62) uses the same rule.
 - **`cancelStaff` must never throw, and the answer path is why.** On answer the handler cancels the
   other ringing legs and THEN redirects the caller into the conference. Twilio's `Status=canceled`
   only applies to a leg still queued or ringing — a sibling that just hit voicemail, was declined,
@@ -614,117 +467,290 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   `answered` and only one `no_answer`. `cancelStaff` now swallows and logs `CANCEL_STAFF_FAILED`
   (#63). Keep the tolerance inside it, not at the four call sites — two already had it and two did
   not.
-- **Call History was removed from the web dashboard (#63).** The handset carries the same list. The
-  per-call DETAIL page `/admin/calls/:id` stays — `/admin/voicemail` links into it — but
-  `/admin/calls` 404s deliberately, and a test pins that.
-- **A web/desktop outbound call shows its pane the moment Call is pressed, not on `accept`
-  (2026-09-28).** Reported from the desktop app as "no calling screen" -- and a call sitting in the
-  customer's voicemail had no Hang up at all. The pane (the ONLY Hang up) used to appear on the
-  SDK's `accept` event and nothing before it. Two live calls that day (12:48, 12:49, both into the
-  customer's voicemail) connected with no screen; WHY `accept` never showed it was NOT found --
-  SDK 2.18.3 emits it once media and signalling are open, which a `<Dial><Conference>` answers at
-  once. So the fix does not depend on it: `placeCall` shows `showCallPane(to, true)` ("Calling",
-  Hang up only -- Mute/Hold/Transfer need the leg's CallSid) before `device.connect`, Hang up while
-  connecting sets `hangupWhenPlaced`, and a failed connect takes the pane down. `placeCall` and
-  `callContact` refuse while `callBusy()`, or the failure path would tear down a live call's pane.
-  A rail **"On call"** button now brings the pane back after Calls/Contacts/dial pad replaced it --
-  before that nothing did. Still unproven with a real desktop call.
-- **The web Phone page is the dashboard's SHELL: every other section runs in a frame over it (#142,
-  2026-09-23). Never let a dashboard navigation leave `/admin/phone`.** The Twilio Device exists only
-  on that page, and a full-page navigation destroys it -- and Twilio never re-offers a call to a
-  Device that registered after the call started. So before #142 a call rang NOWHERE while staff were
-  on Messages or Voicemail, and clicking back to Phone mid-ring showed it as "In progress" with no
-  Answer (reported on the desktop app; the browser was identical). The desktop app loads
-  `/admin/phone`, so it got the fix from the web deploy; a desktop-only two-view Electron version was
-  written first and dropped because running both designs would register two Devices.
-  The load-bearing pieces, all in `src/html/pages/phone.ts`, `layout.ts` and the `/admin/` routes:
-  * **Shell or plain page is decided by `Sec-Fetch-Dest`.** `document` (a top-level load) gets the
-    Phone page with that section open in `#section-frame`; each `/admin/` route returns it FIRST
-    (`topLevel`/`shellHere`), before its own queries, so nothing runs twice and a 404 stays a 404
-    (call detail checks the row exists, `deleted_at IS NULL`). `iframe` gets the plain page. A MISSING
-    header gets the plain page too -- never the shell, which inside a frame nests a second softphone
-    -- and that page sends itself to `/admin/phone?section=...` (layout head script), which is also
-    the safety net for a route that forgets `topLevel`. `?section=` accepts only a dashboard path.
-  * **`/admin/phone` requested INTO the frame answers a stub** (`renderPhoneFrameStub`) that hands
-    `?dial=`/`?listen=` to the running page (`tcbShowPhone` -> `tcbPhoneDeepLink`). Messages "Call",
-    Live Calls "Listen" and the staff/demo redirects all land there. The Phone page also guards
-    itself: framed anyway, it `window.stop()`s before the SDK loads.
-  * **One softphone per browser, via the Web Locks API** (`tcb-softphone`). Every dashboard tab is
-    now the Phone page, so without it a Ctrl-clicked second tab rang every call too. A tab whose
-    phone failed to start RELEASES the lock (or every other tab waits behind a phone that never
-    rings); a lock API that refuses starts the phone anyway.
-  * **A ringing call hides the section without unloading it** (`tcbHideSection`, draft kept, media
-    paused) and brings it back when the call ends -- unless another call is still up, or the user
-    chose Phone ("back to call" button, Phone link, Back), which keeps it loaded but hidden. Hidden
-    frames still report `visibilityState` "visible", so the layout wraps `setInterval` in framed
-    pages to pause every poll while hidden: Messages' thread poll marks the thread read for the WHOLE
-    team, and a hidden one would clear texts nobody saw. It covers `setInterval` only; a new poll
-    built on a `setTimeout` chain needs to check `window.tcbSectionHidden()` itself.
-  * The frame's location is always REPLACED; the top page gets one `pushState` per section the user
-    opens, so Back moves between sections. `beforeunload` asks before leaving mid-call in the
-    browser only -- the desktop app has no Back button and must never be kept from quitting.
-    `/admin/` pages send `frame-ancestors 'self'` + `X-Frame-Options: SAMEORIGIN`, and
-    `Vary: Sec-Fetch-Dest` + `no-store`, so Back can never serve the plain page at the top.
-  **It took SIX `/code-review` rounds (10, 10, 7, 8, 9, 9 findings) and the count never fell**,
-  because each round's fixes were new frame/history/lock code for the next round to find edge cases
-  in. It was stopped by agreeing a bar with Phill: fix anything that can drop or miss a call, list
-  the rest. Two traps met on the way: a regex with `\/` inside the page's template literal loses
-  its backslashes and throws in the browser (write it without a regex), and an iframe keeps its
-  intrinsic 150px height under top/bottom insets, so its height is set outright.
-  **Still unproven with a real call** as of the merge: ring while on Messages and answer; click Phone
-  mid-ring; "Call" from Messages during a call. Every other check was tests plus a real Chrome
-  against `wrangler dev`, where the token endpoint 500s (no Twilio creds locally).
-- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Speaker-labelled call transcripts need TWO things set, and neither announces itself.**
-  `TWILIO_INTELLIGENCE_SERVICE_SID` (a `GA...` Conversational Intelligence service) as a worker
-  secret -- `deploy.yml` does not set it, wrangler secrets are separate -- AND **Dual-channel
-  Recording for Conference** turned on in the Twilio Console (Voice > Settings). Without the secret
-  nothing runs; without the toggle every recording comes back on one channel and is discarded
-  unlabelled, because labelling a mono mix would be a guess presented as fact. Both states are
-  reported by Admin > Health Checks, which is the answer to "is it on?" -- added precisely because
-  `SERVICEM8_API_KEY` sat inert for a day with nothing saying so.
-- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **A mono recording never reached Health Checks, so the transcripts alarm could not fire.** Checked
-  against live D1 on 2026-09-10 after "the transcripts isn't working": EVERY recorded call had
-  `intelligence_sid` NULL — Twilio had never been asked, not once, since the feature shipped. The
-  check counted rows `WHERE intelligence_sid IS NOT NULL`, but a recording that comes back mono is
-  skipped in the recording webhook BEFORE Twilio is asked, so it never gets a sid. Its one
-  `single_channel` branch — the headline case, the Console's dual-channel switch being off — was
-  therefore unreachable from the webhook path and could only ever be set by the sweep, from a
-  DUAL-channel recording whose sentences all landed on one channel. The screen instead said
-  "Configured, but no answered call has been transcribed yet", indefinitely, which is the exact
-  reassuring silence it was built to break. The skip is persisted as `single_channel` now and the
-  check keys on `intelligence_status`.
-  Two constraints on that marker. It is written **only for conference recordings**, flagged with
-  `&conference=1` on the callback URLs we build ourselves. Since 2026-09-18 every recorded flow is a
-  dual `<Dial>` recording flagged `rec=dual` instead (caller leg, softphone customer leg,
-  call-via-mobile), where mono coming back is a real FAULT rather than the Console switch — so the
-  `conference=1` path is now effectively unused, kept for the fallback it describes. Inferring it
-  from Twilio's own parameters was the alternative and is worse: `<Dial>`'s documented
-  recordingStatusCallback carries no `ConferenceSid`, but that is a fact about their docs, not a
-  guarantee. And the write is guarded on `intelligence_status IS NULL`, because callbacks are
-  redelivered and a completed transcript must not be relabelled a misconfiguration by a late
-  duplicate. Note `conf=` already means a conference NAME on `/webhooks/twilio/join-conference`;
-  the boolean is deliberately spelled `conference`.
-  **`TWILIO_INTELLIGENCE_SERVICE_SID` is bound in `vitest.config.ts`**, not `wrangler.jsonc` (the
-  real one is a worker secret). Mutating the `env` imported from `cloudflare:test` does NOT reach
-  `SELF.fetch` — the worker holds its own — so the first version of these tests passed every
-  assertion with the branch never executing. A fifth instance of "a test that passes against
-  reverted code is not a test". Any test whose subject is "the secret is ABSENT" must now say so
-  explicitly rather than lean on the config default.
-- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Twilio has TWO Conversation Intelligence products and this uses the OLD one.** Searching the
-  Console lands you on the new one (Conversation Orchestrator: configurations, memory stores,
-  profiles, a "grouping type" field) — none of which applies. `src/twilio/intelligence.ts` POSTs one
-  recording to `intelligence.twilio.com/v2/Transcripts` with a `ServiceSid`, which is
-  **Conversation Intelligence (classic)** → Services, and the SID starts `GA`. No Language Operators
-  are needed; only the raw sentences and their channel numbers are read. Creating it by API avoids
-  the navigation entirely: `POST https://intelligence.twilio.com/v2/Services` with `UniqueName`.
-  The channel rule that default rests on: a DialVerb dual recording puts channel 1 on the **parent
-  call**, and for an inbound call that parent is the **CALLER** — so the customer is channel 1 and
-  **staff are channel 2**, which is why the default is 2. (For a CONFERENCE recording it was channel
-  1 = whoever joined first, which happened to give the same answer for a weaker reason.) This
-  paragraph said "staff are channel 1" for about half an hour on 2026-09-12, left over from a
-  reverted attempt at putting the recording on the staff leg; that is the sentence a future session
-  reads before touching `transcript_staff_channel`, and believing it labels every inbound transcript
-  backwards.
+- **Resolving the caller ID must never THROW on the ring path, and the rejection marker clears
+  itself.** `dialBatch` resolves the business caller ID once per ring round rather than once per leg
+  (four serial full-table reads in front of a caller on hold), which puts that call ABOVE its per-leg
+  try/catch. Every `dialStaff` failure falls the caller through to business voicemail; a throw from
+  `callerId()` instead escapes `dialBatch`, `startRing` and `handleMainWebhook` to the DO's catch-all,
+  which says "we're experiencing a technical issue" and HANGS UP on a live customer — and via
+  `performDeferredDial` does that to someone already on hold. So `callerId()` swallows a failed READ
+  the same way it already handled an invalid VALUE, falling back to `TWILIO_FROM_NUMBER`
+  (`CALLER_ID_LOOKUP_FAILED`). A test renames `phone_numbers` so the read genuinely throws; against
+  the old code it fails with the technical-issue hangup.
+  Two companions from the same review: `divert_caller_id_last_error` is cleared on the first
+  successful divert of a call, because a marker that only ever gets set pins Health Checks red for
+  seven days and teaches you to ignore it; and `isCallerIdRejection` is **HTTP 400 only**, since
+  401/403 are auth (a rotated key would otherwise dial every divert leg twice for the length of the
+  outage and be reported as a caller-ID fault), 404 is not-found, and 429/5xx may have created the
+  call. Not an incident that happened — a hazard found by review before it could.
+- **Reads on the ring path must never throw, and that list is the thing to check.** (Headed "THREE"
+  once; it is well past that. Added since: `resolveNumberRouting` `NUMBER_ROUTING_LOOKUP_FAILED`,
+  the contact-name lookup `RING_CONTACT_LOOKUP_FAILED`, `recordCallLeg` `CALL_LEG_RECORD_FAILED`,
+  `holdCallbackAck` `HOLD_CALLBACK_STEP_UNUSABLE`/`_FAILED`, `ringNoAnswerFromCall`
+  `AMD_FALLTHROUGH_LOOKUP_FAILED`, and the `outbound_target_sid` read in `handleAgentStatus`
+  `AGENT_STATUS_OUTBOUND_LOOKUP_FAILED`. Refer to them by function name — line numbers here rot.) A throw
+  inside `startRing` escapes `handleMainWebhook` to the DO's catch-all, which says "we're
+  experiencing a technical issue" and **hangs up on a live customer** — via `performDeferredDial`, on
+  someone already waiting on hold. `callerId()` was fixed for this (#71); `resolveRingTargets` sits
+  one line away (in `startRing`; the old `CallSession.ts:402` reference is stale) and had the same exposure twice over — `getStaffRoster`
+  (which `JSON.parse`s every row's schedule) and a per-person `getUserSettings` read inside the loop.
+  Both are guarded now (`RING_ROSTER_LOOKUP_FAILED`, `RING_PREFS_LOOKUP_FAILED`), and both fall
+  **closed**: a failed preferences read rings that person's softphone, an unreadable roster returns
+  zero legs, which the ring node already handles by continuing to `noAnswerNextNodeId` (voicemail).
+  Catching `JSON.parse` throwing is not enough, either — a schedule column holding the literal text
+  `null` parses fine and then throws in `isWithinBusinessHours`, so the SHAPE is checked with
+  `isBusinessHoursSchedule`. The fourth member of this family is `playFromConfig`: a wait node with a
+  blank `audioAssetId` (`""` survives `?? null`) throws in `resolveAudioCommands`, and one with both
+  fields set throws in `renderHold`. The fifth is `resolveOnCallEmail` (two D1 reads plus a
+  `JSON.parse` of the stored rotation), guarded the same way and falling back to "nobody on call",
+  which the ring node already handles. **Anything new that reads or parses inside `startRing` joins
+  this list.**
+- **A ring node's `timeoutSeconds` has to beat the staff member's own carrier voicemail, or calls
+  land there instead of business voicemail.** Reported 2026-09-15 as "calls are going through to my
+  mobile voicemail, not the business". Live D1 had the SECOND `main` ring node (`n_e6wrtx7`, reached
+  after the callback/continue gather) at **`timeoutSeconds: 500`** -- almost certainly a fat-fingered
+  edit, since the mobile step editor's `NumberField` for this field has a `min` but no `max` (the
+  web editor's `<input>` caps at 120 client-side only, never enforced server-side). At 500s, Phill's
+  own mobile carrier answers the PSTN leg with his personal voicemail (typically ~15-20s) long before
+  Twilio's own Dial timeout ever has a chance to fire -- and Twilio counts that as *answered*, not a
+  timeout, so async AMD is the only thing left to notice and rescue the caller, 2-4s later, by which
+  point the caller has already heard Phill's personal greeting. The FIRST `main` ring node
+  (`n_5frbzxd`) was already at 15s and never showed this symptom in the event log -- proof that 15s
+  reliably loses the race against the carrier before it can answer. Both `main` ring nodes are now
+  15s. `isRingConfig`'s validator (`src/api/ivrFlow.ts`) now rejects any `timeoutSeconds` over
+  `RING_TIMEOUT_MAX_SECONDS` (120, matching the web editor's unenforced client-side cap) from EITHER
+  client, with a test that fails against the old code. The mobile `NumberField` itself was
+  deliberately left alone: giving it a `max` risks the exact divergence bug documented on that
+  component (a clamp that fires mid-typing, before the field is "finished") for a case the server
+  now guards regardless of which client sends it.
+  **It regressed, and 15s stopped being enough (2026-09-25).** `n_e6wrtx7` was back at **60s** and
+  Phill's carrier voicemail answered ~32s into it; on the same day it also answered at **14.4s** into
+  the 15s first round, so the carrier's timer varies and 15 is no margin at all. Every `main` ring
+  step is now **10s**, and the old single long ring is a CHAIN of short ones:
+  greeting -> ring 10 (`n_5frbzxd`) -> hold/callback (`n_holdcb1`) -> ring 10 (`n_e6wrtx7`) ->
+  ring 10 (`n_ring03`) -> ring 10 (`n_ring04`) -> voicemail (`n_pkqmsmd`). Each ring step is a new
+  leg, which restarts the carrier's no-answer timer, so it never reaches its own voicemail. Written
+  straight to D1 at Phill's request. **To ring longer, add another 10s step; never raise a timeout.**
+  What this cannot fix: a DECLINED call or a phone that is off goes to carrier voicemail instantly,
+  and the caller still hears 3-4s of the personal greeting before async AMD rescues them. The cure
+  for that is press-1-to-accept screening on the mobile leg, offered and not yet chosen.
+  **Proven with a real call on 2026-09-27 07:46 Sydney** (`CA248f1a7612c4b9a6e4a43780980ed1f4`,
+  Phill's mobile to the landline, left unanswered): four `ring_started`/`no_answer` rounds at 16s,
+  29s, 48s and 61s (each round lasted 12-19s, since Twilio's setup time adds to the 10s timeout), then
+  `voicemail_left` in "Voicemail during hours" at 90s, with NO `mobile_machine_answered` — the
+  carrier voicemail never got in. Re-run that same `call_events` check if this ever regresses. Phill has ring-my-mobile ON, so his leg is the
+  PSTN mobile, which is why his carrier voicemail is in the race at all.
+
+### Ring-my-mobile, divert caller ID and call-via-mobile
+
+- **Ring-my-mobile is a DIVERT**, decided 2026-09-02: when a staff member enables it, their leg
+  becomes their mobile and their softphone is **not** rung. Per-person — other staff still ring.
+  This deliberately supersedes the "additive / also ring" wording in
+  `specs/2026-08-27-settings-functional-design.md`; read the Superseded note there before "fixing"
+  it back. Each on-shift person contributes exactly one leg, which is also what keeps
+  `ring_priority` ordering meaningful under the cascade strategy.
+- **"Call via my mobile" is the OUTBOUND counterpart to ring-my-mobile, and is a separate toggle.**
+  `POST /api/softphone/call-via-mobile` asks Twilio to ring the staff member's mobile, and
+  `/twiml/mobile-bridge` dials the customer once they answer, with the business number as caller ID
+  on both legs. No VoIP leg exists, so the **native dialler owns the call** — mute, speaker, keypad
+  and hangup come free, and there is deliberately no in-call screen. The trade is no in-app
+  hold/transfer/notes mid-call. AMD on the staff leg is **synchronous here** — the exact opposite of
+  the inbound pstn leg, and not a mistake: no caller is waiting yet, so blocking for the verdict is
+  what lets us hang up instead of connecting a customer to someone's voicemail greeting. The row is
+  keyed on the mobile leg's CallSid so history, the status webhook, recording and the ServiceM8
+  sweep all treat it as an ordinary outbound call.
+- **Staff-leg caller ID comes from `phone_numbers`, and nothing validates those rows against
+  Twilio.** `dialStaff` used `TWILIO_FROM_NUMBER` (the number this system was built on) and so
+  ignored the ported landline entirely; it now resolves the default like every other outbound path,
+  shape-checked against E.164 first. Without that check a typo'd default would 400 every leg, and
+  every inbound call would fall to voicemail with no handset ringing.
+- **A divert can ring showing the CUSTOMER's number, and that needs `CallToken`.** "I want to know
+  who's calling before I answer": with `divert_caller_id` on (default, `/admin/settings` and mobile
+  Admin > Diverted calls), the leg to a staff mobile presents the caller's number instead of the
+  business one. Twilio rejects a `From` you don't own (error 21210) **unless** the inbound call's
+  `CallToken` rides along to prove the leg is forwarding that call — and Twilio sends `CallToken`
+  on a call's **first** webhook only, so `handleMainWebhook` stashes it in DO storage rather than
+  reading it at ring time, several gather turns later. It is documented under SHAKEN/STIR, which is
+  a **North American** scheme, so whether Australian carriers honour it is **unverified** — hence
+  `dialStaff` retries once with the business number on a `TwilioApiError` and logs
+  `DIVERT_CALLER_ID_REJECTED`. That fallback is not optional: without it a rejected caller ID
+  throws, `dialBatch` cancels, and every inbound call falls to voicemail with no handset ringing.
+  The retry is deliberately narrow: **HTTP 400 only** (see the caller-ID bullet below — it was
+  briefly any non-429 4xx, which would have double-dialled every leg on a rotated API key). Those
+  are the caller-ID rejections it exists for, where Twilio validated the request and created nothing.
+  A 5xx, a 429, or a network error may have created the call before failing to say so, and
+  re-dialling then leaves a second leg ringing that is in no `attemptSids` and so is never cancelled
+  on answer — #63's symptom exactly.
+  A withheld caller ID or a missing token logs `DIVERT_CALLER_ID_SKIPPED` and rings as the business.
+- **The trade on that setting is the MISSED call, not the answered one — and it has two halves.**
+  With it on, a missed divert sits in the phone's own call log looking like an ordinary unknown
+  number rather than a work call; the app's Recents stays the authoritative missed-call list, and
+  marks them red. The second half is worse and less obvious: **returning that call from the phone's
+  own log dials the customer from the staff member's PERSONAL number.** The customer keeps it and
+  rings it directly from then on, and the call creates no `calls` row, no recording, no ServiceM8
+  diary note and never appears in Recents. Calling back from the app goes out as the business, as
+  before. That pair is why this is a setting and not a constant.
+- **`Admin > Health Checks` reports the divert caller ID**, because the fallback is invisible on
+  purpose — the phone still rings, the call still connects, just from the business number. A
+  rejection is persisted (`divert_caller_id_last_error`) rather than left in a log line nobody
+  tails. What the check CANNOT see is a carrier that accepts the leg and then rewrites the presented
+  number downstream, so it says "make one test divert" rather than claiming more than it knows.
+- **The answered case is covered by a whisper, and it must precede the `<Dial>`.**
+  `renderDialAgentIntoConference({ whisper: true })` prepends `<Say>T C B call.</Say>`, so a staff
+  member seeing an unfamiliar number is told it is work before they speak. Letter-spaced because TTS
+  reads "TCB" as a word. Inside the `<Dial>` the customer would hear it too (they are already in the
+  conference — `handleAgentAnswer` redirects them in first); after it, it would never play. The flag
+  travels as `whisper=1` on the agent-answer URL and is set **only** when the caller ID was actually
+  swapped, so the softphone (whose screen already says who is calling) never gets it.
+
+### After-hours on-call rota
+
+- **After-hours calls ring an ON-CALL rotation, which is a different question from "who is on
+  shift".** Before this, the closed branch of `business_hours` went straight to the "after hours"
+  voicemail node and every call outside business hours reached a machine — not a bug in the IVR but
+  a consequence of `resolveRingTargets` only ever returning people who are on shift, which after
+  hours is nobody, by construction. The `on_call` ring target names ONE person per week and
+  deliberately bypasses **both** gates the other targets apply. The schedule is bypassed because
+  that is the entire point. `status` is bypassed for a less obvious reason: `away`/`offline` is a
+  live signal meant for the working day and it is STICKY, so someone who set Away at 4pm and went
+  home still carries it at 11pm — honouring it would let one forgotten toggle silently disable the
+  whole rota, caller hearing voicemail, nothing anywhere saying why. Being on call IS the commitment
+  to be rung; the way out is to swap the week.
+  It also **overrides ring-my-mobile** and always dials the personal mobile, which is the one place
+  this system overrides a staff preference: the softphone leg depends on a backgrounded app being
+  woken by a VoIP push, which is the weakest link at 2am and is exactly what iOS was killing on
+  2026-09-10. No mobile saved falls back to the softphone rather than to nobody.
+- **The rota was wired to the IVR on 2026-09-16, and UNWIRED again a few hours later.** Wired
+  version: `main`'s entry (`business_hours` node `n_7lk2oio`) had its `closedNextNodeId` pointed at
+  a new gather ("If this is urgent, press 1 to speak with our on call technician...") whose digit-1
+  option rang a new node targeting `on_call`. First real after-hours call through it (00:50,
+  2026-09-17) exposed why this needs to wait: `MachineDetection=Enable` on the on-call mobile leg
+  runs Twilio's default heuristic with no tuned thresholds, and it misfired ~4.6s after Phill
+  genuinely answered — `answered` then `mobile_machine_answered` then the AMD rescue (correctly, by
+  its own logic) redirected a LIVE caller to business voicemail mid-conversation. The orphaned
+  recording's transcript: "Could be, though." — a conversation fragment, not a greeting.
+  Reverted the same way it was wired: directly via D1, not a deploy. `closedNextNodeId` back to
+  `n_pkqmsmd` (the shared voicemail node); the gather and on-call ring node it pointed at
+  (`n_1m36drd`, `n_nc3xde0`) DELETED rather than left dangling, since nothing referenced them once
+  unwired. `settings.on_call_rotation` (one member, `phill@tcbpestcontrolcanberra.com.au`, anchor
+  `2026-09-07`) and the on-call admin screens are untouched — only the IVR wiring was pulled, so
+  Admin > Health Checks will go back to reporting the rota as not reachable from the IVR, correctly.
+  Re-wiring needs the AMD false-positive addressed first: either tune
+  `MachineDetectionSpeechEndThreshold`/`MachineDetectionSilenceTimeout` on that leg (untuned
+  today — see the mobile-leg dial site), or drop `MachineDetection` entirely on the on-call leg and
+  accept that a call to a genuinely-unreachable phone rings out instead of rescuing to business
+  voicemail. Also worth revisiting then: on-call overrides `ring_my_mobile` unconditionally (by
+  design, see the bullet above), which is what let the mobile ring at all despite Phill's own
+  toggle being off — surprising in the moment even though it's working as documented.
+- **Rotation weeks run Monday→Monday in Australia/Sydney, and the anchor MUST be a Monday.**
+  `weekStartKey` resolves the Sydney calendar date FIRST and only then shifts back to Monday: read
+  the UTC weekday first and Monday 09:00 in Canberra (Sunday 23:00 UTC) counts into the previous
+  week and rings last week's tech — most of every Monday morning, not an edge case. The arithmetic
+  afterwards runs in UTC on a bare calendar date so a 23-hour daylight-saving day cannot move a
+  boundary. A non-Monday anchor would shift every boundary forever and is refused on write, as is a
+  member who is not staff (a typo fails SILENTLY at 2am — the week comes round, nobody matches, the
+  caller hears voicemail exactly as though no rota existed) and a duplicate (not an error at ring
+  time, just two weeks in the cycle, which reads as a mysteriously unfair rota months later).
+  A per-week OVERRIDE covers swaps and applies to that week only — it never shifts the rotation.
+  Health Checks reports who is on call, a rotation member who has left, and a member with no mobile.
+- **"Is the rota wired up?" is a REACHABILITY question, and three cheaper answers are all wrong.**
+  `checkOnCall` asks whether an after-hours call can reach a ring step targeting `on_call`.
+  (1) Counting rows counts a step nothing points at — blank next-fields are legal and
+  `replaceFlowNodes` persists unreachable nodes, so a dragged-in ring step satisfied the count over
+  a rota ringing nobody. (2) Walking every branch follows the OPEN side of `business_hours`, so a
+  step on the daytime path reported the AFTER-HOURS rota as fine — the one thing the check exists to
+  deny; `flowEngine` takes `closedNextNodeId` and only that when `isAfterHours`, so the walk does
+  the same. (3) Loading one flow drops a next-id crossing into another, and node ids are a global
+  PRIMARY KEY (`nodeExistsInOtherFlow` exists because of that, `loadNodeById` has no flow
+  predicate) — so a correctly wired rota read as broken, which would have someone dismantle a
+  working setup. A flow with **no entry node** returns `null`, "could not verify": that state means
+  every inbound call already fails in `loadEntryNode`, i.e. the phone system is down, and telling
+  someone to add a menu step then is the wrong emergency.
+- **Preserving the rotation anchor does not preserve who is on call tonight.** `rotationMemberFor`
+  indexes on `weeksBetween(anchor, week) % members.length`, so the member COUNT is as load-bearing
+  as the anchor: adding a fourth tech to a three-person rota re-indexes the current week and moves
+  tonight's on-call person, mid-week, silently. The mobile screen computes before/after with a
+  client copy of the rule and asks first — skipping the question when the current week is an
+  override, because there the override wins and nothing changes. The eight-week preview only
+  reloads AFTER a save, so that dialog is the one moment it can be said before it is true.
+
+### Softphone calls: hold, transfer, dialling out
+
+- **Hold, transfer and complete-transfer resolve the conference from the staff member's OWN leg**
+  (`ownLegConference`, `softphone_call_legs.conference_name`). A client-supplied `conferenceName` is
+  ignored: an inbound call's conference is named after the CALLER's leg, which no client knows, so
+  web Hold 404'd on every inbound call and mobile Hold only ever flipped local state. Complete-transfer
+  removes **only the requester's own leg** (it used to remove any `callSid` it was given, i.e. a staff
+  member could hang up the customer) and refuses with 409 until the colleague has joined, or the
+  lone-conference cleanup ends the call on the customer. Mobile transfer is **attended only**; Blind
+  was removed deliberately, because an unanswered blind transfer strands the customer alone.
+- **Outbound calls store the BUSINESS number in `caller_number`.** Both outbound paths bind it that
+  way and the customer's number is `called_number`, so anything identifying "the customer" has to
+  branch on `direction` -- reading `caller_number` unconditionally told Twilio the office landline
+  was the customer.
+- **The app showed the BUSINESS number for every incoming call, never the customer's — a real bug,
+  and it predates this session.** Reported 2026-09-15/16 as "it's showing the business number when
+  calling in the app, not the customer's, wtf". Twilio's own `From` on a softphone (`client:`) leg
+  is deliberately always the business number (`dialStaff` in `CallSession.ts`: caller-ID-ownership
+  rules for a `client:` destination are murky, so the raw caller is never risked there); the ACTUAL
+  caller rides along as a `CallerNumber` custom Client parameter instead, read via
+  `CallInvite.getCustomParameters()` — Twilio's own documented mechanism for exactly this. Grepping
+  the whole mobile app found **zero** references to `getCustomParameters` or `CallerNumber`: the
+  backend had been sending it since the softphone shipped, and nothing on the client had ever read
+  it. `voice.ts` used `invite.getFrom()` unconditionally in both places an incoming number is
+  surfaced (`handleInvite` and the "already answered before JS subscribed" adopt path), so every
+  ringing screen and every in-call screen (which take their number from the same route params) has
+  shown "TCB Phone"/the business number since the softphone existed. Fixed with a helper (first
+  `callerNumberFromInvite`; since #127 it is `callerFromInvite`, returning `{number, name}` from the
+  `CallerNumber` and `CallerName` parameters) that prefers the custom parameter (case-insensitive key match — no prior evidence either
+  native SDK preserves case, and a customer's number is worth the defensive lookup) and falls back
+  to `getFrom()` only when it's absent, run through `toE164` (the AU phone-number module already
+  handled the backend's bare-digits shape correctly, per the comment left in `dialStaff` -- it was
+  only ever unread, not unhandled).
+- **1300/1800/13xx numbers could not be dialled from the softphone at all, and the fix for it
+  already existed elsewhere in the codebase, unapplied to this path.** Reported 2026-09-16 as "i
+  want to be able to call 1300 numbers". `normalizeAuNumber` in `worker.ts` (the gate in front of
+  every softphone dial, `/twiml/voice-app`) only recognised `0[2-9]xxxxxxxx` geographic numbers and
+  `61xxxxxxxxx`; a 1300/1800/13xx number typed the way anyone actually dials one ("1300 123 456", no
+  leading 0 -- these carry no trunk prefix to strip) matched neither pattern and fell through to
+  being returned as bare digits with **no `+` at all**, which Twilio rejects outright as not E.164.
+  `callViaMobile.ts`'s `normalizeDialTarget` already carries the correct fix, with a comment naming
+  this exact trap ("Slicing here produced +61300123456, a number that does not exist") -- it was
+  only ever applied to the call-via-mobile path, never to the primary VoIP dial path these two
+  functions otherwise mirror. `normalizeAuNumber` now matches it. `src/db/contacts.ts`'s
+  `normalizePhone` (contact-matching only, unrelated to dialing) has the same gap -- a 1300 contact
+  saved from one number shape won't match a lookup from another -- and was deliberately left alone
+  here as a narrower, separate bug from "can't call the number at all".
+- **Dialling a 1300/1800/13xx number is ALSO blocked by a Twilio ACCOUNT setting, entirely separate
+  from the formatting bug above, and no code fix can clear it.** Even with `normalizeAuNumber`
+  fixed, every attempt to `+611300669664` came back Twilio error **13227**: *"No International
+  Permission. To call this phone number you must enable the High Risk:Special permission for AU"*.
+  Twilio classifies AU 1300/1800/13xx destinations as **High Risk: Special** (a toll-fraud
+  safeguard) and it is OFF by default, separately from ordinary AU mobile/landline permissions.
+  Fixed 2026-09-16 by enabling it at
+  `https://www.twilio.com/console/voice/calls/geo-permissions/high-risk?countryIsoCode=AU` (needs
+  the account's Owner or Administrator role). Read Health Checks or the Twilio debugger for error
+  13227/21215 before re-diagnosing this as a code bug again -- it looks identical to a formatting
+  bug (the call is simply refused) but no amount of `normalizeAuNumber` correctness fixes it.
+- **That geo-permission rejection was ALSO an unhandled crash in `/twiml/voice-app`, and Twilio's
+  own retry turned one failure into two.** `createOutboundCall`'s throw on a Twilio 4xx/5xx had no
+  try/catch on this route (unlike `callViaMobile.ts`, which already wraps the identical call) --
+  so it escaped straight to the Workers runtime's own error page: a bare 500, logged in the Twilio
+  debugger as **error 1101** ("Got HTTP 500 response to .../twiml/voice-app") with no explanation
+  reaching the agent's own leg or the app. Twilio then retries that same webhook ONCE with the
+  SAME CallSid, and the retry's `INSERT INTO calls` collided on the primary key with the row the
+  first attempt had already written -- guaranteeing a SECOND crash regardless of what the first
+  one was. Fixed with `INSERT OR IGNORE` (matching the pattern `recordCallLeg` already used for the
+  same reason) plus try/catch around `createOutboundCall` and everything after it: a create-call
+  rejection now marks the call `failed` and answers with `<Say>Sorry, that call could not be
+  placed.</Say><Hangup/>` instead of a raw 500, and a failure AFTER the target call was already
+  created best-effort cancels it rather than stranding the callee on a live call nobody joins.
+  This is a general robustness fix -- it fires for ANY Twilio rejection (a rotated key, a 429, a
+  different geo-permission gap), not just this one -- logged as `VOICE_APP_DIAL_FAILED` /
+  `VOICE_APP_SETUP_FAILED` so the next one is a log line instead of a bare Cloudflare error page.
+
+### Recordings and transcripts
+
 - **An inbound call is recorded by the CALLER's leg, and that one sentence is the whole design.**
   Speaker labelling needs two channels, and a `<Conference>` recording's channel count is governed
   by one account-wide Console switch — **Dual-channel Recording for Conference**, Voice > Recordings
@@ -804,63 +830,151 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   per-call value or this setting, nothing else. `getTranscriptStaffChannel` still **catches `JSON.parse`**, because a hand-edited
   junk row would otherwise throw inside the cron tick. The first test for that seeded `'7'` — valid
   JSON, so the guard was never executed and deleting it left the test green.
-- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Whisper and the Twilio sweep both write `call_transcript`, in the same cron tick.**
-  `backfillTranscripts` can select a row with a NULL transcript, spend 10-30s in Workers AI, and land
-  after the labelled text was written -- destroying it permanently, since the row is by then out of
-  the sweep's query. `transcribeCallRecording` therefore guards its UPDATE on
-  `intelligence_status <> 'completed'`. The guard belongs on the WRITE; the gap between read and
-  write is where the race lives.
-- **Outbound calls store the BUSINESS number in `caller_number`.** Both outbound paths bind it that
-  way and the customer's number is `called_number`, so anything identifying "the customer" has to
-  branch on `direction` -- reading `caller_number` unconditionally told Twilio the office landline
-  was the customer.
-- **`handleGetDiagnostics` positionally destructures its `Promise.all`.** Adding a check without
-  adding a binding shifts every one after it and drops the last off the end silently. That happened
-  when the transcripts check was added: the push check vanished while every other assertion still
-  passed. A test now pins the exact key list.
-- **Staff-leg caller ID comes from `phone_numbers`, and nothing validates those rows against
-  Twilio.** `dialStaff` used `TWILIO_FROM_NUMBER` (the number this system was built on) and so
-  ignored the ported landline entirely; it now resolves the default like every other outbound path,
-  shape-checked against E.164 first. Without that check a typo'd default would 400 every leg, and
-  every inbound call would fall to voicemail with no handset ringing.
-- **A divert can ring showing the CUSTOMER's number, and that needs `CallToken`.** "I want to know
-  who's calling before I answer": with `divert_caller_id` on (default, `/admin/settings` and mobile
-  Admin > Diverted calls), the leg to a staff mobile presents the caller's number instead of the
-  business one. Twilio rejects a `From` you don't own (error 21210) **unless** the inbound call's
-  `CallToken` rides along to prove the leg is forwarding that call — and Twilio sends `CallToken`
-  on a call's **first** webhook only, so `handleMainWebhook` stashes it in DO storage rather than
-  reading it at ring time, several gather turns later. It is documented under SHAKEN/STIR, which is
-  a **North American** scheme, so whether Australian carriers honour it is **unverified** — hence
-  `dialStaff` retries once with the business number on a `TwilioApiError` and logs
-  `DIVERT_CALLER_ID_REJECTED`. That fallback is not optional: without it a rejected caller ID
-  throws, `dialBatch` cancels, and every inbound call falls to voicemail with no handset ringing.
-  The retry is deliberately narrow: **HTTP 400 only** (see the caller-ID bullet below — it was
-  briefly any non-429 4xx, which would have double-dialled every leg on a rotated API key). Those
-  are the caller-ID rejections it exists for, where Twilio validated the request and created nothing.
-  A 5xx, a 429, or a network error may have created the call before failing to say so, and
-  re-dialling then leaves a second leg ringing that is in no `attemptSids` and so is never cancelled
-  on answer — #63's symptom exactly.
-  A withheld caller ID or a missing token logs `DIVERT_CALLER_ID_SKIPPED` and rings as the business.
-- **The trade on that setting is the MISSED call, not the answered one — and it has two halves.**
-  With it on, a missed divert sits in the phone's own call log looking like an ordinary unknown
-  number rather than a work call; the app's Recents stays the authoritative missed-call list, and
-  marks them red. The second half is worse and less obvious: **returning that call from the phone's
-  own log dials the customer from the staff member's PERSONAL number.** The customer keeps it and
-  rings it directly from then on, and the call creates no `calls` row, no recording, no ServiceM8
-  diary note and never appears in Recents. Calling back from the app goes out as the business, as
-  before. That pair is why this is a setting and not a constant.
-- **`Admin > Health Checks` reports the divert caller ID**, because the fallback is invisible on
-  purpose — the phone still rings, the call still connects, just from the business number. A
-  rejection is persisted (`divert_caller_id_last_error`) rather than left in a log line nobody
-  tails. What the check CANNOT see is a carrier that accepts the leg and then rewrites the presented
-  number downstream, so it says "make one test divert" rather than claiming more than it knows.
-- **The answered case is covered by a whisper, and it must precede the `<Dial>`.**
-  `renderDialAgentIntoConference({ whisper: true })` prepends `<Say>T C B call.</Say>`, so a staff
-  member seeing an unfamiliar number is told it is work before they speak. Letter-spaced because TTS
-  reads "TCB" as a word. Inside the `<Dial>` the customer would hear it too (they are already in the
-  conference — `handleAgentAnswer` redirects them in first); after it, it would never play. The flag
-  travels as `whisper=1` on the agent-answer URL and is set **only** when the caller ID was actually
-  swapped, so the softphone (whose screen already says who is calling) never gets it.
+- **A recording-status callback may never blank a recording it does not carry.** All three of
+  `recording_url`, `recording_sid` and `recording_duration` are COALESCEd, because a redelivery — or
+  a `RecordingStatus` of absent/failed — arrives with no `RecordingUrl` and was writing NULL over a
+  good one, after which `/api/calls/:id/recording` 404s for a call whose audio is fine in Twilio.
+  COALESCE is only half of it: this is a **form post**, so a field Twilio has nothing to say about
+  can arrive absent *or* empty, and `?? null` only catches the first — `""` is a value that survives
+  COALESCE and blanks the column just as destructively. Hence `blankToNull` beside
+  `parseRecordingDuration`, which has handled exactly this for the duration all along. It is
+  **not** first-write-wins: two different recordings legitimately post under the same `callSid` (a
+  divert into the staff member's carrier voicemail records the conference, then the caller falls to
+  business voicemail and records again), and the later real one must win. A test pins both halves.
+
+### Missed calls, voicemail and the missed-call SMS
+
+- **A voicemail is a call with a `mailbox_label`, NOT one with a transcript.** The mobile Inbox
+  filtered on `transcription`, so every message Whisper produced nothing for was invisible — which
+  is most short ones; both voicemails left on 2026-09-08 (4s and 5s) had `transcribe_attempts`
+  exhausted at 3 and `transcription` NULL while sitting playable in D1. `mailbox_label` is written
+  only by the voicemail path (`CallSession.ts`, beside the `voicemail_left` event); every recording
+  in production without one carries an `answered` event, i.e. is a recorded conversation. Fixed in
+  #61; `/admin/voicemail` (added in #60, restyled in #62) uses the same rule.
+- **"Was this call missed?" has ONE definition, and it is `answered`/`event_count`, not `ivr_path`.**
+  `listCalls` ships both columns for this. The web softphone kept the older `!ivr_path` rule long
+  after the handset moved (#65), and `CallSession` writes `ivr_path` on the voicemail handoff — so
+  **no call that reached voicemail was ever marked missed on the web**, which is exactly the set
+  that still needs ringing back. Both surfaces now answer it identically; change them together.
+- **Auto missed-call SMS, added 2026-09-15 (migration `0037`, `/admin/settings`, admin-only, OFF by
+  default).** When a call ends having never produced an `answered` event, `sendMissedCallSmsIfDue`
+  (`src/api/missedCallSms.ts`) texts the caller from the business number. It is hooked into
+  `/webhooks/twilio/status` -- the CALLER's own top-level status callback, configured directly on
+  the Twilio number, not `CallSession`'s per-ring-round `notifyMissedOnce` -- and that distinction
+  is the whole design. A ring node's no-answer branch can lead to ANOTHER ring node (`main` has
+  two), so `notifyMissedOnce` fires at the first round that times out, whether or not a later round
+  bridges; hooking the SMS there would occasionally text a customer "sorry we missed you" while
+  they were being connected. The status webhook only ever reaches this after the call is genuinely
+  over (`ended_at IS NULL` already guards against a redelivered terminal status running it twice),
+  so the auto-text can only ever answer "did anyone ever pick up, for the whole call" -- checked the
+  same way `src/db/calls.ts` already defines "missed" elsewhere (`EXISTS ... event_type = 'answered'`),
+  plus one addition: the call must have reached a `ring_started` event, or a wrong number who hangs
+  up during the greeting gets texted too. Direction is checked too -- an outbound call (call-via-mobile)
+  going unanswered is a staff member's target not picking up, not a customer TCB missed.
+  `calls.missed_sms_sent_at` is claimed with an atomic `UPDATE ... WHERE missed_sms_sent_at IS NULL`
+  **BEFORE** the Twilio send and set back to NULL if the send throws (changed in #138; this bullet
+  said "after" until 2026-09-27). The reason: there are now two senders that can race (next
+  bullet), and the conditional UPDATE is the only thing that serialises them. Releasing on failure
+  keeps the column honest ("a text actually went out"). The caller ID is resolved BEFORE the claim,
+  because a throw between claim and try would hold the claim forever. The same UPDATE also enforces
+  **one text per caller per Sydney day** (#148, `NOT EXISTS` another call from that caller with
+  `missed_sms_sent_at >= sydneyDayStart(now)`; skips log `MISSED_CALL_SMS_SKIPPED`). It reads
+  `calls`, not `messages`, because the messages insert is best-effort. Known edge: an in-flight
+  claim counts, so if that send then fails, a second call from the same number ending in the same
+  second stays untexted. The text itself is recorded via
+  the ordinary `insertMessage`/`threadPeer` path so it shows up in that caller's inbox thread like
+  any other message, in its own try/catch exactly like `handleSendMessage` -- Twilio has already
+  accepted the send by that point, so a D1 failure there must never be reported as a send failure.
+  Settings (`getMissedCallSms`/`setMissedCallSms`, key `missed_call_sms`) follow the exact
+  `getDivertCallerId` shape: a JSON blob in the generic `settings` table, admin-only PUT, and a
+  template capped at 320 chars (roughly two GSM-7 SMS segments) so an admin can't accidentally wire
+  up a message that bills for a small novel on every missed call. Enabling it with a blank template
+  is refused at save time, the same "validate on write" rule as everywhere else in this file.
+  **Shipped web-only at first, which Phill caught within the hour ("I can't see it in settings" —
+  he was on the app, not the browser).** Mobile now carries it too: `Admin > Missed-Call SMS`
+  (`mobile/src/app/admin/missed-call-sms.tsx`), registered in `_layout.tsx`'s `ADMIN_SCREENS` and
+  linked from the hub with an On/Off summary, the same shape as every other settings sub-screen
+  (Business Hours, Call Blocklist). `getMissedCallSmsSetting`/`setMissedCallSmsSetting` in
+  `mobile/src/lib/api.ts` mirror the web pair exactly. The lesson generalizes: **a business-wide
+  admin setting shipped on only one of web/mobile is an incomplete feature, not a web feature** —
+  check both surfaces before calling one done, the same rule already written down for the on-call
+  rota's web/mobile split.
+- **The missed-call SMS's first version only ever fired from `/webhooks/twilio/status`, so it
+  silently never fired for the two cases Phill actually cared about.** Reported the same day as
+  "sms not working if they request a call back or leave a voicemail". Both the voicemail `<Record>`
+  handoff and `recordCallbackRequest` (`CallSession.ts`) set `calls.ended_at` **themselves**, the
+  instant they run — well before Twilio's own terminal status callback for that call arrives — so
+  by the time that callback lands, `ended_at IS NULL` is already false, `changes = 0`, and the
+  status-webhook's own call into `sendMissedCallSmsIfDue` never runs. The first fix called it from
+  both IVR sites directly — which texted callers while they were STILL ON THE LINE, mid-voicemail.
+  **Current design (#138, superseding that):** exactly two senders. (1) The caller leg's terminal
+  status callback, deliberately OUTSIDE its `changes > 0` block, so an earlier `ended_at` stamp no
+  longer suppresses it. (2) CallSession's `<Record>` action, ONLY when Twilio posts
+  `Digits=hangup` (the caller hung up to end the recording); any other value means they are still
+  connected. Sender 2 exists because the two fire concurrently with no ordering, and if the status
+  webhook lands first `voicemail_left` is not written yet. `recordCallbackRequest` no longer stamps
+  `ended_at` itself; it waits for its recording like voicemail. Two code comments still describe
+  the old shape (`missedCallSms.ts` "Called from ONE place", `worker.ts` "the ONLY place") — trust
+  the code, not them. Also: this whole feature leans on the per-number **"Call status changes"**
+  webhook being set in the Twilio console, which `/admin/webhooks` labels only "optional but
+  recommended"; `reconcileStaleCalls` stamps `ended_at` but never sends the text.
+  That fix alone would still have missed most real cases, for a second, independent reason: the
+  async-AMD rescue (see the bullet on it above) makes Twilio report a real `answered` event for the
+  call the moment ANY leg picks up — a staff member's own carrier voicemail included, since
+  `AnsweredBy` isn't known until the separate async verdict lands 2-4s later (`handleAgentAnswer`
+  only skips logging `answered` when it already knows synchronously it's a machine). So a caller
+  rescued from a staff mobile's voicemail and then left a business voicemail carries BOTH an
+  `answered` event and a `voicemail_left` event — and the original "ring_started AND NOT answered"
+  rule read the `answered` event as decisive and skipped every one of these, which in live D1 was
+  most of the real missed calls this feature exists for. `voicemail_left` and `callback_requested`
+  are now decisive on their own regardless of what else is on the call, and a `no_answer` logged
+  with reason `mobile_voicemail_answered` (the rescue fired but the caller hung up before recording
+  anything) counts too. The plain "reached a ring, never answered" rule is now the fourth, narrower
+  case, kept for exactly the reason it existed originally: a caller bridged on a LATER ring round
+  must never be texted "sorry we missed you" mid-conversation, and none of the other three shapes
+  will have fired for that call.
+
+### ServiceM8
+
+- **ServiceM8 needs `SERVICEM8_API_KEY` set as a worker secret, and nothing tells you if it isn't.**
+  `deploy.yml` does not set it — wrangler secrets are separate (`npx wrangler secret put
+  SERVICEM8_API_KEY`). Both halves of the integration (the job diary note and the auto-created
+  contact) are gated on that one env var and used to fail in total silence, which is how it sat
+  inert while callers who ARE in ServiceM8 kept landing as bare numbers. Checked 2026-09-06: no
+  "Logged automatically by TCB Phone" note on any job, no contact created since 09-04. The paths
+  now log `SERVICEM8_DISABLED` (no key), `SERVICEM8_SEARCH_FAILED` (missing/revoked key — a 401
+  looks identical to no key), `SERVICEM8_NO_MATCH`, `SERVICEM8_NO_NAME` and
+  `SERVICEM8_CONTACT_CREATED`, so `wrangler tail | grep SERVICEM8_` answers "is it on?".
+- **ServiceM8 runs 15 minutes AFTER a call ends, on a cron — not from the status webhook.** Staff
+  routinely create the ServiceM8 client or job during the call or right after hanging up, so firing
+  the instant it ended searched for a record that did not exist yet, found nothing, and never tried
+  again — the note and the contact were both lost for that call. The status webhook now only leaves
+  `calls.servicem8_synced_at` NULL (migration `0031`) and `src/servicem8/syncQueue.ts` sweeps on the
+  cron. A **second cron, `* * * * *`, exists solely for this sweep** — the `*/5` tick would have
+  stretched the original "3 minutes" to 3–8; `scheduled()` branches on `event.cron` so everything
+  else stays on `*/5`. Each call is CLAIMED in D1 before any work, because two overlapping ticks
+  would otherwise post the diary note twice. The sweep reaches back only 2 hours, which is what
+  stops the first tick after a deploy noting every call in history, and also bounds retries.
+  **Raised from 3 to 15 on 2026-09-11** (`SERVICEM8_SYNC_DELAY_MS`), after a call that ended at
+  13:03:18 was looked at at 13:06:50 and the job was created at 13:09:33 — after the only look it
+  would ever get. Two things follow. The wait still gets exactly ONE look: a `no-match` claims the
+  row permanently (only `failed` releases it), so a job written up at minute sixteen is lost exactly
+  as before — 15 minutes moves the line, it does not remove it, and the durable fix is to retry a
+  `no-match` inside the existing 2-hour window. And the caller's NAME now takes 15 minutes to appear,
+  so a new customer sits in Recents and in the thread as a bare number until then. The number is
+  quoted in Admin > Health Checks, which DERIVES it from the constant — do not retype it there.
+- **ServiceM8 search tokenizes; its OData filters do not.** `search.json?q=` matches a number
+  however it is stored ("0402 430 107" matches a query of "0402430107"), but
+  `jobcontact.json?$filter=mobile eq '...'` is an exact string compare, so the old name lookup
+  missed every customer whose number carries spaces. The name now comes from the search results
+  themselves — the `company` result's `name` IS the customer — with jobcontact only as a fallback,
+  widened to several stored formats. One search per call now serves both the note and the contact.
+
+### Messaging: SMS and Facebook Messenger
+
+- **Message threads are keyed by `threadPeer`**, which normalises only phone-shaped strings
+  (`0412 345 678` -> `+61412345678`) and leaves Messenger ids and alphanumeric senders ("Service NSW")
+  untouched. Sending normalised but lookup did not, so a new message showed an empty thread.
 - **The conversation-undo token is a millisecond TIMESTAMP matched exactly, which constrains two
   things.** `handleDeleteThread` returns `deletedAt` as the client's undo token; `restoreThread`
   matches `deleted_at = ?`. So:
@@ -878,165 +992,6 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   `THREAD_DELETED` logs `deletedAt` because it IS the token and the client's copy dies with the undo
   alert. Deliberately NOT changed: `softDeleteCall` reads its own clock too, but `restoreCall`
   matches on `id`, never on the stamp, so no drift is possible there.
-- **Resolving the caller ID must never THROW on the ring path, and the rejection marker clears
-  itself.** `dialBatch` resolves the business caller ID once per ring round rather than once per leg
-  (four serial full-table reads in front of a caller on hold), which puts that call ABOVE its per-leg
-  try/catch. Every `dialStaff` failure falls the caller through to business voicemail; a throw from
-  `callerId()` instead escapes `dialBatch`, `startRing` and `handleMainWebhook` to the DO's catch-all,
-  which says "we're experiencing a technical issue" and HANGS UP on a live customer — and via
-  `performDeferredDial` does that to someone already on hold. So `callerId()` swallows a failed READ
-  the same way it already handled an invalid VALUE, falling back to `TWILIO_FROM_NUMBER`
-  (`CALLER_ID_LOOKUP_FAILED`). A test renames `phone_numbers` so the read genuinely throws; against
-  the old code it fails with the technical-issue hangup.
-  Two companions from the same review: `divert_caller_id_last_error` is cleared on the first
-  successful divert of a call, because a marker that only ever gets set pins Health Checks red for
-  seven days and teaches you to ignore it; and `isCallerIdRejection` is **HTTP 400 only**, since
-  401/403 are auth (a rotated key would otherwise dial every divert leg twice for the length of the
-  outage and be reported as a caller-ID fault), 404 is not-found, and 429/5xx may have created the
-  call. Not an incident that happened — a hazard found by review before it could.
-- **Removing a staff member is a MULTI-TABLE cleanup, and the handset is the part people forget.**
-  `handleRemoveStaff` clears sessions, `password_tokens`, `login_attempts`, `push_tokens` and
-  `user_settings` before deleting the row. Before migration `0039`, `getPushTokensForType` selected
-  every row in `push_tokens` and never checked the owner still existed, so a missed delete left a
-  departed person's phone showing inbound customer texts indefinitely. Since `0039` every sender
-  reads through `LIVE_PUSH_TOKENS` (`src/db/pushTokens.ts`), which joins `sessions` on
-  `push_tokens.session_hash` — so logout, a password reset or removal stops that handset's pushes.
-  A pre-0039 row with NULL `session_hash` stays live only while `last_seen` is under 30 days old.
-  Health Checks and Test Push must use the same clause or they call a phone fine that real pushes
-  skip. The
-  `user_settings` row matters for the opposite reason: without it a re-invite silently restores the
-  old mobile number and ring-my-mobile state onto whoever next holds that address.
-- **"Was this call missed?" has ONE definition, and it is `answered`/`event_count`, not `ivr_path`.**
-  `listCalls` ships both columns for this. The web softphone kept the older `!ivr_path` rule long
-  after the handset moved (#65), and `CallSession` writes `ivr_path` on the voicemail handoff — so
-  **no call that reached voicemail was ever marked missed on the web**, which is exactly the set
-  that still needs ringing back. Both surfaces now answer it identically; change them together.
-- **After-hours calls ring an ON-CALL rotation, which is a different question from "who is on
-  shift".** Before this, the closed branch of `business_hours` went straight to the "after hours"
-  voicemail node and every call outside business hours reached a machine — not a bug in the IVR but
-  a consequence of `resolveRingTargets` only ever returning people who are on shift, which after
-  hours is nobody, by construction. The `on_call` ring target names ONE person per week and
-  deliberately bypasses **both** gates the other targets apply. The schedule is bypassed because
-  that is the entire point. `status` is bypassed for a less obvious reason: `away`/`offline` is a
-  live signal meant for the working day and it is STICKY, so someone who set Away at 4pm and went
-  home still carries it at 11pm — honouring it would let one forgotten toggle silently disable the
-  whole rota, caller hearing voicemail, nothing anywhere saying why. Being on call IS the commitment
-  to be rung; the way out is to swap the week.
-  It also **overrides ring-my-mobile** and always dials the personal mobile, which is the one place
-  this system overrides a staff preference: the softphone leg depends on a backgrounded app being
-  woken by a VoIP push, which is the weakest link at 2am and is exactly what iOS was killing on
-  2026-09-10. No mobile saved falls back to the softphone rather than to nobody.
-- **The rota was wired to the IVR on 2026-09-16, and UNWIRED again a few hours later.** Wired
-  version: `main`'s entry (`business_hours` node `n_7lk2oio`) had its `closedNextNodeId` pointed at
-  a new gather ("If this is urgent, press 1 to speak with our on call technician...") whose digit-1
-  option rang a new node targeting `on_call`. First real after-hours call through it (00:50,
-  2026-09-17) exposed why this needs to wait: `MachineDetection=Enable` on the on-call mobile leg
-  runs Twilio's default heuristic with no tuned thresholds, and it misfired ~4.6s after Phill
-  genuinely answered — `answered` then `mobile_machine_answered` then the AMD rescue (correctly, by
-  its own logic) redirected a LIVE caller to business voicemail mid-conversation. The orphaned
-  recording's transcript: "Could be, though." — a conversation fragment, not a greeting.
-  Reverted the same way it was wired: directly via D1, not a deploy. `closedNextNodeId` back to
-  `n_pkqmsmd` (the shared voicemail node); the gather and on-call ring node it pointed at
-  (`n_1m36drd`, `n_nc3xde0`) DELETED rather than left dangling, since nothing referenced them once
-  unwired. `settings.on_call_rotation` (one member, `phill@tcbpestcontrolcanberra.com.au`, anchor
-  `2026-09-07`) and the on-call admin screens are untouched — only the IVR wiring was pulled, so
-  Admin > Health Checks will go back to reporting the rota as not reachable from the IVR, correctly.
-  Re-wiring needs the AMD false-positive addressed first: either tune
-  `MachineDetectionSpeechEndThreshold`/`MachineDetectionSilenceTimeout` on that leg (untuned
-  today — see the mobile-leg dial site), or drop `MachineDetection` entirely on the on-call leg and
-  accept that a call to a genuinely-unreachable phone rings out instead of rescuing to business
-  voicemail. Also worth revisiting then: on-call overrides `ring_my_mobile` unconditionally (by
-  design, see the bullet above), which is what let the mobile ring at all despite Phill's own
-  toggle being off — surprising in the moment even though it's working as documented.
-- **Rotation weeks run Monday→Monday in Australia/Sydney, and the anchor MUST be a Monday.**
-  `weekStartKey` resolves the Sydney calendar date FIRST and only then shifts back to Monday: read
-  the UTC weekday first and Monday 09:00 in Canberra (Sunday 23:00 UTC) counts into the previous
-  week and rings last week's tech — most of every Monday morning, not an edge case. The arithmetic
-  afterwards runs in UTC on a bare calendar date so a 23-hour daylight-saving day cannot move a
-  boundary. A non-Monday anchor would shift every boundary forever and is refused on write, as is a
-  member who is not staff (a typo fails SILENTLY at 2am — the week comes round, nobody matches, the
-  caller hears voicemail exactly as though no rota existed) and a duplicate (not an error at ring
-  time, just two weeks in the cycle, which reads as a mysteriously unfair rota months later).
-  A per-week OVERRIDE covers swaps and applies to that week only — it never shifts the rotation.
-  Health Checks reports who is on call, a rotation member who has left, and a member with no mobile.
-- **A completed password reset invalidates the account's OTHER tokens and its lockout.**
-  `issueToken` always INSERTs, so two clicks of "Send reset" leave two live links; consuming one
-  used to leave the other valid for the rest of its hour, and whoever held the older email could
-  set the password again afterwards and take the account. `login_attempts` is cleared in the same
-  place, or someone who hit the 8-failure lockout and then legitimately reset was still refused on
-  the next login.
-- **The client-side escapers must escape QUOTES.** `h()` in `ivrFlow.ts` and `esc()` in
-  `messages.ts` are `textContent` → `innerHTML`, which handles `& < >` and **not** `"` or `'` — and
-  their output is spliced into double-quoted attribute values. An admin-entered mailbox name with a
-  quote could close the attribute and add an event handler running in the authenticated page. Both
-  now replace the quote characters explicitly. Anything new that interpolates into an attribute
-  belongs behind the same helper.
-- **Admin pages render in `Australia/Sydney` via `formatSydney`, because Workers run UTC.** A bare
-  `toLocaleString("en-AU")` showed a 9am Canberra call as 11pm the previous day, and a callback as
-  though it came in last night. One helper in `src/html/formatTime.ts` for every SERVER-rendered
-  admin time; do not inline the option bag again. Three places deliberately stay outside it: the
-  clock code inside `phone.ts`'s template literal runs in the **browser**, which is already in
-  Canberra, and `businessHours.ts` / `dateRules.ts` keep their own `TIME_ZONE` because theirs is a
-  routing decision rather than a label — importing from `src/html/` would be the wrong direction.
-- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **An empty transcript result is NOT the same as a mono recording.** `fetchSentences` returns
-  `null` for "could not read" (non-2xx, thrown fetch, past `MAX_SENTENCE_PAGES`) and an array only
-  for a real read. They used to collapse into `[]`, and the sweep turns empty into the **terminal**
-  `single_channel` — so a transient 502 abandoned a transcript Twilio still held, and Health Checks
-  counted it as mono and told you to switch on a Console setting that was never off. `null` now
-  leaves the row pending for the next tick — and **counts the attempt**, which is what bounds it:
-  not all of these are transient (a transcript past the page cap fails identically every tick), and
-  an uncounted retry would hold one of the five `BATCH` slots forever while the query, ordered
-  `started_at DESC`, starves the older calls behind it. A read that genuinely returns nothing is its
-  own terminal `no_speech` — someone rang and said nothing — so it is not reported as the Console
-  switch either. Health Checks counts `abandoned`/`failed` too: turning the wrong alarm off without
-  that would have traded it for no alarm, which is the exact silence that screen exists to break.
-- **A recording-status callback may never blank a recording it does not carry.** All three of
-  `recording_url`, `recording_sid` and `recording_duration` are COALESCEd, because a redelivery — or
-  a `RecordingStatus` of absent/failed — arrives with no `RecordingUrl` and was writing NULL over a
-  good one, after which `/api/calls/:id/recording` 404s for a call whose audio is fine in Twilio.
-  COALESCE is only half of it: this is a **form post**, so a field Twilio has nothing to say about
-  can arrive absent *or* empty, and `?? null` only catches the first — `""` is a value that survives
-  COALESCE and blanks the column just as destructively. Hence `blankToNull` beside
-  `parseRecordingDuration`, which has handled exactly this for the duration all along. It is
-  **not** first-write-wins: two different recordings legitimately post under the same `callSid` (a
-  divert into the staff member's carrier voicemail records the conference, then the caller falls to
-  business voicemail and records again), and the later real one must win. A test pins both halves.
-- **The web Away button has to POST.** It used to only highlight itself and focus the reason box, so
-  the one status that means "stop ringing me" was the only one that changed nothing on the server —
-  the dot went yellow and every inbound call still rang that leg. It persists now, and it opens the
-  reason box **synchronously first**: `setStatus` awaits the PUT before it highlights, and
-  highlighting is what un-hides the wrapper, so focusing after the call focuses a `display:none`
-  input and does nothing.
-  It also sends **no `awayReason` at all**, which is now different from sending `null`: absent means
-  "I am not talking about the reason" and preserves a stored one, `null` clears it. That matters
-  because `/api/staff` returns only `{email, role, status}` — it omits the rest deliberately so an
-  ungated softphone cannot read the team's details — so the reason box always starts EMPTY however
-  long a reason has been set, and sending its value would wipe the reason on every Away click. The
-  handset relies on the same rule: `mobile/src/lib/api.ts` sends `{status}` only. Preserving is
-  scoped to `away` — any other status clears the reason said or unsaid, so nobody is left available
-  carrying a stale "On site until 3".
-- **Reads on the ring path must never throw, and that list is the thing to check.** (Headed "THREE"
-  once; it is well past that. Added since: `resolveNumberRouting` `NUMBER_ROUTING_LOOKUP_FAILED`,
-  the contact-name lookup `RING_CONTACT_LOOKUP_FAILED`, `recordCallLeg` `CALL_LEG_RECORD_FAILED`,
-  `holdCallbackAck` `HOLD_CALLBACK_STEP_UNUSABLE`/`_FAILED`, `ringNoAnswerFromCall`
-  `AMD_FALLTHROUGH_LOOKUP_FAILED`, and the `outbound_target_sid` read in `handleAgentStatus`
-  `AGENT_STATUS_OUTBOUND_LOOKUP_FAILED`. Refer to them by function name — line numbers here rot.) A throw
-  inside `startRing` escapes `handleMainWebhook` to the DO's catch-all, which says "we're
-  experiencing a technical issue" and **hangs up on a live customer** — via `performDeferredDial`, on
-  someone already waiting on hold. `callerId()` was fixed for this (#71); `resolveRingTargets` sits
-  one line away (in `startRing`; the old `CallSession.ts:402` reference is stale) and had the same exposure twice over — `getStaffRoster`
-  (which `JSON.parse`s every row's schedule) and a per-person `getUserSettings` read inside the loop.
-  Both are guarded now (`RING_ROSTER_LOOKUP_FAILED`, `RING_PREFS_LOOKUP_FAILED`), and both fall
-  **closed**: a failed preferences read rings that person's softphone, an unreadable roster returns
-  zero legs, which the ring node already handles by continuing to `noAnswerNextNodeId` (voicemail).
-  Catching `JSON.parse` throwing is not enough, either — a schedule column holding the literal text
-  `null` parses fine and then throws in `isWithinBusinessHours`, so the SHAPE is checked with
-  `isBusinessHoursSchedule`. The fourth member of this family is `playFromConfig`: a wait node with a
-  blank `audioAssetId` (`""` survives `?? null`) throws in `resolveAudioCommands`, and one with both
-  fields set throws in `renderHold`. The fifth is `resolveOnCallEmail` (two D1 reads plus a
-  `JSON.parse` of the stored rotation), guarded the same way and falling back to "nobody on call",
-  which the ring node already handles. **Anything new that reads or parses inside `startRing` joins
-  this list.**
 - **A Twilio status callback may not erase what an earlier one recorded.** Twilio's callbacks are
   **not ordered**, so a late `sent` landing after a `failed` used to overwrite the terminal status
   and NULL its `ErrorCode` — the message then read as fine in the app AND dropped out of
@@ -1084,6 +1039,67 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   counting it burned `MAX_NAME_ATTEMPTS` on the whole backlog in six hours — after which those names
   can never be backfilled, because the manual refresh uses the same per-psid route. Graph code 100
   IS about the person and still counts.
+
+### Auth, staff accounts and the demo account
+
+- **The App Review demo account is denied by default on `/admin/`**, except `/admin/phone` and
+  `/admin/messages`, which render from the substituted `/api/`; everything else read real D1 and a web
+  login lands on `/admin/live`. Its `POST /api/push/register` is swallowed too, since every push goes
+  to every stored token with real customer names and message text.
+- **The login lockout is `reserveAttempt`: one conditional INSERT before the password hash.** Count,
+  hash, then record let a parallel burst all pass the count (20 of 20 in the test). A success clears.
+  **`SELF.fetch` serialises requests in the test worker, so a concurrency test must call the handler
+  directly**; the SELF version of this test passed against the broken code.
+- **Removing a staff member is a MULTI-TABLE cleanup, and the handset is the part people forget.**
+  `handleRemoveStaff` clears sessions, `password_tokens`, `login_attempts`, `push_tokens` and
+  `user_settings` before deleting the row. Before migration `0039`, `getPushTokensForType` selected
+  every row in `push_tokens` and never checked the owner still existed, so a missed delete left a
+  departed person's phone showing inbound customer texts indefinitely. Since `0039` every sender
+  reads through `LIVE_PUSH_TOKENS` (`src/db/pushTokens.ts`), which joins `sessions` on
+  `push_tokens.session_hash` — so logout, a password reset or removal stops that handset's pushes.
+  A pre-0039 row with NULL `session_hash` stays live only while `last_seen` is under 30 days old.
+  Health Checks and Test Push must use the same clause or they call a phone fine that real pushes
+  skip. The
+  `user_settings` row matters for the opposite reason: without it a re-invite silently restores the
+  old mobile number and ring-my-mobile state onto whoever next holds that address.
+- **A completed password reset invalidates the account's OTHER tokens and its lockout.**
+  `issueToken` always INSERTs, so two clicks of "Send reset" leave two live links; consuming one
+  used to leave the other valid for the rest of its hour, and whoever held the older email could
+  set the password again afterwards and take the account. `login_attempts` is cleared in the same
+  place, or someone who hit the 8-failure lockout and then legitimately reset was still refused on
+  the next login.
+- **A defaulted exclusion list FAILS OPEN, so security-shaped parameters are required ones.**
+  `excludeEmails: string[] = []` meant a new caller — or a route refactor dropping `demoEmails(env)`
+  — compiled cleanly and silently restored the demo account to the pickers. Both the on-call
+  handlers and `/api/staff` take it required now, so omitting it is a type error. `/api/staff`
+  matters more: it is the UNGATED roster the softphone's transfer picker reads, where an App Review
+  reviewer appearing as a destination could be handed a real customer's live call.
+  The filter itself is **one function**, `excludeDemos` in `src/demo`. It existed as three
+  byte-identical copies, and the single surface that skipped it (`checkOnCall`) is exactly where
+  the bug turned up.
+- `reviewer@tcbpestcontrolcanberra.com.au` is a demo account that sits in the staff table marked
+  `available`, but it is **excluded by code, not by luck**: `DEMO_ACCOUNT_EMAILS` in
+  `wrangler.jsonc` feeds `demoEmails(env)` into `resolveRingTargets`, which drops it from the roster
+  before shift or availability is even considered (and out of `/api/staff` likewise). An earlier
+  note here claimed only a stale heartbeat kept it from ringing; that was wrong. Emptying that var
+  is what would make it ring.
+
+### Admin settings and Health Checks
+
+- **Admin > Health Checks (mobile) is where "is it actually working?" gets answered.**
+  `GET /api/admin/diagnostics` runs eleven checks as of 2026-09-27 (display order: twilio, regions,
+  number_routes, roster, on_call, divert_caller_id, servicem8, transcripts, email, voip_push, push),
+  each one added because it failed silently in production. The original six: Twilio credentials, **live** voice-number regions (asks `routes.twilio.com` rather
+  than trusting the region recorded on `/admin/settings` — a 404 there means no explicit config,
+  which defaults to us1), who is on call right now, ServiceM8 (distinguishing "no key" from "key
+  rejected"), the email binding, and the caller's registered push devices. `POST
+  /api/admin/test-push` and `/api/admin/test-email` are end-to-end and deliberately target only the
+  CALLER's own account, so a test never pages the team; the push one prunes any token Expo reports
+  as `DeviceNotRegistered`.
+- **`handleGetDiagnostics` positionally destructures its `Promise.all`.** Adding a check without
+  adding a binding shifts every one after it and drops the last off the end silently. That happened
+  when the transcripts check was added: the push check vanished while every other assertion still
+  passed. A test now pins the exact key list.
 - **A business-hours window is validated in ONE place, and a close of `00:00` means midnight.**
   `isWithinBusinessHours` is `minutes >= open && minutes < close`, and the two duplicate
   `isDayWindow` copies (`api/settings.ts`, `api/staff.ts`) checked only the `\d{2}:\d{2}` shape — so
@@ -1102,6 +1118,178 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   range, and the error names the offending entry. `MM-DD..MM-DD` recurring ranges now work: they are
   compared against `MM-DD`, since against `YYYY-MM-DD` `"2026-12-27" <= "12-31"` is already false on
   the first character. One that wraps the new year is two ranges under string comparison.
+
+### Web dashboard and desktop app
+
+- **Call History was removed from the web dashboard (#63).** The handset carries the same list. The
+  per-call DETAIL page `/admin/calls/:id` stays — `/admin/voicemail` links into it — but
+  `/admin/calls` 404s deliberately, and a test pins that.
+- **A web/desktop outbound call shows its pane the moment Call is pressed, not on `accept`
+  (2026-09-28).** Reported from the desktop app as "no calling screen" -- and a call sitting in the
+  customer's voicemail had no Hang up at all. The pane (the ONLY Hang up) used to appear on the
+  SDK's `accept` event and nothing before it. Two live calls that day (12:48, 12:49, both into the
+  customer's voicemail) connected with no screen; WHY `accept` never showed it was NOT found --
+  SDK 2.18.3 emits it once media and signalling are open, which a `<Dial><Conference>` answers at
+  once. So the fix does not depend on it: `placeCall` shows `showCallPane(to, true)` ("Calling",
+  Hang up only -- Mute/Hold/Transfer need the leg's CallSid) before `device.connect`, Hang up while
+  connecting sets `hangupWhenPlaced`, and a failed connect takes the pane down. `placeCall` and
+  `callContact` refuse while `callBusy()`, or the failure path would tear down a live call's pane.
+  A rail **"On call"** button now brings the pane back after Calls/Contacts/dial pad replaced it --
+  before that nothing did. Still unproven with a real desktop call.
+- **The web Phone page is the dashboard's SHELL: every other section runs in a frame over it (#142,
+  2026-09-23). Never let a dashboard navigation leave `/admin/phone`.** The Twilio Device exists only
+  on that page, and a full-page navigation destroys it -- and Twilio never re-offers a call to a
+  Device that registered after the call started. So before #142 a call rang NOWHERE while staff were
+  on Messages or Voicemail, and clicking back to Phone mid-ring showed it as "In progress" with no
+  Answer (reported on the desktop app; the browser was identical). The desktop app loads
+  `/admin/phone`, so it got the fix from the web deploy; a desktop-only two-view Electron version was
+  written first and dropped because running both designs would register two Devices.
+  The load-bearing pieces, all in `src/html/pages/phone.ts`, `layout.ts` and the `/admin/` routes:
+  * **Shell or plain page is decided by `Sec-Fetch-Dest`.** `document` (a top-level load) gets the
+    Phone page with that section open in `#section-frame`; each `/admin/` route returns it FIRST
+    (`topLevel`/`shellHere`), before its own queries, so nothing runs twice and a 404 stays a 404
+    (call detail checks the row exists, `deleted_at IS NULL`). `iframe` gets the plain page. A MISSING
+    header gets the plain page too -- never the shell, which inside a frame nests a second softphone
+    -- and that page sends itself to `/admin/phone?section=...` (layout head script), which is also
+    the safety net for a route that forgets `topLevel`. `?section=` accepts only a dashboard path.
+  * **`/admin/phone` requested INTO the frame answers a stub** (`renderPhoneFrameStub`) that hands
+    `?dial=`/`?listen=` to the running page (`tcbShowPhone` -> `tcbPhoneDeepLink`). Messages "Call",
+    Live Calls "Listen" and the staff/demo redirects all land there. The Phone page also guards
+    itself: framed anyway, it `window.stop()`s before the SDK loads.
+  * **One softphone per browser, via the Web Locks API** (`tcb-softphone`). Every dashboard tab is
+    now the Phone page, so without it a Ctrl-clicked second tab rang every call too. A tab whose
+    phone failed to start RELEASES the lock (or every other tab waits behind a phone that never
+    rings); a lock API that refuses starts the phone anyway.
+  * **A ringing call hides the section without unloading it** (`tcbHideSection`, draft kept, media
+    paused) and brings it back when the call ends -- unless another call is still up, or the user
+    chose Phone ("back to call" button, Phone link, Back), which keeps it loaded but hidden. Hidden
+    frames still report `visibilityState` "visible", so the layout wraps `setInterval` in framed
+    pages to pause every poll while hidden: Messages' thread poll marks the thread read for the WHOLE
+    team, and a hidden one would clear texts nobody saw. It covers `setInterval` only; a new poll
+    built on a `setTimeout` chain needs to check `window.tcbSectionHidden()` itself.
+  * The frame's location is always REPLACED; the top page gets one `pushState` per section the user
+    opens, so Back moves between sections. `beforeunload` asks before leaving mid-call in the
+    browser only -- the desktop app has no Back button and must never be kept from quitting.
+    `/admin/` pages send `frame-ancestors 'self'` + `X-Frame-Options: SAMEORIGIN`, and
+    `Vary: Sec-Fetch-Dest` + `no-store`, so Back can never serve the plain page at the top.
+  **It took SIX `/code-review` rounds (10, 10, 7, 8, 9, 9 findings) and the count never fell**,
+  because each round's fixes were new frame/history/lock code for the next round to find edge cases
+  in. It was stopped by agreeing a bar with Phill: fix anything that can drop or miss a call, list
+  the rest. Two traps met on the way: a regex with `\/` inside the page's template literal loses
+  its backslashes and throws in the browser (write it without a regex), and an iframe keeps its
+  intrinsic 150px height under top/bottom insets, so its height is set outright.
+  **Still unproven with a real call** as of the merge: ring while on Messages and answer; click Phone
+  mid-ring; "Call" from Messages during a call. Every other check was tests plus a real Chrome
+  against `wrangler dev`, where the token endpoint 500s (no Twilio creds locally).
+- **The client-side escapers must escape QUOTES.** `h()` in `ivrFlow.ts` and `esc()` in
+  `messages.ts` are `textContent` → `innerHTML`, which handles `& < >` and **not** `"` or `'` — and
+  their output is spliced into double-quoted attribute values. An admin-entered mailbox name with a
+  quote could close the attribute and add an event handler running in the authenticated page. Both
+  now replace the quote characters explicitly. Anything new that interpolates into an attribute
+  belongs behind the same helper.
+- **Admin pages render in `Australia/Sydney` via `formatSydney`, because Workers run UTC.** A bare
+  `toLocaleString("en-AU")` showed a 9am Canberra call as 11pm the previous day, and a callback as
+  though it came in last night. One helper in `src/html/formatTime.ts` for every SERVER-rendered
+  admin time; do not inline the option bag again. Three places deliberately stay outside it: the
+  clock code inside `phone.ts`'s template literal runs in the **browser**, which is already in
+  Canberra, and `businessHours.ts` / `dateRules.ts` keep their own `TIME_ZONE` because theirs is a
+  routing decision rather than a label — importing from `src/html/` would be the wrong direction.
+- **The web Away button has to POST.** It used to only highlight itself and focus the reason box, so
+  the one status that means "stop ringing me" was the only one that changed nothing on the server —
+  the dot went yellow and every inbound call still rang that leg. It persists now, and it opens the
+  reason box **synchronously first**: `setStatus` awaits the PUT before it highlights, and
+  highlighting is what un-hides the wrapper, so focusing after the call focuses a `display:none`
+  input and does nothing.
+  It also sends **no `awayReason` at all**, which is now different from sending `null`: absent means
+  "I am not talking about the reason" and preserves a stored one, `null` clears it. That matters
+  because `/api/staff` returns only `{email, role, status}` — it omits the rest deliberately so an
+  ungated softphone cannot read the team's details — so the reason box always starts EMPTY however
+  long a reason has been set, and sending its value would wipe the reason on every Away click. The
+  handset relies on the same rule: `mobile/src/lib/api.ts` sends `{status}` only. Preserving is
+  scoped to `away` — any other status clears the reason said or unsaid, so nobody is left available
+  carrying a stale "On site until 3".
+
+### Mobile: iOS calling, push and crash reporting
+
+- **Mobile, the durable pieces.** There is ONE native CallInvite handler with a subscriber stack in
+  `voice.ts` (the newest registration is told; two registrations used to open two ringing screens);
+  `unregisterFromIncoming` bumps a generation that stops a pending registration retry re-registering
+  a signed-out phone. The session token is `tcb_session_token_v2` with `AFTER_FIRST_UNLOCK`: the old
+  default could not be read on a locked-phone VoIP launch, the restore threw and the app sat on its
+  spinner with no call UI (a candidate cause of the "no hang-up button" report). `getTokenWhenReadable`
+  waits for unlock, then backs off ~3s before treating refusal as signed out; launch reads share one
+  in-flight read so the key migration cannot race. `createScreenExit` makes a screen leave exactly
+  once and only while on top (call-active). The thread query is **disabled while the thread is not
+  focused**: every load marks the thread read for the WHOLE team, and polling or the app-foreground
+  refetch under a call screen cleared everyone's unread dot.
+- **A missing VoIP push credential is why a softphone never rings, and NOTHING said so.**
+  `mintAccessToken` sets `push_credential_sid` only `if (opts.pushCredentialSid)` — so an unset
+  secret mints a perfectly valid access token with no push credential on it. The app registers
+  happily, presence goes green, and Twilio has no way to wake it: an inbound call rings
+  `client:{email}` for the FULL timeout and the handset never stirs. No error, no log line, no
+  crash, and `/admin/errors` stays empty because no JavaScript ever runs. That is exactly the
+  10:28 call on 2026-09-11 — 22s then 62s of ringing into a phone that was never told.
+  `TWILIO_PUSH_CREDENTIAL_SID_ANDROID` is a plain var in `wrangler.jsonc`; **the iOS one is not
+  there at all**, so it has always depended on a wrangler secret (`deploy.yml` does not set
+  secrets) that nothing verified. `Admin > Health Checks > Ringing the app` now answers it, and it
+  asks Twilio rather than trusting the var: a 404 means the SID is not in au1 (see the next
+  bullet), and `sandbox: "true"` on an APNs credential means silence on any TestFlight or App Store
+  build, because those talk to PRODUCTION APNs. Could-not-reach is a warn, never a fail — a Twilio
+  blip must not send someone rebuilding credentials that were fine.
+- **A PUSH CREDENTIAL MUST LIVE IN au1, AND THE CONSOLE CANNOT MAKE ONE. This cost two days.**
+  Twilio's Voice SDK regional guide states the binding rule: *"The Twilio resources referred to by
+  the Access Token (the API Key, TwiML Application, **and Push Credential**) must exist in the
+  Twilio Region specified in the Access Token."* `mintAccessToken` sets `twr: "au1"`, so a us1
+  credential on the token is not a near-miss — Twilio has nothing to send a VoIP push with and the
+  handset is never woken. That is **error 52161**, and it is what commit `8822611` hit on Android
+  on 2026-08-23.
+  What makes this a trap is that Twilio ALSO says *"Mobile push credential creation for the AU1
+  region is not supported"* and *"REST API operations that manage Push Credentials … are supported
+  only in US1"*. **Both are true of the CONSOLE and false of the REST API.** The au1 host creates
+  and reads them perfectly well:
+  ```bash
+  curl -X POST https://notify.sydney.au1.twilio.com/v1/Credentials -u "$ACCOUNT_SID:$AU1_AUTH_TOKEN" \
+    --data-urlencode Type=apn --data-urlencode FriendlyName="..." \
+    --data-urlencode Certificate@voip_cert.pem --data-urlencode PrivateKey@voip_key_rsa.pem \
+    --data-urlencode Sandbox=false
+  ```
+  (the AU1 **auth token**, which is a different value from the us1 one — API keys and auth tokens
+  are per-region. `Invoke-WebRequest` fails this POST with "Cannot follow an insecure redirection";
+  use curl.)
+  So **the US1 Console list is NOT the account's list**, and a 404 from `notify.twilio.com` says
+  nothing whatsoever about an au1-homed account. Checked live 2026-09-12: the au1 host returns 200
+  for `CRa514b67c…` (Android FCM) and `CRa85b8607…` (iOS APNs) and **404 for `CR7b85225…`**, a real
+  credential that simply sits in us1.
+  The iOS credential is `CRa85b8607a3c0fa5a465024590c9ff96a` (apn, sandbox false), created
+  2026-09-12 from an Apple **VoIP Services Certificate** — not a standard APNs cert, which Twilio's
+  own FAQ says fails exactly this way, and not a `.p8` key, which their APNs credential does not
+  take. Use a **fresh CSR**: reusing one that already made a regular APNs certificate causes
+  "service type confusion" and the certificate then looks fine and silently does not work.
+  **The iPhone rang, locked, at 07:28 on 2026-09-12** — the first time it ever has.
+  Two things that wasted most of that investigation, recorded so nobody repeats them. A **foreground**
+  app is rung over the Voice SDK's own signalling connection with **no push involved**, so "it rang
+  while I had the app open" is never evidence about the push credential — only a locked or killed
+  handset tests it. And the Expo dashboard's push graph is the **other** push system entirely (SMS,
+  voicemail, missed-call alerts); 100% delivery there says nothing about VoIP push. Getting the
+  missed-call notification but no ring is the signature of exactly this bug.
+- **The `· b5` in Settings never rendered, on any device, ever.** It read
+  `Constants.nativeBuildVersion`, which is not a property of `Constants` in SDK 54 — only a
+  `@deprecated` comment pointing at `expo-application`. `Constants` is typed `& Record<string, any>`,
+  so it compiled clean and was `undefined` everywhere, from the day it shipped in OTA 60. This file
+  called that half "the ONLY thing that says whether the fix is on the handset"; it printed nothing.
+  It comes from `expo-application` now, through one `NATIVE_BUILD` constant that both the Settings
+  screen and push registration read. **And `expo-application` must stay in `mobile/package.json`**:
+  the first version imported it while it resolved only as a transitive dep of `expo-notifications`,
+  and its native module loads with `requireNativeModule`, which THROWS — `api.ts` is imported by
+  nearly every screen, so the day that hoist changed every handset would white-screen on launch
+  with no JS left to report it.
+- **The handset reports its build to the server now** (migration `0036`, on push registration —
+  the one call every signed-in handset makes on launch), so "is the native fix on that phone?" is a
+  Health Check rather than a question someone answers by reading their own screen aloud. An iPhone
+  below `b5` FAILS and names the fix; one that has not reported WARNS rather than passing, because
+  unknown is not the same as fine. Bounded to 30 days so a spare phone in a drawer cannot pin it
+  red forever, and the build is parsed strictly — `Number("1.0.4")` is NaN and `NaN < 5` is false,
+  which would have cleared a handset the check never actually read.
 - **`0xBAADCA11` is iOS killing the app for not answering a VoIP push fast enough, and it is the
   root cause of the "crash loops" (2026-09-10).** The device crash log — Settings > Privacy &
   Security > Analytics & Improvements > Analytics Data on the iPhone, which needs **no** App Store
@@ -1215,6 +1403,21 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   source text is not a test** — the first version of both the crash-write test and the PushKit test
   passed with the fix fully reverted, one because the fake keychain mutated synchronously and one
   because `indexOf` matched the comment naming the function.
+- **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
+  UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
+  a live call. OTA 70 fixed two things with exactly that shape: the locked-phone launch that stuck on
+  the auth spinner, and a lock-screen-answered call that never opened the in-call screen. If it does
+  not recur after OTA 70, one of those was it. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and
+  over) was never root-caused either: it was escaped by rolling the OTA back to #49, and #53 carries
+  the same code plus crash reporting and has been clean since. If it returns, `/admin/errors` is now
+  the first place to look rather than the last.
+
+### Mobile: screens, editors and Android
+
+- **`OTA_BUILD` lives in `mobile/src/lib/build.ts`**, not in the Settings screen — a crash report and
+  the Settings screen have to quote the same constant. `publish-ota.yml` greps that file for it, so
+  moving it again means moving the grep in the same commit or every publish fails at "Read
+  OTA_BUILD".
 - **The mobile `admin` group is a SIBLING of `(tabs)`, which strands its hub screen.** Two things
   compound: the tab bar is not rendered under `/admin` at all (it lives inside `(tabs)`), and
   `admin/index` is the ROOT of the nested stack in `admin/_layout.tsx`, so React Navigation draws no
@@ -1372,6 +1575,22 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   version names the offending day. An OVERNIGHT window (say 22:00-06:00) is inexpressible for the
   same reason, and that is a real limitation rather than a bug: only `00:00` as a close means
   midnight.
+
+### Working practices and testing
+
+- **Test-runner gotchas met on 2026-09-13.** The full worker suite is flaky under load on this machine
+  (timeouts in files unrelated to the change, and once `workerd` crashed at startup with
+  `std::terminate`); re-run the failed files alone before investigating. And `mobile/__tests__/auth.test.tsx`
+  shows as a failing suite on Windows because its `testPathIgnorePatterns` entry uses `/`; it is
+  ignored correctly on Linux, including in `publish-ota.yml`.
+- **READ `docs/superpowers/` BEFORE IMPLEMENTING. It is not decorative, and skipping it cost a day.**
+  This file says so at the top and it was ignored on 2026-09-11 through an entire softphone
+  investigation. `specs/2026-08-19-ios-softphone-phase1-design.md` lists, under Risks: *"APNs
+  environment mismatch (sandbox vs production push credential) is a common cause of 'no incoming
+  ring'"* and *"VoIP background mode + push entitlement must be exactly right or background ringing
+  silently fails"*. Both were written a month before the morning they explained, and both were
+  unread while the same symptom was chased through CallKit, build numbers and OTA versions instead.
+  The 24 documents in there are the cheapest reading in this repo.
 - **RUN `/code-review` BEFORE SHIPPING, not after — and expect the FIX to need reviewing too.**
   Standing instruction from Phill, and 2026-09-10 is the case for it. The on-call rotation (#89) was
   merged and deployed unreviewed; `/code-review` then found **14** defects in it, **15** in the PR
@@ -1390,35 +1609,6 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   that normalise too). "A test that reads through the fix is not a test" now sits beside "a test
   that reads source text is not a test"; the fix for both is to assert the raw stored value and to
   revert the change and watch the test fail.
-- **A defaulted exclusion list FAILS OPEN, so security-shaped parameters are required ones.**
-  `excludeEmails: string[] = []` meant a new caller — or a route refactor dropping `demoEmails(env)`
-  — compiled cleanly and silently restored the demo account to the pickers. Both the on-call
-  handlers and `/api/staff` take it required now, so omitting it is a type error. `/api/staff`
-  matters more: it is the UNGATED roster the softphone's transfer picker reads, where an App Review
-  reviewer appearing as a destination could be handed a real customer's live call.
-  The filter itself is **one function**, `excludeDemos` in `src/demo`. It existed as three
-  byte-identical copies, and the single surface that skipped it (`checkOnCall`) is exactly where
-  the bug turned up.
-- **"Is the rota wired up?" is a REACHABILITY question, and three cheaper answers are all wrong.**
-  `checkOnCall` asks whether an after-hours call can reach a ring step targeting `on_call`.
-  (1) Counting rows counts a step nothing points at — blank next-fields are legal and
-  `replaceFlowNodes` persists unreachable nodes, so a dragged-in ring step satisfied the count over
-  a rota ringing nobody. (2) Walking every branch follows the OPEN side of `business_hours`, so a
-  step on the daytime path reported the AFTER-HOURS rota as fine — the one thing the check exists to
-  deny; `flowEngine` takes `closedNextNodeId` and only that when `isAfterHours`, so the walk does
-  the same. (3) Loading one flow drops a next-id crossing into another, and node ids are a global
-  PRIMARY KEY (`nodeExistsInOtherFlow` exists because of that, `loadNodeById` has no flow
-  predicate) — so a correctly wired rota read as broken, which would have someone dismantle a
-  working setup. A flow with **no entry node** returns `null`, "could not verify": that state means
-  every inbound call already fails in `loadEntryNode`, i.e. the phone system is down, and telling
-  someone to add a menu step then is the wrong emergency.
-- **Preserving the rotation anchor does not preserve who is on call tonight.** `rotationMemberFor`
-  indexes on `weeksBetween(anchor, week) % members.length`, so the member COUNT is as load-bearing
-  as the anchor: adding a fourth tech to a three-person rota re-indexes the current week and moves
-  tonight's on-call person, mid-week, silently. The mobile screen computes before/after with a
-  client copy of the rule and asks first — skipping the question when the current week is an
-  override, because there the override wins and nothing changes. The eight-week preview only
-  reloads AFTER a save, so that dialog is the one moment it can be said before it is true.
 - **`git checkout -B <branch> origin/master` DISCARDS anything on that branch that is not merged.**
   Used repeatedly this repo to restart the designated branch after each squash merge, which is
   correct — but a CLAUDE.md commit that had been pushed and not yet merged was silently thrown away
@@ -1440,192 +1630,6 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
   crash-write and PushKit tests. The invariant is "never reads local parts", so that is what is
   pinned now: spy on `Date.prototype.getDate`/`getMonth`/`getFullYear`/`getDay` and assert they were
   never called. That version fails under any ambient timezone.
-- **Known-unresolved:** the mobile in-call screen once showed **no hang-up button** (call answered,
-  UI popped). Never reproduced; the paths now log and surface errors instead of silently stranding
-  a live call. OTA 70 fixed two things with exactly that shape: the locked-phone launch that stuck on
-  the auth spinner, and a lock-screen-answered call that never opened the in-call screen. If it does
-  not recur after OTA 70, one of those was it. The iOS **crash loop of 2026-09-07** (app died within a minute of tab mount, over and
-  over) was never root-caused either: it was escaped by rolling the OTA back to #49, and #53 carries
-  the same code plus crash reporting and has been clean since. If it returns, `/admin/errors` is now
-  the first place to look rather than the last.
-- `reviewer@tcbpestcontrolcanberra.com.au` is a demo account that sits in the staff table marked
-  `available`, but it is **excluded by code, not by luck**: `DEMO_ACCOUNT_EMAILS` in
-  `wrangler.jsonc` feeds `demoEmails(env)` into `resolveRingTargets`, which drops it from the roster
-  before shift or availability is even considered (and out of `/api/staff` likewise). An earlier
-  note here claimed only a stale heartbeat kept it from ringing; that was wrong. Emptying that var
-  is what would make it ring.
-- **A ring node's `timeoutSeconds` has to beat the staff member's own carrier voicemail, or calls
-  land there instead of business voicemail.** Reported 2026-09-15 as "calls are going through to my
-  mobile voicemail, not the business". Live D1 had the SECOND `main` ring node (`n_e6wrtx7`, reached
-  after the callback/continue gather) at **`timeoutSeconds: 500`** -- almost certainly a fat-fingered
-  edit, since the mobile step editor's `NumberField` for this field has a `min` but no `max` (the
-  web editor's `<input>` caps at 120 client-side only, never enforced server-side). At 500s, Phill's
-  own mobile carrier answers the PSTN leg with his personal voicemail (typically ~15-20s) long before
-  Twilio's own Dial timeout ever has a chance to fire -- and Twilio counts that as *answered*, not a
-  timeout, so async AMD is the only thing left to notice and rescue the caller, 2-4s later, by which
-  point the caller has already heard Phill's personal greeting. The FIRST `main` ring node
-  (`n_5frbzxd`) was already at 15s and never showed this symptom in the event log -- proof that 15s
-  reliably loses the race against the carrier before it can answer. Both `main` ring nodes are now
-  15s. `isRingConfig`'s validator (`src/api/ivrFlow.ts`) now rejects any `timeoutSeconds` over
-  `RING_TIMEOUT_MAX_SECONDS` (120, matching the web editor's unenforced client-side cap) from EITHER
-  client, with a test that fails against the old code. The mobile `NumberField` itself was
-  deliberately left alone: giving it a `max` risks the exact divergence bug documented on that
-  component (a clamp that fires mid-typing, before the field is "finished") for a case the server
-  now guards regardless of which client sends it.
-  **It regressed, and 15s stopped being enough (2026-09-25).** `n_e6wrtx7` was back at **60s** and
-  Phill's carrier voicemail answered ~32s into it; on the same day it also answered at **14.4s** into
-  the 15s first round, so the carrier's timer varies and 15 is no margin at all. Every `main` ring
-  step is now **10s**, and the old single long ring is a CHAIN of short ones:
-  greeting -> ring 10 (`n_5frbzxd`) -> hold/callback (`n_holdcb1`) -> ring 10 (`n_e6wrtx7`) ->
-  ring 10 (`n_ring03`) -> ring 10 (`n_ring04`) -> voicemail (`n_pkqmsmd`). Each ring step is a new
-  leg, which restarts the carrier's no-answer timer, so it never reaches its own voicemail. Written
-  straight to D1 at Phill's request. **To ring longer, add another 10s step; never raise a timeout.**
-  What this cannot fix: a DECLINED call or a phone that is off goes to carrier voicemail instantly,
-  and the caller still hears 3-4s of the personal greeting before async AMD rescues them. The cure
-  for that is press-1-to-accept screening on the mobile leg, offered and not yet chosen.
-  **Proven with a real call on 2026-09-27 07:46 Sydney** (`CA248f1a7612c4b9a6e4a43780980ed1f4`,
-  Phill's mobile to the landline, left unanswered): four `ring_started`/`no_answer` rounds at 16s,
-  29s, 48s and 61s (each round lasted 12-19s, since Twilio's setup time adds to the 10s timeout), then
-  `voicemail_left` in "Voicemail during hours" at 90s, with NO `mobile_machine_answered` — the
-  carrier voicemail never got in. Re-run that same `call_events` check if this ever regresses. Phill has ring-my-mobile ON, so his leg is the
-  PSTN mobile, which is why his carrier voicemail is in the race at all.
-- **Auto missed-call SMS, added 2026-09-15 (migration `0037`, `/admin/settings`, admin-only, OFF by
-  default).** When a call ends having never produced an `answered` event, `sendMissedCallSmsIfDue`
-  (`src/api/missedCallSms.ts`) texts the caller from the business number. It is hooked into
-  `/webhooks/twilio/status` -- the CALLER's own top-level status callback, configured directly on
-  the Twilio number, not `CallSession`'s per-ring-round `notifyMissedOnce` -- and that distinction
-  is the whole design. A ring node's no-answer branch can lead to ANOTHER ring node (`main` has
-  two), so `notifyMissedOnce` fires at the first round that times out, whether or not a later round
-  bridges; hooking the SMS there would occasionally text a customer "sorry we missed you" while
-  they were being connected. The status webhook only ever reaches this after the call is genuinely
-  over (`ended_at IS NULL` already guards against a redelivered terminal status running it twice),
-  so the auto-text can only ever answer "did anyone ever pick up, for the whole call" -- checked the
-  same way `src/db/calls.ts` already defines "missed" elsewhere (`EXISTS ... event_type = 'answered'`),
-  plus one addition: the call must have reached a `ring_started` event, or a wrong number who hangs
-  up during the greeting gets texted too. Direction is checked too -- an outbound call (call-via-mobile)
-  going unanswered is a staff member's target not picking up, not a customer TCB missed.
-  `calls.missed_sms_sent_at` is claimed with an atomic `UPDATE ... WHERE missed_sms_sent_at IS NULL`
-  **BEFORE** the Twilio send and set back to NULL if the send throws (changed in #138; this bullet
-  said "after" until 2026-09-27). The reason: there are now two senders that can race (next
-  bullet), and the conditional UPDATE is the only thing that serialises them. Releasing on failure
-  keeps the column honest ("a text actually went out"). The caller ID is resolved BEFORE the claim,
-  because a throw between claim and try would hold the claim forever. The same UPDATE also enforces
-  **one text per caller per Sydney day** (#148, `NOT EXISTS` another call from that caller with
-  `missed_sms_sent_at >= sydneyDayStart(now)`; skips log `MISSED_CALL_SMS_SKIPPED`). It reads
-  `calls`, not `messages`, because the messages insert is best-effort. Known edge: an in-flight
-  claim counts, so if that send then fails, a second call from the same number ending in the same
-  second stays untexted. The text itself is recorded via
-  the ordinary `insertMessage`/`threadPeer` path so it shows up in that caller's inbox thread like
-  any other message, in its own try/catch exactly like `handleSendMessage` -- Twilio has already
-  accepted the send by that point, so a D1 failure there must never be reported as a send failure.
-  Settings (`getMissedCallSms`/`setMissedCallSms`, key `missed_call_sms`) follow the exact
-  `getDivertCallerId` shape: a JSON blob in the generic `settings` table, admin-only PUT, and a
-  template capped at 320 chars (roughly two GSM-7 SMS segments) so an admin can't accidentally wire
-  up a message that bills for a small novel on every missed call. Enabling it with a blank template
-  is refused at save time, the same "validate on write" rule as everywhere else in this file.
-  **Shipped web-only at first, which Phill caught within the hour ("I can't see it in settings" —
-  he was on the app, not the browser).** Mobile now carries it too: `Admin > Missed-Call SMS`
-  (`mobile/src/app/admin/missed-call-sms.tsx`), registered in `_layout.tsx`'s `ADMIN_SCREENS` and
-  linked from the hub with an On/Off summary, the same shape as every other settings sub-screen
-  (Business Hours, Call Blocklist). `getMissedCallSmsSetting`/`setMissedCallSmsSetting` in
-  `mobile/src/lib/api.ts` mirror the web pair exactly. The lesson generalizes: **a business-wide
-  admin setting shipped on only one of web/mobile is an incomplete feature, not a web feature** —
-  check both surfaces before calling one done, the same rule already written down for the on-call
-  rota's web/mobile split.
-- **The missed-call SMS's first version only ever fired from `/webhooks/twilio/status`, so it
-  silently never fired for the two cases Phill actually cared about.** Reported the same day as
-  "sms not working if they request a call back or leave a voicemail". Both the voicemail `<Record>`
-  handoff and `recordCallbackRequest` (`CallSession.ts`) set `calls.ended_at` **themselves**, the
-  instant they run — well before Twilio's own terminal status callback for that call arrives — so
-  by the time that callback lands, `ended_at IS NULL` is already false, `changes = 0`, and the
-  status-webhook's own call into `sendMissedCallSmsIfDue` never runs. The first fix called it from
-  both IVR sites directly — which texted callers while they were STILL ON THE LINE, mid-voicemail.
-  **Current design (#138, superseding that):** exactly two senders. (1) The caller leg's terminal
-  status callback, deliberately OUTSIDE its `changes > 0` block, so an earlier `ended_at` stamp no
-  longer suppresses it. (2) CallSession's `<Record>` action, ONLY when Twilio posts
-  `Digits=hangup` (the caller hung up to end the recording); any other value means they are still
-  connected. Sender 2 exists because the two fire concurrently with no ordering, and if the status
-  webhook lands first `voicemail_left` is not written yet. `recordCallbackRequest` no longer stamps
-  `ended_at` itself; it waits for its recording like voicemail. Two code comments still describe
-  the old shape (`missedCallSms.ts` "Called from ONE place", `worker.ts` "the ONLY place") — trust
-  the code, not them. Also: this whole feature leans on the per-number **"Call status changes"**
-  webhook being set in the Twilio console, which `/admin/webhooks` labels only "optional but
-  recommended"; `reconcileStaleCalls` stamps `ended_at` but never sends the text.
-  That fix alone would still have missed most real cases, for a second, independent reason: the
-  async-AMD rescue (see the bullet on it above) makes Twilio report a real `answered` event for the
-  call the moment ANY leg picks up — a staff member's own carrier voicemail included, since
-  `AnsweredBy` isn't known until the separate async verdict lands 2-4s later (`handleAgentAnswer`
-  only skips logging `answered` when it already knows synchronously it's a machine). So a caller
-  rescued from a staff mobile's voicemail and then left a business voicemail carries BOTH an
-  `answered` event and a `voicemail_left` event — and the original "ring_started AND NOT answered"
-  rule read the `answered` event as decisive and skipped every one of these, which in live D1 was
-  most of the real missed calls this feature exists for. `voicemail_left` and `callback_requested`
-  are now decisive on their own regardless of what else is on the call, and a `no_answer` logged
-  with reason `mobile_voicemail_answered` (the rescue fired but the caller hung up before recording
-  anything) counts too. The plain "reached a ring, never answered" rule is now the fourth, narrower
-  case, kept for exactly the reason it existed originally: a caller bridged on a LATER ring round
-  must never be texted "sorry we missed you" mid-conversation, and none of the other three shapes
-  will have fired for that call.
-- **The app showed the BUSINESS number for every incoming call, never the customer's — a real bug,
-  and it predates this session.** Reported 2026-09-15/16 as "it's showing the business number when
-  calling in the app, not the customer's, wtf". Twilio's own `From` on a softphone (`client:`) leg
-  is deliberately always the business number (`dialStaff` in `CallSession.ts`: caller-ID-ownership
-  rules for a `client:` destination are murky, so the raw caller is never risked there); the ACTUAL
-  caller rides along as a `CallerNumber` custom Client parameter instead, read via
-  `CallInvite.getCustomParameters()` — Twilio's own documented mechanism for exactly this. Grepping
-  the whole mobile app found **zero** references to `getCustomParameters` or `CallerNumber`: the
-  backend had been sending it since the softphone shipped, and nothing on the client had ever read
-  it. `voice.ts` used `invite.getFrom()` unconditionally in both places an incoming number is
-  surfaced (`handleInvite` and the "already answered before JS subscribed" adopt path), so every
-  ringing screen and every in-call screen (which take their number from the same route params) has
-  shown "TCB Phone"/the business number since the softphone existed. Fixed with a helper (first
-  `callerNumberFromInvite`; since #127 it is `callerFromInvite`, returning `{number, name}` from the
-  `CallerNumber` and `CallerName` parameters) that prefers the custom parameter (case-insensitive key match — no prior evidence either
-  native SDK preserves case, and a customer's number is worth the defensive lookup) and falls back
-  to `getFrom()` only when it's absent, run through `toE164` (the AU phone-number module already
-  handled the backend's bare-digits shape correctly, per the comment left in `dialStaff` -- it was
-  only ever unread, not unhandled).
-- **1300/1800/13xx numbers could not be dialled from the softphone at all, and the fix for it
-  already existed elsewhere in the codebase, unapplied to this path.** Reported 2026-09-16 as "i
-  want to be able to call 1300 numbers". `normalizeAuNumber` in `worker.ts` (the gate in front of
-  every softphone dial, `/twiml/voice-app`) only recognised `0[2-9]xxxxxxxx` geographic numbers and
-  `61xxxxxxxxx`; a 1300/1800/13xx number typed the way anyone actually dials one ("1300 123 456", no
-  leading 0 -- these carry no trunk prefix to strip) matched neither pattern and fell through to
-  being returned as bare digits with **no `+` at all**, which Twilio rejects outright as not E.164.
-  `callViaMobile.ts`'s `normalizeDialTarget` already carries the correct fix, with a comment naming
-  this exact trap ("Slicing here produced +61300123456, a number that does not exist") -- it was
-  only ever applied to the call-via-mobile path, never to the primary VoIP dial path these two
-  functions otherwise mirror. `normalizeAuNumber` now matches it. `src/db/contacts.ts`'s
-  `normalizePhone` (contact-matching only, unrelated to dialing) has the same gap -- a 1300 contact
-  saved from one number shape won't match a lookup from another -- and was deliberately left alone
-  here as a narrower, separate bug from "can't call the number at all".
-- **Dialling a 1300/1800/13xx number is ALSO blocked by a Twilio ACCOUNT setting, entirely separate
-  from the formatting bug above, and no code fix can clear it.** Even with `normalizeAuNumber`
-  fixed, every attempt to `+611300669664` came back Twilio error **13227**: *"No International
-  Permission. To call this phone number you must enable the High Risk:Special permission for AU"*.
-  Twilio classifies AU 1300/1800/13xx destinations as **High Risk: Special** (a toll-fraud
-  safeguard) and it is OFF by default, separately from ordinary AU mobile/landline permissions.
-  Fixed 2026-09-16 by enabling it at
-  `https://www.twilio.com/console/voice/calls/geo-permissions/high-risk?countryIsoCode=AU` (needs
-  the account's Owner or Administrator role). Read Health Checks or the Twilio debugger for error
-  13227/21215 before re-diagnosing this as a code bug again -- it looks identical to a formatting
-  bug (the call is simply refused) but no amount of `normalizeAuNumber` correctness fixes it.
-- **That geo-permission rejection was ALSO an unhandled crash in `/twiml/voice-app`, and Twilio's
-  own retry turned one failure into two.** `createOutboundCall`'s throw on a Twilio 4xx/5xx had no
-  try/catch on this route (unlike `callViaMobile.ts`, which already wraps the identical call) --
-  so it escaped straight to the Workers runtime's own error page: a bare 500, logged in the Twilio
-  debugger as **error 1101** ("Got HTTP 500 response to .../twiml/voice-app") with no explanation
-  reaching the agent's own leg or the app. Twilio then retries that same webhook ONCE with the
-  SAME CallSid, and the retry's `INSERT INTO calls` collided on the primary key with the row the
-  first attempt had already written -- guaranteeing a SECOND crash regardless of what the first
-  one was. Fixed with `INSERT OR IGNORE` (matching the pattern `recordCallLeg` already used for the
-  same reason) plus try/catch around `createOutboundCall` and everything after it: a create-call
-  rejection now marks the call `failed` and answers with `<Say>Sorry, that call could not be
-  placed.</Say><Hangup/>` instead of a raw 500, and a failure AFTER the target call was already
-  created best-effort cancels it rather than stranding the callee on a live call nobody joins.
-  This is a general robustness fix -- it fires for ANY Twilio rejection (a rotated key, a 429, a
-  different geo-permission gap), not just this one -- logged as `VOICE_APP_DIAL_FAILED` /
-  `VOICE_APP_SETUP_FAILED` so the next one is a log line instead of a bare Cloudflare error page.
 
 ## Reference (whole-repo audit, 2026-09-27)
 
@@ -1981,3 +1985,417 @@ Still open, deliberately:
   a Firebase app and an Apple VoIP certificate for the `.test` IDs — console work, not code.
 - No retention job exists (see Scheduled work). Deciding what to delete, and after how long, is
   Phill's call.
+
+## Repair log
+
+Every fix shipped, newest last. Add a line here with each merged PR.
+
+### Dated summaries
+
+Written at the time; kept as they were.
+
+- **Recent work (2026-09-02/03):** the divert above (#26), async AMD (#27), recording playback —
+  `calls.recording_duration` persisted from Twilio plus a proxy that always sends `Content-Length`
+  and honours Range (#26) — and a sending-number dropdown in the mobile app (#28, OTA 34).
+  Then in-page message composing and contact saving on web (#31) and mobile (#33), the Android
+  compose-field fix plus a manual-dispatch **Publish OTA** workflow (#34), and #35: a region field
+  on `/admin/settings` numbers, contact search in the web composer's To field, and a tappable
+  contact name in mobile threads (OTA 37). Before that: ServiceM8 call logging (`src/servicem8/`),
+  mobile reconnect-loop fix, and Facebook Messenger delivery-status tracking.
+- **Recent work (2026-09-04/06):** the hold-queue release fix (#45, see the hold-document note
+  above), an IVR **callback node** so a menu key logs a callback request (#46), an Australian
+  ringback tone (#47), a Settings **connection test** for call quality (#48), then the CallKit
+  native-answer chain — #49 (accepting a non-pending `CallInvite` aborts the process), #50 (adopt
+  the `Call` on `CallInvite.Event.Accepted`) and #51 (hand that adopted call back, or the ringing
+  screen pops an empty stack and goes black over a live call). Then #52: the mobile **Inbox** tab
+  (Voicemail | Callbacks segmented, replacing the Voicemail tab), `PUT /api/callback-requests/:id`
+  to mark one handled or reopen it, migration 0030's `done_at`/`done_by`, a `notif_callback` push,
+  and the same mark-done actions on `/admin/callbacks`. OTA 45. Then the mobile **Admin** section
+  (Settings > Administration, admin role only): business hours, call blocklist, phone numbers with
+  the au1 region warning, and staff (working hours, ring order, availability, invite/reset/remove).
+  It reads `GET /api/admin/staff` — a new admin-only endpoint, because the plain roster
+  (`/api/staff`) deliberately omits schedules, ring order and password state so the softphone's
+  transfer picker can stay ungated. Everything under `/api/admin/` is admin-only by construction.
+  The IVR editor and Analytics stayed web-only at the time; the IVR is now on mobile too (see the
+  phone-menu bullet below). OTA 46.
+- **Recent work (2026-09-07/08):** call-via-mobile carried `<Dial action="…/webhooks/twilio/status">`
+  and a `<Dial action>` URL must answer with TwiML — that endpoint is a status callback answering
+  the plain text `ok`, so Twilio played "an application error has occurred" on **every** such call
+  (#60). Then the **crash-loop day**: with no crash logs available anywhere (TestFlight needs an App
+  Store Connect API key that is not configured, and Play's Developer Reporting API is disabled on
+  the project), the only move was rolling the OTA back to #49 — so #61 added crash reporting the app
+  had never had. Reports are written to the device FIRST and sent on the NEXT launch, because a
+  fatal error kills the app before an HTTP request finishes; `occurred_at` and `received_at` are
+  separate columns so the gap between them identifies a crash that really took the app down. A
+  global handler chains to the previous one (observes, does not change behaviour) and an error
+  boundary keeps a render error from unmounting the tree. Migration `0033`, read at `/admin/errors`
+  (admin-only), reported to `POST /api/client-errors` (any signed-in staff — a handset that is
+  falling over must be able to say so whoever holds it). Handsets were on **OTA 78** (published
+  2026-09-22 07:30, both channels); master has since bumped `OTA_BUILD` to 79 (#136), 80 (#137)
+  and **81** (#146) — whether each was PUBLISHED is not recorded here, so check the Publish OTA run
+  history before assuming. And the first binary carrying the native CallKit fix is
+  **build 5** (2026-09-10), **confirmed installed on Phill's iPhone on 2026-09-11**. Settings shows
+  that as `#<OTA> · b5` (it read `#78 · b5` on 2026-09-22) — and the `· b5` half only renders from OTA 67 onwards (see the bullet on it
+  below). **Build 5 expires around 2026-12-09**: internal TestFlight builds last 90 days, so the
+  binary needs re-uploading quarterly even when no native code has changed.
+- **Recent work (2026-09-09/10):** the day the missed calls were root-caused. `0xBAADCA11` turned
+  out to be the iOS CallKit watchdog rather than any JavaScript fault (see the two bullets on it
+  below — most of a day went into chasing it as a JS crash, which it can never be), the cure shipped
+  natively as **build 5**, and the TestFlight submit that carries it was finally made to work from
+  EAS with no Mac and no `.p8` anywhere. Then, in order: **#89** the after-hours **on-call
+  rotation**, migration `0035`, editable on web `/admin/settings` and mobile
+  `Admin > After-hours On Call`, with a Health Check for it; **#90** a back button on the mobile
+  **Admin hub**, which had no way out at all, plus the missing `Icon` fallbacks on the on-call
+  screen; **#91** the **phone menu on mobile** (`Admin > Phone Menu`) as a list of steps rather than
+  the web's node canvas, reversing this file's old "IVR stays web-only" line — and the PR that
+  actually added `iconFallback` to `Row`, which this line used to credit to #90; then **#92** and **#94**, two rounds of
+  `/code-review` fixes over #89 — see the review bullet below, which is the durable lesson from the
+  whole day. OTA **66** on both channels; worker deployed.
+  Superseded on 2026-09-11: **OTA 67** on both channels, worker deployed, migration `0036` applied.
+  **Still outstanding at the end of it, and almost none of it is code:**
+  * ~~Build 5 has never been proven on a device.~~ **2026-09-11: build 5 IS installed, and a real
+    call still did not ring the softphone** — so the CallKit watchdog is ruled out as the remaining
+    cause and the lead is the VoIP push credential (see that bullet below). A locked-phone test call
+    is still the proof, but only once `TWILIO_PUSH_CREDENTIAL_SID_IOS` is confirmed set and not
+    sandbox; until then there is nothing for the handset to be woken BY.
+  * **The IVR's after-hours branch was wired to the on-call rotation on 2026-09-16, then UNWIRED
+    the same night** after it AMD-misfired a live caller into voicemail mid-conversation — see the
+    on-call-wiring bullet lower in this file. `main`'s closed branch is back to plain voicemail.
+    The rotation itself still holds Phill (anchor `2026-09-07`) but nothing in the IVR reaches it.
+  * `staff_users` still holds only Phill plus the demo reviewer account, so there is nobody ELSE to
+    rotate between — the rota rings the one person there is until a second tech is added.
+  * ~~Speaker-labelled transcripts need the Console's **Dual-channel Recording for Conference**
+    switch.~~ **Resolved 2026-09-12 by not depending on it**: that switch was Enabled and saved and
+    Twilio was still returning mono, so the recording moved to `record-from-answer-dual` on the
+    `<Dial>`. See the bullet on it below. **Settled 2026-09-22**: Twilio's Conversational
+    Intelligence turned out to be unusable here at all (unsupported in AU1) and was deleted; the
+    labelling is done in the worker now, and the first real labelled transcript came out correct.
+    Only **call-via-mobile** — the one flow with the channels reversed — is still unread.
+  * **A Twilio Auth Token was exposed in chat on 2026-09-10 and needs rotating** if it has not been.
+    The ORDER matters: create a SECONDARY token in Twilio, update `TWILIO_AUTH_TOKEN` in the
+    Cloudflare dashboard (Workers & Pages > tcb-voip > Settings > Variables and Secrets), make one
+    test call in and out, and only then promote it. Killing the old token before the worker holds
+    the new one breaks live calls — not because of webhook auth (webhooks authenticate by the
+    `?whsec=` URL secret first; see the webhook-auth bullet in the reference section) but because
+    the answer-time `redirectCall`, `hangupCall` and every conference operation authenticate with
+    `TWILIO_AUTH_TOKEN`. (Corrected 2026-09-27; this line used to blame webhook signatures.)
+    `TWILIO_AUTH_TOKEN_SECONDARY` lets both tokens pass signature checks during the swap.
+  * The **web** `/admin/settings` on-call section and the mobile screen are separate
+    implementations of the same rota; a change to one usually needs the other.
+- **Recent work (2026-09-13): a whole-repo bug scan, and all 49 findings fixed.** The `bug-hunter`
+  skill scanned `origin/master` in 9 domain groups (one agent finds, a separate agent challenges and
+  rules), giving 49 confirmed bugs. #105 shipped 5 (worker only); **#106** shipped the other 44 (worker +
+  **OTA 70**, both channels). The findings, fix list and raw verdicts are NOT in the repo, on purpose:
+  `C:\Users\Phill\Documents\TCB Phone bug audit 2026-09-13\`. Every fix has a test that failed first,
+  and each batch was run through `/code-review` until clean. **That took up to four rounds per batch
+  and caught about 20 real defects in the fixes themselves**, one of which (a first attempt at the
+  sibling-voicemail race) made things worse and was reverted, not patched. The rule stands: review
+  the fix, then review the fix to the fix. Still needing a handset: a locked-phone launch, answering
+  from the lock screen then opening the app, an attended transfer, call waiting, mute while dialling.
+
+### Before pull requests (2026-08-07 to 2026-09-01, pushed straight to `master`)
+
+- **08-07 to 08-10** -- the foundation: D1 schema, business hours, Twilio signature checks, the IVR
+  state machine in the `CallSession` Durable Object, call lifecycle tracking, staff table, settings
+  and call APIs, the first web pages (Call History, Settings, Live Calls), the Electron desktop
+  wrapper, and the IVR flow editor with its first review fixes (uploaded audio playback, node ids).
+- **08-12** -- softphone hold put the OTHER party on hold, `device.connect()` awaited (SDK 2.x),
+  outbound calls given a `calls` row, conference-membership checks on hold/transfer.
+- **08-15 to 08-16** -- email/password auth replaced Cloudflare Access: PBKDF2 (100,000 iterations,
+  the Workers cap), D1 sessions, login rate limit, invite/reset tokens, break-glass script, staff
+  admin; then the Expo app scaffold, login, Live Calls and EAS config.
+- **08-19 to 08-23** -- inline recording playback, mobile call history/detail/callbacks, tabs,
+  branding, softphone surface, messaging, Android launch-crash fixes (`@expo/ui` removed, PNGs
+  re-encoded), staff invites moved from SendGrid to Cloudflare `send_email`, admin-only web pages,
+  native outbound and incoming calls, the dialled leg cancelled when the agent hangs up first, the
+  **au1 push credential fix (error 52161)**, ringback instead of hold music, IVR editor usability,
+  SMS send/receive on `+61485034869`.
+- **08-25** -- calling/SMS hardening, Whisper transcription, number picker, live listen-in.
+- **08-27 to 08-28** -- iOS PushKit registry initialised before registering; move to `tcbvoip.app`
+  plus legal pages; per-user settings and notification toggles; ring-my-mobile (pstn legs, AMD);
+  business-wide recording setting; missed-call and voicemail pushes; audio routing, auto-answer and
+  call waiting; Facebook Messenger replies via Twilio; Play Store release config; transcription
+  backfill cron; call outcome and notes on mobile.
+- **08-29 to 09-01** -- Messenger names (Page inbox, hand-naming), desktop load retry and
+  Cloudflare-hosted auto-update, staff no longer timed out.
+
+### Pull requests, oldest first (every merged PR on `master`)
+
+**2026-09-02**
+- #17 Fix mobile reconnect flapping and silent Facebook send failures
+- #18 chore(mobile): bump OTA_BUILD to 30
+- #19 feat(servicem8): auto-log completed calls as a job diary note
+- #20 fix(servicem8): skip Unsuccessful jobs when picking the job to note
+- #21 docs: mark the tenancy foundation plan as shelved
+- #22 feat(servicem8): auto-fill contact names from ServiceM8 job contacts
+- #23 fix(mobile): show "Not delivered" on failed outbound messages
+- #24 feat(messaging): capture delivery error codes, alert on failure, and watch channel health
+- #25 fix(webhooks): add the missing sms-status URL to the admin webhooks page
+- #26 fix(calls): divert to mobile when ring-my-mobile is on, and fix the recording player
+
+**2026-09-03**
+- #27 fix(calls): run voicemail detection async so the caller stops ringing on answer
+- #28 feat(mobile): pick the sending number from a dropdown showing name and number
+- #29 docs: bring CLAUDE.md's current status up to date
+- #30 chore(mobile): clear the two eslint warnings
+- #31 feat(web): compose new messages and save contacts in the page, not in browser dialogs
+- #32 chore(mobile): track the eslint config so lint works outside this machine
+- #33 feat(mobile): save a contact from a message thread
+- #34 fix(mobile): show the message you are typing on Android
+- #35 Number regions, contact search in the composer, and a tappable name in mobile threads
+- #36 docs: the landline port is done, and voice numbers must be au1
+- #37 docs: unlisted distribution is the iOS plan, not a public listing
+- #38 Serve the App Review demo account invented data
+- #39 fix: the demo account must never be rung or transferred to
+- #40 feat: a public /support page for the store listings
+- #41 fix: ring staff who are on shift, not just staff with the app open
+- #42 feat: staff set their own availability, and it resets each morning
+
+**2026-09-04**
+- #43 feat(mobile): search contacts by name in the New Message To field
+- #44 chore(mobile): drop the unused wrangler devDependency
+- #45 fix: release queued callers to the menu instead of ringing forever
+- #46 feat(ivr): add a callback node so a menu key can request a callback
+- #47 fix(audio): use an Australian ringback tone, and stop the Gather distorting it
+- #48 feat(mobile): add a connection test so call quality is measurable, not guessed
+- #49 fix(mobile): stop the app aborting when a caller hangs up while it is ringing
+- #50 fix(mobile): dismiss the ringing screen when the call is answered natively
+- #51 fix(mobile): show the live call instead of a black screen after answering
+
+**2026-09-06**
+- #52 A callbacks section in the mobile app, and a way to clear one
+
+**2026-09-07**
+- #53 feat(mobile): add an admin-only Admin section
+- #54 fix(servicem8): actually name callers who are already in ServiceM8
+- #55 feat(servicem8): look the caller up 3 minutes after the call, not instantly
+- #56 feat(admin): health checks and end-to-end tests on the phone
+- #57 fix(test): drop the `global` reference that broke the deploy typecheck
+- #58 feat(calls): "Call via my mobile", and name the caller on the call screens
+- #59 fix: complete the call-via-mobile wiring, and add recoverable deletes
+
+**2026-09-08**
+- #60 fix: stop call-via-mobile erroring, and add a Voicemail section
+- #61 fix: show voicemails that have no transcript, and start reporting crashes
+- #62 refactor(web): make the Voicemail page look like the rest of the dashboard
+
+**2026-09-09**
+- #63 fix(dial): stop phones ringing after a call is answered — and drop Call History from the web
+- #64 docs: bring CLAUDE.md current, and correct the demo-account note
+- #65 fix: mark missed calls properly, make them read red, and stop sending two notifications for one
+- #66 feat: speaker-labelled call transcripts, Add Contact from Call Details, and the business caller ID on staff legs
+- #67 feat(dial): ring a staff mobile from the customer's number
+- #68 docs: the whisper flag is whisper=1, not pstn=1
+- #69 fix(messages): stamp a thread delete once, or Undo silently fails
+- #70 fix(messages): stop a hidden thread being mutated behind its own undo
+- #71 fix(dial): a caller-ID lookup must never hang up a live call
+
+**2026-09-10**
+- #72 fix: eight silent failures found by the whole-repo review (tier 2)
+- #73 fix: eight more silent failures, and two ring-path hangups (tier 3)
+- #74 fix(mobile): one tap = one call, and make crash reporting actually work
+- #75 fix(mobile): create the PushKit registry at launch, or iOS kills the app mid-ring
+- #77 fix(ios): align buildNumber with the build that actually shipped
+- #76 docs: record the 0xBAADCA11 root cause before it is lost
+- #78 fix(mobile): build the Twilio voice module during native launch
+- #79 fix(ios): put the extraModules override in the delegate's class body
+- #80 fix(ios): stop naming RCTBridgeModule, which Swift cannot see from the app target
+- #81 fix(ios): add extraModulesForBridge: with the ObjC runtime, not a Swift declaration
+- #82 docs: build 5 compiled, so record which Swift shape works
+- #83 feat(ci): submit iOS to TestFlight from the Actions tab
+- #84 feat(eas): submit iOS to TestFlight as an EAS workflow, replacing the GitHub one
+- #85 fix(eas): drop the build_id input, which fails validation when blank
+- #86 fix(eas): find the build with get-build, since submit requires a build_id
+- #87 fix(eas): authenticate the submit with EAS-held credentials, not a gitignored file
+- #88 docs: record what actually made the TestFlight submit work
+- #89 feat(dial): an after-hours on-call rotation, so a night call rings somebody
+
+**2026-09-11**
+- #90 fix(mobile): give the Admin hub a way out, and the on-call icons a fallback
+- #91 feat(mobile): the phone menu, as a list of steps
+- #92 fix(on-call): act on the code review of the rotation
+- #93 chore(mobile): bump OTA_BUILD for the on-call review fixes
+- #94 fix(on-call): two further review rounds over the rotation
+- #95 docs: record the day, and the lesson the day was actually about
+- #96 fix: business hours won't save on mobile, and a mono recording invisible to Health Checks
+- #97 fix: the phone-menu review findings, and why the softphone never rang
+- #98 fix: a logged-out handset that kept ringing, and making the APNs credential readable
+
+**2026-09-12**
+- #99 fix: ServiceM8 waits 15 minutes, and a push-credential 404 stops crying wolf
+- #100 fix(push): a VoIP push credential must live in au1, and the Console cannot make one
+- #101 fix(transcripts): record dual-channel on the Dial, because the Console switch does not work
+
+**2026-09-13**
+- #105 fix: five worker bugs from the repo scan (voicemail hangup, re-ring, Away reset, demo leaks)
+- #106 fix: every remaining bug from the repo scan (44 fixes, worker + OTA 70)
+- #107 docs(claude): record the 2026-09-13 repo bug scan and the rules it left behind
+
+**2026-09-15**
+- #108 fix ring-timeout voicemail bug + add auto missed-call SMS
+- #109 feat(mobile): add Missed-Call SMS to Admin
+
+**2026-09-16**
+- #110 fix: missed-call SMS never fired for a voicemail or a callback request
+- #111 fix(mobile): incoming calls showed the business number, never the caller's
+- #112 fix: 1300/1800/13xx numbers could not be dialled from the softphone
+- #113 fix: don't crash /twiml/voice-app on a Twilio create-call rejection
+- #114 docs: wire the after-hours IVR branch to the on-call rotation
+
+**2026-09-17**
+- #115 fix(transcripts): intelligence.twilio.com is a global host, not au1
+- #116 fix(mobile): native call notification showed the business number, not the customer's
+- #117 fix(transcripts): persist Twilio's actual create-failure so Health Checks can quote it
+- #118 fix: mobile audit 2026-09-17 (15 bugs, worker + OTA 74)
+- #119 fix(mobile): catch the late hang-up of a call ended before it attached (OTA 75)
+
+**2026-09-18**
+- #120 fix(desktop): one incoming-call toast, a lock that holds, and a publish guard
+- #122 feat(desktop): say what changed after an update installs
+- #121 fix(transcripts): stop sending participant overrides Twilio refuses
+- #123 fix(calls): refuse an inbound call to a number whose voice is switched off
+- #124 chore(calls): record the custom parameters Twilio posts on the agent-answer leg
+- #125 chore(calls): record the caller number attached to each softphone leg
+- #126 fix(calls): stop advertising the business number as the incoming caller
+- #127 feat(calls): show the saved contact's name on an incoming call, else the number
+- #128 feat(transcripts): label who said what on outbound calls too
+
+**2026-09-21**
+- #129 docs(mobile): the Expo SDK 54 pin rests on the native CallKit fix, not Expo Go
+- #130 feat(transcripts): label the speakers ourselves, because AU1 cannot use Twilio's
+- #131 feat(mobile): search Recents by name or number
+
+**2026-09-22**
+- #132 feat(ivr): give every phone number its own call route
+- #134 docs: the speaker labels are confirmed against a real transcript
+- #133 Fix the OTA number collision, and record the traps that caused it
+- #135 docs: refresh the status lines that had gone stale
+- #136 fix(mobile,web): admin screen dead ends, and one blocklist rule on the server
+- #137 feat(messages): receive and show picture messages
+- #138 fix(sms): send the missed-call text when the call ends, not mid-IVR
+
+**2026-09-23**
+- #139 feat(messages): show when each message was sent or received
+- #140 fix(calls): tell a callback caller to leave a message before the beep
+- #141 Correct the memory that had drifted from the code
+- #142 fix(web): calls ring on every dashboard section, not only Phone
+
+**2026-09-24**
+- #143 docs: record the Phone-page shell in CLAUDE.md
+- #144 fix(calls): keep the phones ringing while callers hear the hold message
+- #145 Commit Superpowers and caveman skills so every session loads them
+- #146 fix(ivr): hold step's callback key plays an editable callback step; callback list shows contact names
+
+**2026-09-27**
+- #148 Missed-call SMS: at most one text per caller per Sydney day
+- #147 docs: record 10s ring-step chain fix for calls reaching carrier voicemail
+- #149 docs(CLAUDE.md): record advanced-security false failure, D1 query gotchas, desktop process count, untested ring chain
+- #150 docs(CLAUDE.md): whole-repo audit — fix stale claims, add missing reference
+- #151 fix: close the audit's hazards, and record them in CLAUDE.md
+- #152 docs(CLAUDE.md): ring chain proven by a real call; OTA 82 published
+
+**2026-09-28**
+- #153 fix(web): show the call screen as soon as an outbound call is placed *(open)*
+
+PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
+numeric order; 102-104 were never merged.
+
+## History: superseded notes
+
+Kept for the record only -- none of this describes the system today. Twilio Conversational
+Intelligence was removed on 2026-09-27; see "Call transcripts today" under Reference.
+
+- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Transcripts: a refused request is marked `request_failed` and reported.** It fails Health Checks
+  when nothing was transcribed and warns alongside working transcripts (the marker is permanent and a
+  single 5xx sets it). Live D1 on 2026-09-13: 76 recorded calls, **zero** ever given a transcript sid.
+  **Three separate causes, each hiding the next, and `intelligence_error` is what made them
+  legible.** Read that column on the newest recorded call before diagnosing anything here — it holds
+  Twilio's own words, and the answer has changed twice.
+  (1) The AU1 `TWILIO_AUTH_TOKEN` was being sent to the US1 host `intelligence.twilio.com` (tokens
+  are per-region). Real, fixed in **#115** (`globalAuthHeader`).
+  (2) `TWILIO_INTELLIGENCE_SERVICE_SID` was stored **with a stray quote** —
+  `400: {"code":1302,"message":"GAfa08e9518a03474beb8a4c6b9c07b412\" is invalid"}` on 2026-09-17.
+  Re-saved unquoted with `npx wrangler secret put` (effective immediately, no deploy). A Cloudflare
+  secret can never be read back, so this was only ever confirmable by the error going away — which
+  it did: the next call carried a different 400.
+  (3) The request itself was malformed, and had been since the feature shipped. The 21:34 call on
+  2026-09-17 reads
+  `400: The media_participant_id can only be set for transcript with media url`. We create from a
+  recording sid, and Twilio documents the `participants` override only with `media_url`. It is a
+  WHOLE-REQUEST rejection, so the call got no transcript at all. The array is gone entirely — it only
+  labelled channels in Twilio's own viewer, and nothing reads those roles back (see the staff-channel
+  bullet below). Dropping `role` with it means no second media-url-only field can take its place.
+  Do not widen the search: voicemail transcripts work (under ~5s legitimately comes back empty) and
+  plain unlabelled call transcripts work on nearly every answered call, both directions; it is only
+  the SPEAKER-LABELLED ones that have never once succeeded. The 14 rows already at `request_failed`
+  are terminal — the sweep selects on `intelligence_sid IS NOT NULL` — so nothing retries them and
+  those calls have no labelled transcript, permanently.
+- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Speaker-labelled call transcripts need TWO things set, and neither announces itself.**
+  `TWILIO_INTELLIGENCE_SERVICE_SID` (a `GA...` Conversational Intelligence service) as a worker
+  secret -- `deploy.yml` does not set it, wrangler secrets are separate -- AND **Dual-channel
+  Recording for Conference** turned on in the Twilio Console (Voice > Settings). Without the secret
+  nothing runs; without the toggle every recording comes back on one channel and is discarded
+  unlabelled, because labelling a mono mix would be a guess presented as fact. Both states are
+  reported by Admin > Health Checks, which is the answer to "is it on?" -- added precisely because
+  `SERVICEM8_API_KEY` sat inert for a day with nothing saying so.
+- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **A mono recording never reached Health Checks, so the transcripts alarm could not fire.** Checked
+  against live D1 on 2026-09-10 after "the transcripts isn't working": EVERY recorded call had
+  `intelligence_sid` NULL — Twilio had never been asked, not once, since the feature shipped. The
+  check counted rows `WHERE intelligence_sid IS NOT NULL`, but a recording that comes back mono is
+  skipped in the recording webhook BEFORE Twilio is asked, so it never gets a sid. Its one
+  `single_channel` branch — the headline case, the Console's dual-channel switch being off — was
+  therefore unreachable from the webhook path and could only ever be set by the sweep, from a
+  DUAL-channel recording whose sentences all landed on one channel. The screen instead said
+  "Configured, but no answered call has been transcribed yet", indefinitely, which is the exact
+  reassuring silence it was built to break. The skip is persisted as `single_channel` now and the
+  check keys on `intelligence_status`.
+  Two constraints on that marker. It is written **only for conference recordings**, flagged with
+  `&conference=1` on the callback URLs we build ourselves. Since 2026-09-18 every recorded flow is a
+  dual `<Dial>` recording flagged `rec=dual` instead (caller leg, softphone customer leg,
+  call-via-mobile), where mono coming back is a real FAULT rather than the Console switch — so the
+  `conference=1` path is now effectively unused, kept for the fallback it describes. Inferring it
+  from Twilio's own parameters was the alternative and is worse: `<Dial>`'s documented
+  recordingStatusCallback carries no `ConferenceSid`, but that is a fact about their docs, not a
+  guarantee. And the write is guarded on `intelligence_status IS NULL`, because callbacks are
+  redelivered and a completed transcript must not be relabelled a misconfiguration by a late
+  duplicate. Note `conf=` already means a conference NAME on `/webhooks/twilio/join-conference`;
+  the boolean is deliberately spelled `conference`.
+  **`TWILIO_INTELLIGENCE_SERVICE_SID` is bound in `vitest.config.ts`**, not `wrangler.jsonc` (the
+  real one is a worker secret). Mutating the `env` imported from `cloudflare:test` does NOT reach
+  `SELF.fetch` — the worker holds its own — so the first version of these tests passed every
+  assertion with the branch never executing. A fifth instance of "a test that passes against
+  reverted code is not a test". Any test whose subject is "the secret is ABSENT" must now say so
+  explicitly rather than lean on the config default.
+- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Twilio has TWO Conversation Intelligence products and this uses the OLD one.** Searching the
+  Console lands you on the new one (Conversation Orchestrator: configurations, memory stores,
+  profiles, a "grouping type" field) — none of which applies. `src/twilio/intelligence.ts` POSTs one
+  recording to `intelligence.twilio.com/v2/Transcripts` with a `ServiceSid`, which is
+  **Conversation Intelligence (classic)** → Services, and the SID starts `GA`. No Language Operators
+  are needed; only the raw sentences and their channel numbers are read. Creating it by API avoids
+  the navigation entirely: `POST https://intelligence.twilio.com/v2/Services` with `UniqueName`.
+  The channel rule that default rests on: a DialVerb dual recording puts channel 1 on the **parent
+  call**, and for an inbound call that parent is the **CALLER** — so the customer is channel 1 and
+  **staff are channel 2**, which is why the default is 2. (For a CONFERENCE recording it was channel
+  1 = whoever joined first, which happened to give the same answer for a weaker reason.) This
+  paragraph said "staff are channel 1" for about half an hour on 2026-09-12, left over from a
+  reverted attempt at putting the recording on the staff leg; that is the sentence a future session
+  reads before touching `transcript_staff_channel`, and believing it labels every inbound transcript
+  backwards.
+- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **Whisper and the Twilio sweep both write `call_transcript`, in the same cron tick.**
+  `backfillTranscripts` can select a row with a NULL transcript, spend 10-30s in Workers AI, and land
+  after the labelled text was written -- destroying it permanently, since the row is by then out of
+  the sweep's query. `transcribeCallRecording` therefore guards its UPDATE on
+  `intelligence_status <> 'completed'`. The guard belongs on the WRITE; the gap between read and
+  write is where the race lives.
+- **[SUPERSEDED 2026-09-27 — Twilio Conversational Intelligence was removed; see "Call transcripts today" in the reference section. Kept as history.]** **An empty transcript result is NOT the same as a mono recording.** `fetchSentences` returns
+  `null` for "could not read" (non-2xx, thrown fetch, past `MAX_SENTENCE_PAGES`) and an array only
+  for a real read. They used to collapse into `[]`, and the sweep turns empty into the **terminal**
+  `single_channel` — so a transient 502 abandoned a transcript Twilio still held, and Health Checks
+  counted it as mono and told you to switch on a Console setting that was never off. `null` now
+  leaves the row pending for the next tick — and **counts the attempt**, which is what bounds it:
+  not all of these are transient (a transcript past the page cap fails identically every tick), and
+  an uncounted retry would hold one of the five `BATCH` slots forever while the query, ordered
+  `started_at DESC`, starves the older calls behind it. A read that genuinely returns nothing is its
+  own terminal `no_speech` — someone rang and said nothing — so it is not reported as the Console
+  switch either. Health Checks counts `abandoned`/`failed` too: turning the wrong alarm off without
+  that would have traded it for no alarm, which is the exact silence that screen exists to break.
