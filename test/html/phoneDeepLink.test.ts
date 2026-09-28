@@ -175,8 +175,9 @@ describe("an outbound call still connecting", () => {
     const api = new Function(
       "device",
       "document",
-      `var activeCall = null, listenConnecting = false, placingCall = false;
-       function onCallConnected() {} function onCallEnded() {}
+      `var activeCall = null, listenConnecting = false, placingCall = false, hangupWhenPlaced = false;
+       var window = {};
+       function onCallConnected() {} function onCallEnded() {} function showCallPane() {} function flashDeviceNote() {}
        ${busy} ${place}
        return { placeCall: placeCall, callBusy: callBusy };`
     )(device, { getElementById: () => null }) as { placeCall: (to: string) => Promise<void>; callBusy: () => boolean };
