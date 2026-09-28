@@ -50,6 +50,26 @@ function isValidStatus(value: unknown): value is "available" | "away" | "offline
   return value === "available" || value === "away" || value === "offline";
 }
 
+// The desktop app (Electron shell, every version up to 1.2.2) PUTs exactly
+// `{"status":"offline","awayReason":null}` from its `before-quit` handler. Status is per PERSON, not
+// per device, so quitting the desktop app -- tray Quit, restart-to-update, a Windows restart -- took
+// that person off the ring roster everywhere, their mobile included, for the rest of the day. That
+// is how a customer went straight to voicemail on 2026-09-28 with nobody rung. Closing an app is not
+// going off shift (the handset made the same call and stopped writing "offline" on unmount).
+// The shell cannot be fixed without a desktop release, so the server ignores that one request. It
+// is recognised by shape AND sender: the web Offline button sends `{status}` alone precisely so it
+// never matches, and the handset sends `{status}` alone anyway.
+function isDesktopQuitOffline(request: Request, body: Record<string, unknown>): boolean {
+  const keys = Object.keys(body);
+  return (
+    (request.headers.get("User-Agent") ?? "").includes("Electron/") &&
+    body.status === "offline" &&
+    body.awayReason === null &&
+    keys.length === 2 &&
+    keys.includes("awayReason")
+  );
+}
+
 export async function handlePutPresence(request: Request, db: D1Database, staff: StaffUser): Promise<Response> {
   let body: unknown;
   try {
@@ -62,6 +82,10 @@ export async function handlePutPresence(request: Request, db: D1Database, staff:
   if (!isValidStatus(status)) return new Response("invalid request body", { status: 400 });
   if (awayReason !== undefined && typeof awayReason !== "string" && awayReason !== null) {
     return new Response("invalid request body", { status: 400 });
+  }
+  if (isDesktopQuitOffline(request, body as Record<string, unknown>)) {
+    console.log("PRESENCE_DESKTOP_QUIT_IGNORED", JSON.stringify({ email: staff.email }));
+    return jsonResponse({ ok: true, ignored: true });
   }
   // Stamped with today's Canberra date: the override lasts for the rest of this local day and
   // the cron puts them back to available afterwards (see resetAvailabilityForNewDay).

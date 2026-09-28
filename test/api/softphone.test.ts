@@ -48,6 +48,35 @@ describe("handlePutPresence", () => {
     const row = await env.DB.prepare("SELECT status, away_reason FROM staff_users WHERE email = 'a@b.com'").first();
     expect(row).toEqual({ status: "away", away_reason: "lunch" });
   });
+
+  // Quitting the desktop app sent exactly this and took the person off the ring roster everywhere.
+  const put = (body: unknown, ua: string) =>
+    new Request("http://x", { method: "PUT", headers: { "User-Agent": ua }, body: JSON.stringify(body) });
+  const ELECTRON_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) tcb-phone/1.2.2 Chrome/140.0 Electron/43.3.0 Safari/537.36";
+  const seedAvailable = async () => {
+    await env.DB.prepare("INSERT INTO staff_users (email, role, created_at, status) VALUES ('q@b.com', 'staff', ?, 'available')").bind(Date.now()).run();
+  };
+  const statusOf = async () =>
+    (await env.DB.prepare("SELECT status FROM staff_users WHERE email = 'q@b.com'").first<{ status: string }>())?.status;
+
+  it("ignores the desktop app's quit-time offline, leaving the person available", async () => {
+    await seedAvailable();
+    const res = await handlePutPresence(put({ status: "offline", awayReason: null }, ELECTRON_UA), env.DB, { email: "q@b.com", role: "staff" });
+    expect(res.status).toBe(200);
+    expect(await statusOf()).toBe("available");
+  });
+
+  it("still goes offline when the Offline button is pressed in the desktop app", async () => {
+    await seedAvailable();
+    await handlePutPresence(put({ status: "offline" }, ELECTRON_UA), env.DB, { email: "q@b.com", role: "staff" });
+    expect(await statusOf()).toBe("offline");
+  });
+
+  it("still goes offline from a browser sending the old Offline body", async () => {
+    await seedAvailable();
+    await handlePutPresence(put({ status: "offline", awayReason: null }, "Mozilla/5.0 Chrome/140.0 Safari/537.36"), env.DB, { email: "q@b.com", role: "staff" });
+    expect(await statusOf()).toBe("offline");
+  });
 });
 
 describe("handlePostHeartbeat", () => {

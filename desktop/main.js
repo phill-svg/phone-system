@@ -349,19 +349,13 @@ app.on("before-quit", () => {
   // Runs before app.quit() closes any windows, so the flag is already set
   // by the time the "close" handler above checks it.
   app.isQuitting = true;
-  // Best-effort: flip presence to offline so the ring roster drops this agent
-  // immediately instead of ringing a dead endpoint until the 5-minute
-  // heartbeat staleness threshold expires. Runs in the page context (which
-  // holds the Access session cookies); keepalive lets the request survive
-  // page teardown. Fire-and-forget -- quitting must never hang on it.
-  try {
-    mainWindow?.webContents.executeJavaScript(
-      "fetch('/api/softphone/presence',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'offline',awayReason:null}),keepalive:true}).catch(function(){})",
-      true
-    );
-  } catch (e) {
-    // Window may already be destroyed; nothing to do.
-  }
+  // Deliberately does NOT set presence to offline. Status is per PERSON, not per
+  // device: quitting this app (tray Quit, restart-to-update, a Windows restart)
+  // used to take the person off the ring roster everywhere, their mobile
+  // included, for the rest of the day -- a customer went straight to voicemail
+  // on 2026-09-28 that way. Ringing does not depend on this app being open (VoIP
+  // push reaches the handset), so closing it is not going off shift. The server
+  // also ignores the old request from versions up to 1.2.2.
 });
 
 app.on("window-all-closed", () => {
