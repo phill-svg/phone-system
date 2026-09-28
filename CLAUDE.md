@@ -104,6 +104,8 @@ before the work is called done.
 - Never let a dashboard navigation leave `/admin/phone`: the Twilio Device lives only there. Other
   sections open in the frame; one softphone per browser (Web Lock `tcb-softphone`).
 - An outbound call shows its pane (with Hang up) the moment Call is pressed, not on `accept`.
+- A status-line warning names what actually happened and takes itself back when it recovers. Only
+  a 401 means signed out; a fetch that throws is the network.
 - Status is per PERSON, not per device: nothing may set Offline automatically (an app quitting,
   unmounting or restarting). Quitting the desktop app did exactly that until 2026-09-28; the server
   now ignores that request (`isDesktopQuitOffline`), so the web Offline button must keep sending
@@ -1177,6 +1179,17 @@ is shaped the way it is. Newest status is in **Status today** above; these are t
   the first character. One that wraps the new year is two ranges under string comparison.
 
 ### Web dashboard and desktop app
+
+- **"The desktop session keeps expiring every couple minutes" was a false alarm that never cleared
+  (2026-09-28).** The session was fine: no new `sessions` row, no failed logins, sessions last 10
+  years, and `last_heartbeat_at` was seconds old. The Phone page beats every 20s; two beats whose
+  `fetch` THREW -- a network blip, never the session -- printed "Session expired -- reload", and a
+  later successful beat only reset the counter, so the text stayed up for good. Now: a throw reads
+  "Connection to the server dropped -- retrying…", only a 401 reads "Signed out", and the next
+  successful beat takes back its own warning (only its own -- a Device error shown since stays).
+  The token-refresh catch no longer says "session expired" either. `test/html/phoneHeartbeat.test.ts`
+  runs the real emitted code. If the warning keeps coming BACK, the desk's network is dropping --
+  and with ring-my-mobile ON, Phill's inbound leg is his mobile, not this page, anyway.
 
 - **Quitting the desktop app set the whole account Offline, and that is why calls went straight to
   voicemail (2026-09-28).** A customer rang at 13:07 and the log showed `call_started` then
@@ -2404,6 +2417,7 @@ Written at the time; kept as they were.
 
 **2026-09-28**
 - #153 fix(web): show the call screen as soon as an outbound call is placed
+- (#155) fix(web): the softphone's "Session expired" was a network blip that never cleared
 - (#154) fix: quitting the desktop app no longer sets the account Offline (server guard + desktop 1.2.3)
 - (#154) docs(CLAUDE.md): one memory file -- rules checklist, status today, notes by topic, repair log
 

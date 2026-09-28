@@ -1830,10 +1830,6 @@ export function renderPhonePage(
       // A lapsed Cloudflare Access session turns same-origin API fetches into cross-origin
       // redirects to cloudflareaccess.com, which reject with TypeError before any status check
       // runs. Reloading the page re-triggers the Access login.
-      function sessionExpiredHint() {
-        setDeviceStatusText('Session expired -- reload (Ctrl+Shift+R) to sign back in.');
-      }
-
       async function initDevice() {
         setDeviceStatusText('Registering…');
         try {
@@ -1879,7 +1875,8 @@ export function renderPhonePage(
               var d = await r.json();
               device.updateToken(d.token);
             } catch (e) {
-              sessionExpiredHint();
+              // A thrown fetch is the network, not the session (a signed-out refresh is a 401 above).
+              setDeviceStatusText('Could not refresh the phone (connection dropped). Reload if calls stop.');
             }
           });
           device.on('incoming', function (call) {
@@ -1897,17 +1894,38 @@ export function renderPhonePage(
         }
       }
 
-      // Heartbeat: keep presence alive while this tab is open. Two consecutive failures means
-      // the Access session has lapsed (or the network is down) -- surface it.
+      // Heartbeat: keep presence alive while this tab is open, and say so when it cannot.
+      // A 401 is the only thing that means signed out. A fetch that THROWS never reached the server --
+      // a network blip -- and used to print "Session expired -- reload" there too, which then stayed on
+      // screen for good after the next beat succeeded: reported as "the desktop session keeps expiring
+      // every couple minutes" (2026-09-28) while the session was fine and beats were landing. So the
+      // warning names what happened, and a successful beat takes back whatever warning it put up.
       var heartbeatFailures = 0;
+      var heartbeatWarning = null;
+      function heartbeatWarn(text) {
+        heartbeatWarning = text;
+        setDeviceStatusText(text);
+      }
+      function heartbeatOk() {
+        heartbeatFailures = 0;
+        if (heartbeatWarning === null) return;
+        var el = document.getElementById('device-status');
+        // Only our own warning is taken back: a Device error shown since then stays.
+        if (el && el.textContent === heartbeatWarning) {
+          if (device && device.state === 'registered') setDeviceStatusText('Registered', true);
+          else setDeviceStatusText(device ? 'Unregistered' : 'Connecting…');
+        }
+        heartbeatWarning = null;
+      }
       function sendHeartbeat() {
         fetch('/api/softphone/heartbeat', { method: 'POST' })
           .then(function (r) {
-            if (r.ok) { heartbeatFailures = 0; return; }
-            if (++heartbeatFailures >= 2) setDeviceStatusText('Heartbeat failing (status ' + r.status + ').');
+            if (r.ok) { heartbeatOk(); return; }
+            if (r.status === 401) { heartbeatWarn('Signed out -- reload (Ctrl+Shift+R) to sign back in.'); return; }
+            if (++heartbeatFailures >= 2) heartbeatWarn('Heartbeat failing (status ' + r.status + ').');
           })
           .catch(function () {
-            if (++heartbeatFailures >= 2) sessionExpiredHint();
+            if (++heartbeatFailures >= 2) heartbeatWarn('Connection to the server dropped -- retrying…');
           });
       }
       setInterval(sendHeartbeat, 20000);
