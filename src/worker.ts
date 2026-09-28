@@ -1,6 +1,6 @@
 import { authorizeTwilioWebhook, appendWebhookSecret } from "./twilio/webhookAuth";
 import { isDemoUser, handleDemoRequest, demoEmails } from "./demo";
-import { renderJoinConference, renderDialAgentIntoConference, renderListenConference, renderBridgeToCustomer, renderAbandonToVoicemail } from "./twilio/conferenceTwiml";
+import { renderJoinConference, renderDialAgentIntoConference, renderListenConference, renderBridgeToCustomer, renderAbandonToVoicemail, renderConferenceRingback } from "./twilio/conferenceTwiml";
 import { createOutboundCall, cancelCall, TwilioApiError } from "./twilio/restClient";
 import { wrapResponse } from "./twilio/flowTwiml";
 import { cleanupLoneConference } from "./twilio/conferenceClient";
@@ -1119,6 +1119,12 @@ export default {
       }
 
       return new Response("ok", { status: 200 });
+    }
+
+    // The conference waitUrl (see CONFERENCE_WAIT_URL). Public and static -- it names only the public
+    // ringback file -- and GET or POST, since a <Conference>'s waitMethod defaults to POST.
+    if (url.pathname === "/twiml/ringback-wait" && (request.method === "POST" || request.method === "GET")) {
+      return new Response(renderConferenceRingback(), { headers: { "Content-Type": "text/xml" } });
     }
 
     if (url.pathname.startsWith("/media/")) {

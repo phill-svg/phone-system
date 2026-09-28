@@ -1,5 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { renderJoinConference, renderDialAgentIntoConference } from "../../src/twilio/conferenceTwiml";
+import { renderJoinConference, renderDialAgentIntoConference, renderConferenceRingback } from "../../src/twilio/conferenceTwiml";
+
+// Twilio plays what a <Conference waitUrl> returns ONCE, then silence. Pointed straight at the wav, a
+// lone participant heard one 3s ring and then dead air (2026-09-28). The waitUrl is a TwiML document
+// that loops the tone, and nothing may point a conference at the bare file again.
+describe("conference wait audio", () => {
+  it("loops the Australian ringback until the conference starts", () => {
+    expect(renderConferenceRingback()).toContain(
+      '<Play loop="0">https://tcbvoip.app/media/system/ringback-au.wav</Play>'
+    );
+  });
+
+  it("is what every conference waits on -- never the bare audio file", () => {
+    const docs = [
+      renderJoinConference({ conferenceName: "CAcaller" }),
+      renderDialAgentIntoConference({ conferenceName: "CAx", actionUrl: "https://x/a", recordingStatusCallbackUrl: "https://x/r" }),
+    ];
+    for (const xml of docs) {
+      expect(xml).toContain('waitUrl="https://tcbvoip.app/twiml/ringback-wait"');
+      expect(xml).not.toContain('waitUrl="https://tcbvoip.app/media/');
+    }
+  });
+});
 
 describe("renderJoinConference", () => {
   it("renders a Dial/Conference document for the given name", () => {
@@ -7,7 +29,7 @@ describe("renderJoinConference", () => {
     // Pinned to a fixed region (au1) so this leg mixes in the SAME room as the other leg's
     // <Conference>, regardless of which Twilio region created/is processing either underlying call.
     expect(xml).toContain('<Conference region="au1"');
-    expect(xml).toContain('waitUrl="https://tcbvoip.app/media/system/ringback-au.wav"');
+    expect(xml).toContain('waitUrl="https://tcbvoip.app/twiml/ringback-wait"');
     expect(xml).toContain('beep="false"');
     expect(xml).toContain(">CAcaller</Conference></Dial>");
   });

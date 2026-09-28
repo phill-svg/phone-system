@@ -20,8 +20,8 @@
 //                volume did not jump
 //
 // The 3.0s length is load-bearing in BOTH consumers, which is why it is one WHOLE cycle:
-//   - conference: RINGBACK_URL is the <Conference waitUrl>, so Twilio loops the file itself. A
-//     partial cycle would loop with the wrong gap.
+//   - conference: looped by the TwiML at CONFERENCE_WAIT_URL below. A partial cycle would loop with
+//     the wrong gap.
 //   - queue hold: rendered as <Play loop="1"> with no wrapping <Gather> (see renderHold), so the
 //     document IS one cycle and Twilio re-fetches the waitUrl the instant it ends.
 //
@@ -29,3 +29,14 @@
 // updated tone MUST get a NEW filename -- overwriting in place leaves Twilio and Cloudflare serving
 // the old audio for months.
 export const RINGBACK_URL = "https://tcbvoip.app/media/system/ringback-au.wav";
+
+// The <Conference waitUrl>. NOT the wav itself: Twilio plays whatever a waitUrl returns ONCE and then
+// holds the participant in silence ("Once the TwiML document located at the waitUrl runs out of verbs
+// to execute, silence will be played"). Pointed straight at the wav from 2026-08-23 -- on the belief
+// that "Twilio loops the file itself" -- so an outbound softphone call played ONE 3s ring cycle and
+// then dead air until the customer answered (reported 2026-09-28 as "a weird dial, then quiet"), and
+// an inbound caller waiting in the conference for the staff leg got the same.
+// This URL answers `<Play loop="0">` (renderConferenceRingback). An unbounded loop is correct HERE
+// and nowhere near the queue hold document: wait audio stops the moment the conference starts (a
+// second participant joins), so nothing needs this document to end. Public and static, like /media/.
+export const CONFERENCE_WAIT_URL = "https://tcbvoip.app/twiml/ringback-wait";

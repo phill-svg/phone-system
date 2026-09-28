@@ -96,6 +96,8 @@ before the work is called done.
   secret first -- rotate it primary=new/secondary=old, repoint, then unset.
 - The ringback is self-hosted and exactly one 3.0s cycle; `/media/` is public and immutable-cached,
   so nothing private goes in that R2 bucket and a changed file needs a new name.
+- A `<Conference waitUrl>` is played ONCE, then silence. Conferences wait on `/twiml/ringback-wait`
+  (`CONFERENCE_WAIT_URL`), which loops the tone -- never point one at the bare audio file.
 - The on-call rota stays UNWIRED from the IVR until AMD on that leg is tuned or removed. Its anchor
   must be a Monday.
 - "Was this call missed?" is `answered`/`event_count` -- never `ivr_path` -- on every surface.
@@ -154,7 +156,8 @@ before the work is called done.
 
 ## Status today (2026-09-28 -- update this when it changes)
 
-- **Live:** worker deployed 2026-09-28 (Deploy #173, #153). Handsets on **OTA 82** (published
+- **Live:** worker deployed 2026-09-28 (Deploy #175, #155; #153 and #154 went out earlier the same
+  morning). Handsets on **OTA 82** (published
   2026-09-27, both channels). iOS **build 5** installed via internal TestFlight -- it **expires
   around 2026-12-09** and needs re-uploading; the next iOS build is 6. Android ships to the Play
   internal track. Desktop app 1.2.2 on desks; **1.2.3 is in the repo, not yet built or uploaded**
@@ -162,11 +165,13 @@ before the work is called done.
 - **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
   `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
 - **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
-- **Fixed 2026-09-28, #154:** quitting the desktop app set the whole account Offline, so a
-  customer at 13:07 went straight to voicemail with nobody rung. Server-side fix works for every
-  desktop version once deployed; desktop 1.2.3 removes the cause.
-- **Just shipped:** #153 -- on web/desktop an outbound call shows its screen and Hang up the
-  moment Call is pressed. Deployed 2026-09-28; not yet tested with a real desktop call.
+- **Shipped 2026-09-28** (none yet proven on a real call):
+  - #153 -- web/desktop outbound calls show their screen and Hang up the moment Call is pressed.
+  - #154 -- quitting the desktop app no longer sets the whole account Offline (a customer at 13:07
+    went straight to voicemail with nobody rung). Desktop 1.2.3 removes the cause at source.
+  - #155 -- the desktop's false "Session expired" is now "Connection dropped" and clears itself.
+  - Outbound ringback: a desktop/web call rings "brr-brr" until the customer answers, instead of
+    one odd ring and then silence (this change -- see the softphone notes).
 - **Waiting on Phill (not code):**
   - Rotate the Twilio auth token exposed on 2026-09-10, if not done (order in the notes below).
   - Delete the dead secret: `npx wrangler secret delete TWILIO_INTELLIGENCE_SERVICE_SID`.
@@ -734,6 +739,20 @@ is shaped the way it is. Newest status is in **Status today** above; these are t
   reloads AFTER a save, so that dialog is the one moment it can be said before it is true.
 
 ### Softphone calls: hold, transfer, dialling out
+
+- **An outbound softphone call played ONE ring and then dead air until the customer answered
+  (2026-08-23 to 2026-09-28).** Reported as "it doesn't bring-bring, it has a weird dial and then
+  goes quiet". The agent's leg joins the call's conference first and waits there alone -- a
+  conference does not start until two participants are in -- hearing its `waitUrl`. That was the
+  wav itself, on the belief that "Twilio loops the file itself". It does not: Twilio's `<Conference>`
+  docs say a waitUrl's content runs once "and then silence will be played"; the only loop is TwiML.
+  So the 3.0s file played one cycle (the "weird dial") and nothing followed. The same waitUrl is on
+  the inbound caller's `renderJoinConference`, so a caller waiting for the staff leg to join got the
+  same silence, only for less time. Fix: every conference waits on `CONFERENCE_WAIT_URL`
+  (`/twiml/ringback-wait`, public and static, GET or POST), which answers `<Play loop="0">` of the
+  same file. The unbounded loop is right here and ONLY here -- conference wait audio stops when the
+  conference starts, whereas the queue hold document must end so the caller can be released. The
+  Voice SDK's own short "connecting" chirp when Call is pressed is separate and was left alone.
 
 - **Hold, transfer and complete-transfer resolve the conference from the staff member's OWN leg**
   (`ownLegConference`, `softphone_call_legs.conference_name`). A client-supplied `conferenceName` is
@@ -2418,6 +2437,7 @@ Written at the time; kept as they were.
 **2026-09-28**
 - #153 fix(web): show the call screen as soon as an outbound call is placed
 - (#155) fix(web): the softphone's "Session expired" was a network blip that never cleared
+- fix(calls): outbound softphone calls ring until answered instead of one ring then silence
 - (#154) fix: quitting the desktop app no longer sets the account Offline (server guard + desktop 1.2.3)
 - (#154) docs(CLAUDE.md): one memory file -- rules checklist, status today, notes by topic, repair log
 
