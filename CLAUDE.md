@@ -56,10 +56,14 @@ before the work is called done.
 - Expo is pinned to SDK 54 on purpose. iOS submit runs on EAS (`mobile/.eas/workflows/submit-ios.yml`);
   `mobile/eas.json` must NOT name `ascApiKeyPath`. Do not rebuild it as a GitHub Actions job.
 - Store identifiers (`au.com.tcbpestcontrolcanberra.tcbphone`) and Play version codes are permanent.
+  Store submission rules (screenshots, Play declarations, signing) are under "App Store and Play
+  submission" in the detailed notes.
 - Worker secrets are set with `npx wrangler secret put` -- `deploy.yml` sets none of them.
 - `AUTH_MODE=dev` is local only, never production.
 - `npm test` needs a Cloudflare login (the `ai` binding). Without one: copy `wrangler.jsonc` minus
-  `"ai"` and point a throwaway vitest config at it; delete both after. The full suite is flaky under
+  `"ai"` (the September plans' `localtest.sh` also dropped `send_email`) and point a throwaway vitest
+  config at it; delete both after. Tests must seed the `staff_users` row first: `user_settings`,
+  `sessions` and `password_tokens` have foreign keys to it and the test D1 enforces them. The full suite is flaky under
   load -- re-run failed files alone before investigating. `SELF.fetch` serialises requests, so a
   concurrency test must call the handler directly.
 
@@ -83,6 +87,10 @@ before the work is called done.
 - Only the CALLER's leg records (`record-from-answer-dual`); staff legs pass `record: false`. Each
   flow declares `staffch=`. A reversed transcript is fixed at that flow's call site.
 - Outbound rows store the BUSINESS number in `caller_number` -- branch on `direction`.
+- Never put `CallerNumber`/custom parameters on a PSTN leg -- they only reach `client:` identities.
+- Call Recording is ONE business-wide setting (`recording_enabled` in `settings`, default ON,
+  admin-only PUT), read by `renderJoinConference`, `transfer-answer`, `mobile-bridge` and
+  `CallSession`. Any new recorded flow must read it too.
 - A voice number must be homed in **au1**, and so must every VoIP push credential (create those by
   REST on the au1 host; the Console cannot). Twilio webhooks authenticate by the `?whsec=` URL
   secret first -- rotate it primary=new/secondary=old, repoint, then unset.
@@ -101,13 +109,25 @@ before the work is called done.
 - Server-rendered admin times go through `formatSydney` (Workers run UTC).
 - Mirrored copies change together: `msgStatusLabel`/`messageStatusLabel`, `msgTime`/
   `messageTimeLabel`, `normalizePhone` (three copies), `CALLBACK_KEYS` (web and mobile).
+- Delete AND undo (threads and calls) are admin-only, and so is everything under `/api/admin/`.
+- `/privacy` and `/terms` stay public, no auth -- both store listings and the app link to them.
+- Auth keeps three properties: passwords of at least 10 characters, a dummy PBKDF2 run for an
+  unknown email (so timing cannot reveal who has an account), and one neutral forgot-password page.
 - Every new `/api/` route is checked against `handleDemoRequest`; `/api/admin/` is admin-only;
   `excludeEmails`-style exclusion lists are REQUIRED parameters, never defaulted.
 - A desktop release is only for Electron shell changes: bump `desktop/package.json` and add a
   `releaseNotes.js` entry. Feature changes ship with the worker deploy.
 
 **Mobile app**
-- Read `mobile/AGENTS.md` before touching `mobile/`.
+- Read `mobile/AGENTS.md` before touching `mobile/`, and read the **SDK 54** Expo docs
+  (https://docs.expo.dev/versions/v54.0.0/) -- newer docs describe a different API.
+- Install mobile packages from inside `mobile/` with `npx expo install` (never hand-pick versions,
+  never add app deps to the root `package.json`). A new ambient `@types/*` goes in
+  `mobile/tsconfig.json`'s `types` list, which is `["jest"]`.
+- Only `mobile/src/lib/voice.ts` imports `@twilio/voice-react-native-sdk`. Decision logic
+  (`callRouting.ts` and friends) stays free of native imports so Jest can load it.
+- An admin toggle whose server default is ON stays disabled until loaded
+  (`toggleDisabled={value === null}`), or an admin "testing" it switches the feature off.
 - `Icon` needs a `fallback` or Android shows a blank circle.
 - Any screen that loads on `useFocusEffect` needs `keepEdits`, `setError(null)` on success, and a
   re-read before writing.
@@ -128,15 +148,15 @@ before the work is called done.
 
 ## Status today (2026-09-28 -- update this when it changes)
 
-- **Live:** worker deployed 2026-09-27 (Deploy #171). Handsets on **OTA 82** (published
+- **Live:** worker deployed 2026-09-28 (Deploy #173, #153). Handsets on **OTA 82** (published
   2026-09-27, both channels). iOS **build 5** installed via internal TestFlight -- it **expires
   around 2026-12-09** and needs re-uploading; the next iOS build is 6. Android ships to the Play
   internal track. Desktop app 1.2.2.
 - **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
   `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
 - **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
-- **Open PR:** #153 -- outbound call screen shows immediately on web/desktop. Not yet tested with
-  a real desktop call.
+- **Just shipped:** #153 -- on web/desktop an outbound call shows its screen and Hang up the
+  moment Call is pressed. Deployed 2026-09-28; not yet tested with a real desktop call.
 - **Waiting on Phill (not code):**
   - Rotate the Twilio auth token exposed on 2026-09-10, if not done (order in the notes below).
   - Delete the dead secret: `npx wrangler secret delete TWILIO_INTELLIGENCE_SERVICE_SID`.
@@ -145,10 +165,18 @@ before the work is called done.
   - Decide a retention period (nothing is ever purged today).
   - Decide on press-1-to-accept screening for the mobile leg (declined/off phones still leak 3-4s
     of carrier voicemail greeting).
+  - Before ANY store submission: the App Store privacy answers and Play Data safety form say "no
+    diagnostics / no crash SDK", but the app has collected crash reports (`client_errors`) since
+    2026-09-08, and the privacy policy (`src/html/pages/legal.ts`) mentions neither those nor the
+    fact that nothing is ever deleted. Update all three.
+  - Confirm which Play developer account type TCB has: a personal account made after 13 Nov 2023
+    needs a 14-day closed test with 12 testers before production.
 - **Still unproven on a real call:** a call-via-mobile transcript (the one flow with reversed
   channels); the web shell's ring-while-on-Messages / Phone-mid-ring / Call-from-Messages cases;
   the #153 outbound pane on desktop.
-- **Known, not yet fixed:** the on-call rota is unwired from the IVR (AMD misfire); a ServiceM8
+- **Known, not yet fixed:** a greeting built as PLAY -> Hold (wait) -> ring never plays --
+  `startRing`'s wait path uses only the Hold step's own audio and drops the PLAY before it (put a
+  greeting before a DIRECT ring); the on-call rota is unwired from the IVR (AMD misfire); a ServiceM8
   `no-match` is never retried; a mobile business-hours save with an inverted window says only
   "request failed (400)"; most `Row` call sites lack an Android `iconFallback`; the `test` EAS
   profile cannot receive incoming-call pushes; the mobile "no hang-up button" report was never
@@ -195,6 +223,27 @@ for your area before implementing; where it disagrees with this file, this file 
   Do NOT rebuild this as a GitHub Actions job: one was written on 2026-09-10 and deleted the same
   hour, because `.eas/workflows/` already existed (`publish-update.yml`) and EAS holding the
   credentials is strictly less to go wrong than a `.p8` pasted into a repository secret.
+
+### Docs known to be stale (this file wins)
+
+Found 2026-09-28; correct the doc if you are in it anyway.
+- `specs/2026-08-27-tcbvoip-migration-design.md` and `runbooks/mobile-eas-first-build.md` call
+  `phone.tcbpestcontrolcanberra.com.au` a live fallback route -- `wrangler.jsonc` has only
+  `tcbvoip.app`.
+- `specs/2026-08-19-ios-softphone-phase1-design.md`: says the deployed worker is not this repo
+  (deploys run from `deploy.yml`), names one `TWILIO_PUSH_CREDENTIAL_SID` (it is `_IOS`, a secret,
+  and `_ANDROID`, a var), and says a VoIP Services KEY (it must be a VoIP Services CERTIFICATE).
+- Auth and mobile specs/plans: 12h sessions (code: 10 years), PBKDF2 210,000 (code: 100,000, the
+  Workers cap), SendGrid (code: Cloudflare `send_email`), `tcb_session_token` (code: `_v2`), and
+  "Expo SDK 57" in the phase-2 plan (the app is on 54).
+- `runbooks/mobile-eas-first-build.md` blames an unexpected sign-out on "a different session
+  secret" -- there is none; sessions are hashed D1 rows, so the causes are logout, a password reset
+  or removal.
+- The store specs disagree on the demo account (`offline`, `ring_priority=100` in one place,
+  `available` in another; "verified 2026-08-28" in the Play spec, "created 2026-09-03" in the App
+  Store spec). Check live D1 before relying on either. The App Store review notes also still say
+  "small service businesses" / "subscribing business" from the shelved tenancy plan.
+- The store privacy answers and `legal.ts` predate crash reporting (see Status today).
 
 ## Agent skills
 
@@ -1576,6 +1625,37 @@ is shaped the way it is. Newest status is in **Status today** above; these are t
   same reason, and that is a real limitation rather than a bug: only `00:00` as a close means
   midnight.
 
+### App Store and Play submission
+
+From `specs/2026-08-28-appstore-listing.md`, `specs/2026-08-28-playstore-listing.md` and
+`runbooks/android-play-submit.md` (read those for the listing copy itself). The demo-account
+password lives in those two specs -- never copy it anywhere else.
+- **iOS:** `ascAppId` is `6806023125` (`mobile/eas.json`); `ITSAppUsesNonExemptEncryption=false` is
+  already in `mobile/app.json`. Screenshots are exactly 1320x2868 portrait (the 6.9" set only, 3-10
+  of them), taken on the iPhone 16 Pro Max, with no real customer names or numbers; there is no
+  iPad set because `supportsTablet` is unset. Unlisted distribution is TWO steps: submit for review
+  with a notes line saying it is intended for unlisted distribution, THEN file Apple's unlisted-app
+  request -- Apple declines the request for an app not yet submitted or still in beta.
+- **Before every submission (both stores):** check `reviewer@...` can still log in via
+  `POST /api/login`, and that the privacy/Data-safety answers match what the app collects (see
+  Status today -- they are currently out of date).
+- **Android, first release:** the first AAB must be uploaded BY HAND in the Play Console -- the Play
+  API cannot create an app's first release, so `eas submit` fails "package not found" until then.
+  The service-account key is `mobile/credentials/play-service-account.json` (gitignored, path in
+  `mobile/eas.json`) and needs the Release manager role.
+- **Android, signing:** EAS holds the upload keystore. Enrol in Play App Signing and back the
+  keystore up -- without Play App Signing a lost keystore means the listing can never be updated.
+- **Android, builds:** only the `production` profile goes to Play (an AAB). `preview` builds an APK
+  that must never be uploaded.
+- **Android, Console declarations** gate release, both caused by permissions merged in from the
+  Twilio SDK's own manifest (not `app.json`): `FOREGROUND_SERVICE_MICROPHONE` needs a demo video
+  (place a call, background the app, the call survives, hang up), and `USE_FULL_SCREEN_INTENT`
+  needs its own justification. Target audience must be 18+ only -- any under-18 bracket pulls the
+  app into the Families programme.
+- **Android, launcher icon:** `adaptiveIcon.foregroundImage` must stay
+  `android-adaptive-foreground.png` (artwork inside the centre 60%) or it is cropped; regenerate
+  with `mobile/scripts/make-play-assets.py`.
+
 ### Working practices and testing
 
 - **Test-runner gotchas met on 2026-09-13.** The full worker suite is flaky under load on this machine
@@ -2295,7 +2375,8 @@ Written at the time; kept as they were.
 - #152 docs(CLAUDE.md): ring chain proven by a real call; OTA 82 published
 
 **2026-09-28**
-- #153 fix(web): show the call screen as soon as an outbound call is placed *(open)*
+- #153 fix(web): show the call screen as soon as an outbound call is placed
+- (this PR) docs(CLAUDE.md): one memory file -- rules checklist, status today, notes by topic, repair log
 
 PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
 numeric order; 102-104 were never merged.
