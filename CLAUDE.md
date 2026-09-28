@@ -104,6 +104,10 @@ before the work is called done.
 - Never let a dashboard navigation leave `/admin/phone`: the Twilio Device lives only there. Other
   sections open in the frame; one softphone per browser (Web Lock `tcb-softphone`).
 - An outbound call shows its pane (with Hang up) the moment Call is pressed, not on `accept`.
+- Status is per PERSON, not per device: nothing may set Offline automatically (an app quitting,
+  unmounting or restarting). Quitting the desktop app did exactly that until 2026-09-28; the server
+  now ignores that request (`isDesktopQuitOffline`), so the web Offline button must keep sending
+  `{status}` alone.
 - Inline scripts inside TS template literals: no backticks, no `${...}`, no regex with `\/`.
 - Client escapers must escape quotes too (`h()`, `esc()`).
 - Server-rendered admin times go through `formatSydney` (Workers run UTC).
@@ -151,10 +155,14 @@ before the work is called done.
 - **Live:** worker deployed 2026-09-28 (Deploy #173, #153). Handsets on **OTA 82** (published
   2026-09-27, both channels). iOS **build 5** installed via internal TestFlight -- it **expires
   around 2026-12-09** and needs re-uploading; the next iOS build is 6. Android ships to the Play
-  internal track. Desktop app 1.2.2.
+  internal track. Desktop app 1.2.2 on desks; **1.2.3 is in the repo, not yet built or uploaded**
+  (`cd desktop && npm run build && npm run release:upload` on a Windows machine).
 - **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
   `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
 - **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
+- **Fixed 2026-09-28, #154:** quitting the desktop app set the whole account Offline, so a
+  customer at 13:07 went straight to voicemail with nobody rung. Server-side fix works for every
+  desktop version once deployed; desktop 1.2.3 removes the cause.
 - **Just shipped:** #153 -- on web/desktop an outbound call shows its screen and Hang up the
   moment Call is pressed. Deployed 2026-09-28; not yet tested with a real desktop call.
 - **Waiting on Phill (not code):**
@@ -1169,6 +1177,26 @@ is shaped the way it is. Newest status is in **Status today** above; these are t
   the first character. One that wraps the new year is two ranges under string comparison.
 
 ### Web dashboard and desktop app
+
+- **Quitting the desktop app set the whole account Offline, and that is why calls went straight to
+  voicemail (2026-09-28).** A customer rang at 13:07 and the log showed `call_started` then
+  `voicemail_left` with NO `ring_started`: the ring step found nobody and fell through. Phill's
+  `status` was `offline`, set that day -- his 12:48 call had rung, so it changed in between, and the
+  desktop heartbeat reappearing at 13:08 fits the app being quit and reopened (the #153 deploy went
+  out at 13:03). `desktop/main.js`'s `before-quit` PUT `{status:'offline',awayReason:null}` "so the
+  roster drops this agent instead of ringing a dead endpoint" -- a reason that died when the
+  heartbeat stopped gating ringing. Status is per person, so it took his MOBILE off the roster too,
+  for the rest of the day (the morning reset only clears earlier days). The handset had already
+  learned this ("closing the app is not going off shift"); the desktop never had.
+  Two halves. The shell change needs a desktop release (1.2.3), so the server ignores that exact
+  request NOW: `isDesktopQuitOffline` matches a UA containing `Electron/` AND a body of exactly
+  `{status:"offline",awayReason:null}`, answers `{ok:true,ignored:true}` and logs
+  `PRESENCE_DESKTOP_QUIT_IGNORED`. The web Offline button was changed to send `{status}` alone so it
+  never matches (Offline clears an away reason either way); the handset already sends `{status}`
+  alone. One edge: a desktop page loaded BEFORE the deploy still sends the old body from its Offline
+  button, which is ignored until that page reloads.
+  Diagnose any "it went straight to voicemail" the same way: no `ring_started` means zero targets,
+  so read `staff_users.status`, `status_set_on` and the schedule before anything else.
 
 - **Call History was removed from the web dashboard (#63).** The handset carries the same list. The
   per-call DETAIL page `/admin/calls/:id` stays — `/admin/voicemail` links into it — but
@@ -2376,7 +2404,8 @@ Written at the time; kept as they were.
 
 **2026-09-28**
 - #153 fix(web): show the call screen as soon as an outbound call is placed
-- (this PR) docs(CLAUDE.md): one memory file -- rules checklist, status today, notes by topic, repair log
+- (#154) fix: quitting the desktop app no longer sets the account Offline (server guard + desktop 1.2.3)
+- (#154) docs(CLAUDE.md): one memory file -- rules checklist, status today, notes by topic, repair log
 
 PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
 numeric order; 102-104 were never merged.

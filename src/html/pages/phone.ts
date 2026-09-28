@@ -1479,7 +1479,10 @@ export function renderPhonePage(
       }
 
       document.getElementById('status-available-btn').addEventListener('click', function () { setStatus('available', null); });
-      document.getElementById('status-offline-btn').addEventListener('click', function () { setStatus('offline', null); });
+      // ONE argument, so the body is {status} alone: {status:'offline', awayReason:null} is exactly what
+      // older desktop apps send when they QUIT, and the server ignores that shape from Electron (see
+      // isDesktopQuitOffline). Offline clears any away reason either way.
+      document.getElementById('status-offline-btn').addEventListener('click', function () { setStatus('offline'); });
       document.getElementById('status-away-btn').addEventListener('click', function () {
         // Open the box FIRST, synchronously. setStatus awaits the PUT before it highlights, and
         // highlighting is what un-hides #away-reason-wrap -- so focusing after the call focuses an

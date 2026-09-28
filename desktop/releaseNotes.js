@@ -11,6 +11,7 @@ const RELEASE_NOTES = {
     "Opening TCB Phone while it is already running brings the existing window forward instead of starting a second copy.",
   ],
   "1.2.2": ["This window: after an update installs, the app now tells you what changed."],
+  "1.2.3": ["Closing or restarting TCB Phone no longer sets you to Offline, so your mobile keeps ringing."],
 };
 
 // Sorts like a human reads it: 1.10.0 is newer than 1.9.0, which a string compare gets backwards.
