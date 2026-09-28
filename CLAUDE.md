@@ -2417,7 +2417,7 @@ Written at the time; kept as they were.
 
 **2026-09-28**
 - #153 fix(web): show the call screen as soon as an outbound call is placed
-- (#154) fix(web): the softphone's "Session expired" was a network blip that never cleared
+- (#155) fix(web): the softphone's "Session expired" was a network blip that never cleared
 - (#154) fix: quitting the desktop app no longer sets the account Offline (server guard + desktop 1.2.3)
 - (#154) docs(CLAUDE.md): one memory file -- rules checklist, status today, notes by topic, repair log
 
