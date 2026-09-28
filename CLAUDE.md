@@ -617,6 +617,18 @@ When unsure, read `SELECT sql FROM sqlite_master WHERE name = '<table>'` first.
 - **Call History was removed from the web dashboard (#63).** The handset carries the same list. The
   per-call DETAIL page `/admin/calls/:id` stays — `/admin/voicemail` links into it — but
   `/admin/calls` 404s deliberately, and a test pins that.
+- **A web/desktop outbound call shows its pane the moment Call is pressed, not on `accept`
+  (2026-09-28).** Reported from the desktop app as "no calling screen" -- and a call sitting in the
+  customer's voicemail had no Hang up at all. The pane (the ONLY Hang up) used to appear on the
+  SDK's `accept` event and nothing before it. Two live calls that day (12:48, 12:49, both into the
+  customer's voicemail) connected with no screen; WHY `accept` never showed it was NOT found --
+  SDK 2.18.3 emits it once media and signalling are open, which a `<Dial><Conference>` answers at
+  once. So the fix does not depend on it: `placeCall` shows `showCallPane(to, true)` ("Calling",
+  Hang up only -- Mute/Hold/Transfer need the leg's CallSid) before `device.connect`, Hang up while
+  connecting sets `hangupWhenPlaced`, and a failed connect takes the pane down. `placeCall` and
+  `callContact` refuse while `callBusy()`, or the failure path would tear down a live call's pane.
+  A rail **"On call"** button now brings the pane back after Calls/Contacts/dial pad replaced it --
+  before that nothing did. Still unproven with a real desktop call.
 - **The web Phone page is the dashboard's SHELL: every other section runs in a frame over it (#142,
   2026-09-23). Never let a dashboard navigation leave `/admin/phone`.** The Twilio Device exists only
   on that page, and a full-page navigation destroys it -- and Twilio never re-offers a call to a

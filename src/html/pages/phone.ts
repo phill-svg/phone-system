@@ -117,6 +117,8 @@ export function renderPhonePage(
       .rail-item:hover { color: var(--text); background: rgba(255,255,255,0.05); }
       .rail-item.active { color: #fff; }
       .rail-item.active svg { color: var(--brand); }
+      #rail-oncall { display: none; color: #3fb950; }
+      #rail-oncall svg { color: #3fb950; }
       .rail-item.active::before { content: ""; position: absolute; left: -0.4rem; top: 20%; bottom: 20%; width: 3px; border-radius: 0 3px 3px 0; background: var(--brand); }
       .rail-spacer { flex: 1; }
       .rail-fab { width: 48px; height: 48px; border-radius: 50%; background: var(--brand); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: var(--shadow-brand); margin-bottom: 1rem; transition: background 0.12s, transform 0.06s; }
@@ -363,6 +365,7 @@ export function renderPhonePage(
     <nav class="rail">
       <button type="button" class="rail-item active" id="rail-calls" title="Calls">${ICON_CALLS}<span>Calls</span></button>
       <button type="button" class="rail-item" id="rail-contacts" title="Contacts">${ICON_CONTACTS}<span>Contacts</span></button>
+      <button type="button" class="rail-item" id="rail-oncall" data-detail="active" title="Back to the call">${ICON_PHONE}<span>On call</span></button>
       <div class="rail-spacer"></div>
       <button type="button" class="rail-fab" data-detail="dialpad" title="Dial pad">${ICON_KEYPAD}</button>
       <button type="button" class="rail-avatar" id="rail-avatar" data-detail="status" title="${staffEmailSafe}">${staffInitials}</button>
@@ -426,7 +429,7 @@ export function renderPhonePage(
             <div class="active-peer">
               <div class="active-peer-avatar">${ICON_PHONE}</div>
               <div>
-                <div class="active-peer-label">On call with</div>
+                <div class="active-peer-label" id="active-call-label">On call with</div>
                 <div class="active-peer-name" id="active-call-peer"></div>
               </div>
             </div>
@@ -570,6 +573,9 @@ export function renderPhonePage(
       var listenConnecting = false;
       // Likewise an outbound call: placeCall only sets activeCall once device.connect resolves.
       var placingCall = false;
+      // Hang up pressed while device.connect was still resolving: there is no Call to disconnect
+      // yet, so placeCall hangs it up the moment it has one.
+      var hangupWhenPlaced = false;
       // Set when the softphone cannot start at all (no token, SDK missing, register threw). A listen
       // queued then would wait for a registration that never comes.
       var deviceFailed = false;
@@ -1138,6 +1144,8 @@ export function renderPhonePage(
 
       function callContact(number) {
         document.getElementById('dial-input').value = number;
+        // Mid-call the pane on screen holds Hang up; the number waits in the dial pad instead.
+        if (callBusy()) { flashDeviceNote('Number ready in the dial pad for after this call.'); return; }
         showDetail('dialpad');
         if (device) placeCall(number).catch(function (err) { setDeviceStatusText('Call failed: ' + describeError(err)); });
       }
@@ -1570,27 +1578,41 @@ export function renderPhonePage(
         }
       }
 
+      // The call pane. \`connecting\` is an outbound call that has not connected yet: Hang up is all
+      // it offers, because Mute/Hold/Transfer need a connected leg (Hold and Transfer key off its
+      // CallSid). It is shown the moment Call is pressed rather than on 'accept', so a call that is
+      // ringing -- or sitting in the other person's voicemail -- always has a Hang up on screen.
+      function showCallPane(peer, connecting) {
+        var peerContact = contactsByNorm[normalizePhoneJS(peer)];
+        document.getElementById('active-call-label').textContent = connecting ? 'Calling' : 'On call with';
+        document.getElementById('active-call-peer').textContent = peerContact ? peerContact.name : formatAu(peer);
+        document.getElementById('mute-btn').textContent = 'Mute';
+        document.getElementById('mute-btn').style.display = connecting ? 'none' : '';
+        document.getElementById('hold-btn').textContent = 'Hold';
+        document.getElementById('hold-btn').style.display = connecting ? 'none' : '';
+        document.getElementById('transfer-panel').style.display = connecting ? 'none' : '';
+        document.getElementById('complete-transfer-btn').style.display = 'none';
+        document.getElementById('transfer-status').textContent = '';
+        document.getElementById('active-call-controls').style.display = 'block';
+        // Clicking Calls, Contacts or the dial pad mid-call replaces this pane; the rail's "On call"
+        // button is the way back to it.
+        document.getElementById('rail-oncall').style.display = 'flex';
+        showDetail('active');
+      }
+
       function onCallConnected(call) {
         hideIncomingBanner();
         if (window.tcbSyncCallPill) window.tcbSyncCallPill();
         isOnHold = false;
         var peer = incomingCallerNumber(call) || (call.parameters && call.parameters.To) || document.getElementById('dial-input').value || 'call';
-        var peerContact = contactsByNorm[normalizePhoneJS(peer)];
-        document.getElementById('active-call-peer').textContent = peerContact ? peerContact.name : formatAu(peer);
-        document.getElementById('mute-btn').textContent = 'Mute';
-        document.getElementById('mute-btn').style.display = '';
-        document.getElementById('hold-btn').textContent = 'Hold';
-        document.getElementById('hold-btn').style.display = '';
-        document.getElementById('complete-transfer-btn').style.display = 'none';
-        document.getElementById('transfer-status').textContent = '';
-        document.getElementById('active-call-controls').style.display = 'block';
-        showDetail('active');
+        showCallPane(peer, false);
         populateTransferTargets();
       }
 
       function onCallEnded() {
         hideIncomingBanner();
         document.getElementById('active-call-controls').style.display = 'none';
+        document.getElementById('rail-oncall').style.display = 'none';
         showDetail('empty');
         activeCall = null;
         isOnHold = false;
@@ -1649,19 +1671,31 @@ export function renderPhonePage(
 
       async function placeCall(to) {
         if (!device || !to) return;
+        // A second connect would be refused by the SDK, and the failure path below would then tear
+        // down the pane of the call that IS live.
+        if (callBusy()) { flashDeviceNote('Hang up the current call first.'); return; }
         var fromSel = document.getElementById('from-select');
         var params = { To: to };
         if (fromSel && fromSel.value) params.CallerId = fromSel.value;
         placingCall = true;
+        hangupWhenPlaced = false;
+        showCallPane(to, true);
+        if (window.tcbSyncCallPill) window.tcbSyncCallPill();
+        var call;
         try {
-          activeCall = await device.connect({ params: params });
-        } finally {
+          call = await device.connect({ params: params });
+        } catch (err) {
           placingCall = false;
+          onCallEnded();
+          throw err;
         }
-        activeCall.on('accept', onCallConnected);
-        activeCall.on('disconnect', onCallEnded);
-        activeCall.on('cancel', onCallEnded);
-        activeCall.on('reject', onCallEnded);
+        placingCall = false;
+        activeCall = call;
+        call.on('accept', onCallConnected);
+        call.on('disconnect', onCallEnded);
+        call.on('cancel', onCallEnded);
+        call.on('reject', onCallEnded);
+        if (hangupWhenPlaced) call.disconnect();
       }
 
       // Live listen-in: join a live call's conference muted (server verifies admin + returns the
@@ -1733,6 +1767,10 @@ export function renderPhonePage(
 
       document.getElementById('hangup-btn').addEventListener('click', function () {
         if (activeCall) activeCall.disconnect();
+        else if (placingCall) {
+          hangupWhenPlaced = true;
+          document.getElementById('active-call-label').textContent = 'Hanging up';
+        }
       });
 
       document.getElementById('transfer-btn').addEventListener('click', async function () {
@@ -1893,8 +1931,8 @@ export function renderPhonePage(
         if (d) {
           var inp = document.getElementById('dial-input');
           if (inp) inp.value = d;
-          // Mid-call, the pane on screen holds Hang up / Mute / Hold / Transfer, and nothing in the
-          // rail brings it back -- so the number waits in the dialpad instead of replacing them.
+          // Mid-call, the pane on screen holds Hang up / Mute / Hold / Transfer -- so the number
+          // waits in the dialpad instead of replacing them.
           if (callBusy()) flashDeviceNote('Number ready in the dial pad for after this call.');
           else showDetail('dialpad');
         }
