@@ -7,7 +7,7 @@ import * as Application from "expo-application";
 // constant the handset displays, or the two can disagree.
 //
 // The publish workflow greps this file's value, so keep the literal on one line.
-export const OTA_BUILD = "82";
+export const OTA_BUILD = "83";
 
 // What Settings shows, and the only way to tell whether a NATIVE fix is on a handset.
 //

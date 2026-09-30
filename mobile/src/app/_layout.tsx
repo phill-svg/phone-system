@@ -12,6 +12,7 @@ import { ErrorBoundary } from "../components/ErrorBoundary";
 import { installCrashReporter, flushCrashQueue, setCurrentScreen } from "../lib/crashReport";
 import { primePushRegistry } from "../lib/voice";
 import { wireQueryFocusToAppState } from "../lib/queryFocus";
+import { useNotificationTaps } from "../lib/useNotificationTaps";
 
 const queryClient = new QueryClient();
 // Without this nothing refetches when the app comes back to the foreground (see queryFocus.ts).
@@ -41,6 +42,9 @@ function RootNavigator() {
 
   // The route is recorded for crash reports, which are gathered outside React and cannot read it.
   useEffect(() => setCurrentScreen(pathname), [pathname]);
+
+  // Tapping a push opens what it is about, not whatever screen was last up.
+  useNotificationTaps(status === "authed");
 
   // Anything last launch could not send goes out once signed in -- the endpoint is authenticated,
   // and a crash on the login screen is exactly the case where the queue has to survive until then.
