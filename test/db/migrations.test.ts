@@ -47,4 +47,18 @@ describe("D1 schema", () => {
     expect(row?.direction).toBe("inbound");
     expect(row?.mailbox_label).toBeNull();
   });
+
+  it("indexes call_events by call_id, so the call list does not scan the table per row", async () => {
+    // The plan text is the assertion: a SCAN of call_events means every call row re-reads the
+    // whole table (the 2026-09-30 D1 free-tier read-limit outage).
+    for (const sql of [
+      "SELECT EXISTS(SELECT 1 FROM call_events e WHERE e.call_id = 'x' AND e.event_type = 'answered')",
+      "SELECT COUNT(*) FROM call_events e WHERE e.call_id = 'x'",
+    ]) {
+      const plan = await env.DB.prepare("EXPLAIN QUERY PLAN " + sql).all<{ detail: string }>();
+      const details = plan.results.map((r) => r.detail).join(" | ");
+      expect(details).toContain("idx_call_events_call_type");
+      expect(details).not.toMatch(/SCAN (e|call_events)\b/);
+    }
+  });
 });
