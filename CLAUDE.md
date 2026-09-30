@@ -40,10 +40,14 @@ before the work is called done.
   `CAPIError: 400`); it is not a merge blocker and a session cannot re-run it.
 
 **Database, deploy and release**
-- Migrations: take the next number from `origin/master`, not your checkout (next free: `0043` as
-  of 2026-09-27). Additive only -- `deploy.yml` applies them BEFORE the new code ships. Never
+- Migrations: take the next number from `origin/master`, not your checkout (next free: `0044` as
+  of 2026-09-30). Additive only -- `deploy.yml` applies them BEFORE the new code ships. Never
   rename one that has been applied (wrangler re-runs it); a duplicate number is survivable.
 - D1 caps a query at 100 bound parameters and miniflare does not enforce it -- chunk any `IN (...)`.
+- D1 free tier allows 5M row reads a day and, once spent, refuses EVERY read: the whole phone system
+  goes down (2026-09-30). A correlated subquery on an unindexed column is a full scan per row --
+  `call_events` had no index until `0043`, so one Recents load (2000 calls) read millions of rows.
+  Index anything you filter or correlate on; `EXPLAIN QUERY PLAN` shows a `SCAN`.
 - `call_events` timestamps are `ts`; `user_settings` is keyed by `email`. When unsure, read
   `SELECT sql FROM sqlite_master WHERE name = '<table>'`.
 - `OTA_BUILD` lives in `mobile/src/lib/build.ts`; read it off `origin/master`, bump it before any
@@ -2440,6 +2444,9 @@ Written at the time; kept as they were.
 - fix(calls): outbound softphone calls ring until answered instead of one ring then silence
 - (#154) fix: quitting the desktop app no longer sets the account Offline (server guard + desktop 1.2.3)
 - (#154) docs(CLAUDE.md): one memory file -- rules checklist, status today, notes by topic, repair log
+
+**2026-09-30**
+- fix(db): index `call_events(call_id, event_type)` (migration `0043`) -- the unindexed correlated subqueries in `listCalls` burned D1's free 5M-reads/day and took the phones down
 
 PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
 numeric order; 102-104 were never merged.
