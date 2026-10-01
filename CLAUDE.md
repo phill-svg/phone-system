@@ -166,6 +166,15 @@ before the work is called done.
   around 2026-12-09** and needs re-uploading; the next iOS build is 6. Android ships to the Play
   internal track. Desktop app 1.2.2 on desks; **1.2.3 is in the repo, not yet built or uploaded**
   (`cd desktop && npm run build && npm run release:upload` on a Windows machine).
+- **OUTAGE 2026-10-01: R2 is switched off on the Cloudflare account** (dashboard work, not code).
+  Deploy #178 (#158) failed at `wrangler deploy` with `R2 binding error ... Please enable R2 through
+  the Cloudflare Dashboard [code: 10136]`, and the LIVE worker's `/media/` and `/desktop/` answer 500
+  (error 1101 -- `AUDIO_ASSETS.get` throws), so the ringback tone, uploaded IVR greetings and the
+  desktop update feed are down. D1 and the rest of the worker are fine; `0043` was applied before
+  the deploy step failed, and #158 had no worker code, so nothing is missing from the live worker.
+  Fix: Cloudflare dashboard > R2 Object Storage > enable it (check Billing for a failed or removed
+  payment method first), confirm `curl https://tcbvoip.app/media/system/ringback-au.wav` is 200,
+  then re-run Deploy #178. Delete this line once that is done.
 - **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
   `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
 - **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
@@ -1822,6 +1831,13 @@ name, not line number.
   file name `src/email/sendgrid.ts`; from `noreply@mail.tcbpestcontrolcanberra.com.au`, reply-to
   `office@…`, invite links say 7 days. `AI` = Workers AI. `observability.enabled` is true, so
   Workers Logs keep past logs, not only `wrangler tail`.
+- **A deploy failing with `R2 binding error ... Please enable R2 through the Cloudflare Dashboard
+  [code: 10136]` is the ACCOUNT, not the repo** (2026-10-01). R2 itself is off for the account (the
+  API answers code 10042 to a plain bucket list), and the running worker is hit too: every
+  `AUDIO_ASSETS` read throws, so `/media/` and `/desktop/` 500 with Cloudflare error 1101. No code
+  change fixes it; re-enable R2 in the dashboard (it needs a payment method on file even on the
+  free tier), then re-run the failed deploy. `curl -I https://tcbvoip.app/media/system/ringback-au.wav`
+  is the one-line check.
 - **Two public routes read that R2 bucket, and nothing private may ever go in it.** `/media/<key>`
   serves ANY key with no auth and a one-year immutable cache, because Twilio fetches IVR audio
   mid-call with no credentials (uploads go to `ivr-audio/<uuid>`) — never put it behind
