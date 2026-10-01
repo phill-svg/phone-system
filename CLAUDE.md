@@ -166,6 +166,10 @@ before the work is called done.
   around 2026-12-09** and needs re-uploading; the next iOS build is 6. Android ships to the Play
   internal track. Desktop app 1.2.2 on desks; **1.2.3 is in the repo, not yet built or uploaded**
   (`cd desktop && npm run build && npm run release:upload` on a Windows machine).
+- **R2 outage 2026-10-01, resolved the same day:** R2 had been switched off on the Cloudflare
+  account, so Deploy #178 failed (code 10136) and live `/media/` + `/desktop/` returned 500. Phill
+  re-enabled it in the dashboard; the bucket and every IVR greeting came back intact. See the R2
+  bullet under "Production, secrets and deploy" if it recurs.
 - **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
   `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
 - **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
@@ -1822,6 +1826,13 @@ name, not line number.
   file name `src/email/sendgrid.ts`; from `noreply@mail.tcbpestcontrolcanberra.com.au`, reply-to
   `office@…`, invite links say 7 days. `AI` = Workers AI. `observability.enabled` is true, so
   Workers Logs keep past logs, not only `wrangler tail`.
+- **A deploy failing with `R2 binding error ... Please enable R2 through the Cloudflare Dashboard
+  [code: 10136]` is the ACCOUNT, not the repo** (2026-10-01). R2 itself is off for the account (the
+  API answers code 10042 to a plain bucket list), and the running worker is hit too: every
+  `AUDIO_ASSETS` read throws, so `/media/` and `/desktop/` 500 with Cloudflare error 1101. No code
+  change fixes it; re-enable R2 in the dashboard (it needs a payment method on file even on the
+  free tier), then re-run the failed deploy. `curl -I https://tcbvoip.app/media/system/ringback-au.wav`
+  is the one-line check.
 - **Two public routes read that R2 bucket, and nothing private may ever go in it.** `/media/<key>`
   serves ANY key with no auth and a one-year immutable cache, because Twilio fetches IVR audio
   mid-call with no credentials (uploads go to `ivr-audio/<uuid>`) — never put it behind
@@ -2447,6 +2458,9 @@ Written at the time; kept as they were.
 
 **2026-09-30**
 - fix(db): index `call_events(call_id, event_type)` (migration `0043`) -- the unindexed correlated subqueries in `listCalls` burned D1's free 5M-reads/day and took the phones down
+
+**2026-10-01**
+- #159 docs(CLAUDE.md): R2 switched off on the account broke Deploy #178 and live `/media/` (fixed in the dashboard, not code)
 
 PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
 numeric order; 102-104 were never merged.
