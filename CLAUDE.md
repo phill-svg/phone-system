@@ -166,15 +166,10 @@ before the work is called done.
   around 2026-12-09** and needs re-uploading; the next iOS build is 6. Android ships to the Play
   internal track. Desktop app 1.2.2 on desks; **1.2.3 is in the repo, not yet built or uploaded**
   (`cd desktop && npm run build && npm run release:upload` on a Windows machine).
-- **OUTAGE 2026-10-01: R2 is switched off on the Cloudflare account** (dashboard work, not code).
-  Deploy #178 (#158) failed at `wrangler deploy` with `R2 binding error ... Please enable R2 through
-  the Cloudflare Dashboard [code: 10136]`, and the LIVE worker's `/media/` and `/desktop/` answer 500
-  (error 1101 -- `AUDIO_ASSETS.get` throws), so the ringback tone, uploaded IVR greetings and the
-  desktop update feed are down. D1 and the rest of the worker are fine; `0043` was applied before
-  the deploy step failed, and #158 had no worker code, so nothing is missing from the live worker.
-  Fix: Cloudflare dashboard > R2 Object Storage > enable it (check Billing for a failed or removed
-  payment method first), confirm `curl https://tcbvoip.app/media/system/ringback-au.wav` is 200,
-  then re-run Deploy #178. Delete this line once that is done.
+- **R2 outage 2026-10-01, resolved the same day:** R2 had been switched off on the Cloudflare
+  account, so Deploy #178 failed (code 10136) and live `/media/` + `/desktop/` returned 500. Phill
+  re-enabled it in the dashboard; the bucket and every IVR greeting came back intact. See the R2
+  bullet under "Production, secrets and deploy" if it recurs.
 - **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
   `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
 - **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
@@ -2463,6 +2458,9 @@ Written at the time; kept as they were.
 
 **2026-09-30**
 - fix(db): index `call_events(call_id, event_type)` (migration `0043`) -- the unindexed correlated subqueries in `listCalls` burned D1's free 5M-reads/day and took the phones down
+
+**2026-10-01**
+- #159 docs(CLAUDE.md): R2 switched off on the account broke Deploy #178 and live `/media/` (fixed in the dashboard, not code)
 
 PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
 numeric order; 102-104 were never merged.
