@@ -72,6 +72,24 @@ describe("demo request handling", () => {
     }
   });
 
+  // Sync contacts reads every real unsaved customer number and asks the real ServiceM8 about it.
+  // The reviewer is not an admin either, but the demo rules run before the admin gate.
+  // Sync contacts saves into the REAL contact book. Answered in the shape both clients read, so a
+  // stray demo save reads "Saved 0 contacts", not "Saved undefined contacts".
+  it("swallows the ServiceM8 contact save, answering in the save's own shape", async () => {
+    const path = "/api/admin/servicem8/contact-save";
+    const res = handleDemoRequest(new URL("https://x" + path), req(path, "POST"), NOW);
+    expect(res).not.toBeNull();
+    expect(await res!.json()).toEqual({ saved: 0, skipped: 0 });
+  });
+
+  it("answers the ServiceM8 contact lookup with nothing found, never real numbers", async () => {
+    const path = "/api/admin/servicem8/contact-lookup";
+    const res = handleDemoRequest(new URL("https://x" + path), req(path, "POST"), NOW);
+    expect(res).not.toBeNull();
+    expect(await res!.json()).toEqual({ matches: [], checked: 0, failed: 0, total: 0, remaining: 0, next: null });
+  });
+
   it("returns one demo call by id, and 404s an unknown one", async () => {
     const hit = handleDemoRequest(new URL("https://x/api/calls/DEMO-c01"), req("/api/calls/DEMO-c01"), NOW);
     expect((await body(hit)).id).toBe("DEMO-c01");

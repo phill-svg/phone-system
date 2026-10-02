@@ -77,6 +77,18 @@ export function handleDemoRequest(
     return jsonResponse({ ok: true });
   }
 
+  // Sync contacts' save writes the real contact book. Answered in the shape both clients read.
+  if (url.pathname === "/api/admin/servicem8/contact-save") {
+    return jsonResponse({ saved: 0, skipped: 0 });
+  }
+
+  // Sync contacts' lookup reads every real unsaved customer number and asks the real ServiceM8
+  // about each. The reviewer is not an admin, but these rules run before the admin gate, so answer
+  // here: nothing to sync.
+  if (url.pathname === "/api/admin/servicem8/contact-lookup") {
+    return jsonResponse({ matches: [], checked: 0, failed: 0, total: 0, remaining: 0, next: null });
+  }
+
   const threadMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
   if (threadMatch) {
     const peer = safeDecode(threadMatch[1]);

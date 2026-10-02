@@ -10,12 +10,16 @@ import { Avatar } from "../../components/ui/Avatar";
 import { Icon } from "../../components/ui/Icon";
 import { getContacts, type Contact } from "../../lib/api";
 import { searchContacts } from "../../lib/phone";
+import { useAuth } from "../../lib/auth";
 import { useTheme, type } from "../../theme/theme";
 
 export default function ContactsScreen() {
   const t = useTheme();
   const [q, setQ] = useState("");
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: getContacts });
+  const { user } = useAuth();
+  // Sync from ServiceM8 is admin-only; the screen it opens sits under /admin, which enforces it too.
+  const isAdmin = user?.role === "admin";
 
   const sections = useMemo(() => {
     const filtered = searchContacts(q, contacts.data ?? []);
@@ -30,6 +34,11 @@ export default function ContactsScreen() {
 
   const header = (
     <View style={styles.headerRight}>
+      {isAdmin ? (
+        <Pressable onPress={() => router.push("/admin/contact-sync", { withAnchor: true })} hitSlop={8} accessibilityLabel="Sync contacts from ServiceM8">
+          <Icon name="arrow.triangle.2.circlepath" fallback="sync" size={22} color={t.colors.accent} weight="semibold" />
+        </Pressable>
+      ) : null}
       <Pressable onPress={() => router.push("/contact-edit")} hitSlop={8}>
         <Icon name="plus" fallback="add" size={24} color={t.colors.accent} weight="semibold" />
       </Pressable>

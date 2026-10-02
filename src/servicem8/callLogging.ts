@@ -1,9 +1,8 @@
 import {
   searchByPhone,
   pickMostRecentJob,
-  pickCustomerName,
   addJobNote,
-  findJobContactByPhone,
+  resolveCustomerName,
   type Sm8SearchResult,
 } from "./client";
 import { findContactByPhone, createContact } from "../db/contacts";
@@ -104,11 +103,7 @@ async function syncContact(
 
   // The search results already name the customer in the overwhelming majority of cases (the
   // company record IS the customer). jobcontact is only consulted when they don't.
-  let name = pickCustomerName(results);
-  if (!name) {
-    const match = await findJobContactByPhone(apiKey, customerNumber);
-    name = match ? [match.firstName, match.lastName].filter(Boolean).join(" ").trim() : null;
-  }
+  const name = await resolveCustomerName(apiKey, results, customerNumber);
   if (!name) {
     console.log("SERVICEM8_NO_NAME", JSON.stringify({ number: customerNumber }));
     return;
