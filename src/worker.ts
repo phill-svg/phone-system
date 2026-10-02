@@ -75,6 +75,7 @@ import { renderIvrFlowPage } from "./html/pages/ivrFlow";
 import { renderCallbackRequestsPage } from "./html/pages/callbackRequests";
 import { renderVoicemailPage } from "./html/pages/voicemail";
 import { listContacts, normalizePhone } from "./db/contacts";
+import { handleServiceM8ContactLookup, handleServiceM8ContactSave } from "./api/servicem8ContactSync";
 import { handleReportClientErrors, handleListClientErrors } from "./api/clientErrors";
 import { renderClientErrorsPage } from "./html/pages/clientErrors";
 import { listClientErrors } from "./db/clientErrors";
@@ -1466,6 +1467,14 @@ export default {
       }
       if (url.pathname === "/api/admin/test-email" && request.method === "POST") {
         return handleTestEmail(env, staff);
+      }
+      // Sync contacts: look unsaved numbers up in ServiceM8, then save the ones an admin ticked.
+      // Under /api/admin/ and therefore admin-only by construction.
+      if (url.pathname === "/api/admin/servicem8/contact-lookup" && request.method === "POST") {
+        return handleServiceM8ContactLookup(request, env);
+      }
+      if (url.pathname === "/api/admin/servicem8/contact-save" && request.method === "POST") {
+        return handleServiceM8ContactSave(request, env.DB);
       }
       if (url.pathname === "/api/staff") {
         if (request.method === "GET") return handleGetStaffRoster(env.DB, demoEmails(env));

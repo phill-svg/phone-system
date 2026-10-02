@@ -23,12 +23,19 @@ import { useTheme } from "../../theme/theme";
 // while stranding the hub exactly as before -- and this file is rewritten often enough for that to
 // be a real risk (#91 added two rows to it). A test that green-lights the reverted fix is not a
 // test, which is the lesson this repo keeps relearning.
+// A screen opened DIRECTLY (the Contacts tab's Sync button pushes /admin/contact-sync with
+// `withAnchor`) would otherwise be the root of a fresh admin stack: no chevron, and no tab bar
+// because this group is a sibling of (tabs). Anchoring on the hub puts it underneath, so the usual
+// chevron leads back to the hub and the hub's own button leads out.
+export const unstable_settings = { anchor: "index" };
+
 export const ADMIN_SCREENS: { name: string; options: { title: string; headerLeft?: () => React.ReactElement } }[] = [
   { name: "index", options: { title: "Admin", headerLeft: () => <BackToSettings /> } },
   { name: "business-hours", options: { title: "Business Hours" } },
   { name: "blocklist", options: { title: "Call Blocklist" } },
   { name: "numbers", options: { title: "Phone Numbers" } },
   { name: "missed-call-sms", options: { title: "Missed-Call SMS" } },
+  { name: "contact-sync", options: { title: "Sync Contacts" } },
   { name: "on-call", options: { title: "After-hours On Call" } },
   { name: "ivr/index", options: { title: "Phone Menu" } },
   { name: "ivr/[nodeId]", options: { title: "Step" } },

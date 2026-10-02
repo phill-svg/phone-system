@@ -410,6 +410,30 @@ export async function setMissedCallSmsSetting(value: MissedCallSmsSetting): Prom
   await apiFetch("/api/settings/missed-call-sms", { method: "PUT", body: JSON.stringify(value) });
 }
 
+// ---- Sync contacts from ServiceM8 (admin only) ----
+// Looks every unsaved number that has called or texted up in ServiceM8, 15 per request; an admin
+// ticks the matches and only those are saved. Saving never overwrites an existing contact.
+export type ServiceM8Match = { phone: string; name: string; lastSeen: number };
+export type ServiceM8LookupPage = {
+  matches: ServiceM8Match[];
+  checked: number;
+  failed: number;
+  total: number;
+  remaining: number;
+  next: string | null;
+};
+export async function lookupServiceM8Contacts(after: string | null): Promise<ServiceM8LookupPage> {
+  return apiFetch<ServiceM8LookupPage>("/api/admin/servicem8/contact-lookup", {
+    method: "POST",
+    body: JSON.stringify(after === null ? {} : { after }),
+  });
+}
+export async function saveServiceM8Contacts(
+  contacts: { phone: string; name: string }[]
+): Promise<{ saved: number; skipped: number }> {
+  return apiFetch("/api/admin/servicem8/contact-save", { method: "POST", body: JSON.stringify({ contacts }) });
+}
+
 // ---- Call via my mobile ----
 // Asks the server to ring this staff member's mobile and bridge the customer on answer. There is no
 // VoIP leg and no in-call screen: the native dialler owns the call once the phone rings.

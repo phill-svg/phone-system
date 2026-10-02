@@ -1,5 +1,5 @@
 import { leaveAdmin, SETTINGS_HREF } from "../src/lib/nav";
-import { ADMIN_SCREENS } from "../src/app/admin/_layout";
+import { ADMIN_SCREENS, unstable_settings } from "../src/app/admin/_layout";
 
 function fakeRouter(canGoBack: boolean) {
   const calls: string[] = [];
@@ -49,6 +49,19 @@ describe("the Admin hub's way out", () => {
     for (const screen of ADMIN_SCREENS.filter((s) => s.name !== "index")) {
       expect(screen.options.headerLeft).toBeUndefined();
     }
+  });
+
+  // Expo Router only mounts a screen this stack registers; an unregistered one renders with no
+  // header and no way back.
+  // The Contacts tab opens Sync Contacts directly. Without an anchor that screen becomes the ROOT
+  // of a fresh admin stack: no chevron, no tab bar, stranded exactly like the hub was in #90. The
+  // anchor (with `withAnchor` on the push) puts the hub underneath, so the usual chevron appears.
+  it("anchors the admin stack on the hub, so a sub-screen opened directly has a way back", () => {
+    expect(unstable_settings.anchor).toBe("index");
+  });
+
+  it("registers the Sync Contacts screen", () => {
+    expect(ADMIN_SCREENS.map((s) => s.name)).toContain("contact-sync");
   });
 
   it("registers every screen exactly once", () => {

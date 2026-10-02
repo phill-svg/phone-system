@@ -122,6 +122,8 @@ export default function AdminHomeScreen() {
             toggle={recording ?? false} onToggle={onToggleRecording} toggleDisabled={recording === null} />
           <Row icon="message.fill" iconFallback="chatbubble" iconColor="#34C759" label="Missed-Call SMS" value={missedCallSms} chevron
             onPress={() => router.push("/admin/missed-call-sms")} />
+          <Row icon="arrow.triangle.2.circlepath" iconFallback="sync" iconColor="#007AFF" label="Sync Contacts from ServiceM8" chevron
+            onPress={() => router.push("/admin/contact-sync")} />
         </Group>
 
         <Group

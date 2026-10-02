@@ -103,6 +103,18 @@ export async function findJobContactByPhone(apiKey: string, e164: string): Promi
   return { firstName: match.first.trim(), lastName: (match.last ?? "").trim() };
 }
 
+// The one rule for "what is this caller called in ServiceM8", shared by the after-call sync and
+// Admin > Sync contacts so the two cannot drift: the search results' own name first, the job
+// contact only when they carry none. Null means ServiceM8 has no name for the number. Throws when
+// the job-contact lookup is refused -- each caller decides what that means for it.
+export async function resolveCustomerName(apiKey: string, results: Sm8SearchResult[], e164: string): Promise<string | null> {
+  const name = pickCustomerName(results);
+  if (name) return name;
+  const contact = await findJobContactByPhone(apiKey, e164);
+  const full = contact ? [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim() : "";
+  return full || null;
+}
+
 // Adds a staff diary note to a job. `active`/`action_required` string values ("1"/"0") match what
 // ServiceM8's API expects -- confirmed by the working Make.com scenario, which sends the same shape.
 export async function addJobNote(apiKey: string, jobUuid: string, note: string): Promise<void> {

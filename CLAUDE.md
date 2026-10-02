@@ -44,6 +44,9 @@ before the work is called done.
   of 2026-09-30). Additive only -- `deploy.yml` applies them BEFORE the new code ships. Never
   rename one that has been applied (wrangler re-runs it); a duplicate number is survivable.
 - D1 caps a query at 100 bound parameters and miniflare does not enforce it -- chunk any `IN (...)`.
+- The account is (almost certainly) on **Workers Free**: one request may make only **50 outside
+  fetches** (Twilio, ServiceM8, Expo...). Anything that loops over customers calling an outside API
+  must page across requests -- Sync contacts checks 15 numbers per request for exactly this.
 - D1 free tier allows 5M row reads a day and, once spent, refuses EVERY read: the whole phone system
   goes down (2026-09-30). A correlated subquery on an unindexed column is a full scan per row --
   `call_events` had no index until `0043`, so one Recents load (2000 calls) read millions of rows.
@@ -120,7 +123,8 @@ before the work is called done.
 - Client escapers must escape quotes too (`h()`, `esc()`).
 - Server-rendered admin times go through `formatSydney` (Workers run UTC).
 - Mirrored copies change together: `msgStatusLabel`/`messageStatusLabel`, `msgTime`/
-  `messageTimeLabel`, `normalizePhone` (three copies), `CALLBACK_KEYS` (web and mobile).
+  `messageTimeLabel`, `normalizePhone` (three copies), `CALLBACK_KEYS` (web and mobile),
+  `lookupAllInServiceM8` (web `phone.ts`, mobile `src/lib/contactSync.ts`).
 - Delete AND undo (threads and calls) are admin-only, and so is everything under `/api/admin/`.
 - `/privacy` and `/terms` stay public, no auth -- both store listings and the app link to them.
 - Auth keeps three properties: passwords of at least 10 characters, a dummy PBKDF2 run for an
@@ -146,7 +150,9 @@ before the work is called done.
 - `PUT /api/ivr/flows/:flow` is delete-and-reinsert: send every field back (`IVR_NODE_PUT_FIELDS`).
 - `expo-application` must stay a direct dependency. `Alert.prompt` is iOS-only.
 - Module state plus a timeout-less `apiFetch` wedges forever -- use a time window instead of a flag.
-- A route group that is a sibling of `(tabs)` needs its own way back.
+- A route group that is a sibling of `(tabs)` needs its own way back. Opening an admin sub-screen
+  from outside the hub needs `router.push(href, { withAnchor: true })` (the admin layout exports
+  `unstable_settings.anchor = "index"`), or it becomes a stack root with no chevron.
 - Only a locked or killed handset tests VoIP push; a foreground app rings without it.
 
 **Data writes**
@@ -170,6 +176,10 @@ before the work is called done.
   account, so Deploy #178 failed (code 10136) and live `/media/` + `/desktop/` returned 500. Phill
   re-enabled it in the dashboard; the bucket and every IVR greeting came back intact. See the R2
   bullet under "Production, secrets and deploy" if it recurs.
+- **Sync contacts (2026-10-02, this PR -- live once the worker deploys; the mobile screen needs
+  OTA 84 published):** admin-only button on the Contacts screen (web/desktop and mobile, plus
+  Admin > Sync Contacts) that looks up every unsaved number in ServiceM8 and saves only the
+  matches an admin ticks. 41 unsaved numbers on 2026-10-01. Not yet run against real ServiceM8.
 - **Numbers:** `+61261059771` landline (default caller ID), `+61866108941` main (au1, no
   `phone_numbers` row), `+61485034869` SMS (voice disabled, us1).
 - **Ring chain:** four 10s ring steps then voicemail, proven by a real call on 2026-09-27.
@@ -203,7 +213,10 @@ before the work is called done.
   `no-match` is never retried; a mobile business-hours save with an inverted window says only
   "request failed (400)"; most `Row` call sites lack an Android `iconFallback`; the `test` EAS
   profile cannot receive incoming-call pushes; the mobile "no hang-up button" report was never
-  reproduced.
+  reproduced; the AFTER-CALL ServiceM8 sync (`syncContact`) can still save a staff member's own
+  mobile under a customer's name if ServiceM8 matches it (Sync contacts excludes staff mobiles;
+  the after-call path never has); the read-receipts worker (`servicem8-read-receipts-mobile`, not
+  this repo) has `/debug/*` open to anyone because its `DEBUG_KEY` secret is unset.
 
 ## Where things are
 
@@ -1049,6 +1062,24 @@ is shaped the way it is. Newest status is in **Status today** above; these are t
   `no-match` inside the existing 2-hour window. And the caller's NAME now takes 15 minutes to appear,
   so a new customer sits in Recents and in the thread as a bare number until then. The number is
   quoted in Admin > Health Checks, which DERIVES it from the constant — do not retype it there.
+- **Sync contacts: the manual, admin-only backfill (2026-10-02).** The after-call sync only ever
+  sees CALLS, only since it shipped, and never texts, so most numbers in Recents and the inbox had
+  never been looked up (41 on 2026-10-01). `POST /api/admin/servicem8/contact-lookup` lists every
+  E.164 number on a non-deleted call or message that is not a business number (`phone_numbers` +
+  `TWILIO_FROM_NUMBER`/`TWILIO_SMS_NUMBER`), not a staff mobile (`user_settings.mobile_number`) and
+  has no contact, then checks **15 per request** (`CONTACT_LOOKUP_BATCH`: a search plus maybe a
+  job-contact lookup each, under Workers Free's 50 outside fetches) and returns a `next` cursor; the
+  client asks again until `next` is null, and refuses a cursor that does not move. Phill chose
+  **"show me first"**: matches come back pre-ticked, and only ticked ones go to
+  `POST /api/admin/servicem8/contact-save`, which is ONE `INSERT ... SELECT FROM json_each(?)`
+  (one query however many) with `NOT EXISTS`, so it never overwrites a contact saved meanwhile and
+  dedupes in JS first (an INSERT...SELECT cannot see its own earlier rows). Only the FIRST page
+  failing outright is a 502 ("ServiceM8 refused", status only -- the body stays in the log); later
+  pages count failures instead of throwing away matches already found, and a refused job-contact
+  fallback is "no name", not a failed search. Name choice is `resolveCustomerName` in
+  `src/servicem8/client.ts`, shared with the after-call sync. Admin-only by living under
+  `/api/admin/`; the demo account gets empty stubs before the gate. A full-text search hit can be
+  a different customer (a note mentioning the number) -- that is what the review step is for.
 - **ServiceM8 search tokenizes; its OData filters do not.** `search.json?q=` matches a number
   however it is stored ("0402 430 107" matches a query of "0402430107"), but
   `jobcontact.json?$filter=mobile eq '...'` is an exact string compare, so the old name lookup
@@ -1833,6 +1864,17 @@ name, not line number.
   change fixes it; re-enable R2 in the dashboard (it needs a payment method on file even on the
   free tier), then re-run the failed deploy. `curl -I https://tcbvoip.app/media/system/ringback-au.wav`
   is the one-line check.
+- **The Cloudflare account holds more than this worker** (checked 2026-10-01 through the Cloudflare
+  connector, which reads workers and their code, D1, KV, the R2 bucket list and Hyperdrive -- NOT
+  billing, logs, DNS or the files inside a bucket). Workers: `tcb-voip` (this repo),
+  `tcbpestreal` (the public website, www.tcbpestcontrolcanberra.com.au: D1 `tcb-booking-db`,
+  static assets, a chat Durable Object, AI, email, cron), `renewal-autopilot` and
+  `servicem8-read-receipts-mobile` (both ServiceM8 add-ons on their own D1, at
+  `<name>.phill-abb.workers.dev`), plus two starter/template workers. Of the R2 buckets only
+  `tcb-voip-audio` is used by any worker; `messenger`, `recordings`, `tcbpest`,
+  `wehostthis-sites` and `wesellrugs-avatars` are not (`recordings` despite its name). Call
+  recordings themselves stay in Twilio (au1); we store only the link and proxy playback. On
+  2026-10-01: 161 recordings, 127 minutes, inside Twilio's 10,000 free storage minutes.
 - **Two public routes read that R2 bucket, and nothing private may ever go in it.** `/media/<key>`
   serves ANY key with no auth and a one-year immutable cache, because Twilio fetches IVR audio
   mid-call with no credentials (uploads go to `ivr-audio/<uuid>`) — never put it behind
@@ -2461,6 +2503,9 @@ Written at the time; kept as they were.
 
 **2026-10-01**
 - #159 docs(CLAUDE.md): R2 switched off on the account broke Deploy #178 and live `/media/` (fixed in the dashboard, not code)
+
+**2026-10-02**
+- #160 feat: Sync contacts from ServiceM8 -- admin-only, review before saving (worker + OTA 84)
 
 PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
 numeric order; 102-104 were never merged.

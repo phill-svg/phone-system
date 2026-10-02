@@ -66,6 +66,8 @@ export function renderPhonePage(
 ): string {
   const staffInitials = escapeHtml((staffEmail.split("@")[0] || "?").slice(0, 2).toUpperCase());
   const staffEmailSafe = escapeHtml(staffEmail);
+  // Sync contacts is admin-only. Hidden here; the /api/admin/ routes refuse anyone else anyway.
+  const isAdmin = role === "admin";
 
   // Defence in depth: the worker never serves this page into the frame (it sends the stub below),
   // but if it ever did, a second Device would register and ring behind the section. Stop parsing
@@ -326,6 +328,11 @@ export function renderPhonePage(
       .import-hint code { background: var(--app-bg); padding: 0.1rem 0.4rem; border-radius: 0.3rem; color: var(--text-dim); }
       .import-result { min-height: 1.2rem; margin: 1rem 0 0; font-size: 0.85rem; color: var(--ok); }
       .import-result.error { color: var(--brand); }
+      .sync-list { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.9rem 0 0; max-height: 50vh; overflow-y: auto; }
+      .sync-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.55rem 0.7rem; border-radius: 0.6rem; background: var(--app-bg); cursor: pointer; }
+      .sync-row input { width: 1.05rem; height: 1.05rem; flex: none; }
+      .sync-name { font-weight: 600; color: var(--text); }
+      .sync-sub { font-size: 0.78rem; color: var(--text-mute); }
 
       /* Incoming overlay -- visible from any pane */
       #incoming-banner { display: none; position: fixed; top: 70px; left: 50%; transform: translateX(-50%); z-index: 50; width: min(440px, calc(100vw - 2rem)); background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--brand); border-radius: 14px; padding: 1.1rem 1.2rem; box-shadow: var(--shadow-md); }
@@ -388,6 +395,7 @@ export function renderPhonePage(
       <div class="list-actions" id="list-actions">
         <button type="button" class="list-action-btn primary" id="contact-add-btn">${ICON_ADD}<span>Add</span></button>
         <button type="button" class="list-action-btn" id="contact-import-btn">${ICON_IMPORT}<span>Import CSV</span></button>
+        ${isAdmin ? `<button type="button" class="list-action-btn" id="contact-sync-btn">${ICON_CONTACTS}<span>Sync contacts</span></button>` : ""}
       </div>
       <div class="list-scroll" id="calls-list">
         <div class="list-empty">Loading calls…</div>
@@ -540,6 +548,19 @@ export function renderPhonePage(
             <p class="import-result" id="import-result"></p>
           </div>
         </section>
+${isAdmin ? `
+        <section class="detail-view" data-detail="sync">
+          <h2 class="detail-title">Sync contacts from ServiceM8</h2>
+          <div class="card">
+            <p class="import-hint">Checks every number that has called or texted and isn't saved yet against ServiceM8. You choose which matches to save; a contact that is already saved is never changed.</p>
+            <p class="import-result" id="sync-status"></p>
+            <div class="sync-list" id="sync-list"></div>
+            <div class="contact-actions" style="margin-top:1rem">
+              <button type="button" id="sync-save" class="pill-btn pill-btn-primary" style="display:none">${ICON_CHECK_CIRCLE}<span>Save selected</span></button>
+              <button type="button" id="sync-cancel" class="pill-btn pill-btn-secondary">Close</button>
+            </div>
+          </div>
+        </section>` : ""}
       </div>
     </div>
 
@@ -1343,6 +1364,144 @@ export function renderPhonePage(
         result.textContent = 'Choose a CSV file or paste CSV text first.';
         result.classList.add('error');
       });
+
+      // ---- Sync contacts (admins only). The server checks 15 numbers per request -- on the
+      // Workers free plan one request may make 50 outside fetches -- so this asks again with the
+      // cursor until there is nothing left, then shows the matches to tick. ----
+      async function lookupAllInServiceM8(onProgress) {
+        var matches = [];
+        var failed = 0;
+        var checked = 0;
+        var after = null;
+        for (;;) {
+          var res = await fetch('/api/admin/servicem8/contact-lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(after === null ? {} : { after: after }),
+          });
+          var data = null;
+          try { data = await res.json(); } catch (e) { data = null; }
+          if (!res.ok || !data) {
+            throw new Error((data && data.error) || ('ServiceM8 lookup failed (status ' + res.status + ').'));
+          }
+          matches = matches.concat(data.matches || []);
+          failed += data.failed || 0;
+          checked += data.checked || 0;
+          onProgress(checked, checked + (data.remaining || 0));
+          if (!data.next) break;
+          // A cursor that does not move would search ServiceM8 forever.
+          if (data.next === after) throw new Error('ServiceM8 lookup stopped making progress.');
+          after = data.next;
+        }
+        return { matches: matches, failed: failed, checked: checked };
+      }
+      // end lookupAllInServiceM8
+
+      var syncMatches = [];
+      // One run or save at a time: a double-click would otherwise start two runs filling the same
+      // list against whichever syncMatches was assigned last, so a row could save another's number.
+      var syncBusy = false;
+      async function runContactSync() {
+        // Already running (say, Close was clicked mid-run): bring its progress back into view.
+        if (syncBusy) { showDetail('sync'); return; }
+        syncBusy = true;
+        try { await runContactSyncOnce(); } finally { syncBusy = false; }
+      }
+      async function runContactSyncOnce() {
+        var status = document.getElementById('sync-status');
+        var list = document.getElementById('sync-list');
+        var save = document.getElementById('sync-save');
+        status.classList.remove('error');
+        list.innerHTML = '';
+        save.style.display = 'none';
+        syncMatches = [];
+        status.textContent = 'Checking ServiceM8…';
+        showDetail('sync');
+        var result;
+        try {
+          result = await lookupAllInServiceM8(function (done, total) {
+            status.textContent = 'Checking ServiceM8… ' + done + ' of ' + total;
+          });
+        } catch (e) {
+          status.textContent = String((e && e.message) || e);
+          status.classList.add('error');
+          return;
+        }
+        syncMatches = result.matches;
+        var summary = result.checked === 0
+          ? 'Every number that has called or texted is already saved.'
+          : 'Found ' + result.matches.length + ' of ' + result.checked + ' unsaved numbers in ServiceM8.';
+        if (result.failed) summary += ' ' + result.failed + ' could not be checked.';
+        status.textContent = summary;
+        result.matches.forEach(function (m, i) {
+          var row = document.createElement('label');
+          row.className = 'sync-row';
+          var box = document.createElement('input');
+          box.type = 'checkbox';
+          box.checked = true;
+          box.setAttribute('data-index', String(i));
+          var text = document.createElement('div');
+          var name = document.createElement('div');
+          name.className = 'sync-name';
+          name.textContent = m.name;
+          var sub = document.createElement('div');
+          sub.className = 'sync-sub';
+          sub.textContent = formatAu(m.phone) + ' · last seen ' + fmtRowTime(m.lastSeen);
+          text.appendChild(name);
+          text.appendChild(sub);
+          row.appendChild(box);
+          row.appendChild(text);
+          list.appendChild(row);
+        });
+        if (result.matches.length) save.style.display = '';
+      }
+
+      async function saveContactSync() {
+        if (syncBusy) return;
+        syncBusy = true;
+        try { await saveContactSyncOnce(); } finally { syncBusy = false; }
+      }
+      async function saveContactSyncOnce() {
+        var status = document.getElementById('sync-status');
+        var chosen = [];
+        document.querySelectorAll('#sync-list input[type=checkbox]').forEach(function (box) {
+          if (box.checked) {
+            var m = syncMatches[Number(box.getAttribute('data-index'))];
+            if (m) chosen.push({ phone: m.phone, name: m.name });
+          }
+        });
+        status.classList.remove('error');
+        if (!chosen.length) { status.textContent = 'Tick at least one contact to save.'; status.classList.add('error'); return; }
+        status.textContent = 'Saving ' + chosen.length + '…';
+        try {
+          var res = await fetch('/api/admin/servicem8/contact-save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contacts: chosen }),
+          });
+          var data = null;
+          try { data = await res.json(); } catch (e) { data = null; }
+          if (!res.ok || !data) {
+            status.textContent = (data && data.error) || ('Save failed (status ' + res.status + ').');
+            status.classList.add('error');
+            return;
+          }
+          status.textContent = 'Saved ' + data.saved + (data.saved === 1 ? ' contact' : ' contacts') +
+            (data.skipped ? ' (' + data.skipped + ' already saved, left as they were).' : '.');
+          document.getElementById('sync-list').innerHTML = '';
+          document.getElementById('sync-save').style.display = 'none';
+          await loadContacts();
+        } catch (e) {
+          status.textContent = 'Save failed.'; status.classList.add('error');
+        }
+      }
+
+      var syncBtn = document.getElementById('contact-sync-btn');
+      if (syncBtn) {
+        syncBtn.addEventListener('click', runContactSync);
+        document.getElementById('sync-save').addEventListener('click', saveContactSync);
+        document.getElementById('sync-cancel').addEventListener('click', function () { setListMode('contacts'); showDetail('empty'); });
+      }
 
       // ---- Audio device pickers (Twilio Voice SDK audio API). Guarded so an unsupported
       // browser or ungranted mic permission just leaves "System default". ----
