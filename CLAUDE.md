@@ -2505,7 +2505,7 @@ Written at the time; kept as they were.
 - #159 docs(CLAUDE.md): R2 switched off on the account broke Deploy #178 and live `/media/` (fixed in the dashboard, not code)
 
 **2026-10-02**
-- feat: Sync contacts from ServiceM8 -- admin-only, review before saving (worker + OTA 84)
+- #160 feat: Sync contacts from ServiceM8 -- admin-only, review before saving (worker + OTA 84)
 
 PR numbers 1-16 predate this log (work went straight to `master`); 76 and 121 merged out of
 numeric order; 102-104 were never merged.
